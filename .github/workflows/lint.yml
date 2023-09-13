@@ -1,0 +1,30 @@
+name: Lint
+
+on:
+  push:
+    branches-ignore:
+      - release
+
+jobs:
+  lint:
+    strategy:
+      matrix:
+        go-version: [1.21.x]
+        platform: [ubuntu-latest]
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - name: Set up Go 1.x
+        uses: actions/setup-go@v4
+        with:
+          go-version: ${{ matrix.go-version }}
+        id: go
+
+      - name: Check out code into the Go module directory
+        uses: actions/checkout@v3
+
+      - name: lint
+        uses: golangci/golangci-lint-action@v3
+        with:
+          version: latest
