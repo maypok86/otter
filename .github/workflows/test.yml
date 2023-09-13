@@ -27,5 +27,5 @@ jobs:
       - name: Unit tests
         run: make test.unit
 
-      - name: Upload coverage report
-        run: bash <(curl -s https://codecov.io/bash)
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v3

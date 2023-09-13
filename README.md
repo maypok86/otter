@@ -1,11 +1,13 @@
 <p align="center">
   <img src="./assets/logo.png" width="40%" height="auto" >
-  <h1 align="center">Otter</h1>
-  <h3 align="center">Fast in-memory data store.</h3>
+  <h2 align="center">Fast in-memory data store</h2>
 </p>
 
 <p align="center">
 <img src="https://github.com/maypok86/otter/actions/workflows/test.yml/badge.svg" />
+<a href="https://codecov.io/gh/maypok86/otter" >
+    <img src="https://codecov.io/gh/maypok86/otter/graph/badge.svg?token=G0PJFOR8IF"/>
+</a>
 <img src="https://goreportcard.com/badge/github.com/maypok86/otter" />
 <img src="https://img.shields.io/github/license/maypok86/otter" />
 
