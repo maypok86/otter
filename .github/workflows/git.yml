@@ -8,5 +8,5 @@ jobs:
     name: Block merge with fixup commits
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - uses: 13rac1/block-fixup-merge-action@v2.0.0
