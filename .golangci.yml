@@ -92,6 +92,10 @@ linters-settings:
       - io.Copy(os.Stdout)
   nakedret:
     max-func-lines: 1
+  revive:
+    rules:
+      - name: empty-block
+        disabled: true
   tagliatelle:
     case:
       rules:
