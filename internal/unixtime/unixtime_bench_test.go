@@ -7,6 +7,8 @@ import (
 )
 
 func BenchmarkNow(b *testing.B) {
+	Start()
+
 	b.ReportAllocs()
 	b.RunParallel(func(pb *testing.PB) {
 		var ts uint64
@@ -15,6 +17,8 @@ func BenchmarkNow(b *testing.B) {
 		}
 		atomic.StoreUint64(&sink, ts)
 	})
+
+	Stop()
 }
 
 func BenchmarkTimeNowUnix(b *testing.B) {

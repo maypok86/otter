@@ -3,13 +3,16 @@ package stats
 import (
 	"sync"
 	"sync/atomic"
+
+	"github.com/maypok86/otter/internal/xmath"
+	"github.com/maypok86/otter/internal/xruntime"
 )
 
 var tokenPool sync.Pool
 
 type token struct {
 	idx     uint32
-	padding [cacheLineSize - 4]byte
+	padding [xruntime.CacheLineSize - 4]byte
 }
 
 // much faster than atomic in write heavy scenarios (for example stats).
@@ -20,11 +23,11 @@ type counter struct {
 
 type cshard struct {
 	c       int64
-	padding [cacheLineSize - 8]byte
+	padding [xruntime.CacheLineSize - 8]byte
 }
 
 func newCounter() *counter {
-	nshards := roundUpPowerOf2(parallelism())
+	nshards := xmath.RoundUpPowerOf2(xruntime.Parallelism())
 	return &counter{
 		shards: make([]cshard, nshards),
 		mask:   nshards - 1,
@@ -43,7 +46,7 @@ func (c *counter) add(delta int64) {
 	t, ok := tokenPool.Get().(*token)
 	if !ok {
 		t = &token{}
-		t.idx = fastrand()
+		t.idx = xruntime.Fastrand()
 	}
 	for {
 		shard := &c.shards[t.idx&c.mask]
@@ -51,7 +54,7 @@ func (c *counter) add(delta int64) {
 		if atomic.CompareAndSwapInt64(&shard.c, cnt, cnt+delta) {
 			break
 		}
-		t.idx = fastrand()
+		t.idx = xruntime.Fastrand()
 	}
 	tokenPool.Put(t)
 }

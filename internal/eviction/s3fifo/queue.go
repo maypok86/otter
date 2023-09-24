@@ -4,20 +4,22 @@ import (
 	"runtime"
 	"sync/atomic"
 	"unsafe"
+
+	"github.com/maypok86/otter/internal/xruntime"
 )
 
 type queue[T any] struct {
 	capacity    uint64
 	head        atomic.Uint64
-	headPadding [cacheLineSize - unsafe.Sizeof(atomic.Uint64{})]byte
+	headPadding [xruntime.CacheLineSize - unsafe.Sizeof(atomic.Uint64{})]byte
 	tail        atomic.Uint64
-	tailPadding [cacheLineSize - unsafe.Sizeof(atomic.Uint64{})]byte
+	tailPadding [xruntime.CacheLineSize - unsafe.Sizeof(atomic.Uint64{})]byte
 	slots       []paddedSlot[T]
 }
 
 type paddedSlot[T any] struct {
 	slot[T]
-	padding [cacheLineSize - unsafe.Sizeof(atomic.Uint64{})]byte
+	padding [xruntime.CacheLineSize - unsafe.Sizeof(atomic.Uint64{})]byte
 }
 
 type slot[I any] struct {

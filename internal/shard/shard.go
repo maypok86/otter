@@ -119,7 +119,7 @@ func newTable(bucketCount int) *table {
 func (s *Shard[K, V]) Get(key K) (V, *node.Node[K, V], bool) {
 	t := (*table)(atomic.LoadPointer(&s.table))
 	hash := s.calcShiftHash(key)
-	bucketIdx := t.mask & hash
+	bucketIdx := hash & t.mask
 	b := &t.buckets[bucketIdx]
 	for {
 		for i := 0; i < bucketSize; i++ {
