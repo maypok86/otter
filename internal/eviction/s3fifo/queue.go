@@ -28,9 +28,6 @@ type slot[I any] struct {
 }
 
 func newQueue[T any](capacity int) *queue[T] {
-	if capacity < 1 {
-		panic("capacity must be positive number")
-	}
 	return &queue[T]{
 		capacity: uint64(capacity),
 		slots:    make([]paddedSlot[T], capacity),
@@ -82,6 +79,20 @@ func (q *queue[T]) tryRemove() (T, bool) {
 		}
 		runtime.Gosched()
 	}
+}
+
+func (q *queue[T]) clear() {
+	for {
+		_, ok := q.tryRemove()
+		if !ok {
+			break
+		}
+	}
+	for i := 0; i < len(q.slots); i++ {
+		q.slots[i] = paddedSlot[T]{}
+	}
+	q.tail.Store(0)
+	q.head.Store(0)
 }
 
 func (q *queue[T]) length() int {

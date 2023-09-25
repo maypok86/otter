@@ -41,3 +41,11 @@ func (g *ghost[K, V]) evict() {
 		}
 	}
 }
+
+func (g *ghost[K, V]) clear() {
+	g.q.clear()
+}
+
+func (g *ghost[K, V]) length() int {
+	return g.q.length()
+}

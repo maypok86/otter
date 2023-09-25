@@ -19,12 +19,12 @@ func TestShard_PaddedBucketSize(t *testing.T) {
 func TestShard_EmptyStringKey(t *testing.T) {
 	s := New[string, string]()
 	s.Set("", "foobar")
-	v, e, ok := s.Get("")
+	n, e, ok := s.Get("")
 	if !ok {
 		t.Fatal("value was expected")
 	}
-	if v != "foobar" {
-		t.Fatalf("value does not match: %v", v)
+	if n.Value() != "foobar" {
+		t.Fatalf("value does not match: %v", n.Value())
 	}
 	if e != nil {
 		t.Fatal("evicted node wasn't expected")
@@ -34,12 +34,12 @@ func TestShard_EmptyStringKey(t *testing.T) {
 func TestShard_SetNilValue(t *testing.T) {
 	m := New[string, *struct{}]()
 	m.Set("foo", nil)
-	v, e, ok := m.Get("foo")
+	n, e, ok := m.Get("foo")
 	if !ok {
 		t.Fatal("nil value was expected")
 	}
-	if v != nil {
-		t.Fatalf("value was not nil: %v", v)
+	if n.Value() != nil {
+		t.Fatalf("value was not nil: %v", n.Value())
 	}
 	if e != nil {
 		t.Fatal("evicted node wasn't expected")
@@ -53,12 +53,12 @@ func TestShard_Set(t *testing.T) {
 		s.Set(strconv.Itoa(i), i)
 	}
 	for i := 0; i < numberOfNodes; i++ {
-		v, e, ok := s.Get(strconv.Itoa(i))
+		n, e, ok := s.Get(strconv.Itoa(i))
 		if !ok {
 			t.Fatalf("value not found for %d", i)
 		}
-		if v != i {
-			t.Fatalf("values do not match for %d: %v", i, v)
+		if n.Value() != i {
+			t.Fatalf("values do not match for %d: %v", i, n.Value())
 		}
 		if e != nil {
 			t.Fatal("evicted node wasn't expected")
@@ -79,12 +79,12 @@ func TestShard_SetWithCollisions(t *testing.T) {
 	if ev != nil {
 		t.Fatal("evicted must be null")
 	}
-	v, e, ok := s.Get(2)
+	n, e, ok := s.Get(2)
 	if !ok {
 		t.Fatal("value not found for 2")
 	}
-	if v != 2 {
-		t.Fatalf("values do not match for 2: %v", v)
+	if n.Value() != 2 {
+		t.Fatalf("values do not match for 2: %v", n.Value())
 	}
 	if e != nil {
 		t.Fatal("evicted node wasn't expected")
@@ -93,7 +93,7 @@ func TestShard_SetWithCollisions(t *testing.T) {
 	if ins == nil {
 		t.Fatal("inserted must be non null")
 	}
-	if ev == nil || ev.Key == 0 {
+	if ev == nil || ev.Key() == 0 {
 		t.Fatal("evicted must be with key zero")
 	}
 	_, _, ok = s.Get(2)
@@ -166,13 +166,13 @@ func parallelSeqSetter(t *testing.T, s *Shard[string, int], storers, iterations,
 		for j := 0; j < nodes; j++ {
 			if storers == 0 || j%storers == 0 {
 				s.Set(strconv.Itoa(j), j)
-				v, _, ok := s.Get(strconv.Itoa(j))
+				n, _, ok := s.Get(strconv.Itoa(j))
 				if !ok {
 					t.Errorf("value was not found for %d", j)
 					break
 				}
-				if v != j {
-					t.Errorf("value was not expected for %d: %d", j, v)
+				if n.Value() != j {
+					t.Errorf("value was not expected for %d: %d", j, n.Value())
 					break
 				}
 			}
@@ -195,12 +195,12 @@ func TestShard_ParallelSets(t *testing.T) {
 	wg.Wait()
 
 	for i := 0; i < nodes; i++ {
-		v, _, ok := s.Get(strconv.Itoa(i))
+		n, _, ok := s.Get(strconv.Itoa(i))
 		if !ok {
 			t.Fatalf("value not found for %d", i)
 		}
-		if v != i {
-			t.Fatalf("values do not match for %d: %v", i, v)
+		if n.Value() != i {
+			t.Fatalf("values do not match for %d: %v", i, n.Value())
 		}
 	}
 }
@@ -211,8 +211,8 @@ func parallelRandSetter(t *testing.T, s *Shard[string, int], iteratinos, nodes i
 	r := rand.New(rand.NewSource(time.Now().UnixNano()))
 	for i := 0; i < iteratinos; i++ {
 		j := r.Intn(nodes)
-		if v, _ := s.Set(strconv.Itoa(j), j); v.Value != j {
-			t.Errorf("value was not expected for %d: %d", j, v.Value)
+		if v, _ := s.Set(strconv.Itoa(j), j); v.Value() != j {
+			t.Errorf("value was not expected for %d: %d", j, v.Value())
 		}
 	}
 	wg.Done()
@@ -224,8 +224,8 @@ func parallelRandDeleter(t *testing.T, s *Shard[string, int], iterations, nodes 
 	r := rand.New(rand.NewSource(time.Now().UnixNano()))
 	for i := 0; i < iterations; i++ {
 		j := r.Intn(nodes)
-		if v := s.Delete(strconv.Itoa(j)); v != nil && v.Value != j {
-			t.Errorf("value was not expected for %d: %d", j, v.Value)
+		if v := s.Delete(strconv.Itoa(j)); v != nil && v.Value() != j {
+			t.Errorf("value was not expected for %d: %d", j, v.Value())
 		}
 	}
 	wg.Done()
@@ -236,8 +236,8 @@ func parallelGetter(t *testing.T, s *Shard[string, int], iterations, nodes int, 
 
 	for i := 0; i < iterations; i++ {
 		for j := 0; j < nodes; j++ {
-			if v, _, ok := s.Get(strconv.Itoa(j)); ok && v != j {
-				t.Errorf("value was not expected for %d: %d", j, v)
+			if n, _, ok := s.Get(strconv.Itoa(j)); ok && n.Value() != j {
+				t.Errorf("value was not expected for %d: %d", j, n.Value())
 			}
 		}
 	}

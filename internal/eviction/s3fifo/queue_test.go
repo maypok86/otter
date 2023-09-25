@@ -7,15 +7,6 @@ import (
 	"testing"
 )
 
-func TestQueue_InvalidSize(t *testing.T) {
-	defer func() {
-		if err := recover(); err == nil {
-			t.Fatal("no panic detected")
-		}
-	}()
-	newQueue[int](0)
-}
-
 func TestQueue_TryInsertRemove(t *testing.T) {
 	const capacity = 10
 	q := newQueue[int](capacity)

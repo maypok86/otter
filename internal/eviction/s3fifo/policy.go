@@ -40,3 +40,21 @@ func (p *Policy[K, V]) Add(n *node.Node[K, V]) {
 		p.small.add(n)
 	}
 }
+
+func (p *Policy[K, V]) Delete(n *node.Node[K, V]) {
+	n.MustGhost()
+}
+
+func (p *Policy[K, V]) Clear() {
+	p.ghost.clear()
+	p.main.clear()
+	p.small.clear()
+}
+
+func (p *Policy[K, V]) Size() int {
+	return p.small.length() + p.main.length()
+}
+
+func (p *Policy[K, V]) Capacity() int {
+	return p.capacity
+}

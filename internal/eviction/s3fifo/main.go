@@ -46,3 +46,11 @@ func (m *main[K, V]) evict() {
 		}
 	}
 }
+
+func (m *main[K, V]) clear() {
+	m.q.clear()
+}
+
+func (m *main[K, V]) length() int {
+	return m.q.length()
+}
