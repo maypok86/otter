@@ -34,11 +34,6 @@ const (
 	maxCounterLength = 32
 )
 
-func zeroValue[V any]() V {
-	var zero V
-	return zero
-}
-
 type Shard[K comparable, V any] struct {
 	table unsafe.Pointer
 
@@ -116,7 +111,7 @@ func newTable(bucketCount int) *table {
 	return t
 }
 
-func (s *Shard[K, V]) Get(key K) (V, *node.Node[K, V], bool) {
+func (s *Shard[K, V]) Get(key K) (got, evicted *node.Node[K, V], ok bool) {
 	t := (*table)(atomic.LoadPointer(&s.table))
 	hash := s.calcShiftHash(key)
 	bucketIdx := hash & t.mask
@@ -133,21 +128,21 @@ func (s *Shard[K, V]) Get(key K) (V, *node.Node[K, V], bool) {
 			nodePtr := atomic.LoadPointer(&b.nodes[i])
 			if nodePtr == nil {
 				// concurrent write in this node
-				return zeroValue[V](), nil, false
+				return nil, nil, false
 			}
 			n := (*node.Node[K, V])(nodePtr)
-			if key != n.Key {
-				return zeroValue[V](), nil, false
+			if key != n.Key() {
+				return nil, nil, false
 			}
 			if n.IsExpired() {
-				return zeroValue[V](), n, false
+				return nil, n, false
 			}
 
-			return n.Value, nil, true
+			return n, nil, true
 		}
 		bucketPtr := atomic.LoadPointer(&b.next)
 		if bucketPtr == nil {
-			return zeroValue[V](), nil, false
+			return nil, nil, false
 		}
 		b = (*paddedBucket)(bucketPtr)
 	}
@@ -237,12 +232,12 @@ func (s *Shard[K, V]) SetWithExpiration(key K, value V, expiration uint64) (inse
 
 func (s *Shard[K, V]) Delete(key K) *node.Node[K, V] {
 	return s.delete(key, func(n *node.Node[K, V]) bool {
-		return key == n.Key
+		return key == n.Key()
 	})
 }
 
 func (s *Shard[K, V]) EvictNode(n *node.Node[K, V]) *node.Node[K, V] {
-	return s.delete(n.Key, func(current *node.Node[K, V]) bool {
+	return s.delete(n.Key(), func(current *node.Node[K, V]) bool {
 		return n == current
 	})
 }
@@ -280,6 +275,7 @@ func (s *Shard[K, V]) delete(key K, cmp func(*node.Node[K, V]) bool) *node.Node[
 				}
 				current := (*node.Node[K, V])(b.nodes[i])
 				if !cmp(current) {
+					rootBucket.mutex.Unlock()
 					return nil
 				}
 				atomic.StoreUint64(&b.hashes[i], uint64(0))
@@ -371,7 +367,7 @@ func (s *Shard[K, V]) copyBuckets(b *paddedBucket, dest *table) (copied int) {
 			if n.IsExpired() {
 				continue
 			}
-			hash := s.calcShiftHash(n.Key)
+			hash := s.calcShiftHash(n.Key())
 			bucketIdx := hash & dest.mask
 			dest.buckets[bucketIdx].add(hash, b.nodes[i])
 			copied++

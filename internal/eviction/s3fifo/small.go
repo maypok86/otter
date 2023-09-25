@@ -54,3 +54,11 @@ func (s *small[K, V]) evict() {
 		}
 	}
 }
+
+func (s *small[K, V]) clear() {
+	s.q.clear()
+}
+
+func (s *small[K, V]) length() int {
+	return s.q.length()
+}

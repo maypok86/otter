@@ -13,36 +13,44 @@ const (
 )
 
 type Node[K comparable, V any] struct {
-	Key        K
-	Value      V
-	Expiration uint64
-	Frequency  atomic.Int32
+	key        K
+	value      V
+	expiration uint64
+	frequency  atomic.Int32
 }
 
 func New[K comparable, V any](key K, value V, expiration uint64) *Node[K, V] {
 	return &Node[K, V]{
-		Key:        key,
-		Value:      value,
-		Expiration: expiration,
+		key:        key,
+		value:      value,
+		expiration: expiration,
 	}
 }
 
+func (n *Node[K, V]) Key() K {
+	return n.key
+}
+
+func (n *Node[K, V]) Value() V {
+	return n.value
+}
+
 func (n *Node[K, V]) IsExpired() bool {
-	return n.Expiration != 0 && n.Expiration < unixtime.Now()
+	return n.expiration != 0 && n.expiration < unixtime.Now()
 }
 
 func (n *Node[K, V]) IsGhost() bool {
-	return n.Frequency.Load() == ghostFrequency
+	return n.frequency.Load() == ghostFrequency
 }
 
 func (n *Node[K, V]) Touch() bool {
 	for {
-		frequency := n.Frequency.Load()
+		frequency := n.frequency.Load()
 		if frequency >= maxFrequency {
 			// don't need cas
 			return true
 		}
-		if n.Frequency.CompareAndSwap(frequency, minInt32(frequency+1, maxFrequency)) {
+		if n.frequency.CompareAndSwap(frequency, minInt32(frequency+1, maxFrequency)) {
 			return frequency != ghostFrequency // is not ghost
 		}
 	}
@@ -50,11 +58,11 @@ func (n *Node[K, V]) Touch() bool {
 
 func (n *Node[K, V]) Untouch() bool {
 	for {
-		frequency := n.Frequency.Load()
+		frequency := n.frequency.Load()
 
 		// touched
 		if frequency > defaultFrequency {
-			if n.Frequency.CompareAndSwap(frequency, frequency-1) {
+			if n.frequency.CompareAndSwap(frequency, frequency-1) {
 				return true
 			}
 			continue
@@ -65,19 +73,19 @@ func (n *Node[K, V]) Untouch() bool {
 }
 
 func (n *Node[K, V]) BecomeGhost() bool {
-	return n.Frequency.CompareAndSwap(defaultFrequency, ghostFrequency)
+	return n.frequency.CompareAndSwap(defaultFrequency, ghostFrequency)
 }
 
 func (n *Node[K, V]) MustGhost() {
-	n.Frequency.Store(ghostFrequency)
+	n.frequency.Store(ghostFrequency)
 }
 
 func (n *Node[K, V]) Revive() bool {
-	return n.Frequency.CompareAndSwap(ghostFrequency, defaultFrequency)
+	return n.frequency.CompareAndSwap(ghostFrequency, defaultFrequency)
 }
 
 func (n *Node[K, V]) Touched() bool {
-	return n.Frequency.Load() > defaultFrequency
+	return n.frequency.Load() > defaultFrequency
 }
 
 func minInt32(a, b int32) int32 {
