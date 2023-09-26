@@ -1,6 +1,7 @@
 package node
 
 import (
+	"sync"
 	"sync/atomic"
 
 	"github.com/maypok86/otter/internal/unixtime"
@@ -12,19 +13,37 @@ const (
 	defaultFrequency = int32(0)
 )
 
+var nodePool sync.Pool
+
 type Node[K comparable, V any] struct {
 	key        K
 	value      V
 	expiration uint64
-	frequency  atomic.Int32
+	frequency  int32
 }
 
 func New[K comparable, V any](key K, value V, expiration uint64) *Node[K, V] {
-	return &Node[K, V]{
-		key:        key,
-		value:      value,
-		expiration: expiration,
+	n := nodePool.Get()
+	if n == nil {
+		return &Node[K, V]{
+			key:        key,
+			value:      value,
+			expiration: expiration,
+		}
 	}
+
+	//nolint:errcheck // we check nil value (not found in pool or cast error)
+	v := n.(*Node[K, V])
+	v.key = key
+	v.value = value
+	v.expiration = expiration
+
+	return v
+}
+
+func Free[K comparable, V any](n *Node[K, V]) {
+	n.frequency = defaultFrequency
+	nodePool.Put(n)
 }
 
 func (n *Node[K, V]) Key() K {
@@ -40,17 +59,17 @@ func (n *Node[K, V]) IsExpired() bool {
 }
 
 func (n *Node[K, V]) IsGhost() bool {
-	return n.frequency.Load() == ghostFrequency
+	return atomic.LoadInt32(&n.frequency) == ghostFrequency
 }
 
 func (n *Node[K, V]) Touch() bool {
 	for {
-		frequency := n.frequency.Load()
+		frequency := atomic.LoadInt32(&n.frequency)
 		if frequency >= maxFrequency {
 			// don't need cas
 			return true
 		}
-		if n.frequency.CompareAndSwap(frequency, minInt32(frequency+1, maxFrequency)) {
+		if atomic.CompareAndSwapInt32(&n.frequency, frequency, minInt32(frequency+1, maxFrequency)) {
 			return frequency != ghostFrequency // is not ghost
 		}
 	}
@@ -58,11 +77,11 @@ func (n *Node[K, V]) Touch() bool {
 
 func (n *Node[K, V]) Untouch() bool {
 	for {
-		frequency := n.frequency.Load()
+		frequency := atomic.LoadInt32(&n.frequency)
 
 		// touched
 		if frequency > defaultFrequency {
-			if n.frequency.CompareAndSwap(frequency, frequency-1) {
+			if atomic.CompareAndSwapInt32(&n.frequency, frequency, frequency-1) {
 				return true
 			}
 			continue
@@ -73,19 +92,19 @@ func (n *Node[K, V]) Untouch() bool {
 }
 
 func (n *Node[K, V]) BecomeGhost() bool {
-	return n.frequency.CompareAndSwap(defaultFrequency, ghostFrequency)
+	return atomic.CompareAndSwapInt32(&n.frequency, defaultFrequency, ghostFrequency)
 }
 
 func (n *Node[K, V]) MustGhost() {
-	n.frequency.Store(ghostFrequency)
+	atomic.StoreInt32(&n.frequency, ghostFrequency)
 }
 
 func (n *Node[K, V]) Revive() bool {
-	return n.frequency.CompareAndSwap(ghostFrequency, defaultFrequency)
+	return atomic.CompareAndSwapInt32(&n.frequency, ghostFrequency, defaultFrequency)
 }
 
 func (n *Node[K, V]) Touched() bool {
-	return n.frequency.Load() > defaultFrequency
+	return atomic.LoadInt32(&n.frequency) > defaultFrequency
 }
 
 func minInt32(a, b int32) int32 {

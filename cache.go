@@ -54,6 +54,7 @@ func New[K comparable, V any](opts ...Option) (*Cache[K, V], error) {
 
 	c.policy = s3fifo.NewPolicy[K, V](o.capacity, func(n *node.Node[K, V]) {
 		c.getShard(n.Key()).EvictNode(n)
+		node.Free(n)
 	})
 	if o.statsEnabled {
 		c.stats = stats.New()
