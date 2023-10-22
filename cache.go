@@ -7,11 +7,15 @@ import (
 
 	"github.com/zeebo/xxh3"
 
-	"github.com/maypok86/otter/internal/eviction/s3fifo"
+	"github.com/maypok86/otter/internal/hashtable"
+	"github.com/maypok86/otter/internal/lossy"
 	"github.com/maypok86/otter/internal/node"
-	"github.com/maypok86/otter/internal/shard"
+	"github.com/maypok86/otter/internal/queue"
+	"github.com/maypok86/otter/internal/s3fifo"
 	"github.com/maypok86/otter/internal/stats"
 	"github.com/maypok86/otter/internal/unixtime"
+	"github.com/maypok86/otter/internal/xmath"
+	"github.com/maypok86/otter/internal/xruntime"
 )
 
 func zeroValue[V any]() V {
@@ -20,9 +24,11 @@ func zeroValue[V any]() V {
 }
 
 type Cache[K comparable, V any] struct {
-	shards      []*shard.Shard[K, V]
+	shards      []*hashtable.Map[K, V]
 	policy      *s3fifo.Policy[K, V]
 	stats       *stats.Stats
+	readBuffers []*lossy.Buffer[*node.Node[K, V]]
+	writeBuffer *queue.MPSC[s3fifo.WriteItem[K, V]]
 	closeOnce   sync.Once
 	keyIsString bool
 	keySize     int
@@ -41,21 +47,22 @@ func New[K comparable, V any](opts ...Option) (*Cache[K, V], error) {
 	}
 
 	shardCapacity := (o.capacity + o.shardCount - 1) / o.shardCount
-	shards := make([]*shard.Shard[K, V], 0, o.shardCount)
+	shards := make([]*hashtable.Map[K, V], 0, o.shardCount)
+	readBuffers := make([]*lossy.Buffer[*node.Node[K, V]], 0, o.shardCount)
 	for i := 0; i < o.shardCount; i++ {
-		shards = append(shards, shard.New[K, V](shard.WithNodeCount[K](shardCapacity)))
+		shards = append(shards, hashtable.New[K, V](hashtable.WithNodeCount[K](shardCapacity)))
+		readBuffers = append(readBuffers, lossy.New[*node.Node[K, V]]())
 	}
 
 	c := &Cache[K, V]{
-		shards:   shards,
-		mask:     uint64(o.shardCount - 1),
-		capacity: o.capacity,
+		shards:      shards,
+		readBuffers: readBuffers,
+		writeBuffer: queue.NewMPSC[s3fifo.WriteItem[K, V]](128 * int(xmath.RoundUpPowerOf2(xruntime.Parallelism()))),
+		mask:        uint64(o.shardCount - 1),
+		capacity:    o.capacity,
 	}
 
-	c.policy = s3fifo.NewPolicy[K, V](o.capacity, func(n *node.Node[K, V]) {
-		c.getShard(n.Key()).EvictNode(n)
-		node.Free(n)
-	})
+	c.policy = s3fifo.NewPolicy[K, V](uint32(o.capacity))
 	if o.statsEnabled {
 		c.stats = stats.New()
 	}
@@ -69,11 +76,12 @@ func New[K comparable, V any](opts ...Option) (*Cache[K, V], error) {
 	}
 
 	unixtime.Start()
+	go c.process()
 
 	return c, nil
 }
 
-func (c *Cache[K, V]) getShard(key K) *shard.Shard[K, V] {
+func (c *Cache[K, V]) getShardIdx(key K) int {
 	var strKey string
 	if c.keyIsString {
 		strKey = *(*string)(unsafe.Pointer(&key))
@@ -84,9 +92,7 @@ func (c *Cache[K, V]) getShard(key K) *shard.Shard[K, V] {
 		}{unsafe.Pointer(&key), c.keySize}))
 	}
 
-	idx := int(xxh3.HashString(strKey) & c.mask)
-
-	return c.shards[idx]
+	return int(xxh3.HashString(strKey) & c.mask)
 }
 
 func (c *Cache[K, V]) Has(key K) bool {
@@ -95,19 +101,36 @@ func (c *Cache[K, V]) Has(key K) bool {
 }
 
 func (c *Cache[K, V]) Get(key K) (V, bool) {
-	got, evicted, ok := c.getShard(key).Get(key)
-	if evicted != nil {
-		c.policy.Delete(evicted)
-	}
+	idx := c.getShardIdx(key)
+	got, ok := c.shards[idx].Get(key)
 	if !ok {
-		c.stats.IncrementMisses()
+		c.stats.IncMisses()
 		return zeroValue[V](), false
 	}
 
-	c.policy.Get(got)
-	c.stats.IncrementHits()
+	if got.IsExpired() {
+		c.writeBuffer.Insert(s3fifo.NewEvictedItem(got))
+		c.stats.IncMisses()
+		return zeroValue[V](), false
+	}
+
+	c.afterGet(idx, got)
+	c.stats.IncHits()
 
 	return got.Value(), ok
+}
+
+func (c *Cache[K, V]) afterGet(idx int, got *node.Node[K, V]) {
+	pb := c.readBuffers[idx].Add(got)
+	if pb != nil {
+		deleted := c.policy.Read(pb.Deleted, pb.Returned)
+		if len(deleted) > 0 {
+			for _, n := range deleted {
+				c.shards[c.getShardIdx(n.Key())].EvictNode(n)
+			}
+		}
+		c.readBuffers[idx].Free()
+	}
 }
 
 func (c *Cache[K, V]) Set(key K, value V) {
@@ -120,19 +143,68 @@ func (c *Cache[K, V]) SetWithTTL(key K, value V, ttl time.Duration) {
 }
 
 func (c *Cache[K, V]) set(key K, value V, expiration uint64) {
-	inserted, evicted := c.getShard(key).SetWithExpiration(key, value, expiration)
-	if inserted != nil {
-		c.policy.Add(inserted)
+	cost := uint32(1)
+	if cost >= c.policy.MaxAvailableCost() {
+		return
 	}
+
+	idx := c.getShardIdx(key)
+	s := c.shards[idx]
+	got, ok := s.Get(key)
+	if !ok {
+		if !got.IsExpired() {
+			oldCost := got.SwapCost(cost)
+			_ = got.SwapExpiration(expiration)
+			got.SetValue(value)
+			costDiff := cost - oldCost
+			if costDiff != 0 {
+				c.writeBuffer.Insert(s3fifo.NewUpdatedItem(got, costDiff))
+			}
+
+			return
+		}
+
+		c.writeBuffer.Insert(s3fifo.NewEvictedItem(got))
+	}
+
+	n := node.New(key, value, expiration, cost)
+	evicted := s.Set(n)
+	// TODO: try insert?
+	c.writeBuffer.Insert(s3fifo.NewAddedItem(n))
 	if evicted != nil {
-		c.policy.Delete(evicted)
+		c.writeBuffer.Insert(s3fifo.NewEvictedItem(evicted))
 	}
 }
 
 func (c *Cache[K, V]) Delete(key K) {
-	deleted := c.getShard(key).Delete(key)
+	deleted := c.shards[c.getShardIdx(key)].Delete(key)
 	if deleted != nil {
-		c.policy.Delete(deleted)
+		c.writeBuffer.Insert(s3fifo.NewDeletedItem(deleted))
+	}
+}
+
+func (c *Cache[K, V]) process() {
+	bufferCapacity := 128
+	buffer := make([]s3fifo.WriteItem[K, V], 0, bufferCapacity)
+	deleted := make([]*node.Node[K, V], 0, bufferCapacity)
+	i := 0
+	for {
+		item := c.writeBuffer.Remove()
+
+		buffer = append(buffer, item)
+		i++
+		if i >= bufferCapacity {
+			i -= bufferCapacity
+			d := c.policy.Write(deleted, buffer)
+			if len(d) > 0 {
+				for _, n := range d {
+					c.shards[c.getShardIdx(n.Key())].EvictNode(n)
+				}
+			}
+
+			buffer = buffer[:0]
+			deleted = deleted[:0]
+		}
 	}
 }
 

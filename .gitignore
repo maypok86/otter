@@ -18,3 +18,4 @@
 *coverage.txt
 *lint.txt
 **/bin/
+.DS_Store

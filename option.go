@@ -9,13 +9,13 @@ import (
 const (
 	illegalCapacity     = -1
 	illegalShardCount   = -1
-	defaultShardCount   = 512
+	defaultShardCount   = 128
 	defaultStatsEnabled = false
 )
 
 var (
 	ErrIllegalCapacity   = errors.New("capacity should be positive")
-	ErrIllegalShardCount = errors.New("shard count should be positive")
+	ErrIllegalShardCount = errors.New("hashtable count should be positive")
 )
 
 type Option func(*options)

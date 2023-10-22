@@ -1,4 +1,4 @@
-package shard
+package hashtable
 
 import "github.com/dolthub/maphash"
 

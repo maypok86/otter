@@ -12,7 +12,7 @@ func New() *Stats {
 	}
 }
 
-func (s *Stats) IncrementHits() {
+func (s *Stats) IncHits() {
 	if s == nil {
 		return
 	}
@@ -28,7 +28,7 @@ func (s *Stats) Hits() int64 {
 	return s.hits.value()
 }
 
-func (s *Stats) IncrementMisses() {
+func (s *Stats) IncMisses() {
 	if s == nil {
 		return
 	}
