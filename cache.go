@@ -20,6 +20,13 @@ func zeroValue[V any]() V {
 	return zero
 }
 
+type Config[K comparable, V any] struct {
+	Capacity     int
+	ShardCount   int
+	StatsEnabled bool
+	CostFunc     func(key K, value V) uint32
+}
+
 type Cache[K comparable, V any] struct {
 	shards      []*hashtable.Map[K, V]
 	policy      *s3fifo.Policy[K, V]
@@ -28,46 +35,39 @@ type Cache[K comparable, V any] struct {
 	writeBuffer *queue.MPSC[s3fifo.WriteItem[K, V]]
 	closeOnce   sync.Once
 	hasher      *hasher[K]
+	costFunc    func(key K, value V) uint32
 	mask        uint64
 	capacity    int
 }
 
-func New[K comparable, V any](opts ...Option) (*Cache[K, V], error) {
-	o := defaultOptions()
-	for _, opt := range opts {
-		opt(o)
-	}
-
-	if err := o.validate(); err != nil {
-		return nil, err
-	}
-
-	shardCapacity := (o.capacity + o.shardCount - 1) / o.shardCount
-	shards := make([]*hashtable.Map[K, V], 0, o.shardCount)
-	readBuffers := make([]*lossy.Buffer[*node.Node[K, V]], 0, o.shardCount)
-	for i := 0; i < o.shardCount; i++ {
+func NewCache[K comparable, V any](c Config[K, V]) *Cache[K, V] {
+	shardCapacity := (c.Capacity + c.ShardCount - 1) / c.ShardCount
+	shards := make([]*hashtable.Map[K, V], 0, c.ShardCount)
+	readBuffers := make([]*lossy.Buffer[*node.Node[K, V]], 0, c.ShardCount)
+	for i := 0; i < c.ShardCount; i++ {
 		shards = append(shards, hashtable.New[K, V](hashtable.WithNodeCount[K](shardCapacity)))
 		readBuffers = append(readBuffers, lossy.New[*node.Node[K, V]]())
 	}
 
-	c := &Cache[K, V]{
+	cache := &Cache[K, V]{
 		shards:      shards,
 		readBuffers: readBuffers,
 		writeBuffer: queue.NewMPSC[s3fifo.WriteItem[K, V]](128 * int(xmath.RoundUpPowerOf2(xruntime.Parallelism()))),
 		hasher:      newHasher[K](),
-		mask:        uint64(o.shardCount - 1),
-		capacity:    o.capacity,
+		mask:        uint64(c.ShardCount - 1),
+		costFunc:    c.CostFunc,
+		capacity:    c.Capacity,
 	}
 
-	c.policy = s3fifo.NewPolicy[K, V](uint32(o.capacity))
-	if o.statsEnabled {
-		c.stats = stats.New()
+	cache.policy = s3fifo.NewPolicy[K, V](uint32(c.Capacity))
+	if c.StatsEnabled {
+		cache.stats = stats.New()
 	}
 
 	unixtime.Start()
-	go c.process()
+	go cache.process()
 
-	return c, nil
+	return cache
 }
 
 func (c *Cache[K, V]) getShardIdx(key K) int {
@@ -117,12 +117,13 @@ func (c *Cache[K, V]) Set(key K, value V) {
 }
 
 func (c *Cache[K, V]) SetWithTTL(key K, value V, ttl time.Duration) {
-	expiration := unixtime.Now() + uint64(ttl/time.Second)
+	ttl = (ttl + time.Second - 1) / time.Second
+	expiration := unixtime.Now() + uint64(ttl)
 	c.set(key, value, expiration)
 }
 
 func (c *Cache[K, V]) set(key K, value V, expiration uint64) {
-	cost := uint32(1)
+	cost := c.costFunc(key, value)
 	if cost >= c.policy.MaxAvailableCost() {
 		return
 	}
