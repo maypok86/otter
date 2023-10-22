@@ -3,9 +3,6 @@ package otter
 import (
 	"sync"
 	"time"
-	"unsafe"
-
-	"github.com/zeebo/xxh3"
 
 	"github.com/maypok86/otter/internal/hashtable"
 	"github.com/maypok86/otter/internal/lossy"
@@ -30,8 +27,7 @@ type Cache[K comparable, V any] struct {
 	readBuffers []*lossy.Buffer[*node.Node[K, V]]
 	writeBuffer *queue.MPSC[s3fifo.WriteItem[K, V]]
 	closeOnce   sync.Once
-	keyIsString bool
-	keySize     int
+	hasher      *hasher[K]
 	mask        uint64
 	capacity    int
 }
@@ -58,6 +54,7 @@ func New[K comparable, V any](opts ...Option) (*Cache[K, V], error) {
 		shards:      shards,
 		readBuffers: readBuffers,
 		writeBuffer: queue.NewMPSC[s3fifo.WriteItem[K, V]](128 * int(xmath.RoundUpPowerOf2(xruntime.Parallelism()))),
+		hasher:      newHasher[K](),
 		mask:        uint64(o.shardCount - 1),
 		capacity:    o.capacity,
 	}
@@ -67,14 +64,6 @@ func New[K comparable, V any](opts ...Option) (*Cache[K, V], error) {
 		c.stats = stats.New()
 	}
 
-	var key K
-	switch (any(key)).(type) {
-	case string:
-		c.keyIsString = true
-	default:
-		c.keySize = int(unsafe.Sizeof(key))
-	}
-
 	unixtime.Start()
 	go c.process()
 
@@ -82,17 +71,7 @@ func New[K comparable, V any](opts ...Option) (*Cache[K, V], error) {
 }
 
 func (c *Cache[K, V]) getShardIdx(key K) int {
-	var strKey string
-	if c.keyIsString {
-		strKey = *(*string)(unsafe.Pointer(&key))
-	} else {
-		strKey = *(*string)(unsafe.Pointer(&struct {
-			data unsafe.Pointer
-			len  int
-		}{unsafe.Pointer(&key), c.keySize}))
-	}
-
-	return int(xxh3.HashString(strKey) & c.mask)
+	return int(c.hasher.hash(key) & c.mask)
 }
 
 func (c *Cache[K, V]) Has(key K) bool {
@@ -151,7 +130,7 @@ func (c *Cache[K, V]) set(key K, value V, expiration uint64) {
 	idx := c.getShardIdx(key)
 	s := c.shards[idx]
 	got, ok := s.Get(key)
-	if !ok {
+	if ok {
 		if !got.IsExpired() {
 			oldCost := got.SwapCost(cost)
 			_ = got.SwapExpiration(expiration)
