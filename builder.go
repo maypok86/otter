@@ -3,7 +3,6 @@ package otter
 import "errors"
 
 const (
-	illegalShardCount   = -1
 	defaultShardCount   = 128
 	defaultStatsEnabled = false
 )
@@ -21,7 +20,8 @@ type options[K comparable, V any] struct {
 }
 
 func (o *options[K, V]) validate() error {
-	if o.shardCount == illegalShardCount {
+	// shard count should be power of two.
+	if o.shardCount <= 0 || (o.shardCount&(o.shardCount-1)) != 0 {
 		return ErrIllegalShardCount
 	}
 
