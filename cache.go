@@ -31,7 +31,7 @@ type Cache[K comparable, V any] struct {
 	shards      []*hashtable.Map[K, V]
 	policy      *s3fifo.Policy[K, V]
 	stats       *stats.Stats
-	readBuffers []*lossy.Buffer[*node.Node[K, V]]
+	readBuffers []*lossy.Buffer[node.Node[K, V]]
 	writeBuffer *queue.MPSC[s3fifo.WriteItem[K, V]]
 	closeOnce   sync.Once
 	hasher      *hasher[K]
@@ -41,12 +41,11 @@ type Cache[K comparable, V any] struct {
 }
 
 func NewCache[K comparable, V any](c Config[K, V]) *Cache[K, V] {
-	shardCapacity := (c.Capacity + c.ShardCount - 1) / c.ShardCount
 	shards := make([]*hashtable.Map[K, V], 0, c.ShardCount)
-	readBuffers := make([]*lossy.Buffer[*node.Node[K, V]], 0, c.ShardCount)
+	readBuffers := make([]*lossy.Buffer[node.Node[K, V]], 0, c.ShardCount)
 	for i := 0; i < c.ShardCount; i++ {
-		shards = append(shards, hashtable.New[K, V](hashtable.WithNodeCount[K](shardCapacity)))
-		readBuffers = append(readBuffers, lossy.New[*node.Node[K, V]]())
+		shards = append(shards, hashtable.New[K, V]())
+		readBuffers = append(readBuffers, lossy.New[node.Node[K, V]]())
 	}
 
 	cache := &Cache[K, V]{

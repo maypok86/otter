@@ -13,8 +13,8 @@ const (
 )
 
 type PolicyBuffers[T any] struct {
-	Returned []T
-	Deleted  []T
+	Returned []*T
+	Deleted  []*T
 }
 
 type Buffer[T any] struct {
@@ -24,24 +24,24 @@ type Buffer[T any] struct {
 	tailPadding          [xruntime.CacheLineSize - unsafe.Sizeof(atomic.Uint64{})]byte
 	returned             unsafe.Pointer
 	returnedPadding      [xruntime.CacheLineSize - 8]byte
-	policyBuffers        *PolicyBuffers[T]
+	policyBuffers        unsafe.Pointer
 	returnedSlicePadding [xruntime.CacheLineSize - 8]byte
-	buffer               [capacity]T
+	buffer               [capacity]unsafe.Pointer
 }
 
 func New[T any]() *Buffer[T] {
 	pb := &PolicyBuffers[T]{
-		Returned: make([]T, 0, capacity),
-		Deleted:  make([]T, 0, capacity),
+		Returned: make([]*T, 0, capacity),
+		Deleted:  make([]*T, 0, capacity),
 	}
 	b := &Buffer[T]{
-		policyBuffers: pb,
+		policyBuffers: unsafe.Pointer(pb),
 	}
-	b.returned = unsafe.Pointer(b.policyBuffers)
+	b.returned = b.policyBuffers
 	return b
 }
 
-func (b *Buffer[T]) Add(item T) *PolicyBuffers[T] {
+func (b *Buffer[T]) Add(item *T) *PolicyBuffers[T] {
 	head := b.head.Load()
 	tail := b.tail.Load()
 	size := tail - head
@@ -52,18 +52,19 @@ func (b *Buffer[T]) Add(item T) *PolicyBuffers[T] {
 	if b.tail.CompareAndSwap(tail, tail+1) {
 		// success
 		index := int(tail & mask)
-		b.buffer[index] = item
+		atomic.StorePointer(&b.buffer[index], unsafe.Pointer(item))
 		if size == capacity-1 {
 			// try return new buffer
-			if !atomic.CompareAndSwapPointer(&b.returned, unsafe.Pointer(b.policyBuffers), nil) {
+			if !atomic.CompareAndSwapPointer(&b.returned, b.policyBuffers, nil) {
 				// somebody already get buffer
 				return nil
 			}
 
-			pb := b.policyBuffers
+			pb := (*PolicyBuffers[T])(b.policyBuffers)
 			for i := 0; i < capacity; i++ {
 				index := int(head & mask)
-				pb.Returned = append(pb.Returned, b.buffer[index])
+				v := (*T)(atomic.LoadPointer(&b.buffer[index]))
+				pb.Returned = append(pb.Returned, v)
 				head++
 			}
 
@@ -77,7 +78,8 @@ func (b *Buffer[T]) Add(item T) *PolicyBuffers[T] {
 }
 
 func (b *Buffer[T]) Free() {
-	b.policyBuffers.Returned = b.policyBuffers.Returned[:0]
-	b.policyBuffers.Deleted = b.policyBuffers.Deleted[:0]
-	atomic.StorePointer(&b.returned, unsafe.Pointer(b.policyBuffers))
+	pb := (*PolicyBuffers[T])(b.policyBuffers)
+	pb.Returned = pb.Returned[:0]
+	pb.Deleted = pb.Deleted[:0]
+	atomic.StorePointer(&b.returned, b.policyBuffers)
 }
