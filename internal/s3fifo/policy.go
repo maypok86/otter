@@ -85,20 +85,20 @@ func (p *Policy[K, V]) insert(deleted []*node.Node[K, V], n *node.Node[K, V]) []
 	return deleted
 }
 
-func (p *Policy[K, V]) update(deleted []*node.Node[K, V], item WriteItem[K, V]) []*node.Node[K, V] {
+func (p *Policy[K, V]) update(deleted []*node.Node[K, V], n *node.Node[K, V], costDiff uint32) []*node.Node[K, V] {
 	for p.isFull() {
 		deleted = p.evict(deleted)
 	}
 
-	if item.n.Meta.IsDeleted() {
+	if n.Meta.IsDeleted() {
 		return deleted
 	}
 
-	if item.n.Meta.IsSmall() {
-		p.small.cost += item.costDiff
+	if n.Meta.IsSmall() {
+		p.small.cost += costDiff
 	}
-	if item.n.Meta.IsMain() {
-		p.main.cost += item.costDiff
+	if n.Meta.IsMain() {
+		p.main.cost += costDiff
 	}
 
 	return deleted
@@ -116,22 +116,33 @@ func (p *Policy[K, V]) isFull() bool {
 	return p.small.cost+p.main.cost >= p.maxCost
 }
 
-func (p *Policy[K, V]) Write(deleted []*node.Node[K, V], items []WriteItem[K, V]) []*node.Node[K, V] {
+func (p *Policy[K, V]) Write(
+	deleted []*node.Node[K, V],
+	expired []*node.Node[K, V],
+	items []node.WriteItem[K, V],
+) []*node.Node[K, V] {
 	p.mutex.Lock()
+
+	for _, n := range expired {
+		n.Meta = n.Meta.MarkDeleted()
+	}
+
 	for _, item := range items {
+		n := item.GetNode()
+
 		// already deleted in map
-		if item.writeReason == Evicted || item.writeReason == Deleted {
-			item.n.Meta = item.n.Meta.MarkDeleted()
+		if item.IsEvicted() || item.IsDeleted() {
+			n.Meta = n.Meta.MarkDeleted()
 			continue
 		}
 
-		if item.writeReason == Updated {
-			deleted = p.update(deleted, item)
+		if item.IsUpdated() {
+			deleted = p.update(deleted, n, item.GetCostDiff())
 			continue
 		}
 
 		// add
-		deleted = p.insert(deleted, item.n)
+		deleted = p.insert(deleted, n)
 	}
 	p.mutex.Unlock()
 	return deleted

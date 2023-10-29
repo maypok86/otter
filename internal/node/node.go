@@ -47,13 +47,13 @@ func (n *Node[K, V]) SetValue(value V) {
 	n.mutex.Unlock()
 }
 
-func (n *Node[K, V]) SwapExpiration(expiration uint64) (old uint64) {
-	return atomic.SwapUint64(&n.expiration, expiration)
-}
-
 func (n *Node[K, V]) IsExpired() bool {
 	expiration := atomic.LoadUint64(&n.expiration)
 	return expiration > 0 && expiration < unixtime.Now()
+}
+
+func (n *Node[K, V]) Expiration() uint64 {
+	return atomic.LoadUint64(&n.expiration)
 }
 
 func (n *Node[K, V]) Cost() uint32 {
