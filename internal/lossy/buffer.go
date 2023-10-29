@@ -1,6 +1,7 @@
 package lossy
 
 import (
+	"runtime"
 	"sync/atomic"
 	"unsafe"
 
@@ -64,7 +65,9 @@ func (b *Buffer[T]) Add(item *T) *PolicyBuffers[T] {
 			for i := 0; i < capacity; i++ {
 				index := int(head & mask)
 				v := (*T)(atomic.LoadPointer(&b.buffer[index]))
-				pb.Returned = append(pb.Returned, v)
+				if v != nil {
+					pb.Returned = append(pb.Returned, v)
+				}
 				head++
 			}
 
@@ -82,4 +85,16 @@ func (b *Buffer[T]) Free() {
 	pb.Returned = pb.Returned[:0]
 	pb.Deleted = pb.Deleted[:0]
 	atomic.StorePointer(&b.returned, b.policyBuffers)
+}
+
+func (b *Buffer[T]) Clear() {
+	for !atomic.CompareAndSwapPointer(&b.returned, b.policyBuffers, nil) {
+		runtime.Gosched()
+	}
+	for i := 0; i < capacity; i++ {
+		atomic.StorePointer(&b.buffer[i], nil)
+	}
+	b.Free()
+	b.tail.Store(0)
+	b.head.Store(0)
 }

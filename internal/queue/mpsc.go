@@ -65,6 +65,16 @@ func (q *MPSC[T]) Remove() T {
 	return item
 }
 
+func (q *MPSC[T]) Clear() {
+	for !q.isEmpty() {
+		_ = q.Remove()
+	}
+}
+
+func (q *MPSC[T]) isEmpty() bool {
+	return q.tail == q.head.Load()
+}
+
 func (q *MPSC[T]) Capacity() int {
 	return int(q.capacity)
 }

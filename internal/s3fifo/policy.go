@@ -119,7 +119,7 @@ func (p *Policy[K, V]) isFull() bool {
 func (p *Policy[K, V]) Write(
 	deleted []*node.Node[K, V],
 	expired []*node.Node[K, V],
-	items []node.WriteItem[K, V],
+	tasks []node.WriteTask[K, V],
 ) []*node.Node[K, V] {
 	p.mutex.Lock()
 
@@ -127,17 +127,17 @@ func (p *Policy[K, V]) Write(
 		n.Meta = n.Meta.MarkDeleted()
 	}
 
-	for _, item := range items {
-		n := item.GetNode()
+	for _, task := range tasks {
+		n := task.GetNode()
 
 		// already deleted in map
-		if item.IsEvicted() || item.IsDeleted() {
+		if task.IsEvict() || task.IsDelete() {
 			n.Meta = n.Meta.MarkDeleted()
 			continue
 		}
 
-		if item.IsUpdated() {
-			deleted = p.update(deleted, n, item.GetCostDiff())
+		if task.IsUpdate() {
+			deleted = p.update(deleted, n, task.GetCostDiff())
 			continue
 		}
 
@@ -153,6 +153,9 @@ func (p *Policy[K, V]) MaxAvailableCost() uint32 {
 }
 
 func (p *Policy[K, V]) Clear() {
+	p.mutex.Lock()
+	defer p.mutex.Unlock()
+
 	p.ghost.clear()
 	p.main.clear()
 	p.small.clear()
