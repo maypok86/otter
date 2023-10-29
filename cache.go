@@ -4,6 +4,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/maypok86/otter/internal/expire"
 	"github.com/maypok86/otter/internal/hashtable"
 	"github.com/maypok86/otter/internal/lossy"
 	"github.com/maypok86/otter/internal/node"
@@ -28,16 +29,17 @@ type Config[K comparable, V any] struct {
 }
 
 type Cache[K comparable, V any] struct {
-	shards      []*hashtable.Map[K, V]
-	policy      *s3fifo.Policy[K, V]
-	stats       *stats.Stats
-	readBuffers []*lossy.Buffer[node.Node[K, V]]
-	writeBuffer *queue.MPSC[s3fifo.WriteItem[K, V]]
-	closeOnce   sync.Once
-	hasher      *hasher[K]
-	costFunc    func(key K, value V) uint32
-	mask        uint64
-	capacity    int
+	shards       []*hashtable.Map[K, V]
+	policy       *s3fifo.Policy[K, V]
+	expirePolicy *expire.Policy[K, V]
+	stats        *stats.Stats
+	readBuffers  []*lossy.Buffer[node.Node[K, V]]
+	writeBuffer  *queue.MPSC[node.WriteItem[K, V]]
+	closeOnce    sync.Once
+	hasher       *hasher[K]
+	costFunc     func(key K, value V) uint32
+	mask         uint64
+	capacity     int
 }
 
 func NewCache[K comparable, V any](c Config[K, V]) *Cache[K, V] {
@@ -50,15 +52,18 @@ func NewCache[K comparable, V any](c Config[K, V]) *Cache[K, V] {
 
 	cache := &Cache[K, V]{
 		shards:      shards,
+		policy:      s3fifo.NewPolicy[K, V](uint32(c.Capacity)),
 		readBuffers: readBuffers,
-		writeBuffer: queue.NewMPSC[s3fifo.WriteItem[K, V]](128 * int(xmath.RoundUpPowerOf2(xruntime.Parallelism()))),
+		writeBuffer: queue.NewMPSC[node.WriteItem[K, V]](128 * int(xmath.RoundUpPowerOf2(xruntime.Parallelism()))),
 		hasher:      newHasher[K](),
 		mask:        uint64(c.ShardCount - 1),
 		costFunc:    c.CostFunc,
 		capacity:    c.Capacity,
 	}
 
-	cache.policy = s3fifo.NewPolicy[K, V](uint32(c.Capacity))
+	cache.expirePolicy = expire.NewPolicy[K, V](func(n *node.Node[K, V]) {
+		cache.shards[cache.getShardIdx(n.Key())].EvictNode(n)
+	})
 	if c.StatsEnabled {
 		cache.stats = stats.New()
 	}
@@ -87,7 +92,7 @@ func (c *Cache[K, V]) Get(key K) (V, bool) {
 	}
 
 	if got.IsExpired() {
-		c.writeBuffer.Insert(s3fifo.NewEvictedItem(got))
+		c.writeBuffer.Insert(node.NewEvictedItem(got))
 		c.stats.IncMisses()
 		return zeroValue[V](), false
 	}
@@ -102,10 +107,8 @@ func (c *Cache[K, V]) afterGet(idx int, got *node.Node[K, V]) {
 	pb := c.readBuffers[idx].Add(got)
 	if pb != nil {
 		deleted := c.policy.Read(pb.Deleted, pb.Returned)
-		if len(deleted) > 0 {
-			for _, n := range deleted {
-				c.shards[c.getShardIdx(n.Key())].EvictNode(n)
-			}
+		for _, n := range deleted {
+			c.shards[c.getShardIdx(n.Key())].EvictNode(n)
 		}
 		c.readBuffers[idx].Free()
 	}
@@ -133,56 +136,64 @@ func (c *Cache[K, V]) set(key K, value V, expiration uint64) {
 	if ok {
 		if !got.IsExpired() {
 			oldCost := got.SwapCost(cost)
-			_ = got.SwapExpiration(expiration)
 			got.SetValue(value)
 			costDiff := cost - oldCost
 			if costDiff != 0 {
-				c.writeBuffer.Insert(s3fifo.NewUpdatedItem(got, costDiff))
+				c.writeBuffer.Insert(node.NewUpdatedItem(got, costDiff))
 			}
 
 			return
 		}
 
-		c.writeBuffer.Insert(s3fifo.NewEvictedItem(got))
+		c.writeBuffer.Insert(node.NewEvictedItem(got))
 	}
 
 	n := node.New(key, value, expiration, cost)
 	evicted := s.Set(n)
 	// TODO: try insert?
-	c.writeBuffer.Insert(s3fifo.NewAddedItem(n))
+	c.writeBuffer.Insert(node.NewAddedItem(n))
 	if evicted != nil {
-		c.writeBuffer.Insert(s3fifo.NewEvictedItem(evicted))
+		c.writeBuffer.Insert(node.NewEvictedItem(evicted))
 	}
 }
 
 func (c *Cache[K, V]) Delete(key K) {
 	deleted := c.shards[c.getShardIdx(key)].Delete(key)
 	if deleted != nil {
-		c.writeBuffer.Insert(s3fifo.NewDeletedItem(deleted))
+		c.writeBuffer.Insert(node.NewDeletedItem(deleted))
 	}
 }
 
 func (c *Cache[K, V]) process() {
 	bufferCapacity := 128
-	buffer := make([]s3fifo.WriteItem[K, V], 0, bufferCapacity)
+	buffer := make([]node.WriteItem[K, V], 0, bufferCapacity)
 	deleted := make([]*node.Node[K, V], 0, bufferCapacity)
+	expired := make([]*node.Node[K, V], 0, bufferCapacity)
 	i := 0
 	for {
 		item := c.writeBuffer.Remove()
+
+		if item.IsDeleted() || item.IsEvicted() {
+			c.expirePolicy.Delete(item.GetNode())
+		} else if item.IsAdded() {
+			c.expirePolicy.Add(item.GetNode())
+		}
 
 		buffer = append(buffer, item)
 		i++
 		if i >= bufferCapacity {
 			i -= bufferCapacity
-			d := c.policy.Write(deleted, buffer)
-			if len(d) > 0 {
-				for _, n := range d {
-					c.shards[c.getShardIdx(n.Key())].EvictNode(n)
-				}
+
+			e := c.expirePolicy.RemoveExpired(expired)
+
+			d := c.policy.Write(deleted, e, buffer)
+			for _, n := range d {
+				c.shards[c.getShardIdx(n.Key())].EvictNode(n)
 			}
 
 			buffer = buffer[:0]
 			deleted = deleted[:0]
+			expired = expired[:0]
 		}
 	}
 }
@@ -192,6 +203,7 @@ func (c *Cache[K, V]) Clear() {
 		c.shards[i].Clear()
 	}
 	c.policy.Clear()
+	c.expirePolicy.Clear()
 	c.stats.Clear()
 }
 
