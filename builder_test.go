@@ -2,9 +2,20 @@ package otter
 
 import (
 	"errors"
+	"fmt"
 	"reflect"
 	"testing"
 )
+
+func TestBuilder_MustFailed(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Println("recover: ", r)
+		}
+	}()
+	MustBuilder[int, int](-1)
+	t.Fatal("no panic detected")
+}
 
 func TestBuilder_NewFailed(t *testing.T) {
 	_, err := NewBuilder[int, int](-63)
@@ -14,22 +25,16 @@ func TestBuilder_NewFailed(t *testing.T) {
 }
 
 func TestBuilder_BuildFailed(t *testing.T) {
-	b, err := NewBuilder[int, int](10)
-	if err != nil {
-		t.Fatalf("builder creates with error %v", err)
-	}
+	b := MustBuilder[int, int](10)
 
-	_, err = b.ShardCount(129).Build()
+	_, err := b.ShardCount(129).Build()
 	if err == nil || !errors.Is(err, ErrIllegalShardCount) {
 		t.Fatalf("should fail with an error %v, but got %v", ErrIllegalShardCount, err)
 	}
 }
 
 func TestBuilder_BuildSuccess(t *testing.T) {
-	b, err := NewBuilder[int, int](10)
-	if err != nil {
-		t.Fatalf("builder creates with error %v", err)
-	}
+	b := MustBuilder[int, int](10)
 
 	c, err := b.
 		ShardCount(256).

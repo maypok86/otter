@@ -41,6 +41,14 @@ type Builder[K comparable, V any] struct {
 	options[K, V]
 }
 
+func MustBuilder[K comparable, V any](capacity int) *Builder[K, V] {
+	b, err := NewBuilder[K, V](capacity)
+	if err != nil {
+		panic(err)
+	}
+	return b
+}
+
 func NewBuilder[K comparable, V any](capacity int) (*Builder[K, V], error) {
 	if capacity <= 0 {
 		return nil, ErrIllegalCapacity
