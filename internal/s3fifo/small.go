@@ -39,10 +39,6 @@ func (s *small[K, V]) evict(deleted []*node.Node[K, V]) []*node.Node[K, V] {
 		s.cost -= n.Cost()
 		n.Meta = n.Meta.UnmarkSmall()
 		if n.Meta.IsDeleted() {
-			if !n.Meta.IsMain() && !n.Meta.IsGhost() {
-				// can remove
-				deleted = append(deleted, n)
-			}
 			return deleted
 		}
 		if n.IsExpired() {
@@ -58,15 +54,11 @@ func (s *small[K, V]) evict(deleted []*node.Node[K, V]) []*node.Node[K, V] {
 					deleted = s.main.evict(deleted)
 				}
 				n.Meta = n.Meta.ResetFrequency()
+				continue
 			}
-			continue
 		}
 
-		if !n.Meta.IsGhost() {
-			return s.ghost.insert(deleted, n)
-		}
-
-		return deleted
+		return s.ghost.insert(deleted, n)
 	}
 
 	return deleted

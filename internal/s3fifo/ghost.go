@@ -19,19 +19,20 @@ func newGhost[K comparable, V any](main *main[K, V]) *ghost[K, V] {
 }
 
 func (g *ghost[K, V]) insert(deleted []*node.Node[K, V], n *node.Node[K, V]) []*node.Node[K, V] {
+	if n.Meta.IsGhost() {
+		return deleted
+	}
+
 	mainLength := g.main.length()
 	if mainLength == 0 {
-		return deleted
+		n.Meta = n.Meta.MarkDeleted()
+		return append(deleted, n)
 	}
 
 	for g.q.Len() >= mainLength {
 		v := g.q.PopFront()
 		v.Meta = v.Meta.UnmarkGhost()
 		if v.Meta.IsDeleted() {
-			if !v.Meta.IsSmall() && !v.Meta.IsMain() {
-				// can remove
-				deleted = append(deleted, v)
-			}
 			continue
 		}
 
@@ -43,10 +44,8 @@ func (g *ghost[K, V]) insert(deleted []*node.Node[K, V], n *node.Node[K, V]) []*
 		}
 	}
 
-	if !n.Meta.IsGhost() {
-		g.q.PushBack(n)
-		n.Meta = n.Meta.MarkGhost()
-	}
+	g.q.PushBack(n)
+	n.Meta = n.Meta.MarkGhost()
 
 	return deleted
 }

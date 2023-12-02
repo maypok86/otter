@@ -31,10 +31,6 @@ func (m *main[K, V]) evict(deleted []*node.Node[K, V]) []*node.Node[K, V] {
 		if n.Meta.IsDeleted() {
 			n.Meta = n.Meta.UnmarkMain()
 			m.cost -= n.Cost()
-			if !n.Meta.IsSmall() && !n.Meta.IsGhost() {
-				// can remove
-				return append(deleted, n)
-			}
 			return deleted
 		}
 
