@@ -2,7 +2,6 @@ package hashtable
 
 import (
 	"fmt"
-	"runtime"
 	"sync"
 	"sync/atomic"
 	"unsafe"
@@ -22,9 +21,12 @@ const (
 
 const (
 	// number of entries per bucket
-	// 7 because we need to fit them into 2 cache lines (128 bytes).
-	bucketSize       = 7
-	maxSpinThreshold = 16
+	// 3 because we need to fit them into 1 cache line (64 bytes).
+	bucketSize = 3
+	// percentage at which the map will be expanded.
+	loadFactor = 0.75
+	// threshold fraction of table occupation to start a table shrinking
+	// when deleting the last entry in a bucket chain.
 	shrinkFraction   = 128
 	minBucketCount   = 32
 	minNodeCount     = bucketSize * minBucketCount
@@ -109,31 +111,20 @@ func newTable(bucketCount int) *table {
 	return t
 }
 
-func (m *Map[K, V]) Get(key K) (*node.Node[K, V], bool) {
+func (m *Map[K, V]) Get(key K) (got *node.Node[K, V], ok bool) {
 	t := (*table)(atomic.LoadPointer(&m.table))
 	hash := m.calcShiftHash(key)
 	bucketIdx := hash & t.mask
 	b := &t.buckets[bucketIdx]
-	for i := 0; i < bucketSize; i++ {
-		spins := 0
-		for {
-			spins++
-			if spins > maxSpinThreshold {
-				spins = 0
-				runtime.Gosched()
-			}
-
-			seq := atomic.LoadUint64(&b.seq)
-			if seq&1 == 1 {
-				// In progress update/delete
-				continue
-			}
-
+	for {
+		for i := 0; i < bucketSize; i++ {
+			// we treat the hash code only as a hint, so there is no
+			// need to get an atomic snapshot.
 			h := atomic.LoadUint64(&b.hashes[i])
 			if h == uint64(0) || h != hash {
-				break
+				continue
 			}
-
+			// we found a matching hash code
 			nodePtr := atomic.LoadPointer(&b.nodes[i])
 			if nodePtr == nil {
 				// concurrent write in this node
@@ -141,81 +132,94 @@ func (m *Map[K, V]) Get(key K) (*node.Node[K, V], bool) {
 			}
 			n := (*node.Node[K, V])(nodePtr)
 			if key != n.Key() {
-				return nil, false
+				continue
 			}
 
 			return n, true
 		}
+		bucketPtr := atomic.LoadPointer(&b.next)
+		if bucketPtr == nil {
+			return nil, false
+		}
+		b = (*paddedBucket)(bucketPtr)
 	}
-
-	return nil, false
 }
 
-func (m *Map[K, V]) Set(n *node.Node[K, V]) *node.Node[K, V] {
+func (m *Map[K, V]) Set(n *node.Node[K, V]) (evicted *node.Node[K, V]) {
 	for {
+	RETRY:
 		var (
 			emptyBucket *paddedBucket
 			emptyIdx    int
 		)
 		t := (*table)(atomic.LoadPointer(&m.table))
+		tableLen := len(t.buckets)
 		hash := m.calcShiftHash(n.Key())
 		bucketIdx := hash & t.mask
-		b := &t.buckets[bucketIdx]
-		b.mutex.Lock()
-		if m.newerTableExists(t) {
-			// someone resized the table, go for another attempt.
-			b.mutex.Unlock()
-			continue
-		}
+		rootBucket := &t.buckets[bucketIdx]
+		rootBucket.mutex.Lock()
 		if m.resizeInProgress() {
 			// resize is in progress. wait, then go for another attempt.
-			b.mutex.Unlock()
+			rootBucket.mutex.Unlock()
 			m.waitForResize()
-			continue
+			goto RETRY
 		}
-		for i := 0; i < bucketSize; i++ {
-			h := b.hashes[i]
-			if h == uint64(0) {
-				if emptyBucket == nil {
-					emptyBucket = b
-					emptyIdx = i
+		if m.newerTableExists(t) {
+			// someone resized the table, go for another attempt.
+			rootBucket.mutex.Unlock()
+			goto RETRY
+		}
+		b := rootBucket
+		for {
+			for i := 0; i < bucketSize; i++ {
+				h := b.hashes[i]
+				if h == uint64(0) {
+					if emptyBucket == nil {
+						emptyBucket = b
+						emptyIdx = i
+					}
+					continue
 				}
-				continue
+				if h != hash {
+					continue
+				}
+				prev := (*node.Node[K, V])(b.nodes[i])
+				if n.Key() != prev.Key() {
+					continue
+				}
+				atomic.StorePointer(&b.nodes[i], unsafe.Pointer(n))
+				rootBucket.mutex.Unlock()
+				return prev
 			}
-			if h != hash {
-				continue
+			if b.next == nil {
+				if emptyBucket != nil {
+					// insertion into an existing bucket.
+					// first we update the hash, then the entry.
+					atomic.StoreUint64(&emptyBucket.hashes[emptyIdx], hash)
+					atomic.StorePointer(&emptyBucket.nodes[emptyIdx], unsafe.Pointer(n))
+					rootBucket.mutex.Unlock()
+					t.addSize(bucketIdx, 1)
+					return nil
+				}
+				growThreshold := float64(tableLen) * bucketSize * loadFactor
+				if t.sumSize() > int64(growThreshold) {
+					// need to grow the table then go for another attempt.
+					rootBucket.mutex.Unlock()
+					m.resize(t, growHint)
+					goto RETRY
+				}
+				// insertion into a new bucket.
+				// create and append the bucket.
+				newBucket := &paddedBucket{}
+				newBucket.hashes[0] = hash
+				newBucket.nodes[0] = unsafe.Pointer(n)
+				atomic.StorePointer(&b.next, unsafe.Pointer(newBucket))
+				rootBucket.mutex.Unlock()
+				t.addSize(bucketIdx, 1)
+				return nil
 			}
-
-			// Update in progress
-			atomic.AddUint64(&b.seq, 1)
-
-			evicted := (*node.Node[K, V])(b.nodes[i])
-			atomic.StorePointer(&b.nodes[i], unsafe.Pointer(n))
-
-			// Update done
-			atomic.AddUint64(&b.seq, 1)
-
-			b.mutex.Unlock()
-			return evicted
+			b = (*paddedBucket)(b.next)
 		}
-		if emptyBucket != nil {
-			// Insert in progress
-			atomic.AddUint64(&b.seq, 1)
-
-			atomic.StoreUint64(&emptyBucket.hashes[emptyIdx], hash)
-			atomic.StorePointer(&emptyBucket.nodes[emptyIdx], unsafe.Pointer(n))
-
-			// Insert done
-			atomic.AddUint64(&b.seq, 1)
-
-			b.mutex.Unlock()
-			t.addSize(bucketIdx, 1)
-			return nil
-		}
-
-		// Need to grow the table. Then go for another attempt.
-		b.mutex.Unlock()
-		m.resize(t, growHint)
 	}
 }
 
@@ -233,75 +237,70 @@ func (m *Map[K, V]) EvictNode(n *node.Node[K, V]) *node.Node[K, V] {
 
 func (m *Map[K, V]) delete(key K, cmp func(*node.Node[K, V]) bool) *node.Node[K, V] {
 	for {
+	RETRY:
 		hintNonEmpty := 0
 		t := (*table)(atomic.LoadPointer(&m.table))
 		hash := m.calcShiftHash(key)
 		bucketIdx := hash & t.mask
-		b := &t.buckets[bucketIdx]
-		b.mutex.Lock()
-		if m.newerTableExists(t) {
-			// someone resized the table. Go for another attempt.
-			b.mutex.Unlock()
-			continue
-		}
+		rootBucket := &t.buckets[bucketIdx]
+		rootBucket.mutex.Lock()
 		if m.resizeInProgress() {
 			// resize is in progress. Wait, then go for another attempt.
-			b.mutex.Unlock()
+			rootBucket.mutex.Unlock()
 			m.waitForResize()
-			continue
+			goto RETRY
 		}
-
-		for i := 0; i < bucketSize; i++ {
-			h := b.hashes[i]
-			if h == uint64(0) {
-				continue
+		if m.newerTableExists(t) {
+			// someone resized the table. Go for another attempt.
+			rootBucket.mutex.Unlock()
+			goto RETRY
+		}
+		b := rootBucket
+		for {
+			for i := 0; i < bucketSize; i++ {
+				h := b.hashes[i]
+				if h == uint64(0) {
+					continue
+				}
+				if h != hash {
+					hintNonEmpty++
+					continue
+				}
+				current := (*node.Node[K, V])(b.nodes[i])
+				if !cmp(current) {
+					hintNonEmpty++
+					continue
+				}
+				atomic.StoreUint64(&b.hashes[i], uint64(0))
+				atomic.StorePointer(&b.nodes[i], nil)
+				leftEmpty := false
+				if hintNonEmpty == 0 {
+					leftEmpty = b.isEmpty()
+				}
+				rootBucket.mutex.Unlock()
+				t.addSize(bucketIdx, -1)
+				// Might need to shrink the table.
+				if leftEmpty {
+					m.resize(t, shrinkHint)
+				}
+				return current
 			}
-			if h != hash {
-				hintNonEmpty++
-				continue
-			}
-
-			current := (*node.Node[K, V])(b.nodes[i])
-			if !cmp(current) {
-				b.mutex.Unlock()
+			if b.next == nil {
+				// not found
+				rootBucket.mutex.Unlock()
 				return nil
 			}
-
-			// delete in progress
-			atomic.AddUint64(&b.seq, 1)
-
-			atomic.StoreUint64(&b.hashes[i], uint64(0))
-			atomic.StorePointer(&b.nodes[i], nil)
-
-			// delete done
-			atomic.AddUint64(&b.seq, 1)
-
-			leftEmpty := false
-			if hintNonEmpty == 0 {
-				leftEmpty = b.isEmpty()
-			}
-			b.mutex.Unlock()
-			t.addSize(bucketIdx, -1)
-			// might need to shrink the table.
-			if leftEmpty {
-				m.resize(t, shrinkHint)
-			}
-			return current
+			b = (*paddedBucket)(b.next)
 		}
-
-		// not found
-		b.mutex.Unlock()
-		return nil
 	}
 }
 
-func (m *Map[K, V]) resize(t *table, hint resizeHint) {
-	var shrinkThreshold int64
-	tableLen := len(t.buckets)
+func (m *Map[K, V]) resize(known *table, hint resizeHint) {
+	knownTableLen := len(known.buckets)
 	// fast path for shrink attempts.
 	if hint == shrinkHint {
-		shrinkThreshold = int64((tableLen * bucketSize) / shrinkFraction)
-		if tableLen == minBucketCount || t.sumSize() > shrinkThreshold {
+		shrinkThreshold := int64((knownTableLen * bucketSize) / shrinkFraction)
+		if knownTableLen == minBucketCount || known.sumSize() > shrinkThreshold {
 			return
 		}
 	}
@@ -312,17 +311,19 @@ func (m *Map[K, V]) resize(t *table, hint resizeHint) {
 		return
 	}
 	var nt *table
+	t := (*table)(atomic.LoadPointer(&m.table))
+	tableLen := len(t.buckets)
 	switch hint {
 	case growHint:
 		// grow the table with factor of 2.
 		nt = newTable(tableLen << 1)
 	case shrinkHint:
-		if t.sumSize() <= shrinkThreshold {
+		shrinkThreshold := int64((tableLen * bucketSize) / shrinkFraction)
+		if tableLen > minBucketCount && t.sumSize() <= shrinkThreshold {
 			// shrink the table with factor of 2.
 			nt = newTable(tableLen >> 1)
 		} else {
-			// no need to shrink
-			// wake up all waiters and give up.
+			// no need to shrink, wake up all waiters and give up.
 			m.resizeMutex.Lock()
 			m.resizing.Store(0)
 			m.resizeCond.Broadcast()
@@ -350,19 +351,25 @@ func (m *Map[K, V]) resize(t *table, hint resizeHint) {
 }
 
 func (m *Map[K, V]) copyBuckets(b *paddedBucket, dest *table) (copied int) {
-	b.mutex.Lock()
-	for i := 0; i < bucketSize; i++ {
-		if b.nodes[i] == nil {
-			continue
+	rootBucket := b
+	rootBucket.mutex.Lock()
+	for {
+		for i := 0; i < bucketSize; i++ {
+			if b.nodes[i] == nil {
+				continue
+			}
+			n := (*node.Node[K, V])(b.nodes[i])
+			hash := m.calcShiftHash(n.Key())
+			bucketIdx := hash & dest.mask
+			dest.buckets[bucketIdx].add(hash, b.nodes[i])
+			copied++
 		}
-		n := (*node.Node[K, V])(b.nodes[i])
-		hash := m.calcShiftHash(n.Key())
-		bucketIdx := hash & dest.mask
-		dest.buckets[bucketIdx].add(hash, b.nodes[i])
-		copied++
+		if b.next == nil {
+			rootBucket.mutex.Unlock()
+			return copied
+		}
+		b = (*paddedBucket)(b.next)
 	}
-	b.mutex.Unlock()
-	return copied
 }
 
 func (m *Map[K, V]) newerTableExists(table *table) bool {

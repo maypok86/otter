@@ -9,6 +9,7 @@ import (
 	"unsafe"
 
 	"github.com/maypok86/otter/internal/node"
+	"github.com/maypok86/otter/internal/xruntime"
 )
 
 func newNode[K comparable, V any](key K, value V) *node.Node[K, V] {
@@ -17,7 +18,7 @@ func newNode[K comparable, V any](key K, value V) *node.Node[K, V] {
 
 func TestMap_PaddedBucketSize(t *testing.T) {
 	size := unsafe.Sizeof(paddedBucket{})
-	if size != 128 {
+	if size != xruntime.CacheLineSize {
 		t.Fatalf("size of 128B (two cache lines) is expected, got: %d", size)
 	}
 }
@@ -64,29 +65,23 @@ func TestMap_Set(t *testing.T) {
 }
 
 func TestMap_SetWithCollisions(t *testing.T) {
+	const numEntries = 1000
 	m := New[int, int](WithHasher[int](func(i int) uint64 {
-		// we intentionally use an awful hash function here to make sure
-		// that the hashtable evict nodes.
+		// We intentionally use an awful hash function here to make sure
+		// that the map copes with key collisions.
 		return 42
 	}))
-	ev := m.Set(newNode[int, int](2, 2))
-	if ev != nil {
-		t.Fatal("evicted must be null")
+	for i := 0; i < numEntries; i++ {
+		m.Set(newNode(i, i))
 	}
-	n, ok := m.Get(2)
-	if !ok {
-		t.Fatal("value not found for 2")
-	}
-	if n.Value() != 2 {
-		t.Fatalf("values do not match for 2: %v", n.Value())
-	}
-	ev = m.Set(newNode[int, int](1, 1))
-	if ev == nil || ev.Key() == 0 {
-		t.Fatal("evicted must be with key zero")
-	}
-	_, ok = m.Get(2)
-	if ok {
-		t.Fatal("value found for 2")
+	for i := 0; i < numEntries; i++ {
+		v, ok := m.Get(i)
+		if !ok {
+			t.Fatalf("value not found for %d", i)
+		}
+		if v.Value() != i {
+			t.Fatalf("values do not match for %d: %v", i, v)
+		}
 	}
 }
 
