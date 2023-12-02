@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	capacity = 64
+	capacity = 16
 	mask     = uint64(capacity - 1)
 )
 
