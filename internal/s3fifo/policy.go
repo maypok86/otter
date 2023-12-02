@@ -6,13 +6,6 @@ import (
 	"github.com/maypok86/otter/internal/node"
 )
 
-const (
-	maxSmallFrequency = int32(6)
-	deletedFrequency  = int32(-2)
-	ghostFrequency    = int32(-1)
-	defaultFrequency  = int32(0)
-)
-
 type Policy[K comparable, V any] struct {
 	mutex                sync.Mutex
 	small                *small[K, V]

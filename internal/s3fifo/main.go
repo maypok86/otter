@@ -61,5 +61,5 @@ func (m *main[K, V]) clear() {
 }
 
 func (m *main[K, V]) isFull() bool {
-	return m.cost == m.maxCost
+	return m.cost >= m.maxCost
 }

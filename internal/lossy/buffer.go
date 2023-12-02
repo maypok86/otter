@@ -71,7 +71,7 @@ func (b *Buffer[T]) Add(item *T) *PolicyBuffers[T] {
 				head++
 			}
 
-			b.head.Add(capacity)
+			b.head.Store(head)
 			return pb
 		}
 	}

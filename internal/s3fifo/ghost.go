@@ -20,24 +20,26 @@ func newGhost[K comparable, V any](main *main[K, V]) *ghost[K, V] {
 
 func (g *ghost[K, V]) insert(deleted []*node.Node[K, V], n *node.Node[K, V]) []*node.Node[K, V] {
 	mainLength := g.main.length()
-	if mainLength > 0 {
-		for g.q.Len() >= mainLength {
-			v := g.q.PopFront()
-			v.Meta = v.Meta.UnmarkGhost()
-			if v.Meta.IsDeleted() {
-				if !v.Meta.IsSmall() && !v.Meta.IsMain() {
-					// can remove
-					deleted = append(deleted, v)
-				}
-				continue
-			}
+	if mainLength == 0 {
+		return deleted
+	}
 
-			// TODO: add new free buffer
+	for g.q.Len() >= mainLength {
+		v := g.q.PopFront()
+		v.Meta = v.Meta.UnmarkGhost()
+		if v.Meta.IsDeleted() {
 			if !v.Meta.IsSmall() && !v.Meta.IsMain() {
 				// can remove
 				deleted = append(deleted, v)
-				v.Meta = v.Meta.MarkDeleted()
 			}
+			continue
+		}
+
+		// TODO: add new free buffer
+		if !v.Meta.IsSmall() && !v.Meta.IsMain() {
+			// can remove
+			deleted = append(deleted, v)
+			v.Meta = v.Meta.MarkDeleted()
 		}
 	}
 
@@ -45,6 +47,7 @@ func (g *ghost[K, V]) insert(deleted []*node.Node[K, V], n *node.Node[K, V]) []*
 		g.q.PushBack(n)
 		n.Meta = n.Meta.MarkGhost()
 	}
+
 	return deleted
 }
 

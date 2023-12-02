@@ -7,10 +7,6 @@ import (
 	"github.com/maypok86/otter/internal/unixtime"
 )
 
-const (
-	defaultFrequency = int32(0)
-)
-
 type Node[K comparable, V any] struct {
 	mutex      sync.Mutex
 	key        K
@@ -48,12 +44,11 @@ func (n *Node[K, V]) SetValue(value V) {
 }
 
 func (n *Node[K, V]) IsExpired() bool {
-	expiration := atomic.LoadUint64(&n.expiration)
-	return expiration > 0 && expiration < unixtime.Now()
+	return n.expiration > 0 && n.expiration < unixtime.Now()
 }
 
 func (n *Node[K, V]) Expiration() uint64 {
-	return atomic.LoadUint64(&n.expiration)
+	return n.expiration
 }
 
 func (n *Node[K, V]) Cost() uint32 {

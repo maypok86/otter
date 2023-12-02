@@ -54,7 +54,7 @@ func (s *small[K, V]) evict(deleted []*node.Node[K, V]) []*node.Node[K, V] {
 		if n.Meta.GetFrequency() > 1 {
 			if !n.Meta.IsMain() {
 				s.main.insert(n)
-				if s.main.isFull() {
+				for s.main.isFull() {
 					deleted = s.main.evict(deleted)
 				}
 				n.Meta = n.Meta.ResetFrequency()
