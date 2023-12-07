@@ -113,7 +113,7 @@ func newTable(bucketCount int) *table {
 
 func (m *Map[K, V]) Get(key K) (got *node.Node[K, V], ok bool) {
 	t := (*table)(atomic.LoadPointer(&m.table))
-	hash := m.calcShiftHash(key)
+	_, hash := m.calcShiftHash(key)
 	bucketIdx := hash & t.mask
 	b := &t.buckets[bucketIdx]
 	for {
@@ -128,7 +128,7 @@ func (m *Map[K, V]) Get(key K) (got *node.Node[K, V], ok bool) {
 			nodePtr := atomic.LoadPointer(&b.nodes[i])
 			if nodePtr == nil {
 				// concurrent write in this node
-				return nil, false
+				continue
 			}
 			n := (*node.Node[K, V])(nodePtr)
 			if key != n.Key() {
@@ -154,7 +154,8 @@ func (m *Map[K, V]) Set(n *node.Node[K, V]) (evicted *node.Node[K, V]) {
 		)
 		t := (*table)(atomic.LoadPointer(&m.table))
 		tableLen := len(t.buckets)
-		hash := m.calcShiftHash(n.Key())
+		nh, hash := m.calcShiftHash(n.Key())
+		n.SetHash(nh)
 		bucketIdx := hash & t.mask
 		rootBucket := &t.buckets[bucketIdx]
 		rootBucket.mutex.Lock()
@@ -240,7 +241,7 @@ func (m *Map[K, V]) delete(key K, cmp func(*node.Node[K, V]) bool) *node.Node[K,
 	RETRY:
 		hintNonEmpty := 0
 		t := (*table)(atomic.LoadPointer(&m.table))
-		hash := m.calcShiftHash(key)
+		_, hash := m.calcShiftHash(key)
 		bucketIdx := hash & t.mask
 		rootBucket := &t.buckets[bucketIdx]
 		rootBucket.mutex.Lock()
@@ -359,7 +360,7 @@ func (m *Map[K, V]) copyBuckets(b *paddedBucket, dest *table) (copied int) {
 				continue
 			}
 			n := (*node.Node[K, V])(b.nodes[i])
-			hash := m.calcShiftHash(n.Key())
+			_, hash := m.calcShiftHash(n.Key())
 			bucketIdx := hash & dest.mask
 			dest.buckets[bucketIdx].add(hash, b.nodes[i])
 			copied++
@@ -399,11 +400,11 @@ func (m *Map[K, V]) Size() int {
 	return int(table.sumSize())
 }
 
-func (m *Map[K, V]) calcShiftHash(key K) uint64 {
+func (m *Map[K, V]) calcShiftHash(key K) (naturalHash, shiftHash uint64) {
 	h := m.hasher(key)
 	if h == uint64(0) {
-		return 1
+		return h, 1
 	}
 
-	return h
+	return h, h
 }

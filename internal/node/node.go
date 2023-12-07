@@ -8,9 +8,10 @@ import (
 )
 
 type Node[K comparable, V any] struct {
-	mutex      sync.Mutex
 	key        K
 	value      V
+	mutex      sync.Mutex
+	hash       uint64
 	expiration uint64
 	Meta       Meta
 	cost       uint32
@@ -41,6 +42,14 @@ func (n *Node[K, V]) SetValue(value V) {
 	n.mutex.Lock()
 	n.value = value
 	n.mutex.Unlock()
+}
+
+func (n *Node[K, V]) Hash() uint64 {
+	return n.hash
+}
+
+func (n *Node[K, V]) SetHash(h uint64) {
+	n.hash = h
 }
 
 func (n *Node[K, V]) IsExpired() bool {

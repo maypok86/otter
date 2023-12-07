@@ -1,7 +1,6 @@
 package s3fifo
 
 import (
-	"github.com/dolthub/maphash"
 	"github.com/dolthub/swiss"
 	"github.com/gammazero/deque"
 
@@ -9,24 +8,22 @@ import (
 )
 
 type ghost[K comparable, V any] struct {
-	q      *deque.Deque[uint64]
-	m      *swiss.Map[uint64, struct{}]
-	main   *main[K, V]
-	small  *small[K, V]
-	hasher maphash.Hasher[K]
+	q     *deque.Deque[uint64]
+	m     *swiss.Map[uint64, struct{}]
+	main  *main[K, V]
+	small *small[K, V]
 }
 
 func newGhost[K comparable, V any](main *main[K, V]) *ghost[K, V] {
 	return &ghost[K, V]{
-		q:      deque.New[uint64](main.q.Cap()),
-		m:      swiss.NewMap[uint64, struct{}](uint32(main.q.Cap())),
-		main:   main,
-		hasher: maphash.NewHasher[K](),
+		q:    deque.New[uint64](main.q.Cap()),
+		m:    swiss.NewMap[uint64, struct{}](uint32(main.q.Cap())),
+		main: main,
 	}
 }
 
 func (g *ghost[K, V]) isGhost(n *node.Node[K, V]) bool {
-	_, ok := g.m.Get(g.hasher.Hash(n.Key()))
+	_, ok := g.m.Get(n.Hash())
 	return ok
 }
 
@@ -34,7 +31,7 @@ func (g *ghost[K, V]) insert(deleted []*node.Node[K, V], n *node.Node[K, V]) []*
 	n.Meta = n.Meta.MarkDeleted()
 	deleted = append(deleted, n)
 
-	h := g.hasher.Hash(n.Key())
+	h := n.Hash()
 
 	if _, ok := g.m.Get(h); ok {
 		return deleted
