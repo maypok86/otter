@@ -2,9 +2,8 @@ package node
 
 const (
 	deletedMask   = uint32(1 << 31)
-	ghostMask     = uint32(1 << 30)
-	mainMask      = uint32(1 << 29)
-	smallMask     = uint32(1 << 28)
+	mainMask      = uint32(1 << 30)
+	smallMask     = uint32(1 << 29)
 	frequencyMask = uint32(4 - 1)
 )
 
@@ -20,18 +19,6 @@ func (m Meta) IsDeleted() bool {
 
 func (m Meta) MarkDeleted() Meta {
 	return Meta(uint32(m) | deletedMask)
-}
-
-func (m Meta) IsGhost() bool {
-	return uint32(m)&ghostMask == ghostMask
-}
-
-func (m Meta) MarkGhost() Meta {
-	return Meta(uint32(m) | ghostMask)
-}
-
-func (m Meta) UnmarkGhost() Meta {
-	return Meta(uint32(m) &^ ghostMask)
 }
 
 func (m Meta) IsMain() bool {

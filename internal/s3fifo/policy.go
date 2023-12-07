@@ -22,6 +22,7 @@ func NewPolicy[K comparable, V any](maxCost uint32) *Policy[K, V] {
 	main := newMain[K, V](mainMaxCost)
 	ghost := newGhost(main)
 	small := newSmall(smallMaxCost, main, ghost)
+	ghost.small = small
 
 	return &Policy[K, V]{
 		small:                small,
@@ -48,7 +49,7 @@ func (p *Policy[K, V]) read(deleted []*node.Node[K, V], n *node.Node[K, V]) []*n
 
 	if n.Meta.IsSmall() || n.Meta.IsMain() {
 		n.Meta = n.Meta.IncrementFrequency()
-	} else if n.Meta.IsGhost() {
+	} else if p.ghost.isGhost(n) {
 		deleted = p.insert(deleted, n)
 		n.Meta = n.Meta.ResetFrequency()
 	}
@@ -64,7 +65,7 @@ func (p *Policy[K, V]) insert(deleted []*node.Node[K, V], n *node.Node[K, V]) []
 		return deleted
 	}
 
-	if n.Meta.IsGhost() {
+	if p.ghost.isGhost(n) {
 		if !n.Meta.IsMain() {
 			p.main.insert(n)
 		}

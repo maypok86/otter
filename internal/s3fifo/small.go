@@ -64,6 +64,10 @@ func (s *small[K, V]) evict(deleted []*node.Node[K, V]) []*node.Node[K, V] {
 	return deleted
 }
 
+func (s *small[K, V]) length() int {
+	return s.q.Len()
+}
+
 func (s *small[K, V]) clear() {
 	s.q.Clear()
 	s.cost = 0
