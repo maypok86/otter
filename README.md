@@ -75,11 +75,6 @@ func main() {
         panic(err)
     }
 
-    // ShardCount sets the number of cache shards to 256.
-    // The number of shards must always be a degree of two.
-    // Default is 128.
-    builder.ShardCount(256)
-
     // StatsEnabled determines whether statistics should be calculated when the cache is running.
     // By default, statistics calculating is disabled.
     builder.StatsEnabled(true)

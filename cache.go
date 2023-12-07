@@ -23,13 +23,12 @@ func zeroValue[V any]() V {
 
 type Config[K comparable, V any] struct {
 	Capacity     int
-	ShardCount   int
 	StatsEnabled bool
 	CostFunc     func(key K, value V) uint32
 }
 
 type Cache[K comparable, V any] struct {
-	shards       []*hashtable.Map[K, V]
+	hashmap      *hashtable.Map[K, V]
 	policy       *s3fifo.Policy[K, V]
 	expirePolicy *expire.Policy[K, V]
 	stats        *stats.Stats
@@ -37,35 +36,35 @@ type Cache[K comparable, V any] struct {
 	writeBuffer  *queue.MPSC[node.WriteTask[K, V]]
 	closeOnce    sync.Once
 	doneClear    chan struct{}
-	hasher       *hasher[K]
 	costFunc     func(key K, value V) uint32
-	mask         uint64
 	capacity     int
+	mask         uint32
 }
 
 func NewCache[K comparable, V any](c Config[K, V]) *Cache[K, V] {
-	shards := make([]*hashtable.Map[K, V], 0, c.ShardCount)
-	readBuffers := make([]*lossy.Buffer[node.Node[K, V]], 0, c.ShardCount)
-	for i := 0; i < c.ShardCount; i++ {
-		shards = append(shards, hashtable.New[K, V]())
+	parallelism := xruntime.Parallelism()
+	roundedParallelism := int(xmath.RoundUpPowerOf2(parallelism))
+	writeBufferCapacity := 128 * roundedParallelism
+	readBuffersCount := 4 * roundedParallelism
+
+	readBuffers := make([]*lossy.Buffer[node.Node[K, V]], 0, readBuffersCount)
+	for i := 0; i < readBuffersCount; i++ {
 		readBuffers = append(readBuffers, lossy.New[node.Node[K, V]]())
 	}
 
-	writeBufferCapacity := 128 * int(xmath.RoundUpPowerOf2(xruntime.Parallelism()))
 	cache := &Cache[K, V]{
-		shards:      shards,
+		hashmap:     hashtable.New[K, V](),
 		policy:      s3fifo.NewPolicy[K, V](uint32(c.Capacity)),
 		readBuffers: readBuffers,
 		writeBuffer: queue.NewMPSC[node.WriteTask[K, V]](writeBufferCapacity),
 		doneClear:   make(chan struct{}),
-		hasher:      newHasher[K](),
-		mask:        uint64(c.ShardCount - 1),
+		mask:        uint32(readBuffersCount - 1),
 		costFunc:    c.CostFunc,
 		capacity:    c.Capacity,
 	}
 
 	cache.expirePolicy = expire.NewPolicy[K, V](func(n *node.Node[K, V]) {
-		cache.shards[cache.getShardIdx(n.Key())].EvictNode(n)
+		cache.hashmap.EvictNode(n)
 	})
 	if c.StatsEnabled {
 		cache.stats = stats.New()
@@ -77,8 +76,8 @@ func NewCache[K comparable, V any](c Config[K, V]) *Cache[K, V] {
 	return cache
 }
 
-func (c *Cache[K, V]) getShardIdx(key K) int {
-	return int(c.hasher.hash(key) & c.mask)
+func (c *Cache[K, V]) getReadBufferIdx() int {
+	return int(xruntime.Fastrand() & c.mask)
 }
 
 func (c *Cache[K, V]) Has(key K) bool {
@@ -87,8 +86,7 @@ func (c *Cache[K, V]) Has(key K) bool {
 }
 
 func (c *Cache[K, V]) Get(key K) (V, bool) {
-	idx := c.getShardIdx(key)
-	got, ok := c.shards[idx].Get(key)
+	got, ok := c.hashmap.Get(key)
 	if !ok {
 		c.stats.IncMisses()
 		return zeroValue[V](), false
@@ -100,18 +98,19 @@ func (c *Cache[K, V]) Get(key K) (V, bool) {
 		return zeroValue[V](), false
 	}
 
-	c.afterGet(idx, got)
+	c.afterGet(got)
 	c.stats.IncHits()
 
 	return got.Value(), ok
 }
 
-func (c *Cache[K, V]) afterGet(idx int, got *node.Node[K, V]) {
+func (c *Cache[K, V]) afterGet(got *node.Node[K, V]) {
+	idx := c.getReadBufferIdx()
 	pb := c.readBuffers[idx].Add(got)
 	if pb != nil {
 		deleted := c.policy.Read(pb.Deleted, pb.Returned)
 		for _, n := range deleted {
-			c.shards[c.getShardIdx(n.Key())].EvictNode(n)
+			c.hashmap.EvictNode(n)
 		}
 		c.readBuffers[idx].Free()
 	}
@@ -133,9 +132,7 @@ func (c *Cache[K, V]) set(key K, value V, expiration uint64) {
 		return
 	}
 
-	idx := c.getShardIdx(key)
-	s := c.shards[idx]
-	got, ok := s.Get(key)
+	got, ok := c.hashmap.Get(key)
 	if ok {
 		if !got.IsExpired() {
 			oldCost := got.SwapCost(cost)
@@ -152,7 +149,7 @@ func (c *Cache[K, V]) set(key K, value V, expiration uint64) {
 	}
 
 	n := node.New(key, value, expiration, cost)
-	evicted := s.Set(n)
+	evicted := c.hashmap.Set(n)
 	// TODO: try insert?
 	c.writeBuffer.Insert(node.NewAddTask(n))
 	if evicted != nil {
@@ -161,7 +158,7 @@ func (c *Cache[K, V]) set(key K, value V, expiration uint64) {
 }
 
 func (c *Cache[K, V]) Delete(key K) {
-	deleted := c.shards[c.getShardIdx(key)].Delete(key)
+	deleted := c.hashmap.Delete(key)
 	if deleted != nil {
 		c.writeBuffer.Insert(node.NewDeleteTask(deleted))
 	}
@@ -202,7 +199,7 @@ func (c *Cache[K, V]) process() {
 
 			d := c.policy.Write(deleted, e, buffer)
 			for _, n := range d {
-				c.shards[c.getShardIdx(n.Key())].EvictNode(n)
+				c.hashmap.EvictNode(n)
 			}
 
 			buffer = buffer[:0]
@@ -217,8 +214,8 @@ func (c *Cache[K, V]) Clear() {
 }
 
 func (c *Cache[K, V]) clear(task node.WriteTask[K, V]) {
-	for i := 0; i < len(c.shards); i++ {
-		c.shards[i].Clear()
+	c.hashmap.Clear()
+	for i := 0; i < len(c.readBuffers); i++ {
 		c.readBuffers[i].Clear()
 	}
 
