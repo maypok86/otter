@@ -1,13 +1,10 @@
 package s3fifo
 
 import (
-	"sync"
-
 	"github.com/maypok86/otter/internal/node"
 )
 
 type Policy[K comparable, V any] struct {
-	mutex                sync.Mutex
 	small                *small[K, V]
 	main                 *main[K, V]
 	ghost                *ghost[K, V]
@@ -34,11 +31,9 @@ func NewPolicy[K comparable, V any](maxCost uint32) *Policy[K, V] {
 }
 
 func (p *Policy[K, V]) Read(deleted, nodes []*node.Node[K, V]) []*node.Node[K, V] {
-	p.mutex.Lock()
 	for _, n := range nodes {
 		deleted = p.read(deleted, n)
 	}
-	p.mutex.Unlock()
 	return deleted
 }
 
@@ -112,15 +107,8 @@ func (p *Policy[K, V]) isFull() bool {
 
 func (p *Policy[K, V]) Write(
 	deleted []*node.Node[K, V],
-	expired []*node.Node[K, V],
 	tasks []node.WriteTask[K, V],
 ) []*node.Node[K, V] {
-	p.mutex.Lock()
-
-	for _, n := range expired {
-		n.Meta = n.Meta.MarkDeleted()
-	}
-
 	for _, task := range tasks {
 		n := task.GetNode()
 
@@ -138,8 +126,13 @@ func (p *Policy[K, V]) Write(
 		// add
 		deleted = p.insert(deleted, n)
 	}
-	p.mutex.Unlock()
 	return deleted
+}
+
+func (p *Policy[K, V]) Delete(buffer []*node.Node[K, V]) {
+	for _, n := range buffer {
+		n.Meta = n.Meta.MarkDeleted()
+	}
 }
 
 func (p *Policy[K, V]) MaxAvailableCost() uint32 {
@@ -147,9 +140,6 @@ func (p *Policy[K, V]) MaxAvailableCost() uint32 {
 }
 
 func (p *Policy[K, V]) Clear() {
-	p.mutex.Lock()
-	defer p.mutex.Unlock()
-
 	p.ghost.clear()
 	p.main.clear()
 	p.small.clear()

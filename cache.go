@@ -28,17 +28,19 @@ type Config[K comparable, V any] struct {
 }
 
 type Cache[K comparable, V any] struct {
-	hashmap      *hashtable.Map[K, V]
-	policy       *s3fifo.Policy[K, V]
-	expirePolicy *expire.Policy[K, V]
-	stats        *stats.Stats
-	readBuffers  []*lossy.Buffer[node.Node[K, V]]
-	writeBuffer  *queue.MPSC[node.WriteTask[K, V]]
-	closeOnce    sync.Once
-	doneClear    chan struct{}
-	costFunc     func(key K, value V) uint32
-	capacity     int
-	mask         uint32
+	hashmap       *hashtable.Map[K, V]
+	policy        *s3fifo.Policy[K, V]
+	expirePolicy  *expire.Policy[K, V]
+	stats         *stats.Stats
+	readBuffers   []*lossy.Buffer[node.Node[K, V]]
+	writeBuffer   *queue.MPSC[node.WriteTask[K, V]]
+	evictionMutex sync.Mutex
+	closeOnce     sync.Once
+	isClosed      bool
+	doneClear     chan struct{}
+	costFunc      func(key K, value V) uint32
+	capacity      int
+	mask          uint32
 }
 
 func NewCache[K comparable, V any](c Config[K, V]) *Cache[K, V] {
@@ -72,6 +74,7 @@ func NewCache[K comparable, V any](c Config[K, V]) *Cache[K, V] {
 
 	unixtime.Start()
 	go cache.process()
+	go cache.cleanup()
 
 	return cache
 }
@@ -108,10 +111,17 @@ func (c *Cache[K, V]) afterGet(got *node.Node[K, V]) {
 	idx := c.getReadBufferIdx()
 	pb := c.readBuffers[idx].Add(got)
 	if pb != nil {
+		c.evictionMutex.Lock()
 		deleted := c.policy.Read(pb.Deleted, pb.Returned)
+		for _, n := range deleted {
+			c.expirePolicy.Delete(n)
+		}
+		c.evictionMutex.Unlock()
+
 		for _, n := range deleted {
 			c.hashmap.EvictNode(n)
 		}
+
 		c.readBuffers[idx].Free()
 	}
 }
@@ -164,19 +174,48 @@ func (c *Cache[K, V]) Delete(key K) {
 	}
 }
 
+func (c *Cache[K, V]) cleanup() {
+	expired := make([]*node.Node[K, V], 0, 128)
+	for {
+		time.Sleep(time.Second)
+
+		c.evictionMutex.Lock()
+		if c.isClosed {
+			return
+		}
+
+		e := c.expirePolicy.RemoveExpired(expired)
+		c.policy.Delete(e)
+
+		c.evictionMutex.Unlock()
+
+		for _, n := range e {
+			c.hashmap.EvictNode(n)
+		}
+
+		expired = expired[:0]
+	}
+}
+
 func (c *Cache[K, V]) process() {
 	bufferCapacity := 128
 	buffer := make([]node.WriteTask[K, V], 0, bufferCapacity)
 	deleted := make([]*node.Node[K, V], 0, bufferCapacity)
-	expired := make([]*node.Node[K, V], 0, bufferCapacity)
 	i := 0
 	for {
 		task := c.writeBuffer.Remove()
 
 		if task.IsClear() || task.IsClose() {
 			c.writeBuffer.Clear()
+
+			c.evictionMutex.Lock()
 			c.policy.Clear()
 			c.expirePolicy.Clear()
+			if task.IsClose() {
+				c.isClosed = true
+			}
+			c.evictionMutex.Unlock()
+
 			c.doneClear <- struct{}{}
 			if task.IsClose() {
 				break
@@ -184,27 +223,34 @@ func (c *Cache[K, V]) process() {
 			continue
 		}
 
-		if task.IsDelete() || task.IsEvict() {
-			c.expirePolicy.Delete(task.GetNode())
-		} else if task.IsAdd() {
-			c.expirePolicy.Add(task.GetNode())
-		}
-
 		buffer = append(buffer, task)
 		i++
 		if i >= bufferCapacity {
 			i -= bufferCapacity
 
-			e := c.expirePolicy.RemoveExpired(expired)
+			c.evictionMutex.Lock()
 
-			d := c.policy.Write(deleted, e, buffer)
+			for _, t := range buffer {
+				if t.IsDelete() || t.IsEvict() {
+					c.expirePolicy.Delete(t.GetNode())
+				} else if t.IsAdd() {
+					c.expirePolicy.Add(t.GetNode())
+				}
+			}
+
+			d := c.policy.Write(deleted, buffer)
+			for _, n := range d {
+				c.expirePolicy.Delete(n)
+			}
+
+			c.evictionMutex.Unlock()
+
 			for _, n := range d {
 				c.hashmap.EvictNode(n)
 			}
 
 			buffer = buffer[:0]
 			deleted = deleted[:0]
-			expired = expired[:0]
 		}
 	}
 }
