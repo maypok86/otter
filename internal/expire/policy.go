@@ -74,16 +74,14 @@ func (b *bucket[K, V]) clear() {
 }
 
 type Policy[K comparable, V any] struct {
-	removeNode      func(n *node.Node[K, V])
 	buckets         [numberOfBuckets]bucket[K, V]
 	expires         *swiss.Map[*node.Node[K, V], struct{}]
 	currentBucketID int
 }
 
-func NewPolicy[K comparable, V any](removeNode func(n *node.Node[K, V])) *Policy[K, V] {
+func NewPolicy[K comparable, V any]() *Policy[K, V] {
 	p := &Policy[K, V]{
-		removeNode: removeNode,
-		expires:    swiss.NewMap[*node.Node[K, V], struct{}](mapSize),
+		expires: swiss.NewMap[*node.Node[K, V], struct{}](mapSize),
 	}
 
 	for i := 0; i < numberOfBuckets; i++ {
@@ -139,7 +137,6 @@ func (p *Policy[K, V]) expireBucket(expired []*node.Node[K, V], bucketID int, no
 	if now > b.lastTime {
 		b.m.Iter(func(n *node.Node[K, V], _ struct{}) (stop bool) {
 			p.expires.Delete(n)
-			p.removeNode(n)
 			expired = append(expired, n)
 			return false
 		})

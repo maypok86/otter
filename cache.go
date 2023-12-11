@@ -65,9 +65,7 @@ func NewCache[K comparable, V any](c Config[K, V]) *Cache[K, V] {
 		capacity:    c.Capacity,
 	}
 
-	cache.expirePolicy = expire.NewPolicy[K, V](func(n *node.Node[K, V]) {
-		cache.hashmap.EvictNode(n)
-	})
+	cache.expirePolicy = expire.NewPolicy[K, V]()
 	if c.StatsEnabled {
 		cache.stats = stats.New()
 	}
