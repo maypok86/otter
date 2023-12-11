@@ -52,42 +52,36 @@ func (p *Policy[K, V]) read(deleted []*node.Node[K, V], n *node.Node[K, V]) []*n
 }
 
 func (p *Policy[K, V]) insert(deleted []*node.Node[K, V], n *node.Node[K, V]) []*node.Node[K, V] {
-	for p.isFull() {
-		deleted = p.evict(deleted)
-	}
-
 	if n.Meta.IsDeleted() {
 		return deleted
 	}
 
 	if p.ghost.isGhost(n) {
-		if !n.Meta.IsMain() {
-			p.main.insert(n)
-		}
-		return deleted
+		p.main.insert(n)
+	} else {
+		p.small.insert(n)
 	}
 
-	if !n.Meta.IsSmall() {
-		p.small.insert(n)
+	for p.isFull() {
+		deleted = p.evict(deleted)
 	}
 
 	return deleted
 }
 
 func (p *Policy[K, V]) update(deleted []*node.Node[K, V], n *node.Node[K, V], costDiff uint32) []*node.Node[K, V] {
-	for p.isFull() {
-		deleted = p.evict(deleted)
-	}
-
 	if n.Meta.IsDeleted() {
 		return deleted
 	}
 
 	if n.Meta.IsSmall() {
 		p.small.cost += costDiff
-	}
-	if n.Meta.IsMain() {
+	} else if n.Meta.IsMain() {
 		p.main.cost += costDiff
+	}
+
+	for p.isFull() {
+		deleted = p.evict(deleted)
 	}
 
 	return deleted

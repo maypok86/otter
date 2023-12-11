@@ -34,34 +34,32 @@ func (s *small[K, V]) insert(n *node.Node[K, V]) {
 }
 
 func (s *small[K, V]) evict(deleted []*node.Node[K, V]) []*node.Node[K, V] {
-	for s.cost > 0 {
-		n := s.q.PopFront()
-		s.cost -= n.Cost()
-		n.Meta = n.Meta.UnmarkSmall()
-		if n.Meta.IsDeleted() {
-			return deleted
-		}
-		if n.IsExpired() {
-			n.Meta = n.Meta.MarkDeleted()
-			// can remove
-			return append(deleted, n)
-		}
-
-		if n.Meta.GetFrequency() > 1 {
-			if !n.Meta.IsMain() {
-				s.main.insert(n)
-				for s.main.isFull() {
-					deleted = s.main.evict(deleted)
-				}
-				n.Meta = n.Meta.ResetFrequency()
-				continue
-			}
-		}
-
-		return s.ghost.insert(deleted, n)
+	if s.cost == 0 {
+		return deleted
 	}
 
-	return deleted
+	n := s.q.PopFront()
+	s.cost -= n.Cost()
+	n.Meta = n.Meta.UnmarkSmall()
+	if n.Meta.IsDeleted() {
+		return deleted
+	}
+	if n.IsExpired() {
+		n.Meta = n.Meta.MarkDeleted()
+		// can remove
+		return append(deleted, n)
+	}
+
+	if n.Meta.GetFrequency() > 1 {
+		s.main.insert(n)
+		for s.main.isFull() {
+			deleted = s.main.evict(deleted)
+		}
+		n.Meta = n.Meta.ResetFrequency()
+		return deleted
+	}
+
+	return s.ghost.insert(deleted, n)
 }
 
 func (s *small[K, V]) length() int {
