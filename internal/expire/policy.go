@@ -8,9 +8,9 @@ import (
 )
 
 const (
-	numberOfBuckets = 16
+	numberOfBuckets = 128
 	mask            = uint64(numberOfBuckets - 1)
-	base            = uint64(10)
+	base            = uint64(5)
 
 	// eliminate probing.
 	maxProbeCount = 100
@@ -18,10 +18,6 @@ const (
 
 	mapSize = 100
 )
-
-func timestampToBucketID(timestamp uint64) int {
-	return bucketTimeToBucketID(timestampToBucketTime(timestamp))
-}
 
 func bucketTimeToBucketID(bucketTime uint64) int {
 	return int(bucketTime & mask)
