@@ -6,6 +6,8 @@ import (
 	"github.com/maypok86/otter/internal/node"
 )
 
+const maxReinsertions = 20
+
 type main[K comparable, V any] struct {
 	q       *deque.Deque[*node.Node[K, V]]
 	cost    uint32
@@ -26,6 +28,7 @@ func (m *main[K, V]) insert(n *node.Node[K, V]) {
 }
 
 func (m *main[K, V]) evict(deleted []*node.Node[K, V]) []*node.Node[K, V] {
+	reinsertions := 0
 	for m.cost > 0 {
 		n := m.q.PopFront()
 		if n.Meta.IsDeleted() {
@@ -35,6 +38,15 @@ func (m *main[K, V]) evict(deleted []*node.Node[K, V]) []*node.Node[K, V] {
 		}
 
 		if n.IsExpired() || n.Meta.GetFrequency() == 0 {
+			n.Meta = n.Meta.UnmarkMain().MarkDeleted()
+			m.cost -= n.Cost()
+			// can remove
+			return append(deleted, n)
+		}
+
+		// to avoid the worst case O(n), we remove the 20th reinserted consecutive element.
+		reinsertions++
+		if reinsertions >= maxReinsertions {
 			n.Meta = n.Meta.UnmarkMain().MarkDeleted()
 			m.cost -= n.Cost()
 			// can remove
