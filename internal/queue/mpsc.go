@@ -8,18 +8,25 @@ import (
 	"github.com/maypok86/otter/internal/xruntime"
 )
 
+const (
+	maxRetries = 100
+)
+
 func zeroValue[T any]() T {
 	var zero T
 	return zero
 }
 
 type MPSC[T any] struct {
-	capacity    uint64
-	head        atomic.Uint64
-	headPadding [xruntime.CacheLineSize - unsafe.Sizeof(atomic.Uint64{})]byte
-	tail        uint64
-	tailPadding [xruntime.CacheLineSize - 8]byte
-	slots       []paddedSlot[T]
+	capacity     uint64
+	sleep        chan struct{}
+	head         atomic.Uint64
+	headPadding  [xruntime.CacheLineSize - unsafe.Sizeof(atomic.Uint64{})]byte
+	tail         uint64
+	tailPadding  [xruntime.CacheLineSize - 8]byte
+	isSleep      atomic.Uint64
+	sleepPadding [xruntime.CacheLineSize - unsafe.Sizeof(atomic.Uint64{})]byte
+	slots        []paddedSlot[T]
 }
 
 type paddedSlot[T any] struct {
@@ -35,6 +42,7 @@ type slot[T any] struct {
 
 func NewMPSC[T any](capacity int) *MPSC[T] {
 	return &MPSC[T]{
+		sleep:    make(chan struct{}),
 		capacity: uint64(capacity),
 		slots:    make([]paddedSlot[T], capacity),
 	}
@@ -47,6 +55,12 @@ func (q *MPSC[T]) Insert(item T) {
 	for slot.turn.Load() != turn {
 		runtime.Gosched()
 	}
+
+	if q.isSleep.CompareAndSwap(1, 0) {
+		// if the consumer is asleep, we'll wake him up.
+		q.sleep <- struct{}{}
+	}
+
 	slot.item = item
 	slot.turn.Store(turn + 1)
 }
@@ -55,7 +69,16 @@ func (q *MPSC[T]) Remove() T {
 	tail := q.tail
 	slot := &q.slots[q.idx(tail)]
 	turn := 2*q.turn(tail) + 1
+	retries := 0
 	for slot.turn.Load() != turn {
+		if retries == maxRetries {
+			// if the queue's been empty for too long, we fall asleep.
+			q.isSleep.Store(1)
+			<-q.sleep
+			retries = 0
+			continue
+		}
+		retries++
 		runtime.Gosched()
 	}
 	item := slot.item
