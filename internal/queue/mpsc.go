@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	maxRetries = 100
+	maxRetries = 16
 )
 
 func zeroValue[T any]() T {
@@ -50,15 +50,19 @@ func NewMPSC[T any](capacity int) *MPSC[T] {
 
 func (q *MPSC[T]) Insert(item T) {
 	head := q.head.Add(1) - 1
+	q.wakeUpConsumer()
+
 	slot := &q.slots[q.idx(head)]
 	turn := q.turn(head) * 2
+	retries := 0
 	for slot.turn.Load() != turn {
+		if retries == maxRetries {
+			q.wakeUpConsumer()
+			retries = 0
+			continue
+		}
+		retries++
 		runtime.Gosched()
-	}
-
-	if q.isSleep.CompareAndSwap(1, 0) {
-		// if the consumer is asleep, we'll wake him up.
-		q.sleep <- struct{}{}
 	}
 
 	slot.item = item
@@ -72,9 +76,7 @@ func (q *MPSC[T]) Remove() T {
 	retries := 0
 	for slot.turn.Load() != turn {
 		if retries == maxRetries {
-			// if the queue's been empty for too long, we fall asleep.
-			q.isSleep.Store(1)
-			<-q.sleep
+			q.sleepConsumer()
 			retries = 0
 			continue
 		}
@@ -94,12 +96,25 @@ func (q *MPSC[T]) Clear() {
 	}
 }
 
-func (q *MPSC[T]) isEmpty() bool {
-	return q.tail == q.head.Load()
-}
-
 func (q *MPSC[T]) Capacity() int {
 	return int(q.capacity)
+}
+
+func (q *MPSC[T]) wakeUpConsumer() {
+	if q.isSleep.CompareAndSwap(1, 0) {
+		// if the consumer is asleep, we'll wake him up.
+		q.sleep <- struct{}{}
+	}
+}
+
+func (q *MPSC[T]) sleepConsumer() {
+	// if the queue's been empty for too long, we fall asleep.
+	q.isSleep.Store(1)
+	<-q.sleep
+}
+
+func (q *MPSC[T]) isEmpty() bool {
+	return q.tail == q.head.Load()
 }
 
 func (q *MPSC[T]) idx(i uint64) uint64 {
