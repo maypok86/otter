@@ -78,7 +78,7 @@ func (n *Node[K, V]) SwapCost(cost uint32) (old uint32) {
 	return atomic.SwapUint32(&n.cost, cost)
 }
 
-func (n *Node[K, V]) GetFrequency() uint8 {
+func (n *Node[K, V]) Frequency() uint8 {
 	return n.frequency
 }
 

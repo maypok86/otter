@@ -43,7 +43,7 @@ func (s *small[K, V]) evict(deleted []*node.Node[K, V]) []*node.Node[K, V] {
 		return append(deleted, n)
 	}
 
-	if n.GetFrequency() > 1 {
+	if n.Frequency() > 1 {
 		s.main.insert(n)
 		for s.main.isFull() {
 			deleted = s.main.evict(deleted)
