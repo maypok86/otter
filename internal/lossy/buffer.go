@@ -15,7 +15,6 @@ const (
 
 type PolicyBuffers[T any] struct {
 	Returned []*T
-	Deleted  []*T
 }
 
 type Buffer[T any] struct {
@@ -33,7 +32,6 @@ type Buffer[T any] struct {
 func New[T any]() *Buffer[T] {
 	pb := &PolicyBuffers[T]{
 		Returned: make([]*T, 0, capacity),
-		Deleted:  make([]*T, 0, capacity),
 	}
 	b := &Buffer[T]{
 		policyBuffers: unsafe.Pointer(pb),
@@ -83,7 +81,6 @@ func (b *Buffer[T]) Add(item *T) *PolicyBuffers[T] {
 func (b *Buffer[T]) Free() {
 	pb := (*PolicyBuffers[T])(b.policyBuffers)
 	pb.Returned = pb.Returned[:0]
-	pb.Deleted = pb.Deleted[:0]
 	atomic.StorePointer(&b.returned, b.policyBuffers)
 }
 

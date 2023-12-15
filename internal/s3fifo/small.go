@@ -1,13 +1,11 @@
 package s3fifo
 
 import (
-	"github.com/gammazero/deque"
-
 	"github.com/maypok86/otter/internal/node"
 )
 
 type small[K comparable, V any] struct {
-	q       *deque.Deque[*node.Node[K, V]]
+	q       *node.Queue[K, V]
 	main    *main[K, V]
 	ghost   *ghost[K, V]
 	cost    uint32
@@ -20,7 +18,7 @@ func newSmall[K comparable, V any](
 	ghost *ghost[K, V],
 ) *small[K, V] {
 	return &small[K, V]{
-		q:       deque.New[*node.Node[K, V]](),
+		q:       node.NewQueue[K, V](),
 		main:    main,
 		ghost:   ghost,
 		maxCost: maxCost,
@@ -28,8 +26,8 @@ func newSmall[K comparable, V any](
 }
 
 func (s *small[K, V]) insert(n *node.Node[K, V]) {
-	s.q.PushBack(n)
-	n.Meta = n.Meta.MarkSmall()
+	s.q.Push(n)
+	n.MarkSmall()
 	s.cost += n.Cost()
 }
 
@@ -38,28 +36,29 @@ func (s *small[K, V]) evict(deleted []*node.Node[K, V]) []*node.Node[K, V] {
 		return deleted
 	}
 
-	n := s.q.PopFront()
+	n := s.q.Pop()
 	s.cost -= n.Cost()
-	n.Meta = n.Meta.UnmarkSmall()
-	if n.Meta.IsDeleted() {
-		return deleted
-	}
+	n.Unmark()
 	if n.IsExpired() {
-		n.Meta = n.Meta.MarkDeleted()
-		// can remove
 		return append(deleted, n)
 	}
 
-	if n.Meta.GetFrequency() > 1 {
+	if n.GetFrequency() > 1 {
 		s.main.insert(n)
 		for s.main.isFull() {
 			deleted = s.main.evict(deleted)
 		}
-		n.Meta = n.Meta.ResetFrequency()
+		n.ResetFrequency()
 		return deleted
 	}
 
 	return s.ghost.insert(deleted, n)
+}
+
+func (s *small[K, V]) remove(n *node.Node[K, V]) {
+	s.cost -= n.Cost()
+	n.Unmark()
+	s.q.Remove(n)
 }
 
 func (s *small[K, V]) length() int {

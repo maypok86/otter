@@ -30,34 +30,16 @@ func NewPolicy[K comparable, V any](maxCost uint32) *Policy[K, V] {
 	}
 }
 
-func (p *Policy[K, V]) Read(deleted, nodes []*node.Node[K, V]) []*node.Node[K, V] {
+func (p *Policy[K, V]) Read(nodes []*node.Node[K, V]) {
 	for _, n := range nodes {
-		deleted = p.read(deleted, n)
+		n.IncrementFrequency()
 	}
-	return deleted
-}
-
-func (p *Policy[K, V]) read(deleted []*node.Node[K, V], n *node.Node[K, V]) []*node.Node[K, V] {
-	if n.Meta.IsDeleted() {
-		return deleted
-	}
-
-	if n.Meta.IsSmall() || n.Meta.IsMain() {
-		n.Meta = n.Meta.IncrementFrequency()
-	} else if p.ghost.isGhost(n) {
-		deleted = p.insert(deleted, n)
-		n.Meta = n.Meta.ResetFrequency()
-	}
-	return deleted
 }
 
 func (p *Policy[K, V]) insert(deleted []*node.Node[K, V], n *node.Node[K, V]) []*node.Node[K, V] {
-	if n.Meta.IsDeleted() {
-		return deleted
-	}
-
 	if p.ghost.isGhost(n) {
 		p.main.insert(n)
+		n.ResetFrequency()
 	} else {
 		p.small.insert(n)
 	}
@@ -70,13 +52,9 @@ func (p *Policy[K, V]) insert(deleted []*node.Node[K, V], n *node.Node[K, V]) []
 }
 
 func (p *Policy[K, V]) update(deleted []*node.Node[K, V], n *node.Node[K, V], costDiff uint32) []*node.Node[K, V] {
-	if n.Meta.IsDeleted() {
-		return deleted
-	}
-
-	if n.Meta.IsSmall() {
+	if n.IsSmall() {
 		p.small.cost += costDiff
-	} else if n.Meta.IsMain() {
+	} else if n.IsMain() {
 		p.main.cost += costDiff
 	}
 
@@ -107,8 +85,8 @@ func (p *Policy[K, V]) Write(
 		n := task.GetNode()
 
 		// already deleted in map
-		if task.IsEvict() || task.IsDelete() {
-			n.Meta = n.Meta.MarkDeleted()
+		if task.IsDelete() {
+			p.delete(task.GetNode())
 			continue
 		}
 
@@ -125,7 +103,18 @@ func (p *Policy[K, V]) Write(
 
 func (p *Policy[K, V]) Delete(buffer []*node.Node[K, V]) {
 	for _, n := range buffer {
-		n.Meta = n.Meta.MarkDeleted()
+		p.delete(n)
+	}
+}
+
+func (p *Policy[K, V]) delete(n *node.Node[K, V]) {
+	if n.IsSmall() {
+		p.small.remove(n)
+		return
+	}
+
+	if n.IsMain() {
+		p.main.remove(n)
 	}
 }
 
