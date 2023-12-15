@@ -9,8 +9,8 @@ import (
 
 const (
 	numberOfBuckets = 128
-	mask            = uint64(numberOfBuckets - 1)
-	base            = uint64(5)
+	mask            = uint32(numberOfBuckets - 1)
+	base            = uint32(5)
 
 	// eliminate probing.
 	maxProbeCount = 100
@@ -19,11 +19,11 @@ const (
 	mapSize = 100
 )
 
-func bucketTimeToBucketID(bucketTime uint64) int {
+func bucketTimeToBucketID(bucketTime uint32) int {
 	return int(bucketTime & mask)
 }
 
-func timestampToBucketTime(timestamp uint64) uint64 {
+func timestampToBucketTime(timestamp uint32) uint32 {
 	return timestamp / base
 }
 
@@ -33,7 +33,7 @@ func nextBucketID(bucketID int) int {
 
 type bucket[K comparable, V any] struct {
 	m        *swiss.Map[*node.Node[K, V], struct{}]
-	lastTime uint64
+	lastTime uint32
 }
 
 func newBucket[K comparable, V any]() bucket[K, V] {
@@ -43,7 +43,7 @@ func newBucket[K comparable, V any]() bucket[K, V] {
 	}
 }
 
-func (b *bucket[K, V]) add(n *node.Node[K, V], newTime uint64) {
+func (b *bucket[K, V]) add(n *node.Node[K, V], newTime uint32) {
 	if b.isEmpty() {
 		b.m.Put(n, struct{}{})
 		b.lastTime = newTime
@@ -127,7 +127,7 @@ func (p *Policy[K, V]) RemoveExpired(expired []*node.Node[K, V]) []*node.Node[K,
 	return p.probingExpire(expired)
 }
 
-func (p *Policy[K, V]) expireBucket(expired []*node.Node[K, V], bucketID int, now uint64) []*node.Node[K, V] {
+func (p *Policy[K, V]) expireBucket(expired []*node.Node[K, V], bucketID int, now uint32) []*node.Node[K, V] {
 	b := &p.buckets[bucketID]
 	if b.lastTime == 0 {
 		return expired

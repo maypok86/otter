@@ -6,11 +6,11 @@ import (
 	"time"
 )
 
-// We need this package because time.Now() is slower, allocates memory,
-// and we don't need a more precise time for the expiry time (and most other operations).
-var now uint64
-
 var (
+	// We need this package because time.Now() is slower, allocates memory,
+	// and we don't need a more precise time for the expiry time (and most other operations).
+	now uint32
+
 	mutex         sync.Mutex
 	countInstance int
 	done          chan struct{}
@@ -18,7 +18,8 @@ var (
 
 func startTimer() {
 	done = make(chan struct{})
-	atomic.StoreUint64(&now, uint64(time.Now().Unix()))
+	startTime := time.Now().Unix()
+	atomic.StoreUint32(&now, uint32(0))
 
 	go func() {
 		ticker := time.NewTicker(time.Second)
@@ -26,7 +27,7 @@ func startTimer() {
 		for {
 			select {
 			case t := <-ticker.C:
-				atomic.StoreUint64(&now, uint64(t.Unix()))
+				atomic.StoreUint32(&now, uint32(t.Unix()-startTime))
 			case <-done:
 				return
 			}
@@ -58,7 +59,7 @@ func Stop() {
 	}
 }
 
-// Now returns time as a Unix time, the number of seconds elapsed since January 1, 1970 UTC.
-func Now() uint64 {
-	return atomic.LoadUint64(&now)
+// Now returns time as a Unix time, the number of seconds elapsed since program start.
+func Now() uint32 {
+	return atomic.LoadUint32(&now)
 }
