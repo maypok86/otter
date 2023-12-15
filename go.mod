@@ -7,5 +7,3 @@ require (
 	github.com/dolthub/swiss v0.2.1
 	github.com/gammazero/deque v0.2.1
 )
-
-require github.com/stretchr/testify v1.8.2 // indirect

@@ -7,14 +7,25 @@ import (
 	"github.com/maypok86/otter/internal/unixtime"
 )
 
+const (
+	unknownQueueType uint8 = iota
+	smallQueueType
+	mainQueueType
+
+	maxFrequency uint8 = 3
+)
+
 type Node[K comparable, V any] struct {
 	key        K
 	value      V
+	prev       *Node[K, V]
+	next       *Node[K, V]
 	mutex      sync.Mutex
 	hash       uint64
 	expiration uint64
-	Meta       Meta
 	cost       uint32
+	frequency  uint8
+	queueType  uint8
 }
 
 func New[K comparable, V any](key K, value V, expiration uint64, cost uint32) *Node[K, V] {
@@ -22,7 +33,6 @@ func New[K comparable, V any](key K, value V, expiration uint64, cost uint32) *N
 		key:        key,
 		value:      value,
 		expiration: expiration,
-		Meta:       DefaultMeta(),
 		cost:       cost,
 	}
 }
@@ -66,4 +76,48 @@ func (n *Node[K, V]) Cost() uint32 {
 
 func (n *Node[K, V]) SwapCost(cost uint32) (old uint32) {
 	return atomic.SwapUint32(&n.cost, cost)
+}
+
+func (n *Node[K, V]) GetFrequency() uint8 {
+	return n.frequency
+}
+
+func (n *Node[K, V]) IncrementFrequency() {
+	n.frequency = minUint8(n.frequency+1, maxFrequency)
+}
+
+func (n *Node[K, V]) DecrementFrequency() {
+	n.frequency--
+}
+
+func (n *Node[K, V]) ResetFrequency() {
+	n.frequency = 0
+}
+
+func (n *Node[K, V]) MarkSmall() {
+	n.queueType = smallQueueType
+}
+
+func (n *Node[K, V]) IsSmall() bool {
+	return n.queueType == smallQueueType
+}
+
+func (n *Node[K, V]) MarkMain() {
+	n.queueType = mainQueueType
+}
+
+func (n *Node[K, V]) IsMain() bool {
+	return n.queueType == mainQueueType
+}
+
+func (n *Node[K, V]) Unmark() {
+	n.queueType = unknownQueueType
+}
+
+func minUint8(a, b uint8) uint8 {
+	if a < b {
+		return a
+	}
+
+	return b
 }

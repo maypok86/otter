@@ -4,7 +4,6 @@ type reason uint8
 
 const (
 	addReason reason = iota + 1
-	evictReason
 	deleteReason
 	updateReason
 	clearReason
@@ -21,13 +20,6 @@ func NewAddTask[K comparable, V any](n *Node[K, V]) WriteTask[K, V] {
 	return WriteTask[K, V]{
 		n:           n,
 		writeReason: addReason,
-	}
-}
-
-func NewEvictTask[K comparable, V any](n *Node[K, V]) WriteTask[K, V] {
-	return WriteTask[K, V]{
-		n:           n,
-		writeReason: evictReason,
 	}
 }
 
@@ -68,10 +60,6 @@ func (t *WriteTask[K, V]) GetCostDiff() uint32 {
 
 func (t *WriteTask[K, V]) IsAdd() bool {
 	return t.writeReason == addReason
-}
-
-func (t *WriteTask[K, V]) IsEvict() bool {
-	return t.writeReason == evictReason
 }
 
 func (t *WriteTask[K, V]) IsDelete() bool {

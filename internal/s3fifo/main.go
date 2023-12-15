@@ -1,62 +1,59 @@
 package s3fifo
 
 import (
-	"github.com/gammazero/deque"
-
 	"github.com/maypok86/otter/internal/node"
 )
 
 const maxReinsertions = 20
 
 type main[K comparable, V any] struct {
-	q       *deque.Deque[*node.Node[K, V]]
+	q       *node.Queue[K, V]
 	cost    uint32
 	maxCost uint32
 }
 
 func newMain[K comparable, V any](maxCost uint32) *main[K, V] {
 	return &main[K, V]{
-		q:       deque.New[*node.Node[K, V]](),
+		q:       node.NewQueue[K, V](),
 		maxCost: maxCost,
 	}
 }
 
 func (m *main[K, V]) insert(n *node.Node[K, V]) {
-	m.q.PushBack(n)
-	n.Meta = n.Meta.MarkMain()
+	m.q.Push(n)
+	n.MarkMain()
 	m.cost += n.Cost()
 }
 
 func (m *main[K, V]) evict(deleted []*node.Node[K, V]) []*node.Node[K, V] {
 	reinsertions := 0
 	for m.cost > 0 {
-		n := m.q.PopFront()
-		if n.Meta.IsDeleted() {
-			n.Meta = n.Meta.UnmarkMain()
-			m.cost -= n.Cost()
-			return deleted
-		}
+		n := m.q.Pop()
 
-		if n.IsExpired() || n.Meta.GetFrequency() == 0 {
-			n.Meta = n.Meta.UnmarkMain().MarkDeleted()
+		if n.IsExpired() || n.GetFrequency() == 0 {
+			n.Unmark()
 			m.cost -= n.Cost()
-			// can remove
 			return append(deleted, n)
 		}
 
 		// to avoid the worst case O(n), we remove the 20th reinserted consecutive element.
 		reinsertions++
 		if reinsertions >= maxReinsertions {
-			n.Meta = n.Meta.UnmarkMain().MarkDeleted()
+			n.Unmark()
 			m.cost -= n.Cost()
-			// can remove
 			return append(deleted, n)
 		}
 
-		m.q.PushBack(n)
-		n.Meta = n.Meta.DecrementFrequency()
+		m.q.Push(n)
+		n.DecrementFrequency()
 	}
 	return deleted
+}
+
+func (m *main[K, V]) remove(n *node.Node[K, V]) {
+	m.cost -= n.Cost()
+	n.Unmark()
+	m.q.Remove(n)
 }
 
 func (m *main[K, V]) length() int {
