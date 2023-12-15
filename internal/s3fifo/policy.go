@@ -82,16 +82,16 @@ func (p *Policy[K, V]) Write(
 	tasks []node.WriteTask[K, V],
 ) []*node.Node[K, V] {
 	for _, task := range tasks {
-		n := task.GetNode()
+		n := task.Node()
 
 		// already deleted in map
 		if task.IsDelete() {
-			p.delete(task.GetNode())
+			p.delete(task.Node())
 			continue
 		}
 
 		if task.IsUpdate() {
-			deleted = p.update(deleted, n, task.GetCostDiff())
+			deleted = p.update(deleted, n, task.CostDiff())
 			continue
 		}
 

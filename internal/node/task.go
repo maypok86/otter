@@ -50,11 +50,11 @@ func NewCloseTask[K comparable, V any]() WriteTask[K, V] {
 	}
 }
 
-func (t *WriteTask[K, V]) GetNode() *Node[K, V] {
+func (t *WriteTask[K, V]) Node() *Node[K, V] {
 	return t.n
 }
 
-func (t *WriteTask[K, V]) GetCostDiff() uint32 {
+func (t *WriteTask[K, V]) CostDiff() uint32 {
 	return t.costDiff
 }
 

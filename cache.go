@@ -223,9 +223,9 @@ func (c *Cache[K, V]) process() {
 
 			for _, t := range buffer {
 				if t.IsDelete() {
-					c.expirePolicy.Delete(t.GetNode())
+					c.expirePolicy.Delete(t.Node())
 				} else if t.IsAdd() {
-					c.expirePolicy.Add(t.GetNode())
+					c.expirePolicy.Add(t.Node())
 				}
 			}
 
