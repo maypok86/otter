@@ -1,9 +1,9 @@
 package node
 
 import (
-	"sync"
 	"sync/atomic"
 
+	"github.com/maypok86/otter/internal/spinlock"
 	"github.com/maypok86/otter/internal/unixtime"
 )
 
@@ -20,7 +20,7 @@ type Node[K comparable, V any] struct {
 	value      V
 	prev       *Node[K, V]
 	next       *Node[K, V]
-	mutex      sync.Mutex
+	lock       spinlock.SpinLock
 	expiration uint32
 	hash       uint64
 	cost       uint32
@@ -42,16 +42,16 @@ func (n *Node[K, V]) Key() K {
 }
 
 func (n *Node[K, V]) Value() V {
-	n.mutex.Lock()
+	n.lock.Lock()
 	v := n.value
-	n.mutex.Unlock()
+	n.lock.Unlock()
 	return v
 }
 
 func (n *Node[K, V]) SetValue(value V) {
-	n.mutex.Lock()
+	n.lock.Lock()
 	n.value = value
-	n.mutex.Unlock()
+	n.lock.Unlock()
 }
 
 func (n *Node[K, V]) Hash() uint64 {
