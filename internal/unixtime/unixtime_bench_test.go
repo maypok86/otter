@@ -11,11 +11,11 @@ func BenchmarkNow(b *testing.B) {
 
 	b.ReportAllocs()
 	b.RunParallel(func(pb *testing.PB) {
-		var ts uint64
+		var ts uint32
 		for pb.Next() {
 			ts += Now()
 		}
-		atomic.StoreUint64(&sink, ts)
+		atomic.StoreUint64(&sink, uint64(ts))
 	})
 
 	Stop()

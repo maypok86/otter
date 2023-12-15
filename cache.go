@@ -123,11 +123,11 @@ func (c *Cache[K, V]) Set(key K, value V) {
 
 func (c *Cache[K, V]) SetWithTTL(key K, value V, ttl time.Duration) {
 	ttl = (ttl + time.Second - 1) / time.Second
-	expiration := unixtime.Now() + uint64(ttl)
+	expiration := unixtime.Now() + uint32(ttl)
 	c.set(key, value, expiration)
 }
 
-func (c *Cache[K, V]) set(key K, value V, expiration uint64) {
+func (c *Cache[K, V]) set(key K, value V, expiration uint32) {
 	cost := c.costFunc(key, value)
 	if cost >= c.policy.MaxAvailableCost() {
 		return

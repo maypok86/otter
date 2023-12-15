@@ -8,18 +8,16 @@ import (
 func TestNow(t *testing.T) {
 	Start()
 
-	expected := time.Now().Unix()
 	got := Now()
-	if uint64(expected) != got {
-		t.Fatalf("unexpected unix time; got %d; want %d", got, expected)
+	if got != 0 {
+		t.Fatalf("unexpected time since program start; got %d; want %d", got, 0)
 	}
 
 	time.Sleep(3 * time.Second)
 
-	expected = time.Now().Unix()
 	got = Now()
-	if uint64(expected)-got > 1 {
-		t.Fatalf("unexpected unix time; got %d; want %d", got, expected)
+	if got != 2 && got != 3 {
+		t.Fatalf("unexpected time since program start; got %d; want %d", got, 3)
 	}
 
 	Stop()

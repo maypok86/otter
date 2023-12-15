@@ -21,14 +21,14 @@ type Node[K comparable, V any] struct {
 	prev       *Node[K, V]
 	next       *Node[K, V]
 	mutex      sync.Mutex
+	expiration uint32
 	hash       uint64
-	expiration uint64
 	cost       uint32
 	frequency  uint8
 	queueType  uint8
 }
 
-func New[K comparable, V any](key K, value V, expiration uint64, cost uint32) *Node[K, V] {
+func New[K comparable, V any](key K, value V, expiration, cost uint32) *Node[K, V] {
 	return &Node[K, V]{
 		key:        key,
 		value:      value,
@@ -66,7 +66,7 @@ func (n *Node[K, V]) IsExpired() bool {
 	return n.expiration > 0 && n.expiration < unixtime.Now()
 }
 
-func (n *Node[K, V]) Expiration() uint64 {
+func (n *Node[K, V]) Expiration() uint32 {
 	return n.expiration
 }
 
