@@ -5,8 +5,8 @@ import "testing"
 func TestTask(t *testing.T) {
 	n := New[int, int](1, 2, 6, 4)
 
-	addTask := NewAddTask(n)
-	if addTask.Node() != n || !addTask.IsAdd() || addTask.CostDiff() != 0 {
+	addTask := NewAddTask(n, 4)
+	if addTask.Node() != n || !addTask.IsAdd() || addTask.CostDiff() != 4 {
 		t.Fatalf("not valid add task %+v", addTask)
 	}
 

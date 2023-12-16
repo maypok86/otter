@@ -36,7 +36,8 @@ func (p *Policy[K, V]) Read(nodes []*node.Node[K, V]) {
 	}
 }
 
-func (p *Policy[K, V]) insert(deleted []*node.Node[K, V], n *node.Node[K, V]) []*node.Node[K, V] {
+func (p *Policy[K, V]) insert(deleted []*node.Node[K, V], n *node.Node[K, V], cost uint32) []*node.Node[K, V] {
+	n.AddPolicyCostDiff(cost)
 	if p.ghost.isGhost(n) {
 		p.main.insert(n)
 		n.ResetFrequency()
@@ -57,6 +58,7 @@ func (p *Policy[K, V]) update(deleted []*node.Node[K, V], n *node.Node[K, V], co
 	} else if n.IsMain() {
 		p.main.cost += costDiff
 	}
+	n.AddPolicyCostDiff(costDiff)
 
 	for p.isFull() {
 		deleted = p.evict(deleted)
@@ -96,7 +98,7 @@ func (p *Policy[K, V]) Write(
 		}
 
 		// add
-		deleted = p.insert(deleted, n)
+		deleted = p.insert(deleted, n, task.CostDiff())
 	}
 	return deleted
 }

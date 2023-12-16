@@ -1,8 +1,6 @@
 package node
 
 import (
-	"sync/atomic"
-
 	"github.com/maypok86/otter/internal/spinlock"
 	"github.com/maypok86/otter/internal/unixtime"
 )
@@ -24,6 +22,7 @@ type Node[K comparable, V any] struct {
 	expiration uint32
 	hash       uint64
 	cost       uint32
+	policyCost uint32
 	frequency  uint8
 	queueType  uint8
 }
@@ -42,15 +41,18 @@ func (n *Node[K, V]) Key() K {
 }
 
 func (n *Node[K, V]) Value() V {
-	n.lock.Lock()
-	v := n.value
-	n.lock.Unlock()
-	return v
+	return n.value
 }
 
 func (n *Node[K, V]) SetValue(value V) {
-	n.lock.Lock()
 	n.value = value
+}
+
+func (n *Node[K, V]) Lock() {
+	n.lock.Lock()
+}
+
+func (n *Node[K, V]) Unlock() {
 	n.lock.Unlock()
 }
 
@@ -71,11 +73,19 @@ func (n *Node[K, V]) Expiration() uint32 {
 }
 
 func (n *Node[K, V]) Cost() uint32 {
-	return atomic.LoadUint32(&n.cost)
+	return n.cost
 }
 
-func (n *Node[K, V]) SwapCost(cost uint32) (old uint32) {
-	return atomic.SwapUint32(&n.cost, cost)
+func (n *Node[K, V]) SetCost(cost uint32) {
+	n.cost = cost
+}
+
+func (n *Node[K, V]) PolicyCost() uint32 {
+	return n.policyCost
+}
+
+func (n *Node[K, V]) AddPolicyCostDiff(costDiff uint32) {
+	n.policyCost += costDiff
 }
 
 func (n *Node[K, V]) Frequency() uint8 {

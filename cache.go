@@ -136,13 +136,16 @@ func (c *Cache[K, V]) set(key K, value V, expiration uint32) {
 	got, ok := c.hashmap.Get(key)
 	if ok {
 		if !got.IsExpired() {
-			oldCost := got.SwapCost(cost)
+			got.Lock()
 			got.SetValue(value)
-			costDiff := cost - oldCost
+			costDiff := cost - got.Cost()
+			if costDiff != 0 {
+				got.SetCost(cost)
+			}
+			got.Unlock()
 			if costDiff != 0 {
 				c.writeBuffer.Insert(node.NewUpdateTask(got, costDiff))
 			}
-
 			return
 		}
 
@@ -151,8 +154,7 @@ func (c *Cache[K, V]) set(key K, value V, expiration uint32) {
 
 	n := node.New(key, value, expiration, cost)
 	evicted := c.hashmap.Set(n)
-	// TODO: try insert?
-	c.writeBuffer.Insert(node.NewAddTask(n))
+	c.writeBuffer.Insert(node.NewAddTask(n, cost))
 	if evicted != nil {
 		c.writeBuffer.Insert(node.NewDeleteTask(evicted))
 	}

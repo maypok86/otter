@@ -28,7 +28,7 @@ func newSmall[K comparable, V any](
 func (s *small[K, V]) insert(n *node.Node[K, V]) {
 	s.q.Push(n)
 	n.MarkSmall()
-	s.cost += n.Cost()
+	s.cost += n.PolicyCost()
 }
 
 func (s *small[K, V]) evict(deleted []*node.Node[K, V]) []*node.Node[K, V] {
@@ -37,7 +37,7 @@ func (s *small[K, V]) evict(deleted []*node.Node[K, V]) []*node.Node[K, V] {
 	}
 
 	n := s.q.Pop()
-	s.cost -= n.Cost()
+	s.cost -= n.PolicyCost()
 	n.Unmark()
 	if n.IsExpired() {
 		return append(deleted, n)
@@ -56,7 +56,7 @@ func (s *small[K, V]) evict(deleted []*node.Node[K, V]) []*node.Node[K, V] {
 }
 
 func (s *small[K, V]) remove(n *node.Node[K, V]) {
-	s.cost -= n.Cost()
+	s.cost -= n.PolicyCost()
 	n.Unmark()
 	s.q.Remove(n)
 }

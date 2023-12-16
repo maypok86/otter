@@ -16,10 +16,11 @@ type WriteTask[K comparable, V any] struct {
 	costDiff    uint32
 }
 
-func NewAddTask[K comparable, V any](n *Node[K, V]) WriteTask[K, V] {
+func NewAddTask[K comparable, V any](n *Node[K, V], cost uint32) WriteTask[K, V] {
 	return WriteTask[K, V]{
 		n:           n,
 		writeReason: addReason,
+		costDiff:    cost,
 	}
 }
 

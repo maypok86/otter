@@ -22,7 +22,7 @@ func newMain[K comparable, V any](maxCost uint32) *main[K, V] {
 func (m *main[K, V]) insert(n *node.Node[K, V]) {
 	m.q.Push(n)
 	n.MarkMain()
-	m.cost += n.Cost()
+	m.cost += n.PolicyCost()
 }
 
 func (m *main[K, V]) evict(deleted []*node.Node[K, V]) []*node.Node[K, V] {
@@ -32,7 +32,7 @@ func (m *main[K, V]) evict(deleted []*node.Node[K, V]) []*node.Node[K, V] {
 
 		if n.IsExpired() || n.Frequency() == 0 {
 			n.Unmark()
-			m.cost -= n.Cost()
+			m.cost -= n.PolicyCost()
 			return append(deleted, n)
 		}
 
@@ -40,7 +40,7 @@ func (m *main[K, V]) evict(deleted []*node.Node[K, V]) []*node.Node[K, V] {
 		reinsertions++
 		if reinsertions >= maxReinsertions {
 			n.Unmark()
-			m.cost -= n.Cost()
+			m.cost -= n.PolicyCost()
 			return append(deleted, n)
 		}
 
@@ -51,7 +51,7 @@ func (m *main[K, V]) evict(deleted []*node.Node[K, V]) []*node.Node[K, V] {
 }
 
 func (m *main[K, V]) remove(n *node.Node[K, V]) {
-	m.cost -= n.Cost()
+	m.cost -= n.PolicyCost()
 	n.Unmark()
 	m.q.Remove(n)
 }

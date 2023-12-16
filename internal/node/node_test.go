@@ -51,13 +51,19 @@ func TestNode(t *testing.T) {
 	}
 
 	newCost := uint32(5)
-	oldCost := n.SwapCost(newCost)
-	if cost != oldCost {
-		t.Fatalf("old cost = %d, want %d", oldCost, cost)
+	n.SetCost(newCost)
+	if n.Cost() != newCost {
+		t.Fatalf("n.Cost() = %d, want %d", n.Cost(), cost)
 	}
 
-	if n.Cost() != newCost {
-		t.Fatalf("n.Cost() = %d, want %d", n.Cost(), newCost)
+	// policy cost
+	if n.PolicyCost() != 0 {
+		t.Fatalf("n.PolicyCost() = %d, want %d", n.PolicyCost(), 0)
+	}
+
+	n.AddPolicyCostDiff(1)
+	if n.PolicyCost() != 1 {
+		t.Fatalf("n.PolicyCost() = %d, want %d", n.PolicyCost(), 1)
 	}
 
 	// frequency
