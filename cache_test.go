@@ -23,7 +23,7 @@ func TestCache_Set(t *testing.T) {
 	}
 
 	for i := 0; i < 100; i++ {
-		c.Set(i, i)
+		c.SetWithTTL(i, i, time.Minute)
 	}
 
 	parallelism := xruntime.Parallelism()
@@ -77,13 +77,76 @@ func TestCache_Ratio(t *testing.T) {
 		k := z.Uint64()
 
 		o.Get(k)
-		if _, ok := c.Get(k); !ok {
-			c.Set(k, k)
+		if !c.Has(k) {
+			c.SetWithTTL(k, k, time.Minute)
 		}
 	}
 
 	t.Logf("actual size: %d, capacity: %d", c.Size(), c.Capacity())
 	t.Logf("actual: %.2f, optimal: %.2f", c.Ratio(), o.Ratio())
+}
+
+func TestCache_Close(t *testing.T) {
+	size := 10
+	c, err := MustBuilder[int, int](size).Build()
+	if err != nil {
+		t.Fatalf("can not create cache: %v", err)
+	}
+
+	for i := 0; i < size; i++ {
+		c.Set(i, i)
+	}
+
+	if cacheSize := c.Size(); cacheSize != size {
+		t.Fatalf("c.Size() = %d, want = %d", cacheSize, size)
+	}
+
+	c.Close()
+
+	time.Sleep(10 * time.Millisecond)
+
+	if cacheSize := c.Size(); cacheSize != 0 {
+		t.Fatalf("c.Size() = %d, want = %d", cacheSize, 0)
+	}
+	if !c.isClosed {
+		t.Fatalf("cache should be closed")
+	}
+
+	c.Close()
+
+	if cacheSize := c.Size(); cacheSize != 0 {
+		t.Fatalf("c.Size() = %d, want = %d", cacheSize, 0)
+	}
+	if !c.isClosed {
+		t.Fatalf("cache should be closed")
+	}
+}
+
+func TestCache_Clear(t *testing.T) {
+	size := 10
+	c, err := MustBuilder[int, int](size).Build()
+	if err != nil {
+		t.Fatalf("can not create cache: %v", err)
+	}
+
+	for i := 0; i < size; i++ {
+		c.Set(i, i)
+	}
+
+	if cacheSize := c.Size(); cacheSize != size {
+		t.Fatalf("c.Size() = %d, want = %d", cacheSize, size)
+	}
+
+	c.Clear()
+
+	time.Sleep(10 * time.Millisecond)
+
+	if cacheSize := c.Size(); cacheSize != 0 {
+		t.Fatalf("c.Size() = %d, want = %d", cacheSize, 0)
+	}
+	if c.isClosed {
+		t.Fatalf("cache shouldn't be closed")
+	}
 }
 
 type optimal struct {
