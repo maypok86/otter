@@ -59,6 +59,54 @@ func TestCache_Set(t *testing.T) {
 	}
 }
 
+func TestCache_SetWithTTL(t *testing.T) {
+	size := 256
+	c, err := MustBuilder[int, int](size).Build()
+	if err != nil {
+		t.Fatalf("can not create builder: %v", err)
+	}
+
+	for i := 0; i < size; i++ {
+		c.SetWithTTL(i, i, time.Second)
+	}
+
+	time.Sleep(3 * time.Second)
+	for i := 0; i < size; i++ {
+		if c.Has(i) {
+			t.Fatalf("key should be expired: %d", i)
+		}
+	}
+
+	time.Sleep(10 * time.Millisecond)
+
+	if cacheSize := c.Size(); cacheSize != 0 {
+		t.Fatalf("c.Size() = %d, want = %d", cacheSize, 0)
+	}
+
+	c, err = MustBuilder[int, int](size).Build()
+	if err != nil {
+		t.Fatalf("can not create builder: %v", err)
+	}
+
+	for i := 0; i < size; i++ {
+		c.SetWithTTL(i, i, 5*time.Second)
+	}
+
+	time.Sleep(7 * time.Second)
+
+	for i := 0; i < size; i++ {
+		if c.Has(i) {
+			t.Fatalf("key should be expired: %d", i)
+		}
+	}
+
+	time.Sleep(10 * time.Millisecond)
+
+	if cacheSize := c.Size(); cacheSize != 0 {
+		t.Fatalf("c.Size() = %d, want = %d", cacheSize, 0)
+	}
+}
+
 func TestCache_Ratio(t *testing.T) {
 	b, err := NewBuilder[uint64, uint64](100)
 	if err != nil {
@@ -78,7 +126,7 @@ func TestCache_Ratio(t *testing.T) {
 
 		o.Get(k)
 		if !c.Has(k) {
-			c.SetWithTTL(k, k, time.Minute)
+			c.Set(k, k)
 		}
 	}
 

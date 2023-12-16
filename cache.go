@@ -199,6 +199,7 @@ func (c *Cache[K, V]) process() {
 		task := c.writeBuffer.Remove()
 
 		if task.IsClear() || task.IsClose() {
+			buffer = buffer[:0]
 			c.writeBuffer.Clear()
 
 			c.evictionMutex.Lock()
