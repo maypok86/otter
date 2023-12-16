@@ -82,6 +82,7 @@ func TestCache_Ratio(t *testing.T) {
 		}
 	}
 
+	t.Logf("actual size: %d, capacity: %d", c.Size(), c.Capacity())
 	t.Logf("actual: %.2f, optimal: %.2f", c.Ratio(), o.Ratio())
 }
 

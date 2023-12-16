@@ -272,6 +272,10 @@ func (c *Cache[K, V]) Close() {
 	})
 }
 
+func (c *Cache[K, V]) Size() int {
+	return c.hashmap.Size()
+}
+
 func (c *Cache[K, V]) Capacity() int {
 	return c.capacity
 }
