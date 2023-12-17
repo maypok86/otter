@@ -102,7 +102,11 @@ func (c *Cache[K, V]) Get(key K) (V, bool) {
 	c.afterGet(got)
 	c.stats.IncHits()
 
-	return got.Value(), ok
+	got.Lock()
+	value := got.Value()
+	got.Unlock()
+
+	return value, ok
 }
 
 func (c *Cache[K, V]) afterGet(got *node.Node[K, V]) {
