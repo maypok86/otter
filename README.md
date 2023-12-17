@@ -16,6 +16,7 @@
 ## 📖 Contents
 
 - [Motivation](#motivation)
+- [Related works](#related-works)
 - [Features](#features)
 - [Usage](#usage)
   - [Requirements](#requirements)
@@ -29,16 +30,25 @@
 
 ## 💡 Motivation <a id="motivation" />
 
-I once came across the fact that none of the Golang cache libraries are truly contention-free. All of them are just a standard map with mutex and some eviction policy. Unfortunately, these are not able to reach the speed of caches in other languages (such as Caffeine). For example, the fastest cache from Dgraph labs called [Ristretto](https://github.com/dgraph-io/ristretto), which was faster than competitors by 30% at best (Otter is many times faster) and had a [disgusting hit ratio](https://github.com/dgraph-io/ristretto/issues/336) even though README says otherwise. This can be a problem in different applications because no one wants to bump the performance of a cache library and its bad hit ratio 🙂. As a result, I wanted to get the fastest, easiest-to-use cache with excellent hit ratio and support from the authors and Otter is designed to correct this unfortunate misunderstanding.
+I once came across the fact that none of the Golang cache libraries are truly contention-free. All of them are just a standard map with mutex and some eviction policy. Unfortunately, these are not able to reach the speed of caches in other languages (such as [Caffeine](https://github.com/ben-manes/caffeine)). For example, the fastest cache from Dgraph labs called [Ristretto](https://github.com/dgraph-io/ristretto), which was faster than competitors by 30% at best (Otter is many times faster) and had a [disgusting hit ratio](https://github.com/dgraph-io/ristretto/issues/336) even though README says otherwise. This can be a problem in different applications because no one wants to bump the performance of a cache library and its bad hit ratio 🙂. As a result, I wanted to get the fastest, easiest-to-use cache with excellent hit ratio and support from the authors and Otter is designed to correct this unfortunate misunderstanding.
 
 **Please leave a ⭐ as motivation if you liked the idea 😄**
+
+## 🗃 Related works <a id="related-works" />
+Otter is based on the following papers:
+- [BP-Wrapper: A Framework Making Any Replacement Algorithms (Almost) Lock Contention Free](http://web.cse.ohio-state.edu/hpcs/WWW/HTML/publications/papers/TR-09-1.pdf)
+- [FIFO queues are all you need for cache eviction](https://dl.acm.org/doi/10.1145/3600006.3613147)
+- [Bucket-Based Expiration Algorithm: Improving Eviction Efficiency for In-Memory Key-Value Database](https://dl.acm.org/doi/fullHtml/10.1145/3422575.3422797)
+- [A large scale analysis of hundreds of in-memory cache clusters at Twitter](https://www.usenix.org/system/files/osdi20-yang.pdf)
 
 ## ✨ Features <a id="features" />
 
 This library has lots of features such as:
 - **Simple API**: Just set the parameters you want in the builder and enjoy
-- **Generics**: You can safely use comparable types as keys and any types as values
+- **Autoconfiguration**: Otter is automatically configured based on the parallelism of your application
+- **Generics**: You can safely use any comparable types as keys and any types as values
 - **TTL**: Expired values will be automatically deleted from the cache
+- **Cost-based eviction**: Otter supports eviction based on the cost of each item
 - **Excellent performance**: Otter is currently the fastest cache library with a huge lead over the [competition](#performance)
 - **Great hit ratio**: New S3-FIFO algorithm is used, which shows excellent [results](#hit-ratio)
 
@@ -146,17 +156,11 @@ The benchmark code can be found [here](https://github.com/maypok86/benchmarks)
 
 <img width="60%" src="assets/results/reads=75,writes=25.png" alt="reads=75%,writes=25%" />
 
-#### Read (50%) / Write (50%)
-
-<img width="60%" src="assets/results/reads=50,writes=50.png" alt="reads=50%,writes=50%" />
-
-#### Read (25%) / Write (75%)
-
-<img width="60%" src="assets/results/reads=25,writes=75.png" alt="reads=25%,writes=75%" />
-
 #### Write (100%)
 
 <img width="60%" src="assets/results/reads=0,writes=100.png" alt="reads=0%,writes=100%" />
+
+Otter is pretty unstoppable on all workloads except write-heavy, but that's completely unrepresentative of the cache workload.
 
 ### 🎯 Hit ratio <a id="hit-ratio" />
 
@@ -203,6 +207,8 @@ This trace demonstrates a looping access pattern.
 This trace is described as "references to a CODASYL database for a one hour period."
 
 <img width="60%" src="./assets/results/oltp.png" alt="oltp" />
+
+In summary, we have that S3-FIFO (otter) is inferior to W-TinyLFU (theine) on lfu friendly workloads (databases, search, analytics), but has a greater or equal hit ratio on web workloads.
 
 ## 👏 Contribute <a id="contribute" />
 
