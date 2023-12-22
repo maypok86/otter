@@ -5,22 +5,28 @@ import (
 	"sync/atomic"
 )
 
-const maxBackoff = 16
+const maxSpins = 16
 
-// SpinLock is an implementation of spinlock using exponential backoff algorithm.
+// SpinLock is an implementation of spinlock.
 type SpinLock uint32
 
 // Lock locks sl. If the lock is already in use, the calling goroutine blocks until the spinlock is available.
 func (sl *SpinLock) Lock() {
-	backoff := 1
-	for !atomic.CompareAndSwapUint32((*uint32)(sl), 0, 1) {
-		// Leverage the exponential backoff algorithm, see https://en.wikipedia.org/wiki/Exponential_backoff.
-		for i := 0; i < backoff; i++ {
-			runtime.Gosched()
+	spins := 0
+	for {
+		for atomic.LoadUint32((*uint32)(sl)) == 1 {
+			spins++
+			if spins > maxSpins {
+				spins = 0
+				runtime.Gosched()
+			}
 		}
-		if backoff < maxBackoff {
-			backoff <<= 1
+
+		if atomic.CompareAndSwapUint32((*uint32)(sl), 0, 1) {
+			return
 		}
+
+		spins = 0
 	}
 }
 
