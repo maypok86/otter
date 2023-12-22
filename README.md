@@ -160,8 +160,6 @@ The benchmark code can be found [here](https://github.com/maypok86/benchmarks)
 
 <img width="60%" src="assets/results/reads=0,writes=100.png" alt="reads=0%,writes=100%" />
 
-Otter is pretty unstoppable on all workloads except write-heavy, but that's completely unrepresentative of the cache workload.
-
 ### 🎯 Hit ratio <a id="hit-ratio" />
 
 #### Zipf
@@ -208,7 +206,7 @@ This trace is described as "references to a CODASYL database for a one hour peri
 
 <img width="60%" src="./assets/results/oltp.png" alt="oltp" />
 
-In summary, we have that S3-FIFO (otter) is inferior to W-TinyLFU (theine) on lfu friendly workloads (databases, search, analytics), but has a greater or equal hit ratio on web workloads.
+In summary, we have that S3-FIFO (otter) is inferior to W-TinyLFU (theine) on lfu friendly traces (databases, search, analytics), but has a greater or equal hit ratio on web traces.
 
 ## 👏 Contribute <a id="contribute" />
 
