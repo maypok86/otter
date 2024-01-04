@@ -1,6 +1,14 @@
+// Copyright (c) 2023 Alexey Mayshev. All rights reserved.
+// Copyright 2009 The Go Authors. All rights reserved.
+//
 // Copyright notice. Initial version of the following tests was based on
 // the following file from the Go Programming Language core repo:
 // https://github.com/golang/go/blob/831f9376d8d730b16fb33dfd775618dffe13ce7a/src/sync/mutex_test.go
+//
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+// That can be found at https://github.com/golang/go/blob/831f9376d8d730b16fb33dfd775618dffe13ce7a/LICENSE
+
 package spinlock
 
 import (

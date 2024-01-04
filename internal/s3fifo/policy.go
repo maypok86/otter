@@ -1,9 +1,25 @@
+// Copyright (c) 2023 Alexey Mayshev. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package s3fifo
 
 import (
 	"github.com/maypok86/otter/internal/node"
 )
 
+// Policy is an eviction policy based on S3-FIFO eviction algorithm
+// from the following paper: https://dl.acm.org/doi/10.1145/3600006.3613147.
 type Policy[K comparable, V any] struct {
 	small                *small[K, V]
 	main                 *main[K, V]
@@ -12,6 +28,7 @@ type Policy[K comparable, V any] struct {
 	maxAvailableNodeCost uint32
 }
 
+// NewPolicy creates a new Policy.
 func NewPolicy[K comparable, V any](maxCost uint32) *Policy[K, V] {
 	smallMaxCost := maxCost / 10
 	mainMaxCost := maxCost - smallMaxCost
@@ -30,6 +47,7 @@ func NewPolicy[K comparable, V any](maxCost uint32) *Policy[K, V] {
 	}
 }
 
+// Read updates the eviction policy based on node accesses.
 func (p *Policy[K, V]) Read(nodes []*node.Node[K, V]) {
 	for _, n := range nodes {
 		n.IncrementFrequency()
@@ -79,6 +97,7 @@ func (p *Policy[K, V]) isFull() bool {
 	return p.small.cost+p.main.cost >= p.maxCost
 }
 
+// Write updates the eviction policy based on node updates.
 func (p *Policy[K, V]) Write(
 	deleted []*node.Node[K, V],
 	tasks []node.WriteTask[K, V],
@@ -103,6 +122,7 @@ func (p *Policy[K, V]) Write(
 	return deleted
 }
 
+// Delete deletes nodes from the eviction policy.
 func (p *Policy[K, V]) Delete(buffer []*node.Node[K, V]) {
 	for _, n := range buffer {
 		p.delete(n)
@@ -120,10 +140,12 @@ func (p *Policy[K, V]) delete(n *node.Node[K, V]) {
 	}
 }
 
+// MaxAvailableCost returns the maximum available cost of the node.
 func (p *Policy[K, V]) MaxAvailableCost() uint32 {
 	return p.maxAvailableNodeCost
 }
 
+// Clear clears the eviction policy and returns it to the default state.
 func (p *Policy[K, V]) Clear() {
 	p.ghost.clear()
 	p.main.clear()

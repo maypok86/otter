@@ -1,3 +1,17 @@
+// Copyright (c) 2023 Alexey Mayshev. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package otter
 
 import (
@@ -21,12 +35,15 @@ func zeroValue[V any]() V {
 	return zero
 }
 
+// Config is a set of cache settings.
 type Config[K comparable, V any] struct {
 	Capacity     int
 	StatsEnabled bool
 	CostFunc     func(key K, value V) uint32
 }
 
+// Cache is a structure performs a best-effort bounding of a hash table using eviction algorithm
+// to determine which entries to evict when the capacity is exceeded.
 type Cache[K comparable, V any] struct {
 	hashmap       *hashtable.Map[K, V]
 	policy        *s3fifo.Policy[K, V]
@@ -43,6 +60,9 @@ type Cache[K comparable, V any] struct {
 	mask          uint32
 }
 
+// NewCache returns a new cache instance based on the settings from Config.
+//
+// You should always prefer to create a cache using Builder instead of this method.
 func NewCache[K comparable, V any](c Config[K, V]) *Cache[K, V] {
 	parallelism := xruntime.Parallelism()
 	roundedParallelism := int(xmath.RoundUpPowerOf2(parallelism))
@@ -81,11 +101,13 @@ func (c *Cache[K, V]) getReadBufferIdx() int {
 	return int(xruntime.Fastrand() & c.mask)
 }
 
+// Has checks if there is an item with the given key in the cache.
 func (c *Cache[K, V]) Has(key K) bool {
 	_, ok := c.Get(key)
 	return ok
 }
 
+// Get returns the value associated with the key in this cache.
 func (c *Cache[K, V]) Get(key K) (V, bool) {
 	got, ok := c.hashmap.Get(key)
 	if !ok {
@@ -121,10 +143,15 @@ func (c *Cache[K, V]) afterGet(got *node.Node[K, V]) {
 	}
 }
 
+// Set associates the value with the key in this cache. If the cache previously
+// contained a value associated with the key, the old value is replaced by the new value.
 func (c *Cache[K, V]) Set(key K, value V) {
 	c.set(key, value, 0)
 }
 
+// SetWithTTL associates the value with the key in this cache and sets the custom ttl for this key-value pair.
+//
+// If the cache previously contained a value associated with the key, the old value is replaced by the new value.
 func (c *Cache[K, V]) SetWithTTL(key K, value V, ttl time.Duration) {
 	ttl = (ttl + time.Second - 1) / time.Second
 	expiration := unixtime.Now() + uint32(ttl)
@@ -164,6 +191,7 @@ func (c *Cache[K, V]) set(key K, value V, expiration uint32) {
 	}
 }
 
+// Delete removes the association for this key from the cache.
 func (c *Cache[K, V]) Delete(key K) {
 	deleted := c.hashmap.Delete(key)
 	if deleted != nil {
@@ -253,6 +281,9 @@ func (c *Cache[K, V]) process() {
 	}
 }
 
+// Clear clears the hash table, all policies, buffers, etc.
+//
+// NOTE: this operation must be performed when no requests are made to the cache otherwise the behavior is undefined.
 func (c *Cache[K, V]) Clear() {
 	c.clear(node.NewClearTask[K, V]())
 }
@@ -269,30 +300,37 @@ func (c *Cache[K, V]) clear(task node.WriteTask[K, V]) {
 	c.stats.Clear()
 }
 
+// Close clears the hash table, all policies, buffers, etc and stop all goroutines.
+//
+// NOTE: this operation must be performed when no requests are made to the cache otherwise the behavior is undefined.
 func (c *Cache[K, V]) Close() {
 	c.closeOnce.Do(func() {
 		c.clear(node.NewCloseTask[K, V]())
-		// TODO: runtime.SetFinalizer?
 		unixtime.Stop()
 	})
 }
 
+// Size returns the current number of items in the cache.
 func (c *Cache[K, V]) Size() int {
 	return c.hashmap.Size()
 }
 
+// Capacity returns the cache capacity.
 func (c *Cache[K, V]) Capacity() int {
 	return c.capacity
 }
 
+// Hits returns the number of cache hits.
 func (c *Cache[K, V]) Hits() int64 {
 	return c.stats.Hits()
 }
 
+// Misses returns the number of cache misses.
 func (c *Cache[K, V]) Misses() int64 {
 	return c.stats.Misses()
 }
 
+// Ratio returns the cache hit ratio.
 func (c *Cache[K, V]) Ratio() float64 {
 	return c.stats.Ratio()
 }

@@ -1,3 +1,12 @@
+// Copyright (c) 2023 Alexey Mayshev. All rights reserved.
+// Copyright (c) 2023 Andrey Pechkurov
+//
+// Copyright notice. This code is a fork of xsync.MPMCQueueOf from this file with many changes:
+// https://github.com/puzpuzpuz/xsync/blob/main/mpmcqueueof.go
+//
+// Use of this source code is governed by a MIT license that can be found
+// at https://github.com/puzpuzpuz/xsync/blob/main/LICENSE
+
 package queue
 
 import (
@@ -17,6 +26,13 @@ func zeroValue[T any]() T {
 	return zero
 }
 
+// A MPSC is a bounded multi-producer single-consumer concurrent queue.
+//
+// MPSC instances must be created with NewMPSC function.
+// A MPSC must not be copied after first use.
+//
+// Based on the data structure from the following C++ library:
+// https://github.com/rigtorp/MPMCQueue
 type MPSC[T any] struct {
 	capacity     uint64
 	sleep        chan struct{}
@@ -36,10 +52,12 @@ type paddedSlot[T any] struct {
 }
 
 type slot[T any] struct {
+	// atomic.Uint64 is used here to get proper 8 byte alignment on 32-bit archs.
 	turn atomic.Uint64
 	item T
 }
 
+// NewMPSC creates a new MPSC instance with the given capacity.
 func NewMPSC[T any](capacity int) *MPSC[T] {
 	return &MPSC[T]{
 		sleep:    make(chan struct{}),
@@ -48,6 +66,8 @@ func NewMPSC[T any](capacity int) *MPSC[T] {
 	}
 }
 
+// Insert inserts the given item into the queue.
+// Blocks, if the queue is full.
 func (q *MPSC[T]) Insert(item T) {
 	head := q.head.Add(1) - 1
 	q.wakeUpConsumer()
@@ -69,6 +89,8 @@ func (q *MPSC[T]) Insert(item T) {
 	slot.turn.Store(turn + 1)
 }
 
+// Remove retrieves and removes the item from the head of the queue.
+// Blocks, if the queue is empty.
 func (q *MPSC[T]) Remove() T {
 	tail := q.tail
 	slot := &q.slots[q.idx(tail)]
@@ -90,12 +112,14 @@ func (q *MPSC[T]) Remove() T {
 	return item
 }
 
+// Clear clears the queue.
 func (q *MPSC[T]) Clear() {
 	for !q.isEmpty() {
 		_ = q.Remove()
 	}
 }
 
+// Capacity returns capacity of the queue.
 func (q *MPSC[T]) Capacity() int {
 	return int(q.capacity)
 }

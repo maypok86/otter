@@ -1,6 +1,14 @@
+// Copyright (c) 2023 Alexey Mayshev. All rights reserved.
+// Copyright 2009 The Go Authors. All rights reserved.
+//
 // Copyright notice. Initial version of the following tests was based on
 // the following file from the Go Programming Language core repo:
 // https://cs.opensource.google/go/go/+/refs/tags/go1.21.5:src/container/list/list_test.go
+//
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+// That can be found at https://cs.opensource.google/go/go/+/refs/tags/go1.21.5:LICENSE
+
 package node
 
 import (

@@ -1,3 +1,12 @@
+// Copyright (c) 2023 Alexey Mayshev. All rights reserved.
+// Copyright (c) 2021 Andrey Pechkurov
+//
+// Copyright notice. This code is a fork of xsync.MapOf from this file with some changes:
+// https://github.com/puzpuzpuz/xsync/blob/main/mapof.go
+//
+// Use of this source code is governed by a MIT license that can be found
+// at https://github.com/puzpuzpuz/xsync/blob/main/LICENSE
+
 package hashtable
 
 import (
@@ -34,20 +43,41 @@ const (
 	maxCounterLength = 32
 )
 
+// Map is like a Go map[K]V but is safe for concurrent
+// use by multiple goroutines without additional locking or
+// coordination.
+//
+// A Map must not be copied after first use.
+//
+// Map uses a modified version of Cache-Line Hash Table (CLHT)
+// data structure: https://github.com/LPD-EPFL/CLHT
+//
+// CLHT is built around idea to organize the hash table in
+// cache-line-sized buckets, so that on all modern CPUs update
+// operations complete with at most one cache-line transfer.
+// Also, Get operations involve no write to memory, as well as no
+// mutexes or any other sort of locks. Due to this design, in all
+// considered scenarios Map outperforms sync.Map.
 type Map[K comparable, V any] struct {
 	table unsafe.Pointer
 
+	// only used along with resizeCond
 	resizeMutex sync.Mutex
-	resizeCond  sync.Cond
-	resizing    atomic.Int64
+	// used to wake up resize waiters (concurrent modifications)
+	resizeCond sync.Cond
+	// resize in progress flag; updated atomically
+	resizing atomic.Int64
 
 	hasher func(K) uint64
 }
 
 type table struct {
 	buckets []paddedBucket
-	size    []paddedCounter
-	mask    uint64
+	// sharded counter for number of table entries;
+	// used to determine if a table shrinking is needed
+	// occupies min(buckets_memory/1024, 64KB) of memory
+	size []paddedCounter
+	mask uint64
 }
 
 func (t *table) addSize(bucketIdx uint64, delta int) {
@@ -73,11 +103,13 @@ type counter struct {
 }
 
 type paddedCounter struct {
+	// padding prevents false sharing.
 	padding [xruntime.CacheLineSize - unsafe.Sizeof(counter{})]byte
 
 	counter
 }
 
+// New creates a new Map instance.
 func New[K comparable, V any](opts ...Option[K]) *Map[K, V] {
 	o := defaultOptions[K]()
 	for _, opt := range opts {
@@ -111,6 +143,9 @@ func newTable(bucketCount int) *table {
 	return t
 }
 
+// Get returns the *node.Node stored in the map for a key, or nil if no node is present.
+//
+// The ok result indicates whether node was found in the map.
 func (m *Map[K, V]) Get(key K) (got *node.Node[K, V], ok bool) {
 	t := (*table)(atomic.LoadPointer(&m.table))
 	_, hash := m.calcShiftHash(key)
@@ -145,6 +180,9 @@ func (m *Map[K, V]) Get(key K) (got *node.Node[K, V], ok bool) {
 	}
 }
 
+// Set sets the *node.Node for the key.
+//
+// Returns the evicted node or nil if the node was inserted.
 func (m *Map[K, V]) Set(n *node.Node[K, V]) (evicted *node.Node[K, V]) {
 	for {
 	RETRY:
@@ -159,6 +197,8 @@ func (m *Map[K, V]) Set(n *node.Node[K, V]) (evicted *node.Node[K, V]) {
 		bucketIdx := hash & t.mask
 		rootBucket := &t.buckets[bucketIdx]
 		rootBucket.mutex.Lock()
+		// the following two checks must go in reverse to what's
+		// in the resize method.
 		if m.resizeInProgress() {
 			// resize is in progress. wait, then go for another attempt.
 			rootBucket.mutex.Unlock()
@@ -188,6 +228,11 @@ func (m *Map[K, V]) Set(n *node.Node[K, V]) (evicted *node.Node[K, V]) {
 				if n.Key() != prev.Key() {
 					continue
 				}
+				// in-place update.
+				// We get a copy of the value via an interface{} on each call,
+				// thus the live value pointers are unique. Otherwise atomic
+				// snapshot won't be correct in case of multiple Store calls
+				// using the same value.
 				atomic.StorePointer(&b.nodes[i], unsafe.Pointer(n))
 				rootBucket.mutex.Unlock()
 				return prev
@@ -224,12 +269,18 @@ func (m *Map[K, V]) Set(n *node.Node[K, V]) (evicted *node.Node[K, V]) {
 	}
 }
 
+// Delete deletes the value for a key.
+//
+// Returns the deleted node or nil if the node wasn't deleted.
 func (m *Map[K, V]) Delete(key K) *node.Node[K, V] {
 	return m.delete(key, func(n *node.Node[K, V]) bool {
 		return key == n.Key()
 	})
 }
 
+// EvictNode evicts the node for a key.
+//
+// Returns the evicted node or nil if the node wasn't evicted.
 func (m *Map[K, V]) EvictNode(n *node.Node[K, V]) *node.Node[K, V] {
 	return m.delete(n.Key(), func(current *node.Node[K, V]) bool {
 		return n == current
@@ -245,6 +296,8 @@ func (m *Map[K, V]) delete(key K, cmp func(*node.Node[K, V]) bool) *node.Node[K,
 		bucketIdx := hash & t.mask
 		rootBucket := &t.buckets[bucketIdx]
 		rootBucket.mutex.Lock()
+		// the following two checks must go in reverse to what's
+		// in the resize method.
 		if m.resizeInProgress() {
 			// resize is in progress. Wait, then go for another attempt.
 			rootBucket.mutex.Unlock()
@@ -272,6 +325,8 @@ func (m *Map[K, V]) delete(key K, cmp func(*node.Node[K, V]) bool) *node.Node[K,
 					hintNonEmpty++
 					continue
 				}
+				// Deletion.
+				// First we update the hash, then the node.
 				atomic.StoreUint64(&b.hashes[i], uint64(0))
 				atomic.StorePointer(&b.nodes[i], nil)
 				leftEmpty := false
@@ -390,17 +445,20 @@ func (m *Map[K, V]) waitForResize() {
 	m.resizeMutex.Unlock()
 }
 
+// Clear deletes all keys and values currently stored in the map.
 func (m *Map[K, V]) Clear() {
 	table := (*table)(atomic.LoadPointer(&m.table))
 	m.resize(table, clearHint)
 }
 
+// Size returns current size of the map.
 func (m *Map[K, V]) Size() int {
 	table := (*table)(atomic.LoadPointer(&m.table))
 	return int(table.sumSize())
 }
 
 func (m *Map[K, V]) calcShiftHash(key K) (naturalHash, shiftHash uint64) {
+	// uint64(0) is a reserved value which stands for an empty slot.
 	h := m.hasher(key)
 	if h == uint64(0) {
 		return h, 1

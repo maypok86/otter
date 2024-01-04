@@ -1,3 +1,12 @@
+// Copyright (c) 2023 Alexey Mayshev. All rights reserved.
+// Copyright (c) 2023 Andrey Pechkurov
+//
+// Copyright notice. This code is a fork of tests for xsync.MPMCQueueOf from this file with some changes:
+// https://github.com/puzpuzpuz/xsync/blob/main/mpmcqueueof_test.go
+//
+// Use of this source code is governed by a MIT license that can be found
+// at https://github.com/puzpuzpuz/xsync/blob/main/LICENSE
+
 package queue
 
 import (

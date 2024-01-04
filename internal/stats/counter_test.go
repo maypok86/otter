@@ -1,3 +1,12 @@
+// Copyright (c) 2023 Alexey Mayshev. All rights reserved.
+// Copyright (c) 2021 Andrey Pechkurov
+//
+// Copyright notice. This code is a fork of tests for xsync.Counter from this file with some changes:
+// https://github.com/puzpuzpuz/xsync/blob/main/counter_test.go
+//
+// Use of this source code is governed by a MIT license that can be found
+// at https://github.com/puzpuzpuz/xsync/blob/main/LICENSE
+
 package stats
 
 import (
