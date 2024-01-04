@@ -25,6 +25,7 @@ import (
 	"math/rand"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unsafe"
@@ -85,13 +86,22 @@ func TestMap_Set(t *testing.T) {
 	}
 }
 
+// this code may break if the maphash.Hasher[k] structure changes.
+type hasher struct {
+	hash func(pointer unsafe.Pointer, seed uintptr) uintptr
+	seed uintptr
+}
+
 func TestMap_SetWithCollisions(t *testing.T) {
 	const numEntries = 1000
-	m := New[int, int](WithHasher[int](func(i int) uint64 {
+	m := New[int, int]()
+	table := (*table[int])(atomic.LoadPointer(&m.table))
+	hasher := (*hasher)((unsafe.Pointer)(&table.hasher))
+	hasher.hash = func(ptr unsafe.Pointer, seed uintptr) uintptr {
 		// We intentionally use an awful hash function here to make sure
 		// that the map copes with key collisions.
 		return 42
-	}))
+	}
 	for i := 0; i < numEntries; i++ {
 		m.Set(newNode(i, i))
 	}

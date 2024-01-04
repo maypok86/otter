@@ -15,8 +15,9 @@ import (
 	"sync/atomic"
 	"unsafe"
 
+	"github.com/dolthub/maphash"
+
 	"github.com/maypok86/otter/internal/node"
-	"github.com/maypok86/otter/internal/xmath"
 	"github.com/maypok86/otter/internal/xruntime"
 )
 
@@ -67,35 +68,44 @@ type Map[K comparable, V any] struct {
 	resizeCond sync.Cond
 	// resize in progress flag; updated atomically
 	resizing atomic.Int64
-
-	hasher func(K) uint64
 }
 
-type table struct {
+type table[K comparable] struct {
 	buckets []paddedBucket
 	// sharded counter for number of table entries;
 	// used to determine if a table shrinking is needed
 	// occupies min(buckets_memory/1024, 64KB) of memory
-	size []paddedCounter
-	mask uint64
+	size   []paddedCounter
+	mask   uint64
+	hasher maphash.Hasher[K]
 }
 
-func (t *table) addSize(bucketIdx uint64, delta int) {
+func (t *table[K]) addSize(bucketIdx uint64, delta int) {
 	counterIdx := uint64(len(t.size)-1) & bucketIdx
 	atomic.AddInt64(&t.size[counterIdx].c, int64(delta))
 }
 
-func (t *table) addSizePlain(bucketIdx uint64, delta int) {
+func (t *table[K]) addSizePlain(bucketIdx uint64, delta int) {
 	counterIdx := uint64(len(t.size)-1) & bucketIdx
 	t.size[counterIdx].c += int64(delta)
 }
 
-func (t *table) sumSize() int64 {
+func (t *table[K]) sumSize() int64 {
 	sum := int64(0)
 	for i := range t.size {
 		sum += atomic.LoadInt64(&t.size[i].c)
 	}
 	return sum
+}
+
+func (t *table[K]) calcShiftHash(key K) uint64 {
+	// uint64(0) is a reserved value which stands for an empty slot.
+	h := t.hasher.Hash(key)
+	if h == uint64(0) {
+		return 1
+	}
+
+	return h
 }
 
 type counter struct {
@@ -110,22 +120,15 @@ type paddedCounter struct {
 }
 
 // New creates a new Map instance.
-func New[K comparable, V any](opts ...Option[K]) *Map[K, V] {
-	o := defaultOptions[K]()
-	for _, opt := range opts {
-		opt(o)
-	}
-
-	m := &Map[K, V]{
-		hasher: o.hasher,
-	}
+func New[K comparable, V any]() *Map[K, V] {
+	m := &Map[K, V]{}
 	m.resizeCond = *sync.NewCond(&m.resizeMutex)
-	tableLength := xmath.RoundUpPowerOf2(uint32(o.initNodeCount / bucketSize))
-	atomic.StorePointer(&m.table, unsafe.Pointer(newTable(int(tableLength))))
+	t := newTable(minBucketCount, maphash.NewHasher[K]())
+	atomic.StorePointer(&m.table, unsafe.Pointer(t))
 	return m
 }
 
-func newTable(bucketCount int) *table {
+func newTable[K comparable](bucketCount int, prevHasher maphash.Hasher[K]) *table[K] {
 	buckets := make([]paddedBucket, bucketCount)
 	counterLength := bucketCount >> 10
 	if counterLength < minCounterLength {
@@ -135,10 +138,11 @@ func newTable(bucketCount int) *table {
 	}
 	counter := make([]paddedCounter, counterLength)
 	mask := uint64(len(buckets) - 1)
-	t := &table{
+	t := &table[K]{
 		buckets: buckets,
 		size:    counter,
 		mask:    mask,
+		hasher:  maphash.NewSeed[K](prevHasher),
 	}
 	return t
 }
@@ -147,8 +151,8 @@ func newTable(bucketCount int) *table {
 //
 // The ok result indicates whether node was found in the map.
 func (m *Map[K, V]) Get(key K) (got *node.Node[K, V], ok bool) {
-	t := (*table)(atomic.LoadPointer(&m.table))
-	hash := m.calcShiftHash(key)
+	t := (*table[K])(atomic.LoadPointer(&m.table))
+	hash := t.calcShiftHash(key)
 	bucketIdx := hash & t.mask
 	b := &t.buckets[bucketIdx]
 	for {
@@ -190,9 +194,9 @@ func (m *Map[K, V]) Set(n *node.Node[K, V]) (evicted *node.Node[K, V]) {
 			emptyBucket *paddedBucket
 			emptyIdx    int
 		)
-		t := (*table)(atomic.LoadPointer(&m.table))
+		t := (*table[K])(atomic.LoadPointer(&m.table))
 		tableLen := len(t.buckets)
-		hash := m.calcShiftHash(n.Key())
+		hash := t.calcShiftHash(n.Key())
 		bucketIdx := hash & t.mask
 		rootBucket := &t.buckets[bucketIdx]
 		rootBucket.mutex.Lock()
@@ -290,8 +294,8 @@ func (m *Map[K, V]) delete(key K, cmp func(*node.Node[K, V]) bool) *node.Node[K,
 	for {
 	RETRY:
 		hintNonEmpty := 0
-		t := (*table)(atomic.LoadPointer(&m.table))
-		hash := m.calcShiftHash(key)
+		t := (*table[K])(atomic.LoadPointer(&m.table))
+		hash := t.calcShiftHash(key)
 		bucketIdx := hash & t.mask
 		rootBucket := &t.buckets[bucketIdx]
 		rootBucket.mutex.Lock()
@@ -350,7 +354,7 @@ func (m *Map[K, V]) delete(key K, cmp func(*node.Node[K, V]) bool) *node.Node[K,
 	}
 }
 
-func (m *Map[K, V]) resize(known *table, hint resizeHint) {
+func (m *Map[K, V]) resize(known *table[K], hint resizeHint) {
 	knownTableLen := len(known.buckets)
 	// fast path for shrink attempts.
 	if hint == shrinkHint {
@@ -365,18 +369,18 @@ func (m *Map[K, V]) resize(known *table, hint resizeHint) {
 		m.waitForResize()
 		return
 	}
-	var nt *table
-	t := (*table)(atomic.LoadPointer(&m.table))
+	var nt *table[K]
+	t := (*table[K])(atomic.LoadPointer(&m.table))
 	tableLen := len(t.buckets)
 	switch hint {
 	case growHint:
 		// grow the table with factor of 2.
-		nt = newTable(tableLen << 1)
+		nt = newTable(tableLen<<1, t.hasher)
 	case shrinkHint:
 		shrinkThreshold := int64((tableLen * bucketSize) / shrinkFraction)
 		if tableLen > minBucketCount && t.sumSize() <= shrinkThreshold {
 			// shrink the table with factor of 2.
-			nt = newTable(tableLen >> 1)
+			nt = newTable(tableLen>>1, t.hasher)
 		} else {
 			// no need to shrink, wake up all waiters and give up.
 			m.resizeMutex.Lock()
@@ -386,7 +390,7 @@ func (m *Map[K, V]) resize(known *table, hint resizeHint) {
 			return
 		}
 	case clearHint:
-		nt = newTable(minBucketCount)
+		nt = newTable(minBucketCount, t.hasher)
 	default:
 		panic(fmt.Sprintf("unexpected resize hint: %d", hint))
 	}
@@ -405,7 +409,7 @@ func (m *Map[K, V]) resize(known *table, hint resizeHint) {
 	m.resizeMutex.Unlock()
 }
 
-func (m *Map[K, V]) copyBuckets(b *paddedBucket, dest *table) (copied int) {
+func (m *Map[K, V]) copyBuckets(b *paddedBucket, dest *table[K]) (copied int) {
 	rootBucket := b
 	rootBucket.mutex.Lock()
 	for {
@@ -414,7 +418,7 @@ func (m *Map[K, V]) copyBuckets(b *paddedBucket, dest *table) (copied int) {
 				continue
 			}
 			n := (*node.Node[K, V])(b.nodes[i])
-			hash := m.calcShiftHash(n.Key())
+			hash := dest.calcShiftHash(n.Key())
 			bucketIdx := hash & dest.mask
 			dest.buckets[bucketIdx].add(hash, b.nodes[i])
 			copied++
@@ -427,7 +431,7 @@ func (m *Map[K, V]) copyBuckets(b *paddedBucket, dest *table) (copied int) {
 	}
 }
 
-func (m *Map[K, V]) newerTableExists(table *table) bool {
+func (m *Map[K, V]) newerTableExists(table *table[K]) bool {
 	currentTable := atomic.LoadPointer(&m.table)
 	return uintptr(currentTable) != uintptr(unsafe.Pointer(table))
 }
@@ -446,22 +450,12 @@ func (m *Map[K, V]) waitForResize() {
 
 // Clear deletes all keys and values currently stored in the map.
 func (m *Map[K, V]) Clear() {
-	table := (*table)(atomic.LoadPointer(&m.table))
+	table := (*table[K])(atomic.LoadPointer(&m.table))
 	m.resize(table, clearHint)
 }
 
 // Size returns current size of the map.
 func (m *Map[K, V]) Size() int {
-	table := (*table)(atomic.LoadPointer(&m.table))
+	table := (*table[K])(atomic.LoadPointer(&m.table))
 	return int(table.sumSize())
-}
-
-func (m *Map[K, V]) calcShiftHash(key K) uint64 {
-	// uint64(0) is a reserved value which stands for an empty slot.
-	h := m.hasher(key)
-	if h == uint64(0) {
-		return 1
-	}
-
-	return h
 }
