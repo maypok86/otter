@@ -35,7 +35,6 @@ type Node[K comparable, V any] struct {
 	next       *Node[K, V]
 	lock       spinlock.SpinLock
 	expiration uint32
-	hash       uint64
 	cost       uint32
 	policyCost uint32
 	frequency  uint8
@@ -75,16 +74,6 @@ func (n *Node[K, V]) Lock() {
 // Unlock unlocks the node.
 func (n *Node[K, V]) Unlock() {
 	n.lock.Unlock()
-}
-
-// Hash returns the hash.
-func (n *Node[K, V]) Hash() uint64 {
-	return n.hash
-}
-
-// SetHash sets the hash.
-func (n *Node[K, V]) SetHash(h uint64) {
-	n.hash = h
 }
 
 // IsExpired returns true if node is expired.

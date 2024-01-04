@@ -39,17 +39,6 @@ func TestNode(t *testing.T) {
 		t.Fatalf("n.Value() = %d, want %d", n.Value(), newValue)
 	}
 
-	// hash
-	if n.Hash() != 0 {
-		t.Fatalf("n.Hash() = %d, want %d", n.Hash(), 0)
-	}
-
-	hash := uint64(4)
-	n.SetHash(hash)
-	if n.Hash() != hash {
-		t.Fatalf("n.Hash() = %d, want %d", n.Hash(), hash)
-	}
-
 	// expiration
 	if n.IsExpired() {
 		t.Fatalf("node shouldn't be expired")

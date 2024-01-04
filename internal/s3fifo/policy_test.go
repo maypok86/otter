@@ -22,7 +22,6 @@ import (
 
 func newNode(k int) *node.Node[int, int] {
 	n := node.New[int, int](k, k, 0, 1)
-	n.SetHash(uint64(k))
 	return n
 }
 
