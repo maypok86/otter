@@ -24,6 +24,7 @@ test: test.unit ## Run all the tests
 test.unit: ## Run all unit tests
 	@echo 'mode: atomic' > coverage.txt
 	go test -covermode=atomic -coverprofile=coverage.txt -coverpkg=./... -v -race ./...
+	go test -v ./internal/node/...
 
 .PHONY: cover
 cover: test.unit ## Run all the tests and opens the coverage report

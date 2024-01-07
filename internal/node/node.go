@@ -15,7 +15,8 @@
 package node
 
 import (
-	"github.com/maypok86/otter/internal/spinlock"
+	"sync/atomic"
+
 	"github.com/maypok86/otter/internal/unixtime"
 )
 
@@ -33,7 +34,7 @@ type Node[K comparable, V any] struct {
 	value      V
 	prev       *Node[K, V]
 	next       *Node[K, V]
-	lock       spinlock.SpinLock
+	lock       atomic.Uint32
 	expiration uint32
 	cost       uint32
 	policyCost uint32
@@ -56,24 +57,9 @@ func (n *Node[K, V]) Key() K {
 	return n.key
 }
 
-// Value returns the value.
-func (n *Node[K, V]) Value() V {
-	return n.value
-}
-
 // SetValue sets the value.
 func (n *Node[K, V]) SetValue(value V) {
 	n.value = value
-}
-
-// Lock locks the node for updates.
-func (n *Node[K, V]) Lock() {
-	n.lock.Lock()
-}
-
-// Unlock unlocks the node.
-func (n *Node[K, V]) Unlock() {
-	n.lock.Unlock()
 }
 
 // IsExpired returns true if node is expired.

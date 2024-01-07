@@ -9,7 +9,9 @@
 // license that can be found in the LICENSE file.
 // That can be found at https://github.com/golang/go/blob/831f9376d8d730b16fb33dfd775618dffe13ce7a/LICENSE
 
-package spinlock
+//go:build race
+
+package node
 
 import (
 	"runtime"
@@ -17,38 +19,38 @@ import (
 	"time"
 )
 
-func HammerSpinLock(sl *SpinLock, loops int, cdone chan bool) {
+func HammerNodeLock(n *Node[int, int], loops int, cdone chan bool) {
 	for i := 0; i < loops; i++ {
-		sl.Lock()
-		sl.Unlock()
+		n.Lock()
+		n.Unlock()
 	}
 	cdone <- true
 }
 
-func TestSpinLock(t *testing.T) {
+func TestNodeLock(t *testing.T) {
 	if n := runtime.SetMutexProfileFraction(1); n != 0 {
 		t.Logf("got mutexrate %d expected 0", n)
 	}
 	defer runtime.SetMutexProfileFraction(0)
-	sl := new(SpinLock)
+	n := &Node[int, int]{}
 	c := make(chan bool)
 	for i := 0; i < 10; i++ {
-		go HammerSpinLock(sl, 1000, c)
+		go HammerNodeLock(n, 1000, c)
 	}
 	for i := 0; i < 10; i++ {
 		<-c
 	}
 }
 
-func TestSpinLockFairness(t *testing.T) {
-	var sl SpinLock
+func TestNodeLockFairness(t *testing.T) {
+	n := &Node[int, int]{}
 	stop := make(chan bool)
 	defer close(stop)
 	go func() {
 		for {
-			sl.Lock()
+			n.Lock()
 			time.Sleep(100 * time.Microsecond)
-			sl.Unlock()
+			n.Unlock()
 			select {
 			case <-stop:
 				return
@@ -60,8 +62,8 @@ func TestSpinLockFairness(t *testing.T) {
 	go func() {
 		for i := 0; i < 10; i++ {
 			time.Sleep(100 * time.Microsecond)
-			sl.Lock()
-			sl.Unlock()
+			n.Lock()
+			n.Unlock()
 		}
 		done <- true
 	}()

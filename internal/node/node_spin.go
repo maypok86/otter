@@ -1,4 +1,4 @@
-// Copyright (c) 2023 Alexey Mayshev. All rights reserved.
+// Copyright (c) 2024 Alexey Mayshev. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,23 +12,31 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package spinlock
+//go:build race
+
+package node
 
 import (
 	"runtime"
-	"sync/atomic"
 )
+
+// spinlock is used to synchronize the node and atomically get the value.
 
 const maxSpins = 16
 
-// SpinLock is an implementation of spinlock.
-type SpinLock uint32
+// Value returns the value.
+func (n *Node[K, V]) Value() V {
+	n.Lock()
+	value := n.value
+	n.Unlock()
+	return value
+}
 
-// Lock locks sl. If the lock is already in use, the calling goroutine blocks until the spinlock is available.
-func (sl *SpinLock) Lock() {
+// Lock locks the node for updates.
+func (n *Node[K, V]) Lock() {
 	spins := 0
 	for {
-		for atomic.LoadUint32((*uint32)(sl)) == 1 {
+		for n.lock.Load() == 1 {
 			spins++
 			if spins > maxSpins {
 				spins = 0
@@ -36,7 +44,7 @@ func (sl *SpinLock) Lock() {
 			}
 		}
 
-		if atomic.CompareAndSwapUint32((*uint32)(sl), 0, 1) {
+		if n.lock.CompareAndSwap(0, 1) {
 			return
 		}
 
@@ -44,8 +52,7 @@ func (sl *SpinLock) Lock() {
 	}
 }
 
-// Unlock unlocks sl. A locked SpinLock is not associated with a particular goroutine.
-// It is allowed for one goroutine to lock a SpinLock and then arrange for another goroutine to unlock it.
-func (sl *SpinLock) Unlock() {
-	atomic.StoreUint32((*uint32)(sl), 0)
+// Unlock unlocks the node.
+func (n *Node[K, V]) Unlock() {
+	n.lock.Store(0)
 }
