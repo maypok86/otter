@@ -15,7 +15,6 @@
 package node
 
 import (
-	"github.com/maypok86/otter/internal/spinlock"
 	"github.com/maypok86/otter/internal/unixtime"
 )
 
@@ -33,10 +32,8 @@ type Node[K comparable, V any] struct {
 	value      V
 	prev       *Node[K, V]
 	next       *Node[K, V]
-	lock       spinlock.SpinLock
 	expiration uint32
 	cost       uint32
-	policyCost uint32
 	frequency  uint8
 	queueType  uint8
 }
@@ -61,21 +58,6 @@ func (n *Node[K, V]) Value() V {
 	return n.value
 }
 
-// SetValue sets the value.
-func (n *Node[K, V]) SetValue(value V) {
-	n.value = value
-}
-
-// Lock locks the node for updates.
-func (n *Node[K, V]) Lock() {
-	n.lock.Lock()
-}
-
-// Unlock unlocks the node.
-func (n *Node[K, V]) Unlock() {
-	n.lock.Unlock()
-}
-
 // IsExpired returns true if node is expired.
 func (n *Node[K, V]) IsExpired() bool {
 	return n.expiration > 0 && n.expiration < unixtime.Now()
@@ -89,21 +71,6 @@ func (n *Node[K, V]) Expiration() uint32 {
 // Cost returns the cost of the node.
 func (n *Node[K, V]) Cost() uint32 {
 	return n.cost
-}
-
-// SetCost sets the cost of the node.
-func (n *Node[K, V]) SetCost(cost uint32) {
-	n.cost = cost
-}
-
-// PolicyCost returns the cost of the node in the policy.
-func (n *Node[K, V]) PolicyCost() uint32 {
-	return n.policyCost
-}
-
-// AddPolicyCostDiff updates the value of the node in the policy.
-func (n *Node[K, V]) AddPolicyCostDiff(costDiff uint32) {
-	n.policyCost += costDiff
 }
 
 // Frequency returns the frequency of the node.

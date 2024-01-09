@@ -28,7 +28,7 @@ func newNode(k int) *node.Node[int, int] {
 func nodesToAddTasks(nodes []*node.Node[int, int]) []node.WriteTask[int, int] {
 	tasks := make([]node.WriteTask[int, int], 0, len(nodes))
 	for _, n := range nodes {
-		tasks = append(tasks, node.NewAddTask(n, n.Cost()))
+		tasks = append(tasks, node.NewAddTask(n))
 	}
 	return tasks
 }
@@ -44,7 +44,7 @@ func nodesToDeleteTasks(nodes []*node.Node[int, int]) []node.WriteTask[int, int]
 func TestPolicy_ReadAndWrite(t *testing.T) {
 	n := newNode(2)
 	p := NewPolicy[int, int](10)
-	p.Write(nil, []node.WriteTask[int, int]{node.NewAddTask(n, n.Cost())})
+	p.Write(nil, []node.WriteTask[int, int]{node.NewAddTask(n)})
 	if !n.IsSmall() {
 		t.Fatalf("not valid node state: %+v", n)
 	}
@@ -102,33 +102,33 @@ func TestPolicy_Update(t *testing.T) {
 	p := NewPolicy[int, int](100)
 
 	n := newNode(1)
+	n1 := node.New[int, int](1, 1, 0, n.Cost()+8)
 
 	p.Write(nil, []node.WriteTask[int, int]{
-		node.NewAddTask(n, n.Cost()),
-		node.NewUpdateTask(n, 8),
+		node.NewAddTask(n),
+		node.NewUpdateTask(n1, n),
 	})
 
-	p.Read([]*node.Node[int, int]{n, n})
+	p.Read([]*node.Node[int, int]{n1, n1})
 
-	n2 := newNode(2)
-	n2.SetCost(91)
-	n.SetCost(29)
+	n2 := node.New[int, int](2, 1, 0, 91)
 	deleted := p.Write(nil, []node.WriteTask[int, int]{
-		node.NewAddTask(n2, n2.Cost()),
-		node.NewUpdateTask(n, 20),
+		node.NewAddTask(n2),
 	})
 
-	if !n.IsMain() {
-		t.Fatalf("updated node should be in main queue: %+v", n)
+	if !n1.IsMain() {
+		t.Fatalf("updated node should be in main queue: %+v", n1)
 	}
 
 	if n2.IsSmall() || n2.IsMain() || len(deleted) != 1 || deleted[0] != n2 {
 		t.Fatalf("inserted node should be evicted: %+v", n2)
 	}
 
-	n.SetCost(109)
-	deleted = p.Write(nil, []node.WriteTask[int, int]{node.NewUpdateTask(n, 80)})
-	if n.IsSmall() || n.IsMain() || len(deleted) != 1 || deleted[0] != n {
-		t.Fatalf("updated node should be evicted: %+v", n)
+	n3 := node.New[int, int](1, 1, 0, 109)
+	deleted = p.Write(nil, []node.WriteTask[int, int]{
+		node.NewUpdateTask(n3, n1),
+	})
+	if n3.IsSmall() || n3.IsMain() || len(deleted) != 1 || deleted[0] != n3 {
+		t.Fatalf("updated node should be evicted: %+v", n3)
 	}
 }

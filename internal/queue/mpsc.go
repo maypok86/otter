@@ -125,7 +125,7 @@ func (q *MPSC[T]) Capacity() int {
 }
 
 func (q *MPSC[T]) wakeUpConsumer() {
-	if q.isSleep.CompareAndSwap(1, 0) {
+	if q.isSleep.Load() == 1 && q.isSleep.CompareAndSwap(1, 0) {
 		// if the consumer is asleep, we'll wake him up.
 		q.sleep <- struct{}{}
 	}

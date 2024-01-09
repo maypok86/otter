@@ -54,29 +54,13 @@ func (p *Policy[K, V]) Read(nodes []*node.Node[K, V]) {
 	}
 }
 
-func (p *Policy[K, V]) insert(deleted []*node.Node[K, V], n *node.Node[K, V], cost uint32) []*node.Node[K, V] {
-	n.AddPolicyCostDiff(cost)
+func (p *Policy[K, V]) insert(deleted []*node.Node[K, V], n *node.Node[K, V]) []*node.Node[K, V] {
 	if p.ghost.isGhost(n) {
 		p.main.insert(n)
 		n.ResetFrequency()
 	} else {
 		p.small.insert(n)
 	}
-
-	for p.isFull() {
-		deleted = p.evict(deleted)
-	}
-
-	return deleted
-}
-
-func (p *Policy[K, V]) update(deleted []*node.Node[K, V], n *node.Node[K, V], costDiff uint32) []*node.Node[K, V] {
-	if n.IsSmall() {
-		p.small.cost += costDiff
-	} else if n.IsMain() {
-		p.main.cost += costDiff
-	}
-	n.AddPolicyCostDiff(costDiff)
 
 	for p.isFull() {
 		deleted = p.evict(deleted)
@@ -112,12 +96,13 @@ func (p *Policy[K, V]) Write(
 		}
 
 		if task.IsUpdate() {
-			deleted = p.update(deleted, n, task.CostDiff())
-			continue
+			// delete old node
+			p.delete(task.OldNode())
+			// insert new node
 		}
 
 		// add
-		deleted = p.insert(deleted, n, task.CostDiff())
+		deleted = p.insert(deleted, n)
 	}
 	return deleted
 }

@@ -124,11 +124,7 @@ func (c *Cache[K, V]) Get(key K) (V, bool) {
 	c.afterGet(got)
 	c.stats.IncHits()
 
-	got.Lock()
-	value := got.Value()
-	got.Unlock()
-
-	return value, ok
+	return got.Value(), ok
 }
 
 func (c *Cache[K, V]) afterGet(got *node.Node[K, V]) {
@@ -164,30 +160,14 @@ func (c *Cache[K, V]) set(key K, value V, expiration uint32) {
 		return
 	}
 
-	got, ok := c.hashmap.Get(key)
-	if ok {
-		if !got.IsExpired() {
-			got.Lock()
-			got.SetValue(value)
-			costDiff := cost - got.Cost()
-			if costDiff != 0 {
-				got.SetCost(cost)
-			}
-			got.Unlock()
-			if costDiff != 0 {
-				c.writeBuffer.Insert(node.NewUpdateTask(got, costDiff))
-			}
-			return
-		}
-
-		c.writeBuffer.Insert(node.NewDeleteTask(got))
-	}
-
 	n := node.New(key, value, expiration, cost)
 	evicted := c.hashmap.Set(n)
-	c.writeBuffer.Insert(node.NewAddTask(n, cost))
 	if evicted != nil {
-		c.writeBuffer.Insert(node.NewDeleteTask(evicted))
+		// update
+		c.writeBuffer.Insert(node.NewUpdateTask(n, evicted))
+	} else {
+		// insert
+		c.writeBuffer.Insert(node.NewAddTask(n))
 	}
 }
 
@@ -257,9 +237,13 @@ func (c *Cache[K, V]) process() {
 			c.evictionMutex.Lock()
 
 			for _, t := range buffer {
-				if t.IsDelete() {
+				switch {
+				case t.IsDelete():
 					c.expirePolicy.Delete(t.Node())
-				} else if t.IsAdd() {
+				case t.IsAdd():
+					c.expirePolicy.Add(t.Node())
+				case t.IsUpdate():
+					c.expirePolicy.Delete(t.OldNode())
 					c.expirePolicy.Add(t.Node())
 				}
 			}
