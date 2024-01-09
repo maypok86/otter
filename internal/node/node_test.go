@@ -33,12 +33,6 @@ func TestNode(t *testing.T) {
 		t.Fatalf("n.Value() = %d, want %d", n.Value(), value)
 	}
 
-	newValue := 3
-	n.SetValue(newValue)
-	if n.Value() != newValue {
-		t.Fatalf("n.Value() = %d, want %d", n.Value(), newValue)
-	}
-
 	// expiration
 	if n.IsExpired() {
 		t.Fatalf("node shouldn't be expired")
@@ -51,22 +45,6 @@ func TestNode(t *testing.T) {
 	// cost
 	if n.Cost() != cost {
 		t.Fatalf("n.Cost() = %d, want %d", n.Cost(), cost)
-	}
-
-	newCost := uint32(5)
-	n.SetCost(newCost)
-	if n.Cost() != newCost {
-		t.Fatalf("n.Cost() = %d, want %d", n.Cost(), cost)
-	}
-
-	// policy cost
-	if n.PolicyCost() != 0 {
-		t.Fatalf("n.PolicyCost() = %d, want %d", n.PolicyCost(), 0)
-	}
-
-	n.AddPolicyCostDiff(1)
-	if n.PolicyCost() != 1 {
-		t.Fatalf("n.PolicyCost() = %d, want %d", n.PolicyCost(), 1)
 	}
 
 	// frequency

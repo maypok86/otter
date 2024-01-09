@@ -29,16 +29,15 @@ const (
 // node, reason for write, difference after node cost change, etc.
 type WriteTask[K comparable, V any] struct {
 	n           *Node[K, V]
+	oldNode     *Node[K, V]
 	writeReason reason
-	costDiff    uint32
 }
 
 // NewAddTask creates a task to add a node to policies.
-func NewAddTask[K comparable, V any](n *Node[K, V], cost uint32) WriteTask[K, V] {
+func NewAddTask[K comparable, V any](n *Node[K, V]) WriteTask[K, V] {
 	return WriteTask[K, V]{
 		n:           n,
 		writeReason: addReason,
-		costDiff:    cost,
 	}
 }
 
@@ -51,11 +50,11 @@ func NewDeleteTask[K comparable, V any](n *Node[K, V]) WriteTask[K, V] {
 }
 
 // NewUpdateTask creates a task to update the node in the policies.
-func NewUpdateTask[K comparable, V any](n *Node[K, V], costDiff uint32) WriteTask[K, V] {
+func NewUpdateTask[K comparable, V any](n, oldNode *Node[K, V]) WriteTask[K, V] {
 	return WriteTask[K, V]{
 		n:           n,
+		oldNode:     oldNode,
 		writeReason: updateReason,
-		costDiff:    costDiff,
 	}
 }
 
@@ -78,9 +77,9 @@ func (t *WriteTask[K, V]) Node() *Node[K, V] {
 	return t.n
 }
 
-// CostDiff returns the difference between the node's new and old cost. Use only for update tasks.
-func (t *WriteTask[K, V]) CostDiff() uint32 {
-	return t.costDiff
+// OldNode returns the old node contained in the task. If old node was not specified, it returns nil.
+func (t *WriteTask[K, V]) OldNode() *Node[K, V] {
+	return t.oldNode
 }
 
 // IsAdd returns true if this is an add task.
