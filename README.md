@@ -156,6 +156,14 @@ The benchmark code can be found [here](https://github.com/maypok86/benchmarks)
 
 <img width="60%" src="assets/results/reads=75,writes=25.png" alt="reads=75%,writes=25%" />
 
+#### Read (50%) / Write (50%)
+
+<img width="60%" src="assets/results/reads=50,writes=50.png" alt="reads=50%,writes=50%" />
+
+#### Read (25%) / Write (75%)
+
+<img width="60%" src="assets/results/reads=25,writes=75.png" alt="reads=25%,writes=75%" />
+
 #### Write (100%)
 
 <img width="60%" src="assets/results/reads=0,writes=100.png" alt="reads=0%,writes=100%" />
