@@ -66,10 +66,6 @@ issues:
     - path: _test\.go
       linters:
         - gosec
-    - path: internal/spinlock/spinlock_test.go
-      linters:
-        - gocritic
-        - staticcheck
 linters-settings:
   gci:
     sections:
