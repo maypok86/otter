@@ -36,7 +36,7 @@ I once came across the fact that none of the Golang cache libraries are truly co
 
 ## 🗃 Related works <a id="related-works" />
 Otter is based on the following papers:
-- [BP-Wrapper: A Framework Making Any Replacement Algorithms (Almost) Lock Contention Free](http://web.cse.ohio-state.edu/hpcs/WWW/HTML/publications/papers/TR-09-1.pdf)
+- [BP-Wrapper: A Framework Making Any Replacement Algorithms (Almost) Lock Contention Free](https://www.researchgate.net/publication/220966845_BP-Wrapper_A_System_Framework_Making_Any_Replacement_Algorithms_Almost_Lock_Contention_Free)
 - [FIFO queues are all you need for cache eviction](https://dl.acm.org/doi/10.1145/3600006.3613147)
 - [Bucket-Based Expiration Algorithm: Improving Eviction Efficiency for In-Memory Key-Value Database](https://dl.acm.org/doi/fullHtml/10.1145/3422575.3422797)
 - [A large scale analysis of hundreds of in-memory cache clusters at Twitter](https://www.usenix.org/system/files/osdi20-yang.pdf)
