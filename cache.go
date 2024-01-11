@@ -139,25 +139,26 @@ func (c *Cache[K, V]) afterGet(got *node.Node[K, V]) {
 	}
 }
 
-// Set associates the value with the key in this cache. If the cache previously
-// contained a value associated with the key, the old value is replaced by the new value.
-func (c *Cache[K, V]) Set(key K, value V) {
-	c.set(key, value, 0)
+// Set associates the value with the key in this cache.
+//
+// If it returns false, then the key-value item had too much cost and the Set was dropped.
+func (c *Cache[K, V]) Set(key K, value V) bool {
+	return c.set(key, value, 0)
 }
 
-// SetWithTTL associates the value with the key in this cache and sets the custom ttl for this key-value pair.
+// SetWithTTL associates the value with the key in this cache and sets the custom ttl for this key-value item.
 //
-// If the cache previously contained a value associated with the key, the old value is replaced by the new value.
-func (c *Cache[K, V]) SetWithTTL(key K, value V, ttl time.Duration) {
+// If it returns false, then the key-value item had too much cost and the SetWithTTL was dropped.
+func (c *Cache[K, V]) SetWithTTL(key K, value V, ttl time.Duration) bool {
 	ttl = (ttl + time.Second - 1) / time.Second
 	expiration := unixtime.Now() + uint32(ttl)
-	c.set(key, value, expiration)
+	return c.set(key, value, expiration)
 }
 
-func (c *Cache[K, V]) set(key K, value V, expiration uint32) {
+func (c *Cache[K, V]) set(key K, value V, expiration uint32) bool {
 	cost := c.costFunc(key, value)
 	if cost > c.policy.MaxAvailableCost() {
-		return
+		return false
 	}
 
 	n := node.New(key, value, expiration, cost)
@@ -169,6 +170,8 @@ func (c *Cache[K, V]) set(key K, value V, expiration uint32) {
 		// insert
 		c.writeBuffer.Insert(node.NewAddTask(n))
 	}
+
+	return true
 }
 
 // Delete removes the association for this key from the cache.

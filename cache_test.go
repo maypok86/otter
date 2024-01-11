@@ -122,6 +122,34 @@ func TestCache_SetWithTTL(t *testing.T) {
 	}
 }
 
+func TestCache_SetWithCost(t *testing.T) {
+	size := 10
+	c, err := MustBuilder[int, int](size).Cost(func(key int, value int) uint32 {
+		return uint32(key)
+	}).Build()
+	if err != nil {
+		t.Fatalf("can not create cache: %v", err)
+	}
+
+	goodCost := int(c.policy.MaxAvailableCost())
+	badCost := goodCost + 1
+
+	added := c.Set(goodCost, 1)
+	if !added {
+		t.Fatalf("Set was dropped, even though it shouldn't have been. Max available cost: %d, actual cost: %d",
+			c.policy.MaxAvailableCost(),
+			c.costFunc(goodCost, 1),
+		)
+	}
+	added = c.Set(badCost, 1)
+	if added {
+		t.Fatalf("Set wasn't dropped, though it should have been. Max available cost: %d, actual cost: %d",
+			c.policy.MaxAvailableCost(),
+			c.costFunc(badCost, 1),
+		)
+	}
+}
+
 func TestCache_Ratio(t *testing.T) {
 	b, err := NewBuilder[uint64, uint64](100)
 	if err != nil {
