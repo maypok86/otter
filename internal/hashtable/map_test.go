@@ -130,6 +130,65 @@ func TestMap_SetThenDelete(t *testing.T) {
 	}
 }
 
+func TestMap_Range(t *testing.T) {
+	const numNodes = 1000
+	m := New[string, int]()
+	for i := 0; i < numNodes; i++ {
+		m.Set(newNode(strconv.Itoa(i), i))
+	}
+	iters := 0
+	met := make(map[string]int)
+	m.Range(func(n *node.Node[string, int]) bool {
+		if n.Key() != strconv.Itoa(n.Value()) {
+			t.Fatalf("got unexpected key/value for iteration %d: %v/%v", iters, n.Key(), n.Value())
+			return false
+		}
+		met[n.Key()] += 1
+		iters++
+		return true
+	})
+	if iters != numNodes {
+		t.Fatalf("got unexpected number of iterations: %d", iters)
+	}
+	for i := 0; i < numNodes; i++ {
+		if c := met[strconv.Itoa(i)]; c != 1 {
+			t.Fatalf("range did not iterate correctly over %d: %d", i, c)
+		}
+	}
+}
+
+func TestMap_RangeFalseReturned(t *testing.T) {
+	m := New[string, int]()
+	for i := 0; i < 100; i++ {
+		m.Set(newNode(strconv.Itoa(i), i))
+	}
+	iters := 0
+	m.Range(func(n *node.Node[string, int]) bool {
+		iters++
+		return iters != 13
+	})
+	if iters != 13 {
+		t.Fatalf("got unexpected number of iterations: %d", iters)
+	}
+}
+
+func TestMap_RangeNestedDelete(t *testing.T) {
+	const numNodes = 256
+	m := New[string, int]()
+	for i := 0; i < numNodes; i++ {
+		m.Set(newNode(strconv.Itoa(i), i))
+	}
+	m.Range(func(n *node.Node[string, int]) bool {
+		m.Delete(n.Key())
+		return true
+	})
+	for i := 0; i < numNodes; i++ {
+		if _, ok := m.Get(strconv.Itoa(i)); ok {
+			t.Fatalf("value found for %d", i)
+		}
+	}
+}
+
 func TestMap_Size(t *testing.T) {
 	const numberOfNodes = 1000
 	m := New[string, int]()
@@ -283,4 +342,67 @@ func TestMap_ParallelSetsAndDeletes(t *testing.T) {
 	}
 
 	wg.Wait()
+}
+
+func parallelTypedRangeSetter(t *testing.T, m *Map[int, int], numNodes int, stopFlag *int64, cdone chan bool) {
+	t.Helper()
+
+	for {
+		for i := 0; i < numNodes; i++ {
+			m.Set(newNode(i, i))
+		}
+		if atomic.LoadInt64(stopFlag) != 0 {
+			break
+		}
+	}
+	cdone <- true
+}
+
+func parallelTypedRangeDeleter(t *testing.T, m *Map[int, int], numNodes int, stopFlag *int64, cdone chan bool) {
+	t.Helper()
+
+	for {
+		for i := 0; i < numNodes; i++ {
+			m.Delete(i)
+		}
+		if atomic.LoadInt64(stopFlag) != 0 {
+			break
+		}
+	}
+	cdone <- true
+}
+
+func TestMapOfParallelRange(t *testing.T) {
+	const numNodes = 10_000
+	m := New[int, int]()
+	for i := 0; i < numNodes; i++ {
+		m.Set(newNode(i, i))
+	}
+	// Start goroutines that would be storing and deleting items in parallel.
+	cdone := make(chan bool)
+	stopFlag := int64(0)
+	go parallelTypedRangeSetter(t, m, numNodes, &stopFlag, cdone)
+	go parallelTypedRangeDeleter(t, m, numNodes, &stopFlag, cdone)
+	// Iterate the map and verify that no duplicate keys were met.
+	met := make(map[int]int)
+	m.Range(func(n *node.Node[int, int]) bool {
+		if n.Key() != n.Value() {
+			t.Fatalf("got unexpected value for key %d: %d", n.Key(), n.Value())
+			return false
+		}
+		met[n.Key()] += 1
+		return true
+	})
+	if len(met) == 0 {
+		t.Fatal("no nodes were met when iterating")
+	}
+	for k, c := range met {
+		if c != 1 {
+			t.Fatalf("met key %d multiple times: %d", k, c)
+		}
+	}
+	// Make sure that both goroutines finish.
+	atomic.StoreInt64(&stopFlag, 1)
+	<-cdone
+	<-cdone
 }
