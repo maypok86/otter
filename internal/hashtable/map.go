@@ -448,6 +448,55 @@ func (m *Map[K, V]) waitForResize() {
 	m.resizeMutex.Unlock()
 }
 
+// Range calls f sequentially for each node present in the
+// map. If f returns false, range stops the iteration.
+//
+// Range does not necessarily correspond to any consistent snapshot
+// of the Map's contents: no key will be visited more than once, but
+// if the value for any key is stored or deleted concurrently, Range
+// may reflect any mapping for that key from any point during the
+// Range call.
+//
+// It is safe to modify the map while iterating it. However, the
+// concurrent modification rule apply, i.e. the changes may be not
+// reflected in the subsequently iterated nodes.
+func (m *Map[K, V]) Range(f func(*node.Node[K, V]) bool) {
+	var zeroPtr unsafe.Pointer
+	// Pre-allocate array big enough to fit nodes for most hash tables.
+	buffer := make([]unsafe.Pointer, 0, 16*bucketSize)
+	tp := atomic.LoadPointer(&m.table)
+	t := *(*table[K])(tp)
+	for i := range t.buckets {
+		rootBucket := &t.buckets[i]
+		b := rootBucket
+		// Prevent concurrent modifications and copy all nodes into
+		// the intermediate slice.
+		rootBucket.mutex.Lock()
+		for {
+			for i := 0; i < bucketSize; i++ {
+				if b.nodes[i] != nil {
+					buffer = append(buffer, b.nodes[i])
+				}
+			}
+			if b.next == nil {
+				rootBucket.mutex.Unlock()
+				break
+			}
+			b = (*paddedBucket)(b.next)
+		}
+		// Call the function for all copied nodes.
+		for j := range buffer {
+			n := (*node.Node[K, V])(buffer[j])
+			if !f(n) {
+				return
+			}
+			// Remove the reference to allow the copied nodes to be GCed before this method finishes.
+			buffer[j] = zeroPtr
+		}
+		buffer = buffer[:0]
+	}
+}
+
 // Clear deletes all keys and values currently stored in the map.
 func (m *Map[K, V]) Clear() {
 	table := (*table[K])(atomic.LoadPointer(&m.table))

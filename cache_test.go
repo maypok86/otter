@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/maypok86/otter/internal/node"
 	"github.com/maypok86/otter/internal/xruntime"
 )
 
@@ -146,6 +147,33 @@ func TestCache_Ratio(t *testing.T) {
 
 	t.Logf("actual size: %d, capacity: %d", c.Size(), c.Capacity())
 	t.Logf("actual: %.2f, optimal: %.2f", c.Ratio(), o.Ratio())
+}
+
+func TestCache_Range(t *testing.T) {
+	size := 10
+	c, err := MustBuilder[int, int](size).Build()
+	if err != nil {
+		t.Fatalf("can not create cache: %v", err)
+	}
+
+	time.Sleep(3 * time.Second)
+
+	c.Set(1, 1)
+	c.hashmap.Set(node.New(2, 2, 1, 1))
+	c.Set(3, 3)
+	aliveNodes := 2
+	iters := 0
+	c.Range(func(key, value int) bool {
+		if key != value {
+			t.Fatalf("got unexpected key/value for iteration %d: %d/%d", iters, key, value)
+			return false
+		}
+		iters++
+		return true
+	})
+	if iters != aliveNodes {
+		t.Fatalf("got unexpected number of iterations: %d", iters)
+	}
 }
 
 func TestCache_Close(t *testing.T) {

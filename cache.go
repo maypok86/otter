@@ -265,6 +265,19 @@ func (c *Cache[K, V]) process() {
 	}
 }
 
+// Range iterates over all items in the cache.
+//
+// Iteration stops early when the given function returns false.
+func (c *Cache[K, V]) Range(f func(key K, value V) bool) {
+	c.hashmap.Range(func(n *node.Node[K, V]) bool {
+		if n.IsExpired() {
+			return true
+		}
+
+		return f(n.Key(), n.Value())
+	})
+}
+
 // Clear clears the hash table, all policies, buffers, etc.
 //
 // NOTE: this operation must be performed when no requests are made to the cache otherwise the behavior is undefined.
