@@ -201,7 +201,7 @@ func (c *Cache[K, V]) cleanup() {
 			c.hashmap.EvictNode(n)
 		}
 
-		expired = expired[:0]
+		expired = clearBuffer(expired)
 	}
 }
 
@@ -214,7 +214,7 @@ func (c *Cache[K, V]) process() {
 		task := c.writeBuffer.Remove()
 
 		if task.IsClear() || task.IsClose() {
-			buffer = buffer[:0]
+			buffer = clearBuffer(buffer)
 			c.writeBuffer.Clear()
 
 			c.evictionMutex.Lock()
@@ -262,8 +262,8 @@ func (c *Cache[K, V]) process() {
 				c.hashmap.EvictNode(n)
 			}
 
-			buffer = buffer[:0]
-			deleted = deleted[:0]
+			buffer = clearBuffer(buffer)
+			deleted = clearBuffer(deleted)
 		}
 	}
 }
@@ -333,4 +333,12 @@ func (c *Cache[K, V]) Misses() int64 {
 // Ratio returns the cache hit ratio.
 func (c *Cache[K, V]) Ratio() float64 {
 	return c.stats.Ratio()
+}
+
+func clearBuffer[T any](buffer []T) []T {
+	var zero T
+	for i := 0; i < len(buffer); i++ {
+		buffer[i] = zero
+	}
+	return buffer[:0]
 }

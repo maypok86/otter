@@ -99,6 +99,8 @@ func (b *Buffer[T]) Add(item *T) *PolicyBuffers[T] {
 				if v != nil {
 					// published
 					pb.Returned = append(pb.Returned, v)
+					// release
+					atomic.StorePointer(&b.buffer[index], nil)
 				}
 				head++
 			}
@@ -115,6 +117,9 @@ func (b *Buffer[T]) Add(item *T) *PolicyBuffers[T] {
 // Free returns the processed buffer back and also clears it.
 func (b *Buffer[T]) Free() {
 	pb := (*PolicyBuffers[T])(b.policyBuffers)
+	for i := 0; i < len(pb.Returned); i++ {
+		pb.Returned[i] = nil
+	}
 	pb.Returned = pb.Returned[:0]
 	atomic.StorePointer(&b.returned, b.policyBuffers)
 }
