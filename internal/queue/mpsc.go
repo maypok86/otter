@@ -42,13 +42,7 @@ type MPSC[T any] struct {
 	tailPadding  [xruntime.CacheLineSize - 8]byte
 	isSleep      atomic.Uint64
 	sleepPadding [xruntime.CacheLineSize - unsafe.Sizeof(atomic.Uint64{})]byte
-	slots        []paddedSlot[T]
-}
-
-type paddedSlot[T any] struct {
-	slot[T]
-	// TODO: padding
-	padding [xruntime.CacheLineSize - unsafe.Sizeof(atomic.Uint64{}) - 8]byte
+	slots        []slot[T]
 }
 
 type slot[T any] struct {
@@ -62,7 +56,7 @@ func NewMPSC[T any](capacity int) *MPSC[T] {
 	return &MPSC[T]{
 		sleep:    make(chan struct{}),
 		capacity: uint64(capacity),
-		slots:    make([]paddedSlot[T], capacity),
+		slots:    make([]slot[T], capacity),
 	}
 }
 
