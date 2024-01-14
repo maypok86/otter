@@ -150,9 +150,13 @@ func (c *Cache[K, V]) Set(key K, value V) bool {
 //
 // If it returns false, then the key-value item had too much cost and the SetWithTTL was dropped.
 func (c *Cache[K, V]) SetWithTTL(key K, value V, ttl time.Duration) bool {
-	ttl = (ttl + time.Second - 1) / time.Second
-	expiration := unixtime.Now() + uint32(ttl)
-	return c.set(key, value, expiration)
+	if ttl > 0 {
+		ttl = (ttl + time.Second - 1) / time.Second
+		expiration := unixtime.Now() + uint32(ttl)
+		return c.set(key, value, expiration)
+	} else {
+		return c.set(key, value, 0)
+	}
 }
 
 func (c *Cache[K, V]) set(key K, value V, expiration uint32) bool {
