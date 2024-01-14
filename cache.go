@@ -206,7 +206,7 @@ func (c *Cache[K, V]) cleanup() {
 }
 
 func (c *Cache[K, V]) process() {
-	bufferCapacity := 128
+	bufferCapacity := 64
 	buffer := make([]node.WriteTask[K, V], 0, bufferCapacity)
 	deleted := make([]*node.Node[K, V], 0, bufferCapacity)
 	i := 0
