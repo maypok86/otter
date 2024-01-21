@@ -66,79 +66,91 @@ go get -u github.com/maypok86/otter
 
 ### ✏️ Examples <a id="examples" />
 
-**Builder**
-
 Otter uses a builder pattern that allows you to conveniently create a cache object with different parameters
 
+**Cache with const TTL**
 ```go
 package main
 
 import (
-  "github.com/maypok86/otter"
+    "fmt"
+    "time"
+
+    "github.com/maypok86/otter"
 )
 
 func main() {
-  // NewBuilder creates a builder and sets the future cache capacity to 1000 elements.
-  // Returns an error if capacity <= 0.
-  builder, err := otter.NewBuilder[string, string](1000)
-  if err != nil {
-    panic(err)
-  }
+    // create a cache with capacity equal to 10000 elements
+    cache, err := otter.MustBuilder[string, string](10_000).
+        CollectStats().
+        Cost(func(key string, value string) uint32 {
+            return 1
+        }).
+        WithTTL(time.Hour).
+        Build()
+    if err != nil {
+        panic(err)
+    }
 
-  // StatsEnabled determines whether statistics should be calculated when the cache is running.
-  // By default, statistics calculating is disabled.
-  builder.StatsEnabled(true)
+    // set item with ttl (1 hour) 
+    cache.Set("key", "value")
 
-  // Cost sets a function to dynamically calculate the weight of a key-value pair.
-  // By default this function always returns 1.
-  builder.Cost(func(key string, value string) uint32 {
-    return uint32(len(value))
-  })
+    // get value from cache
+    value, ok := cache.Get("key")
+    if !ok {
+        panic("not found key")
+    }
+    fmt.Println(value)
 
-  // Build creates a new cache object or
-  // returns an error if invalid parameters were passed to the builder.
-  cache, err := builder.Build()
-  if err != nil {
-    panic(err)
-  }
+    // delete item from cache
+    cache.Delete("key")
 
-  cache.Close()
+    // delete data and stop goroutines
+    cache.Close()
 }
 ```
 
-**Cache**
+**Cache with variable TTL**
 ```go
 package main
 
 import (
-  "fmt"
-  "time"
+    "fmt"
+    "time"
 
-  "github.com/maypok86/otter"
+    "github.com/maypok86/otter"
 )
 
 func main() {
-  // create a cache with capacity equal to 10000 elements
-  cache, err := otter.MustBuilder[string, string](10_000).Build()
-  if err != nil {
-    panic(err)
-  }
+    // create a cache with capacity equal to 10000 elements
+    cache, err := otter.MustBuilder[string, string](10_000).
+        CollectStats().
+        Cost(func(key string, value string) uint32 {
+            return 1
+        }).
+        WithVariableTTL().
+        Build()
+    if err != nil {
+        panic(err)
+    }
 
-  // set key-value pair with ttl (1 hour) 
-  cache.SetWithTTL("key", "value", time.Hour)
+    // set item with ttl (1 hour)
+    cache.Set("key1", "value1", time.Hour)
+    // set item with ttl (1 minute)
+    cache.Set("key2", "value2", time.Minute)
 
-  // get value from cache
-  value, ok := cache.Get("key")
-  if !ok {
-    panic("not found key")
-  }
-  fmt.Println(value)
+    // get value from cache
+    value, ok := cache.Get("key1")
+    if !ok {
+        panic("not found key")
+    }
+    fmt.Println(value)
 
-  // delete key-value pair from cache
-  cache.Delete("key")
+    // delete item from cache
+    cache.Delete("key1")
 
-  // delete data and stop goroutines
-  cache.Close()
+    // delete data and stop goroutines
+    cache.Close()
 }
 ```
 
