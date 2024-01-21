@@ -14,36 +14,77 @@
 
 package otter
 
-import "errors"
+import (
+	"errors"
+	"time"
 
-const (
-	defaultStatsEnabled = false
+	"github.com/maypok86/otter/internal/core"
 )
 
-// ErrIllegalCapacity means that a non-positive capacity has been passed to the NewBuilder.
-var ErrIllegalCapacity = errors.New("capacity should be positive")
+var (
+	// ErrIllegalCapacity means that a non-positive capacity has been passed to the NewBuilder.
+	ErrIllegalCapacity = errors.New("capacity should be positive")
+	// ErrIllegalTTL means that a non-positive ttl has been passed to the Builder.WithTTL.
+	ErrIllegalTTL = errors.New("ttl should be positive")
+)
 
-type options[K comparable, V any] struct {
+type baseOptions[K comparable, V any] struct {
 	capacity     int
 	statsEnabled bool
 	costFunc     func(key K, value V) uint32
 }
 
-func (o *options[K, V]) validate() error {
+func (o *baseOptions[K, V]) collectStats() {
+	o.statsEnabled = true
+}
+
+func (o *baseOptions[K, V]) cost(costFunc func(key K, value V) uint32) {
+	o.costFunc = costFunc
+}
+
+func (o *baseOptions[K, V]) validate() error {
 	return nil
 }
 
-func (o *options[K, V]) toConfig() Config[K, V] {
-	return Config[K, V]{
+func (o *baseOptions[K, V]) toConfig() core.Config[K, V] {
+	return core.Config[K, V]{
 		Capacity:     o.capacity,
 		StatsEnabled: o.statsEnabled,
 		CostFunc:     o.costFunc,
 	}
 }
 
+type constTTLOptions[K comparable, V any] struct {
+	baseOptions[K, V]
+	ttl time.Duration
+}
+
+func (o *constTTLOptions[K, V]) validate() error {
+	if o.ttl <= 0 {
+		return ErrIllegalTTL
+	}
+	return o.baseOptions.validate()
+}
+
+func (o *constTTLOptions[K, V]) toConfig() core.Config[K, V] {
+	c := o.baseOptions.toConfig()
+	c.TTL = &o.ttl
+	return c
+}
+
+type variableTTLOptions[K comparable, V any] struct {
+	baseOptions[K, V]
+}
+
+func (o *variableTTLOptions[K, V]) toConfig() core.Config[K, V] {
+	c := o.baseOptions.toConfig()
+	c.WithVariableTTL = true
+	return c
+}
+
 // Builder is a one-shot builder for creating a cache instance.
 type Builder[K comparable, V any] struct {
-	options[K, V]
+	baseOptions[K, V]
 }
 
 // MustBuilder creates a builder and sets the future cache capacity.
@@ -66,9 +107,9 @@ func NewBuilder[K comparable, V any](capacity int) (*Builder[K, V], error) {
 	}
 
 	return &Builder[K, V]{
-		options: options[K, V]{
+		baseOptions: baseOptions[K, V]{
 			capacity:     capacity,
-			statsEnabled: defaultStatsEnabled,
+			statsEnabled: false,
 			costFunc: func(key K, value V) uint32 {
 				return 1
 			},
@@ -76,28 +117,113 @@ func NewBuilder[K comparable, V any](capacity int) (*Builder[K, V], error) {
 	}, nil
 }
 
-// StatsEnabled determines whether statistics should be calculated when the cache is running.
+// CollectStats determines whether statistics should be calculated when the cache is running.
 //
 // By default, statistics calculating is disabled.
-func (b *Builder[K, V]) StatsEnabled(statsEnabled bool) *Builder[K, V] {
-	b.statsEnabled = statsEnabled
+func (b *Builder[K, V]) CollectStats() *Builder[K, V] {
+	b.collectStats()
 	return b
 }
 
-// Cost sets a function to dynamically calculate the cost of a key-value pair.
+// Cost sets a function to dynamically calculate the cost of an item.
 //
 // By default, this function always returns 1.
 func (b *Builder[K, V]) Cost(costFunc func(key K, value V) uint32) *Builder[K, V] {
-	b.costFunc = costFunc
+	b.cost(costFunc)
+	return b
+}
+
+// WithTTL specifies that each item should be automatically removed from the cache once a fixed duration
+// has elapsed after the item's creation.
+func (b *Builder[K, V]) WithTTL(ttl time.Duration) *ConstTTLBuilder[K, V] {
+	return &ConstTTLBuilder[K, V]{
+		constTTLOptions[K, V]{
+			baseOptions: b.baseOptions,
+			ttl:         ttl,
+		},
+	}
+}
+
+// WithVariableTTL specifies that each item should be automatically removed from the cache once a duration has
+// elapsed after the item's creation. Items are expired based on the custom ttl specified for each item separately.
+//
+// You should prefer WithTTL to this option whenever possible.
+func (b *Builder[K, V]) WithVariableTTL() *VariableTTLBuilder[K, V] {
+	return &VariableTTLBuilder[K, V]{
+		variableTTLOptions[K, V]{
+			baseOptions: b.baseOptions,
+		},
+	}
+}
+
+// Build creates a configured cache or
+// returns an error if invalid parameters were passed to the builder.
+func (b *Builder[K, V]) Build() (Cache[K, V], error) {
+	if err := b.validate(); err != nil {
+		return Cache[K, V]{}, err
+	}
+
+	return newCache(b.toConfig()), nil
+}
+
+// ConstTTLBuilder is a one-shot builder for creating a cache instance.
+type ConstTTLBuilder[K comparable, V any] struct {
+	constTTLOptions[K, V]
+}
+
+// CollectStats determines whether statistics should be calculated when the cache is running.
+//
+// By default, statistics calculating is disabled.
+func (b *ConstTTLBuilder[K, V]) CollectStats() *ConstTTLBuilder[K, V] {
+	b.collectStats()
+	return b
+}
+
+// Cost sets a function to dynamically calculate the cost of an item.
+//
+// By default, this function always returns 1.
+func (b *ConstTTLBuilder[K, V]) Cost(costFunc func(key K, value V) uint32) *ConstTTLBuilder[K, V] {
+	b.cost(costFunc)
 	return b
 }
 
 // Build creates a configured cache or
 // returns an error if invalid parameters were passed to the builder.
-func (b *Builder[K, V]) Build() (*Cache[K, V], error) {
+func (b *ConstTTLBuilder[K, V]) Build() (Cache[K, V], error) {
 	if err := b.validate(); err != nil {
-		return nil, err
+		return Cache[K, V]{}, err
 	}
 
-	return NewCache(b.toConfig()), nil
+	return newCache(b.toConfig()), nil
+}
+
+// VariableTTLBuilder is a one-shot builder for creating a cache instance.
+type VariableTTLBuilder[K comparable, V any] struct {
+	variableTTLOptions[K, V]
+}
+
+// CollectStats determines whether statistics should be calculated when the cache is running.
+//
+// By default, statistics calculating is disabled.
+func (b *VariableTTLBuilder[K, V]) CollectStats() *VariableTTLBuilder[K, V] {
+	b.collectStats()
+	return b
+}
+
+// Cost sets a function to dynamically calculate the cost of an item.
+//
+// By default, this function always returns 1.
+func (b *VariableTTLBuilder[K, V]) Cost(costFunc func(key K, value V) uint32) *VariableTTLBuilder[K, V] {
+	b.cost(costFunc)
+	return b
+}
+
+// Build creates a configured cache or
+// returns an error if invalid parameters were passed to the builder.
+func (b *VariableTTLBuilder[K, V]) Build() (CacheWithVariableTTL[K, V], error) {
+	if err := b.validate(); err != nil {
+		return CacheWithVariableTTL[K, V]{}, err
+	}
+
+	return newCacheWithVariableTTL(b.toConfig()), nil
 }

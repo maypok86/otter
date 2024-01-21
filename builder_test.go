@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"reflect"
 	"testing"
+	"time"
 )
 
 func TestBuilder_MustFailed(t *testing.T) {
@@ -36,13 +37,18 @@ func TestBuilder_NewFailed(t *testing.T) {
 	if err == nil || !errors.Is(err, ErrIllegalCapacity) {
 		t.Fatalf("should fail with an error %v, but got %v", ErrIllegalCapacity, err)
 	}
+
+	_, err = MustBuilder[int, int](100).WithTTL(-1).Build()
+	if err == nil || !errors.Is(err, ErrIllegalTTL) {
+		t.Fatalf("should fail with an error %v, but got %v", ErrIllegalTTL, err)
+	}
 }
 
 func TestBuilder_BuildSuccess(t *testing.T) {
 	b := MustBuilder[int, int](10)
 
 	c, err := b.
-		StatsEnabled(true).
+		CollectStats().
 		Cost(func(key int, value int) uint32 {
 			return 2
 		}).Build()
@@ -50,7 +56,29 @@ func TestBuilder_BuildSuccess(t *testing.T) {
 		t.Fatalf("builded cache with error: %v", err)
 	}
 
-	if !reflect.DeepEqual(reflect.TypeOf(&Cache[int, int]{}), reflect.TypeOf(c)) {
+	if !reflect.DeepEqual(reflect.TypeOf(Cache[int, int]{}), reflect.TypeOf(c)) {
+		t.Fatalf("builder returned a different type of cache: %v", err)
+	}
+
+	cc, err := b.WithTTL(time.Minute).CollectStats().Cost(func(key int, value int) uint32 {
+		return 2
+	}).Build()
+	if err != nil {
+		t.Fatalf("builded cache with error: %v", err)
+	}
+
+	if !reflect.DeepEqual(reflect.TypeOf(Cache[int, int]{}), reflect.TypeOf(cc)) {
+		t.Fatalf("builder returned a different type of cache: %v", err)
+	}
+
+	cv, err := b.WithVariableTTL().CollectStats().Cost(func(key int, value int) uint32 {
+		return 2
+	}).Build()
+	if err != nil {
+		t.Fatalf("builded cache with error: %v", err)
+	}
+
+	if !reflect.DeepEqual(reflect.TypeOf(CacheWithVariableTTL[int, int]{}), reflect.TypeOf(cv)) {
 		t.Fatalf("builder returned a different type of cache: %v", err)
 	}
 }
