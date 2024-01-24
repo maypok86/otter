@@ -26,12 +26,18 @@ import (
 )
 
 func TestCache_Set(t *testing.T) {
-	c, err := MustBuilder[int, int](100).WithTTL(time.Minute).CollectStats().Build()
+	const size = 100
+	c, err := MustBuilder[int, int](size).WithTTL(time.Minute).CollectStats().Build()
 	if err != nil {
 		t.Fatalf("can not create cache: %v", err)
 	}
 
-	for i := 0; i < 100; i++ {
+	for i := 0; i < size; i++ {
+		c.Set(i, i)
+	}
+
+	// update
+	for i := 0; i < size; i++ {
 		c.Set(i, i)
 	}
 
@@ -66,6 +72,63 @@ func TestCache_Set(t *testing.T) {
 	if ratio != 1.0 {
 		t.Fatalf("cache hit ratio should be 1.0, but got %v", ratio)
 	}
+}
+
+func TestCache_SetIfAbsent(t *testing.T) {
+	const size = 100
+	c, err := MustBuilder[int, int](size).WithTTL(time.Minute).CollectStats().Build()
+	if err != nil {
+		t.Fatalf("can not create cache: %v", err)
+	}
+
+	for i := 0; i < size; i++ {
+		if !c.SetIfAbsent(i, i) {
+			t.Fatalf("set was dropped. key: %d", i)
+		}
+	}
+
+	for i := 0; i < size; i++ {
+		if !c.Has(i) {
+			t.Fatalf("key should exists: %d", i)
+		}
+	}
+
+	for i := 0; i < size; i++ {
+		if c.SetIfAbsent(i, i) {
+			t.Fatalf("set wasn't dropped. key: %d", i)
+		}
+	}
+
+	c.Clear()
+
+	cc, err := MustBuilder[int, int](size).WithVariableTTL().CollectStats().Build()
+	if err != nil {
+		t.Fatalf("can not create cache: %v", err)
+	}
+
+	for i := 0; i < size; i++ {
+		if !cc.SetIfAbsent(i, i, time.Hour) {
+			t.Fatalf("set was dropped. key: %d", i)
+		}
+	}
+
+	for i := 0; i < size; i++ {
+		if !cc.Has(i) {
+			t.Fatalf("key should exists: %d", i)
+		}
+	}
+
+	for i := 0; i < size; i++ {
+		if cc.SetIfAbsent(i, i, time.Second) {
+			t.Fatalf("set wasn't dropped. key: %d", i)
+		}
+	}
+
+	if hits := cc.Stats().Hits(); hits != size {
+		t.Fatalf("hit ratio should be 100%%. Hits: %d", hits)
+	}
+
+	cc.Close()
 }
 
 func TestCache_SetWithTTL(t *testing.T) {

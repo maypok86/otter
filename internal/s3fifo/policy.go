@@ -78,7 +78,7 @@ func (p *Policy[K, V]) evict(deleted []*node.Node[K, V]) []*node.Node[K, V] {
 }
 
 func (p *Policy[K, V]) isFull() bool {
-	return p.small.cost+p.main.cost >= p.maxCost
+	return p.small.cost+p.main.cost > p.maxCost
 }
 
 // Write updates the eviction policy based on node updates.

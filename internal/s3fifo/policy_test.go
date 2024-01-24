@@ -111,7 +111,7 @@ func TestPolicy_Update(t *testing.T) {
 
 	p.Read([]*node.Node[int, int]{n1, n1})
 
-	n2 := node.New[int, int](2, 1, 0, 91)
+	n2 := node.New[int, int](2, 1, 0, 92)
 	deleted := p.Write(nil, []node.WriteTask[int, int]{
 		node.NewAddTask(n2),
 	})

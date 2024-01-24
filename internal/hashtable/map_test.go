@@ -86,6 +86,34 @@ func TestMap_Set(t *testing.T) {
 	}
 }
 
+func TestMap_SetIfAbsent(t *testing.T) {
+	const numberOfNodes = 128
+	m := New[string, int]()
+	for i := 0; i < numberOfNodes; i++ {
+		res := m.SetIfAbsent(newNode[string, int](strconv.Itoa(i), i))
+		if res != nil {
+			t.Fatalf("set was dropped. got: %+v", res)
+		}
+	}
+	for i := 0; i < numberOfNodes; i++ {
+		n := newNode[string, int](strconv.Itoa(i), i)
+		res := m.SetIfAbsent(n)
+		if res == nil {
+			t.Fatalf("set was not dropped. node that was set: %+v", res)
+		}
+	}
+
+	for i := 0; i < numberOfNodes; i++ {
+		n, ok := m.Get(strconv.Itoa(i))
+		if !ok {
+			t.Fatalf("value not found for %d", i)
+		}
+		if n.Value() != i {
+			t.Fatalf("values do not match for %d: %v", i, n.Value())
+		}
+	}
+}
+
 // this code may break if the maphash.Hasher[k] structure changes.
 type hasher struct {
 	hash func(pointer unsafe.Pointer, seed uintptr) uintptr
@@ -372,7 +400,7 @@ func parallelTypedRangeDeleter(t *testing.T, m *Map[int, int], numNodes int, sto
 	cdone <- true
 }
 
-func TestMapOfParallelRange(t *testing.T) {
+func TestMap_ParallelRange(t *testing.T) {
 	const numNodes = 10_000
 	m := New[int, int]()
 	for i := 0; i < numNodes; i++ {
