@@ -4,12 +4,12 @@
 </p>
 
 <p align="center">
+<a href="https://pkg.go.dev/github.com/maypok86/otter"><img src="https://pkg.go.dev/badge/github.com/maypok86/otter.svg" alt="Go Reference"></a>
 <img src="https://github.com/maypok86/otter/actions/workflows/test.yml/badge.svg" />
 <a href="https://codecov.io/gh/maypok86/otter" >
     <img src="https://codecov.io/gh/maypok86/otter/graph/badge.svg?token=G0PJFOR8IF"/>
 </a>
 <img src="https://goreportcard.com/badge/github.com/maypok86/otter" />
-<img src="https://img.shields.io/github/license/maypok86/otter" />
 
 <br />
 
