@@ -35,6 +35,11 @@ func zeroValue[V any]() V {
 	return zero
 }
 
+func getExpiration(ttl time.Duration) uint32 {
+	ttlSecond := (ttl + time.Second - 1) / time.Second
+	return unixtime.Now() + uint32(ttlSecond)
+}
+
 // Config is a set of cache settings.
 type Config[K comparable, V any] struct {
 	Capacity        int
@@ -147,7 +152,7 @@ func (c *Cache[K, V]) afterGet(got *node.Node[K, V]) {
 //
 // If it returns false, then the key-value item had too much cost and the Set was dropped.
 func (c *Cache[K, V]) Set(key K, value V) bool {
-	return c.set(key, value, c.defaultExpiration())
+	return c.set(key, value, c.defaultExpiration(), false)
 }
 
 func (c *Cache[K, V]) defaultExpiration() uint32 {
@@ -162,18 +167,45 @@ func (c *Cache[K, V]) defaultExpiration() uint32 {
 //
 // If it returns false, then the key-value item had too much cost and the SetWithTTL was dropped.
 func (c *Cache[K, V]) SetWithTTL(key K, value V, ttl time.Duration) bool {
-	ttl = (ttl + time.Second - 1) / time.Second
-	expiration := unixtime.Now() + uint32(ttl)
-	return c.set(key, value, expiration)
+	return c.set(key, value, getExpiration(ttl), false)
 }
 
-func (c *Cache[K, V]) set(key K, value V, expiration uint32) bool {
+// SetIfAbsent if the specified key is not already associated with a value associates it with the given value.
+//
+// If the specified key is not already associated with a value, then it returns false.
+//
+// Also, it returns false if the key-value item had too much cost and the SetIfAbsent was dropped.
+func (c *Cache[K, V]) SetIfAbsent(key K, value V) bool {
+	return c.set(key, value, c.defaultExpiration(), true)
+}
+
+// SetIfAbsentWithTTL if the specified key is not already associated with a value associates it with the given value
+// and sets the custom ttl for this key-value item.
+//
+// If the specified key is not already associated with a value, then it returns false.
+//
+// Also, it returns false if the key-value item had too much cost and the SetIfAbsent was dropped.
+func (c *Cache[K, V]) SetIfAbsentWithTTL(key K, value V, ttl time.Duration) bool {
+	return c.set(key, value, getExpiration(ttl), true)
+}
+
+func (c *Cache[K, V]) set(key K, value V, expiration uint32, onlyIfAbsent bool) bool {
 	cost := c.costFunc(key, value)
 	if cost > c.policy.MaxAvailableCost() {
 		return false
 	}
 
 	n := node.New(key, value, expiration, cost)
+	if onlyIfAbsent {
+		res := c.hashmap.SetIfAbsent(n)
+		if res == nil {
+			// insert
+			c.writeBuffer.Insert(node.NewAddTask(n))
+			return true
+		}
+		return false
+	}
+
 	evicted := c.hashmap.Set(n)
 	if evicted != nil {
 		// update

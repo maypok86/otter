@@ -125,6 +125,15 @@ func (c Cache[K, V]) Set(key K, value V) bool {
 	return c.cache.Set(key, value)
 }
 
+// SetIfAbsent if the specified key is not already associated with a value associates it with the given value.
+//
+// If the specified key is not already associated with a value, then it returns false.
+//
+// Also, it returns false if the key-value item had too much cost and the SetIfAbsent was dropped.
+func (c Cache[K, V]) SetIfAbsent(key K, value V) bool {
+	return c.cache.SetIfAbsent(key, value)
+}
+
 // CacheWithVariableTTL is a structure performs a best-effort bounding of a hash table using eviction algorithm
 // to determine which entries to evict when the capacity is exceeded.
 type CacheWithVariableTTL[K comparable, V any] struct {
@@ -142,4 +151,14 @@ func newCacheWithVariableTTL[K comparable, V any](c core.Config[K, V]) CacheWith
 // If it returns false, then the key-value item had too much cost and the Set was dropped.
 func (c CacheWithVariableTTL[K, V]) Set(key K, value V, ttl time.Duration) bool {
 	return c.cache.SetWithTTL(key, value, ttl)
+}
+
+// SetIfAbsent if the specified key is not already associated with a value associates it with the given value
+// and sets the custom ttl for this key-value item.
+//
+// If the specified key is not already associated with a value, then it returns false.
+//
+// Also, it returns false if the key-value item had too much cost and the SetIfAbsent was dropped.
+func (c CacheWithVariableTTL[K, V]) SetIfAbsent(key K, value V, ttl time.Duration) bool {
+	return c.cache.SetIfAbsentWithTTL(key, value, ttl)
 }

@@ -187,7 +187,17 @@ func (m *Map[K, V]) Get(key K) (got *node.Node[K, V], ok bool) {
 // Set sets the *node.Node for the key.
 //
 // Returns the evicted node or nil if the node was inserted.
-func (m *Map[K, V]) Set(n *node.Node[K, V]) (evicted *node.Node[K, V]) {
+func (m *Map[K, V]) Set(n *node.Node[K, V]) *node.Node[K, V] {
+	return m.set(n, false)
+}
+
+// SetIfAbsent sets the *node.Node if the specified key is not already associated with a value (or is mapped to null)
+// associates it with the given value and returns null, else returns the current node.
+func (m *Map[K, V]) SetIfAbsent(n *node.Node[K, V]) *node.Node[K, V] {
+	return m.set(n, true)
+}
+
+func (m *Map[K, V]) set(n *node.Node[K, V], onlyIfAbsent bool) *node.Node[K, V] {
 	for {
 	RETRY:
 		var (
@@ -230,6 +240,11 @@ func (m *Map[K, V]) Set(n *node.Node[K, V]) (evicted *node.Node[K, V]) {
 				prev := (*node.Node[K, V])(b.nodes[i])
 				if n.Key() != prev.Key() {
 					continue
+				}
+				if onlyIfAbsent {
+					// found node, drop set
+					rootBucket.mutex.Unlock()
+					return n
 				}
 				// in-place update.
 				// We get a copy of the value via an interface{} on each call,
