@@ -52,20 +52,21 @@ type Config[K comparable, V any] struct {
 // Cache is a structure performs a best-effort bounding of a hash table using eviction algorithm
 // to determine which entries to evict when the capacity is exceeded.
 type Cache[K comparable, V any] struct {
-	hashmap       *hashtable.Map[K, V]
-	policy        *s3fifo.Policy[K, V]
-	expirePolicy  *expire.Policy[K, V]
-	stats         *stats.Stats
-	readBuffers   []*lossy.Buffer[node.Node[K, V]]
-	writeBuffer   *queue.MPSC[node.WriteTask[K, V]]
-	evictionMutex sync.Mutex
-	closeOnce     sync.Once
-	isClosed      bool
-	doneClear     chan struct{}
-	costFunc      func(key K, value V) uint32
-	ttl           uint32
-	capacity      int
-	mask          uint32
+	hashmap        *hashtable.Map[K, V]
+	policy         *s3fifo.Policy[K, V]
+	expirePolicy   *expire.Policy[K, V]
+	stats          *stats.Stats
+	readBuffers    []*lossy.Buffer[node.Node[K, V]]
+	writeBuffer    *queue.MPSC[node.WriteTask[K, V]]
+	evictionMutex  sync.Mutex
+	closeOnce      sync.Once
+	doneClear      chan struct{}
+	costFunc       func(key K, value V) uint32
+	capacity       int
+	mask           uint32
+	ttl            uint32
+	withExpiration bool
+	isClosed       bool
 }
 
 // NewCache returns a new cache instance based on the settings from Config.
@@ -99,9 +100,14 @@ func NewCache[K comparable, V any](c Config[K, V]) *Cache[K, V] {
 		cache.ttl = uint32((*c.TTL + time.Second - 1) / time.Second)
 	}
 
-	unixtime.Start()
+	cache.withExpiration = c.TTL != nil || c.WithVariableTTL
+
+	if cache.withExpiration {
+		unixtime.Start()
+		go cache.cleanup()
+	}
+
 	go cache.process()
-	go cache.cleanup()
 
 	return cache
 }
@@ -350,7 +356,9 @@ func (c *Cache[K, V]) clear(task node.WriteTask[K, V]) {
 func (c *Cache[K, V]) Close() {
 	c.closeOnce.Do(func() {
 		c.clear(node.NewCloseTask[K, V]())
-		unixtime.Stop()
+		if c.withExpiration {
+			unixtime.Stop()
+		}
 	})
 }
 

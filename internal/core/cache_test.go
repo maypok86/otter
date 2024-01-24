@@ -37,11 +37,13 @@ func TestCache_SetWithCost(t *testing.T) {
 
 func TestCache_Range(t *testing.T) {
 	size := 10
+	ttl := time.Hour
 	c := NewCache[int, int](Config[int, int]{
 		Capacity: size,
 		CostFunc: func(key int, value int) uint32 {
 			return 1
 		},
+		TTL: &ttl,
 	})
 
 	time.Sleep(3 * time.Second)
