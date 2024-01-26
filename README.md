@@ -10,6 +10,7 @@
     <img src="https://codecov.io/gh/maypok86/otter/graph/badge.svg?token=G0PJFOR8IF"/>
 </a>
 <img src="https://goreportcard.com/badge/github.com/maypok86/otter" />
+<a href="https://github.com/avelino/awesome-go"><img src="https://awesome.re/mentioned-badge.svg" alt="Mentioned in Awesome Go"></a>
 
 <br />
 
