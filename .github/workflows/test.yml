@@ -28,4 +28,4 @@ jobs:
         run: make test.unit
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v3
+        uses: codecov/codecov-action@v4
