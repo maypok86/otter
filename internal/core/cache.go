@@ -232,6 +232,22 @@ func (c *Cache[K, V]) Delete(key K) {
 	}
 }
 
+// DeleteByFunc removes the association for this key from the cache when the given function returns true.
+func (c *Cache[K, V]) DeleteByFunc(f func(key K, value V) bool) {
+	// TODO(maypok86): This function can be implemented more efficiently, if the performance of this implementation is not enough for you, then come with an issue :)
+	var keysToDelete []K
+	c.Range(func(key K, value V) bool {
+		if f(key, value) {
+			keysToDelete = append(keysToDelete, key)
+		}
+		return true
+	})
+
+	for _, key := range keysToDelete {
+		c.Delete(key)
+	}
+}
+
 func (c *Cache[K, V]) cleanup() {
 	expired := make([]*node.Node[K, V], 0, 128)
 	for {
