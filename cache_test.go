@@ -182,6 +182,29 @@ func TestCache_SetWithTTL(t *testing.T) {
 	}
 }
 
+func TestBaseCache_DeleteByFunc(t *testing.T) {
+	size := 256
+	c, err := MustBuilder[int, int](size).WithTTL(time.Hour).Build()
+	if err != nil {
+		t.Fatalf("can not create builder: %v", err)
+	}
+
+	for i := 0; i < size; i++ {
+		c.Set(i, i)
+	}
+
+	c.DeleteByFunc(func(key int, value int) bool {
+		return key%2 == 1
+	})
+
+	c.Range(func(key int, value int) bool {
+		if key%2 == 1 {
+			t.Fatalf("key should be odd, but got: %d", key)
+		}
+		return true
+	})
+}
+
 func TestCache_Ratio(t *testing.T) {
 	c, err := MustBuilder[uint64, uint64](100).CollectStats().Build()
 	if err != nil {

@@ -70,6 +70,11 @@ func (bs baseCache[K, V]) Delete(key K) {
 	bs.cache.Delete(key)
 }
 
+// DeleteByFunc removes the association for this key from the cache when the given function returns true.
+func (bs baseCache[K, V]) DeleteByFunc(f func(key K, value V) bool) {
+	bs.cache.DeleteByFunc(f)
+}
+
 // Range iterates over all items in the cache.
 //
 // Iteration stops early when the given function returns false.
