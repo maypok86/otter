@@ -232,20 +232,26 @@ func (c *Cache[K, V]) Delete(key K) {
 	}
 }
 
+func (c *Cache[K, V]) deleteNode(n *node.Node[K, V]) {
+	deleted := c.hashmap.DeleteNode(n)
+	if deleted != nil {
+		c.writeBuffer.Insert(node.NewDeleteTask(deleted))
+	}
+}
+
 // DeleteByFunc removes the association for this key from the cache when the given function returns true.
 func (c *Cache[K, V]) DeleteByFunc(f func(key K, value V) bool) {
-	// TODO(maypok86): This function can be implemented more efficiently, if the performance of this implementation is not enough for you, then come with an issue :)
-	var keysToDelete []K
-	c.Range(func(key K, value V) bool {
-		if f(key, value) {
-			keysToDelete = append(keysToDelete, key)
+	c.hashmap.Range(func(n *node.Node[K, V]) bool {
+		if n.IsExpired() {
+			return true
 		}
+
+		if f(n.Key(), n.Value()) {
+			c.deleteNode(n)
+		}
+
 		return true
 	})
-
-	for _, key := range keysToDelete {
-		c.Delete(key)
-	}
 }
 
 func (c *Cache[K, V]) cleanup() {
@@ -264,7 +270,7 @@ func (c *Cache[K, V]) cleanup() {
 		c.evictionMutex.Unlock()
 
 		for _, n := range e {
-			c.hashmap.EvictNode(n)
+			c.hashmap.DeleteNode(n)
 		}
 
 		expired = clearBuffer(expired)
@@ -325,7 +331,7 @@ func (c *Cache[K, V]) process() {
 			c.evictionMutex.Unlock()
 
 			for _, n := range d {
-				c.hashmap.EvictNode(n)
+				c.hashmap.DeleteNode(n)
 			}
 
 			buffer = clearBuffer(buffer)

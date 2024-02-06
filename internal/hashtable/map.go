@@ -296,10 +296,10 @@ func (m *Map[K, V]) Delete(key K) *node.Node[K, V] {
 	})
 }
 
-// EvictNode evicts the node for a key.
+// DeleteNode evicts the node for a key.
 //
 // Returns the evicted node or nil if the node wasn't evicted.
-func (m *Map[K, V]) EvictNode(n *node.Node[K, V]) *node.Node[K, V] {
+func (m *Map[K, V]) DeleteNode(n *node.Node[K, V]) *node.Node[K, V] {
 	return m.delete(n.Key(), func(current *node.Node[K, V]) bool {
 		return n == current
 	})
