@@ -38,17 +38,47 @@ func TestBuilder_NewFailed(t *testing.T) {
 		t.Fatalf("should fail with an error %v, but got %v", ErrIllegalCapacity, err)
 	}
 
-	_, err = MustBuilder[int, int](100).WithTTL(-1).Build()
+	capacity := 100
+	// negative const ttl
+	_, err = MustBuilder[int, int](capacity).WithTTL(-1).Build()
 	if err == nil || !errors.Is(err, ErrIllegalTTL) {
 		t.Fatalf("should fail with an error %v, but got %v", ErrIllegalTTL, err)
+	}
+
+	// negative initial capacity
+	_, err = MustBuilder[int, int](capacity).InitialCapacity(-2).Build()
+	if err == nil || !errors.Is(err, ErrIllegalInitialCapacity) {
+		t.Fatalf("should fail with an error %v, but got %v", ErrIllegalInitialCapacity, err)
+	}
+
+	_, err = MustBuilder[int, int](capacity).WithTTL(time.Hour).InitialCapacity(0).Build()
+	if err == nil || !errors.Is(err, ErrIllegalInitialCapacity) {
+		t.Fatalf("should fail with an error %v, but got %v", ErrIllegalInitialCapacity, err)
+	}
+
+	_, err = MustBuilder[int, int](capacity).WithVariableTTL().InitialCapacity(-5).Build()
+	if err == nil || !errors.Is(err, ErrIllegalInitialCapacity) {
+		t.Fatalf("should fail with an error %v, but got %v", ErrIllegalInitialCapacity, err)
+	}
+
+	// nil cost func
+	_, err = MustBuilder[int, int](capacity).Cost(nil).Build()
+	if err == nil || !errors.Is(err, ErrNilCostFunc) {
+		t.Fatalf("should fail with an error %v, but got %v", ErrNilCostFunc, err)
 	}
 }
 
 func TestBuilder_BuildSuccess(t *testing.T) {
 	b := MustBuilder[int, int](10)
 
+	_, err := b.InitialCapacity(unsetCapacity).Build()
+	if err != nil {
+		t.Fatalf("builded cache with error: %v", err)
+	}
+
 	c, err := b.
 		CollectStats().
+		InitialCapacity(10).
 		Cost(func(key int, value int) uint32 {
 			return 2
 		}).Build()

@@ -21,36 +21,60 @@ import (
 	"github.com/maypok86/otter/internal/core"
 )
 
+const (
+	unsetCapacity = -1
+)
+
 var (
 	// ErrIllegalCapacity means that a non-positive capacity has been passed to the NewBuilder.
 	ErrIllegalCapacity = errors.New("capacity should be positive")
+	// ErrIllegalInitialCapacity means that a non-positive capacity has been passed to the Builder.InitialCapacity.
+	ErrIllegalInitialCapacity = errors.New("initial capacity should be positive")
+	// ErrNilCostFunc means that a nil cost func has been passed to the Builder.Cost.
+	ErrNilCostFunc = errors.New("setCostFunc func should not be nil")
 	// ErrIllegalTTL means that a non-positive ttl has been passed to the Builder.WithTTL.
 	ErrIllegalTTL = errors.New("ttl should be positive")
 )
 
 type baseOptions[K comparable, V any] struct {
-	capacity     int
-	statsEnabled bool
-	costFunc     func(key K, value V) uint32
+	capacity        int
+	initialCapacity int
+	statsEnabled    bool
+	costFunc        func(key K, value V) uint32
 }
 
 func (o *baseOptions[K, V]) collectStats() {
 	o.statsEnabled = true
 }
 
-func (o *baseOptions[K, V]) cost(costFunc func(key K, value V) uint32) {
+func (o *baseOptions[K, V]) setCostFunc(costFunc func(key K, value V) uint32) {
 	o.costFunc = costFunc
 }
 
+func (o *baseOptions[K, V]) setInitialCapacity(initialCapacity int) {
+	o.initialCapacity = initialCapacity
+}
+
 func (o *baseOptions[K, V]) validate() error {
+	if o.initialCapacity <= 0 && o.initialCapacity != unsetCapacity {
+		return ErrIllegalInitialCapacity
+	}
+	if o.costFunc == nil {
+		return ErrNilCostFunc
+	}
 	return nil
 }
 
 func (o *baseOptions[K, V]) toConfig() core.Config[K, V] {
+	var initialCapacity *int
+	if o.initialCapacity != unsetCapacity {
+		initialCapacity = &o.initialCapacity
+	}
 	return core.Config[K, V]{
-		Capacity:     o.capacity,
-		StatsEnabled: o.statsEnabled,
-		CostFunc:     o.costFunc,
+		Capacity:        o.capacity,
+		InitialCapacity: initialCapacity,
+		StatsEnabled:    o.statsEnabled,
+		CostFunc:        o.costFunc,
 	}
 }
 
@@ -108,8 +132,9 @@ func NewBuilder[K comparable, V any](capacity int) (*Builder[K, V], error) {
 
 	return &Builder[K, V]{
 		baseOptions: baseOptions[K, V]{
-			capacity:     capacity,
-			statsEnabled: false,
+			capacity:        capacity,
+			initialCapacity: unsetCapacity,
+			statsEnabled:    false,
 			costFunc: func(key K, value V) uint32 {
 				return 1
 			},
@@ -125,11 +150,19 @@ func (b *Builder[K, V]) CollectStats() *Builder[K, V] {
 	return b
 }
 
+// InitialCapacity sets the minimum total size for the internal data structures. Providing a large enough estimate
+// at construction time avoids the need for expensive resizing operations later, but setting this
+// value unnecessarily high wastes memory.
+func (b *Builder[K, V]) InitialCapacity(initialCapacity int) *Builder[K, V] {
+	b.setInitialCapacity(initialCapacity)
+	return b
+}
+
 // Cost sets a function to dynamically calculate the cost of an item.
 //
 // By default, this function always returns 1.
 func (b *Builder[K, V]) Cost(costFunc func(key K, value V) uint32) *Builder[K, V] {
-	b.cost(costFunc)
+	b.setCostFunc(costFunc)
 	return b
 }
 
@@ -179,11 +212,19 @@ func (b *ConstTTLBuilder[K, V]) CollectStats() *ConstTTLBuilder[K, V] {
 	return b
 }
 
+// InitialCapacity sets the minimum total size for the internal data structures. Providing a large enough estimate
+// at construction time avoids the need for expensive resizing operations later, but setting this
+// value unnecessarily high wastes memory.
+func (b *ConstTTLBuilder[K, V]) InitialCapacity(initialCapacity int) *ConstTTLBuilder[K, V] {
+	b.setInitialCapacity(initialCapacity)
+	return b
+}
+
 // Cost sets a function to dynamically calculate the cost of an item.
 //
 // By default, this function always returns 1.
 func (b *ConstTTLBuilder[K, V]) Cost(costFunc func(key K, value V) uint32) *ConstTTLBuilder[K, V] {
-	b.cost(costFunc)
+	b.setCostFunc(costFunc)
 	return b
 }
 
@@ -210,11 +251,19 @@ func (b *VariableTTLBuilder[K, V]) CollectStats() *VariableTTLBuilder[K, V] {
 	return b
 }
 
+// InitialCapacity sets the minimum total size for the internal data structures. Providing a large enough estimate
+// at construction time avoids the need for expensive resizing operations later, but setting this
+// value unnecessarily high wastes memory.
+func (b *VariableTTLBuilder[K, V]) InitialCapacity(initialCapacity int) *VariableTTLBuilder[K, V] {
+	b.setInitialCapacity(initialCapacity)
+	return b
+}
+
 // Cost sets a function to dynamically calculate the cost of an item.
 //
 // By default, this function always returns 1.
 func (b *VariableTTLBuilder[K, V]) Cost(costFunc func(key K, value V) uint32) *VariableTTLBuilder[K, V] {
-	b.cost(costFunc)
+	b.setCostFunc(costFunc)
 	return b
 }
 

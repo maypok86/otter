@@ -133,7 +133,10 @@ func TestCache_SetIfAbsent(t *testing.T) {
 
 func TestCache_SetWithTTL(t *testing.T) {
 	size := 256
-	c, err := MustBuilder[int, int](size).WithTTL(time.Second).Build()
+	c, err := MustBuilder[int, int](size).
+		InitialCapacity(size).
+		WithTTL(time.Second).
+		Build()
 	if err != nil {
 		t.Fatalf("can not create builder: %v", err)
 	}
@@ -184,7 +187,10 @@ func TestCache_SetWithTTL(t *testing.T) {
 
 func TestBaseCache_DeleteByFunc(t *testing.T) {
 	size := 256
-	c, err := MustBuilder[int, int](size).WithTTL(time.Hour).Build()
+	c, err := MustBuilder[int, int](size).
+		InitialCapacity(size).
+		WithTTL(time.Hour).
+		Build()
 	if err != nil {
 		t.Fatalf("can not create builder: %v", err)
 	}

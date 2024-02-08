@@ -18,6 +18,7 @@ import (
 	"github.com/dolthub/maphash"
 
 	"github.com/maypok86/otter/internal/node"
+	"github.com/maypok86/otter/internal/xmath"
 	"github.com/maypok86/otter/internal/xruntime"
 )
 
@@ -119,11 +120,28 @@ type paddedCounter struct {
 	counter
 }
 
+// NewWithSize creates a new Map instance with capacity enough
+// to hold size nodes. If size is zero or negative, the value
+// is ignored.
+func NewWithSize[K comparable, V any](size int) *Map[K, V] {
+	return newMap[K, V](size)
+}
+
 // New creates a new Map instance.
 func New[K comparable, V any]() *Map[K, V] {
+	return newMap[K, V](minNodeCount)
+}
+
+func newMap[K comparable, V any](size int) *Map[K, V] {
 	m := &Map[K, V]{}
 	m.resizeCond = *sync.NewCond(&m.resizeMutex)
-	t := newTable(minBucketCount, maphash.NewHasher[K]())
+	var t *table[K]
+	if size <= minNodeCount {
+		t = newTable(minBucketCount, maphash.NewHasher[K]())
+	} else {
+		bucketCount := xmath.RoundUpPowerOf2(uint32(size / bucketSize))
+		t = newTable(int(bucketCount), maphash.NewHasher[K]())
+	}
 	atomic.StorePointer(&m.table, unsafe.Pointer(t))
 	return m
 }
