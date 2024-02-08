@@ -125,7 +125,7 @@ func newCache[K comparable, V any](c core.Config[K, V]) Cache[K, V] {
 
 // Set associates the value with the key in this cache.
 //
-// If it returns false, then the key-value item had too much cost and the Set was dropped.
+// If it returns false, then the key-value item had too much setCostFunc and the Set was dropped.
 func (c Cache[K, V]) Set(key K, value V) bool {
 	return c.cache.Set(key, value)
 }
@@ -134,7 +134,7 @@ func (c Cache[K, V]) Set(key K, value V) bool {
 //
 // If the specified key is not already associated with a value, then it returns false.
 //
-// Also, it returns false if the key-value item had too much cost and the SetIfAbsent was dropped.
+// Also, it returns false if the key-value item had too much setCostFunc and the SetIfAbsent was dropped.
 func (c Cache[K, V]) SetIfAbsent(key K, value V) bool {
 	return c.cache.SetIfAbsent(key, value)
 }
@@ -153,7 +153,7 @@ func newCacheWithVariableTTL[K comparable, V any](c core.Config[K, V]) CacheWith
 
 // Set associates the value with the key in this cache and sets the custom ttl for this key-value item.
 //
-// If it returns false, then the key-value item had too much cost and the Set was dropped.
+// If it returns false, then the key-value item had too much setCostFunc and the Set was dropped.
 func (c CacheWithVariableTTL[K, V]) Set(key K, value V, ttl time.Duration) bool {
 	return c.cache.SetWithTTL(key, value, ttl)
 }
@@ -163,7 +163,7 @@ func (c CacheWithVariableTTL[K, V]) Set(key K, value V, ttl time.Duration) bool 
 //
 // If the specified key is not already associated with a value, then it returns false.
 //
-// Also, it returns false if the key-value item had too much cost and the SetIfAbsent was dropped.
+// Also, it returns false if the key-value item had too much setCostFunc and the SetIfAbsent was dropped.
 func (c CacheWithVariableTTL[K, V]) SetIfAbsent(key K, value V, ttl time.Duration) bool {
 	return c.cache.SetIfAbsentWithTTL(key, value, ttl)
 }

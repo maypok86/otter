@@ -43,6 +43,7 @@ func getExpiration(ttl time.Duration) uint32 {
 // Config is a set of cache settings.
 type Config[K comparable, V any] struct {
 	Capacity        int
+	InitialCapacity *int
 	StatsEnabled    bool
 	TTL             *time.Duration
 	WithVariableTTL bool
@@ -81,8 +82,15 @@ func NewCache[K comparable, V any](c Config[K, V]) *Cache[K, V] {
 		readBuffers = append(readBuffers, lossy.New[node.Node[K, V]]())
 	}
 
+	var hashmap *hashtable.Map[K, V]
+	if c.InitialCapacity == nil {
+		hashmap = hashtable.New[K, V]()
+	} else {
+		hashmap = hashtable.NewWithSize[K, V](*c.InitialCapacity)
+	}
+
 	cache := &Cache[K, V]{
-		hashmap:     hashtable.New[K, V](),
+		hashmap:     hashmap,
 		policy:      s3fifo.NewPolicy[K, V](uint32(c.Capacity)),
 		readBuffers: readBuffers,
 		writeBuffer: queue.NewMPSC[node.WriteTask[K, V]](writeBufferCapacity),

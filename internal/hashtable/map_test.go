@@ -121,8 +121,8 @@ type hasher struct {
 }
 
 func TestMap_SetWithCollisions(t *testing.T) {
-	const numEntries = 1000
-	m := New[int, int]()
+	const numNodes = 1000
+	m := NewWithSize[int, int](numNodes)
 	table := (*table[int])(atomic.LoadPointer(&m.table))
 	hasher := (*hasher)((unsafe.Pointer)(&table.hasher))
 	hasher.hash = func(ptr unsafe.Pointer, seed uintptr) uintptr {
@@ -130,10 +130,10 @@ func TestMap_SetWithCollisions(t *testing.T) {
 		// that the map copes with key collisions.
 		return 42
 	}
-	for i := 0; i < numEntries; i++ {
+	for i := 0; i < numNodes; i++ {
 		m.Set(newNode(i, i))
 	}
-	for i := 0; i < numEntries; i++ {
+	for i := 0; i < numNodes; i++ {
 		v, ok := m.Get(i)
 		if !ok {
 			t.Fatalf("value not found for %d", i)
