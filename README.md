@@ -11,8 +11,7 @@
 </a>
 <img src="https://goreportcard.com/badge/github.com/maypok86/otter" />
 <a href="https://github.com/avelino/awesome-go"><img src="https://awesome.re/mentioned-badge.svg" alt="Mentioned in Awesome Go"></a>
-
-<br />
+</p>
 
 ## 📖 Contents
 
@@ -23,8 +22,8 @@
   - [Requirements](#requirements)
   - [Installation](#installation)
   - [Examples](#examples)
-- [Benchmarks](#benchmarks)
-  - [Performance](#performance)
+- [Performance](#performance)
+  - [Throughput](#throughput)
   - [Hit ratio](#hit-ratio)
 - [Contribute](#contribute)
 - [License](#license)
@@ -36,7 +35,9 @@ I once came across the fact that none of the Go cache libraries are truly conten
 **Please leave a ⭐ as motivation if you liked the idea 😄**
 
 ## 🗃 Related works <a id="related-works" />
-Otter is based on the following papers:
+
+Otter is based on the following papers
+
 - [BP-Wrapper: A Framework Making Any Replacement Algorithms (Almost) Lock Contention Free](https://www.researchgate.net/publication/220966845_BP-Wrapper_A_System_Framework_Making_Any_Replacement_Algorithms_Almost_Lock_Contention_Free)
 - [FIFO queues are all you need for cache eviction](https://dl.acm.org/doi/10.1145/3600006.3613147)
 - [Bucket-Based Expiration Algorithm: Improving Eviction Efficiency for In-Memory Key-Value Database](https://dl.acm.org/doi/fullHtml/10.1145/3422575.3422797)
@@ -44,13 +45,12 @@ Otter is based on the following papers:
 
 ## ✨ Features <a id="features" />
 
-This library has lots of features such as:
 - **Simple API**: Just set the parameters you want in the builder and enjoy
 - **Autoconfiguration**: Otter is automatically configured based on the parallelism of your application
 - **Generics**: You can safely use any comparable types as keys and any types as values
 - **TTL**: Expired values will be automatically deleted from the cache
 - **Cost-based eviction**: Otter supports eviction based on the cost of each item
-- **Excellent performance**: Otter is currently the fastest cache library with a huge lead over the [competition](#performance)
+- **Excellent throughput**: Otter is currently the fastest cache library with a huge lead over the [competition](#throughput)
 - **Great hit ratio**: New S3-FIFO algorithm is used, which shows excellent [results](#hit-ratio)
 
 ## 📚 Usage <a id="usage" />
@@ -67,7 +67,7 @@ go get -u github.com/maypok86/otter
 
 ### ✏️ Examples <a id="examples" />
 
-Otter uses a builder pattern that allows you to conveniently create a cache object with different parameters
+Otter uses a builder pattern that allows you to conveniently create a cache instance with different parameters.
 
 **Cache with const TTL**
 ```go
@@ -155,45 +155,45 @@ func main() {
 }
 ```
 
-## 📊 Benchmarks <a id="benchmarks" />
+## 📊 Performance <a id="performance" />
 
-The benchmark code can be found [here](https://github.com/maypok86/benchmarks)
+The benchmark code can be found [here](https://github.com/maypok86/benchmarks).
 
-### 🚀 Performance <a id="performance" />
+### 🚀 Throughput <a id="throughput" />
 
-Throughput benchmarks are a port of the caffeine [benchmarks](https://github.com/ben-manes/caffeine/blob/master/caffeine/src/jmh/java/com/github/benmanes/caffeine/cache/GetPutBenchmark.java) in Golang.
+Throughput benchmarks are a Go port of the caffeine [benchmarks](https://github.com/ben-manes/caffeine/blob/master/caffeine/src/jmh/java/com/github/benmanes/caffeine/cache/GetPutBenchmark.java).
 
 #### Read (100%)
 
-In this [benchmark](https://github.com/maypok86/benchmarks/blob/main/perf/bench_test.go) **8 threads** concurrently read from a cache configured with a maximum size.
+In this [benchmark](https://github.com/maypok86/benchmarks/blob/main/throughput/bench_test.go) **8 threads** concurrently read from a cache configured with a maximum size.
 
 <img width="60%" src="assets/results/reads=100,writes=0.png" alt="reads=100%,writes=0%" />
 
 #### Read (75%) / Write (25%)
 
-In this [benchmark](https://github.com/maypok86/benchmarks/blob/main/perf/bench_test.go) **6 threads** concurrently read from and **2 threads** write to a cache configured with a maximum size.
+In this [benchmark](https://github.com/maypok86/benchmarks/blob/main/throughput/bench_test.go) **6 threads** concurrently read from and **2 threads** write to a cache configured with a maximum size.
 
 <img width="60%" src="assets/results/reads=75,writes=25.png" alt="reads=75%,writes=25%" />
 
 #### Read (50%) / Write (50%)
 
-In this [benchmark](https://github.com/maypok86/benchmarks/blob/main/perf/bench_test.go) **4 threads** concurrently read from and **4 threads** write to a cache configured with a maximum size.
+In this [benchmark](https://github.com/maypok86/benchmarks/blob/main/throughput/bench_test.go) **4 threads** concurrently read from and **4 threads** write to a cache configured with a maximum size.
 
 <img width="60%" src="assets/results/reads=50,writes=50.png" alt="reads=50%,writes=50%" />
 
 #### Read (25%) / Write (75%)
 
-In this [benchmark](https://github.com/maypok86/benchmarks/blob/main/perf/bench_test.go) **2 threads** concurrently read from and **6 threads** write to a cache configured with a maximum size.
+In this [benchmark](https://github.com/maypok86/benchmarks/blob/main/throughput/bench_test.go) **2 threads** concurrently read from and **6 threads** write to a cache configured with a maximum size.
 
 <img width="60%" src="assets/results/reads=25,writes=75.png" alt="reads=25%,writes=75%" />
 
 #### Write (100%)
 
-In this [benchmark](https://github.com/maypok86/benchmarks/blob/main/perf/bench_test.go) **8 threads** concurrently write to a cache configured with a maximum size.
+In this [benchmark](https://github.com/maypok86/benchmarks/blob/main/throughput/bench_test.go) **8 threads** concurrently write to a cache configured with a maximum size.
 
 <img width="60%" src="assets/results/reads=0,writes=100.png" alt="reads=0%,writes=100%" />
 
-Otter shows fantastic speed under all loads except extreme write-heavy, but such a load is very rare for caches and usually indicates that the cache has a very small hit ratio.
+Otter shows fantastic speed under all workloads except extreme write-heavy, but such a workload is very rare for caches and usually indicates that the cache has a very small hit ratio.
 
 ### 🎯 Hit ratio <a id="hit-ratio" />
 
