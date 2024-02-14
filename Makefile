@@ -34,7 +34,7 @@ ci: lint test ## Run all the tests and code checks
 
 .PHONY: generate
 generate: ## Generate files for the project
-	go generate ./...
+	go run ./cmd/generator ./internal/generated/node
 
 .PHONY: clean
 clean: ## Remove temporary files
