@@ -17,26 +17,28 @@ package s3fifo
 import (
 	"testing"
 
-	"github.com/maypok86/otter/internal/node"
+	"github.com/maypok86/otter/internal/generated/node"
+	"github.com/maypok86/otter/internal/task"
 )
 
-func newNode(k int) *node.Node[int, int] {
-	n := node.New[int, int](k, k, 0, 1)
+func newNode(k int) node.Node[int, int] {
+	m := node.NewManager[int, int](node.Config{})
+	n := m.Create(k, k, 0, 1)
 	return n
 }
 
-func nodesToAddTasks(nodes []*node.Node[int, int]) []node.WriteTask[int, int] {
-	tasks := make([]node.WriteTask[int, int], 0, len(nodes))
+func nodesToAddTasks(nodes []node.Node[int, int]) []task.WriteTask[int, int] {
+	tasks := make([]task.WriteTask[int, int], 0, len(nodes))
 	for _, n := range nodes {
-		tasks = append(tasks, node.NewAddTask(n))
+		tasks = append(tasks, task.NewAddTask(n))
 	}
 	return tasks
 }
 
-func nodesToDeleteTasks(nodes []*node.Node[int, int]) []node.WriteTask[int, int] {
-	tasks := make([]node.WriteTask[int, int], 0, len(nodes))
+func nodesToDeleteTasks(nodes []node.Node[int, int]) []task.WriteTask[int, int] {
+	tasks := make([]task.WriteTask[int, int], 0, len(nodes))
 	for _, n := range nodes {
-		tasks = append(tasks, node.NewDeleteTask(n))
+		tasks = append(tasks, task.NewDeleteTask(n))
 	}
 	return tasks
 }
@@ -44,7 +46,7 @@ func nodesToDeleteTasks(nodes []*node.Node[int, int]) []node.WriteTask[int, int]
 func TestPolicy_ReadAndWrite(t *testing.T) {
 	n := newNode(2)
 	p := NewPolicy[int, int](10)
-	p.Write(nil, []node.WriteTask[int, int]{node.NewAddTask(n)})
+	p.Write(nil, []task.WriteTask[int, int]{task.NewAddTask(n)})
 	if !n.IsSmall() {
 		t.Fatalf("not valid node state: %+v", n)
 	}
@@ -53,12 +55,12 @@ func TestPolicy_ReadAndWrite(t *testing.T) {
 func TestPolicy_OneHitWonders(t *testing.T) {
 	p := NewPolicy[int, int](10)
 
-	oneHitWonders := make([]*node.Node[int, int], 0, 2)
+	oneHitWonders := make([]node.Node[int, int], 0, 2)
 	for i := 0; i < cap(oneHitWonders); i++ {
 		oneHitWonders = append(oneHitWonders, newNode(i+1))
 	}
 
-	popular := make([]*node.Node[int, int], 0, 8)
+	popular := make([]node.Node[int, int], 0, 8)
 	for i := 0; i < cap(popular); i++ {
 		popular = append(popular, newNode(i+3))
 	}
@@ -71,7 +73,7 @@ func TestPolicy_OneHitWonders(t *testing.T) {
 		p.Read(popular)
 	}
 
-	newNodes := make([]*node.Node[int, int], 0, 11)
+	newNodes := make([]node.Node[int, int], 0, 11)
 	for i := 0; i < cap(newNodes); i++ {
 		newNodes = append(newNodes, newNode(i+12))
 	}
@@ -102,18 +104,19 @@ func TestPolicy_Update(t *testing.T) {
 	p := NewPolicy[int, int](100)
 
 	n := newNode(1)
-	n1 := node.New[int, int](1, 1, 0, n.Cost()+8)
+	m := node.NewManager[int, int](node.Config{WithCost: true})
+	n1 := m.Create(1, 1, 0, n.Cost()+8)
 
-	p.Write(nil, []node.WriteTask[int, int]{
-		node.NewAddTask(n),
-		node.NewUpdateTask(n1, n),
+	p.Write(nil, []task.WriteTask[int, int]{
+		task.NewAddTask(n),
+		task.NewUpdateTask(n1, n),
 	})
 
-	p.Read([]*node.Node[int, int]{n1, n1})
+	p.Read([]node.Node[int, int]{n1, n1})
 
-	n2 := node.New[int, int](2, 1, 0, 92)
-	deleted := p.Write(nil, []node.WriteTask[int, int]{
-		node.NewAddTask(n2),
+	n2 := m.Create(2, 1, 0, 92)
+	deleted := p.Write(nil, []task.WriteTask[int, int]{
+		task.NewAddTask(n2),
 	})
 
 	if !n1.IsMain() {
@@ -124,9 +127,9 @@ func TestPolicy_Update(t *testing.T) {
 		t.Fatalf("inserted node should be evicted: %+v", n2)
 	}
 
-	n3 := node.New[int, int](1, 1, 0, 109)
-	deleted = p.Write(nil, []node.WriteTask[int, int]{
-		node.NewUpdateTask(n3, n1),
+	n3 := m.Create(1, 1, 0, 109)
+	deleted = p.Write(nil, []task.WriteTask[int, int]{
+		task.NewUpdateTask(n3, n1),
 	})
 	if n3.IsSmall() || n3.IsMain() || len(deleted) != 1 || deleted[0] != n3 {
 		t.Fatalf("updated node should be evicted: %+v", n3)

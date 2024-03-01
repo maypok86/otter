@@ -19,7 +19,7 @@ import (
 	"github.com/dolthub/swiss"
 	"github.com/gammazero/deque"
 
-	"github.com/maypok86/otter/internal/node"
+	"github.com/maypok86/otter/internal/generated/node"
 )
 
 type ghost[K comparable, V any] struct {
@@ -39,12 +39,12 @@ func newGhost[K comparable, V any](main *main[K, V]) *ghost[K, V] {
 	}
 }
 
-func (g *ghost[K, V]) isGhost(n *node.Node[K, V]) bool {
+func (g *ghost[K, V]) isGhost(n node.Node[K, V]) bool {
 	_, ok := g.m.Get(g.hasher.Hash(n.Key()))
 	return ok
 }
 
-func (g *ghost[K, V]) insert(deleted []*node.Node[K, V], n *node.Node[K, V]) []*node.Node[K, V] {
+func (g *ghost[K, V]) insert(deleted []node.Node[K, V], n node.Node[K, V]) []node.Node[K, V] {
 	deleted = append(deleted, n)
 
 	h := g.hasher.Hash(n.Key())

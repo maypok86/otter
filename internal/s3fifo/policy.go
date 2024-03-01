@@ -15,7 +15,8 @@
 package s3fifo
 
 import (
-	"github.com/maypok86/otter/internal/node"
+	"github.com/maypok86/otter/internal/generated/node"
+	"github.com/maypok86/otter/internal/task"
 )
 
 // Policy is an eviction policy based on S3-FIFO eviction algorithm
@@ -48,13 +49,13 @@ func NewPolicy[K comparable, V any](maxCost uint32) *Policy[K, V] {
 }
 
 // Read updates the eviction policy based on node accesses.
-func (p *Policy[K, V]) Read(nodes []*node.Node[K, V]) {
+func (p *Policy[K, V]) Read(nodes []node.Node[K, V]) {
 	for _, n := range nodes {
 		n.IncrementFrequency()
 	}
 }
 
-func (p *Policy[K, V]) insert(deleted []*node.Node[K, V], n *node.Node[K, V]) []*node.Node[K, V] {
+func (p *Policy[K, V]) insert(deleted []node.Node[K, V], n node.Node[K, V]) []node.Node[K, V] {
 	if p.ghost.isGhost(n) {
 		p.main.insert(n)
 		n.ResetFrequency()
@@ -69,7 +70,7 @@ func (p *Policy[K, V]) insert(deleted []*node.Node[K, V], n *node.Node[K, V]) []
 	return deleted
 }
 
-func (p *Policy[K, V]) evict(deleted []*node.Node[K, V]) []*node.Node[K, V] {
+func (p *Policy[K, V]) evict(deleted []node.Node[K, V]) []node.Node[K, V] {
 	if p.small.cost >= p.maxCost/10 {
 		return p.small.evict(deleted)
 	}
@@ -83,21 +84,21 @@ func (p *Policy[K, V]) isFull() bool {
 
 // Write updates the eviction policy based on node updates.
 func (p *Policy[K, V]) Write(
-	deleted []*node.Node[K, V],
-	tasks []node.WriteTask[K, V],
-) []*node.Node[K, V] {
-	for _, task := range tasks {
-		n := task.Node()
+	deleted []node.Node[K, V],
+	tasks []task.WriteTask[K, V],
+) []node.Node[K, V] {
+	for _, t := range tasks {
+		n := t.Node()
 
 		// already deleted in map
-		if task.IsDelete() {
-			p.delete(task.Node())
+		if t.IsDelete() {
+			p.delete(t.Node())
 			continue
 		}
 
-		if task.IsUpdate() {
+		if t.IsUpdate() {
 			// delete old node
-			p.delete(task.OldNode())
+			p.delete(t.OldNode())
 			// insert new node
 		}
 
@@ -108,13 +109,13 @@ func (p *Policy[K, V]) Write(
 }
 
 // Delete deletes nodes from the eviction policy.
-func (p *Policy[K, V]) Delete(buffer []*node.Node[K, V]) {
+func (p *Policy[K, V]) Delete(buffer []node.Node[K, V]) {
 	for _, n := range buffer {
 		p.delete(n)
 	}
 }
 
-func (p *Policy[K, V]) delete(n *node.Node[K, V]) {
+func (p *Policy[K, V]) delete(n node.Node[K, V]) {
 	if n.IsSmall() {
 		p.small.remove(n)
 		return

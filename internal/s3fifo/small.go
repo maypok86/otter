@@ -15,11 +15,11 @@
 package s3fifo
 
 import (
-	"github.com/maypok86/otter/internal/node"
+	"github.com/maypok86/otter/internal/generated/node"
 )
 
 type small[K comparable, V any] struct {
-	q       *node.Queue[K, V]
+	q       *queue[K, V]
 	main    *main[K, V]
 	ghost   *ghost[K, V]
 	cost    uint32
@@ -32,25 +32,25 @@ func newSmall[K comparable, V any](
 	ghost *ghost[K, V],
 ) *small[K, V] {
 	return &small[K, V]{
-		q:       node.NewQueue[K, V](),
+		q:       newQueue[K, V](),
 		main:    main,
 		ghost:   ghost,
 		maxCost: maxCost,
 	}
 }
 
-func (s *small[K, V]) insert(n *node.Node[K, V]) {
-	s.q.Push(n)
+func (s *small[K, V]) insert(n node.Node[K, V]) {
+	s.q.push(n)
 	n.MarkSmall()
 	s.cost += n.Cost()
 }
 
-func (s *small[K, V]) evict(deleted []*node.Node[K, V]) []*node.Node[K, V] {
+func (s *small[K, V]) evict(deleted []node.Node[K, V]) []node.Node[K, V] {
 	if s.cost == 0 {
 		return deleted
 	}
 
-	n := s.q.Pop()
+	n := s.q.pop()
 	s.cost -= n.Cost()
 	n.Unmark()
 	if n.IsExpired() {
@@ -69,17 +69,17 @@ func (s *small[K, V]) evict(deleted []*node.Node[K, V]) []*node.Node[K, V] {
 	return s.ghost.insert(deleted, n)
 }
 
-func (s *small[K, V]) remove(n *node.Node[K, V]) {
+func (s *small[K, V]) remove(n node.Node[K, V]) {
 	s.cost -= n.Cost()
 	n.Unmark()
-	s.q.Remove(n)
+	s.q.remove(n)
 }
 
 func (s *small[K, V]) length() int {
-	return s.q.Len()
+	return s.q.length()
 }
 
 func (s *small[K, V]) clear() {
-	s.q.Clear()
+	s.q.clear()
 	s.cost = 0
 }

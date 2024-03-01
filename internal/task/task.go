@@ -12,7 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package node
+package task
+
+import (
+	"github.com/maypok86/otter/internal/generated/node"
+)
 
 // reason represents the reason for writing the item to the cache.
 type reason uint8
@@ -28,13 +32,13 @@ const (
 // WriteTask is a set of information to update the cache:
 // node, reason for write, difference after node cost change, etc.
 type WriteTask[K comparable, V any] struct {
-	n           *Node[K, V]
-	oldNode     *Node[K, V]
+	n           node.Node[K, V]
+	oldNode     node.Node[K, V]
 	writeReason reason
 }
 
 // NewAddTask creates a task to add a node to policies.
-func NewAddTask[K comparable, V any](n *Node[K, V]) WriteTask[K, V] {
+func NewAddTask[K comparable, V any](n node.Node[K, V]) WriteTask[K, V] {
 	return WriteTask[K, V]{
 		n:           n,
 		writeReason: addReason,
@@ -42,7 +46,7 @@ func NewAddTask[K comparable, V any](n *Node[K, V]) WriteTask[K, V] {
 }
 
 // NewDeleteTask creates a task to delete a node from policies.
-func NewDeleteTask[K comparable, V any](n *Node[K, V]) WriteTask[K, V] {
+func NewDeleteTask[K comparable, V any](n node.Node[K, V]) WriteTask[K, V] {
 	return WriteTask[K, V]{
 		n:           n,
 		writeReason: deleteReason,
@@ -50,7 +54,7 @@ func NewDeleteTask[K comparable, V any](n *Node[K, V]) WriteTask[K, V] {
 }
 
 // NewUpdateTask creates a task to update the node in the policies.
-func NewUpdateTask[K comparable, V any](n, oldNode *Node[K, V]) WriteTask[K, V] {
+func NewUpdateTask[K comparable, V any](n, oldNode node.Node[K, V]) WriteTask[K, V] {
 	return WriteTask[K, V]{
 		n:           n,
 		oldNode:     oldNode,
@@ -73,12 +77,12 @@ func NewCloseTask[K comparable, V any]() WriteTask[K, V] {
 }
 
 // Node returns the node contained in the task. If node was not specified, it returns nil.
-func (t *WriteTask[K, V]) Node() *Node[K, V] {
+func (t *WriteTask[K, V]) Node() node.Node[K, V] {
 	return t.n
 }
 
 // OldNode returns the old node contained in the task. If old node was not specified, it returns nil.
-func (t *WriteTask[K, V]) OldNode() *Node[K, V] {
+func (t *WriteTask[K, V]) OldNode() node.Node[K, V] {
 	return t.oldNode
 }
 

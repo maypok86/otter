@@ -245,6 +245,12 @@ func (g *generator) printFunctions() {
 
 	g.p("func (n *%s[K, V]) SetPrev(v Node[K, V]) {", g.structName)
 	g.in()
+	g.p("if v == nil {")
+	g.in()
+	g.p("n.prev = nil")
+	g.p("return")
+	g.out()
+	g.p("}")
 	g.p("n.prev = (*%s[K, V])(v.AsPointer())", g.structName)
 	g.out()
 	g.p("}")
@@ -259,6 +265,12 @@ func (g *generator) printFunctions() {
 
 	g.p("func (n *%s[K, V]) SetNext(v Node[K, V]) {", g.structName)
 	g.in()
+	g.p("if v == nil {")
+	g.in()
+	g.p("n.next = nil")
+	g.p("return")
+	g.out()
+	g.p("}")
 	g.p("n.next = (*%s[K, V])(v.AsPointer())", g.structName)
 	g.out()
 	g.p("}")
@@ -278,6 +290,12 @@ func (g *generator) printFunctions() {
 	g.p("func (n *%s[K, V]) SetPrevExp(v Node[K, V]) {", g.structName)
 	g.in()
 	if g.features[expiration] {
+		g.p("if v == nil {")
+		g.in()
+		g.p("n.prevExp = nil")
+		g.p("return")
+		g.out()
+		g.p("}")
 		g.p("n.prevExp = (*%s[K, V])(v.AsPointer())", g.structName)
 	} else {
 		g.p("panic(\"not implemented\")")
@@ -300,6 +318,12 @@ func (g *generator) printFunctions() {
 	g.p("func (n *%s[K, V]) SetNextExp(v Node[K, V]) {", g.structName)
 	g.in()
 	if g.features[expiration] {
+		g.p("if v == nil {")
+		g.in()
+		g.p("n.nextExp = nil")
+		g.p("return")
+		g.out()
+		g.p("}")
 		g.p("n.nextExp = (*%s[K, V])(v.AsPointer())", g.structName)
 	} else {
 		g.p("panic(\"not implemented\")")
@@ -484,6 +508,16 @@ type Node[K comparable, V any] interface {
 	IsMain() bool
 	// Unmark sets the status to unknown.
 	Unmark()
+}
+
+func Equals[K comparable, V any](a, b Node[K, V]) bool {
+	if a == nil {
+		return b == nil || b.AsPointer() == nil
+	}
+	if b == nil {
+		return a.AsPointer() == nil
+	}
+	return a.AsPointer() == b.AsPointer()
 }
 
 type Config struct {

@@ -19,6 +19,7 @@ import (
 	"sync/atomic"
 	"unsafe"
 
+	"github.com/maypok86/otter/internal/generated/node"
 	"github.com/maypok86/otter/internal/xruntime"
 )
 
@@ -29,8 +30,8 @@ const (
 )
 
 // PolicyBuffers is the set of buffers returned by the lossy buffer.
-type PolicyBuffers[T any] struct {
-	Returned []*T
+type PolicyBuffers[K comparable, V any] struct {
+	Returned []node.Node[K, V]
 }
 
 // Buffer is a circular ring buffer stores the elements being transferred by the producers to the consumer.
@@ -46,24 +47,26 @@ type PolicyBuffers[T any] struct {
 // and the next read count are lazily set.
 //
 // This implementation is striped to further increase concurrency.
-type Buffer[T any] struct {
+type Buffer[K comparable, V any] struct {
 	head                 atomic.Uint64
 	headPadding          [xruntime.CacheLineSize - unsafe.Sizeof(atomic.Uint64{})]byte
 	tail                 atomic.Uint64
 	tailPadding          [xruntime.CacheLineSize - unsafe.Sizeof(atomic.Uint64{})]byte
+	nodeManager          *node.Manager[K, V]
 	returned             unsafe.Pointer
-	returnedPadding      [xruntime.CacheLineSize - 8]byte
+	returnedPadding      [xruntime.CacheLineSize - 2*8]byte
 	policyBuffers        unsafe.Pointer
 	returnedSlicePadding [xruntime.CacheLineSize - 8]byte
 	buffer               [capacity]unsafe.Pointer
 }
 
 // New creates a new lossy Buffer.
-func New[T any]() *Buffer[T] {
-	pb := &PolicyBuffers[T]{
-		Returned: make([]*T, 0, capacity),
+func New[K comparable, V any](nodeManager *node.Manager[K, V]) *Buffer[K, V] {
+	pb := &PolicyBuffers[K, V]{
+		Returned: make([]node.Node[K, V], 0, capacity),
 	}
-	b := &Buffer[T]{
+	b := &Buffer[K, V]{
+		nodeManager:   nodeManager,
 		policyBuffers: unsafe.Pointer(pb),
 	}
 	b.returned = b.policyBuffers
@@ -73,7 +76,7 @@ func New[T any]() *Buffer[T] {
 // Add lazily publishes the item to the consumer.
 //
 // item may be lost due to contention.
-func (b *Buffer[T]) Add(item *T) *PolicyBuffers[T] {
+func (b *Buffer[K, V]) Add(n node.Node[K, V]) *PolicyBuffers[K, V] {
 	head := b.head.Load()
 	tail := b.tail.Load()
 	size := tail - head
@@ -84,7 +87,7 @@ func (b *Buffer[T]) Add(item *T) *PolicyBuffers[T] {
 	if b.tail.CompareAndSwap(tail, tail+1) {
 		// success
 		index := int(tail & mask)
-		atomic.StorePointer(&b.buffer[index], unsafe.Pointer(item))
+		atomic.StorePointer(&b.buffer[index], n.AsPointer())
 		if size == capacity-1 {
 			// try return new buffer
 			if !atomic.CompareAndSwapPointer(&b.returned, b.policyBuffers, nil) {
@@ -92,13 +95,13 @@ func (b *Buffer[T]) Add(item *T) *PolicyBuffers[T] {
 				return nil
 			}
 
-			pb := (*PolicyBuffers[T])(b.policyBuffers)
+			pb := (*PolicyBuffers[K, V])(b.policyBuffers)
 			for i := 0; i < capacity; i++ {
 				index := int(head & mask)
-				v := (*T)(atomic.LoadPointer(&b.buffer[index]))
+				v := atomic.LoadPointer(&b.buffer[index])
 				if v != nil {
 					// published
-					pb.Returned = append(pb.Returned, v)
+					pb.Returned = append(pb.Returned, b.nodeManager.FromPointer(v))
 					// release
 					atomic.StorePointer(&b.buffer[index], nil)
 				}
@@ -115,8 +118,8 @@ func (b *Buffer[T]) Add(item *T) *PolicyBuffers[T] {
 }
 
 // Free returns the processed buffer back and also clears it.
-func (b *Buffer[T]) Free() {
-	pb := (*PolicyBuffers[T])(b.policyBuffers)
+func (b *Buffer[K, V]) Free() {
+	pb := (*PolicyBuffers[K, V])(b.policyBuffers)
 	for i := 0; i < len(pb.Returned); i++ {
 		pb.Returned[i] = nil
 	}
@@ -125,7 +128,7 @@ func (b *Buffer[T]) Free() {
 }
 
 // Clear clears the lossy Buffer and returns it to the default state.
-func (b *Buffer[T]) Clear() {
+func (b *Buffer[K, V]) Clear() {
 	for !atomic.CompareAndSwapPointer(&b.returned, b.policyBuffers, nil) {
 		runtime.Gosched()
 	}

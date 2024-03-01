@@ -30,24 +30,21 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/maypok86/otter/internal/node"
+	"github.com/maypok86/otter/internal/generated/node"
 	"github.com/maypok86/otter/internal/xruntime"
 )
-
-func newNode[K comparable, V any](key K, value V) *node.Node[K, V] {
-	return node.New[K, V](key, value, 0, 1)
-}
 
 func TestMap_PaddedBucketSize(t *testing.T) {
 	size := unsafe.Sizeof(paddedBucket{})
 	if size != xruntime.CacheLineSize {
-		t.Fatalf("size of 128B (two cache lines) is expected, got: %d", size)
+		t.Fatalf("size of 64B (one cache line) is expected, got: %d", size)
 	}
 }
 
 func TestMap_EmptyStringKey(t *testing.T) {
-	m := New[string, string]()
-	m.Set(newNode[string, string]("", "foobar"))
+	nm := node.NewManager[string, string](node.Config{})
+	m := New(nm)
+	m.Set(nm.Create("", "foobar", 0, 1))
 	n, ok := m.Get("")
 	if !ok {
 		t.Fatal("value was expected")
@@ -58,8 +55,9 @@ func TestMap_EmptyStringKey(t *testing.T) {
 }
 
 func TestMap_SetNilValue(t *testing.T) {
-	m := New[string, *struct{}]()
-	m.Set(newNode[string, *struct{}]("foo", nil))
+	nm := node.NewManager[string, *struct{}](node.Config{})
+	m := New(nm)
+	m.Set(nm.Create("foo", nil, 0, 1))
 	n, ok := m.Get("foo")
 	if !ok {
 		t.Fatal("nil value was expected")
@@ -71,9 +69,10 @@ func TestMap_SetNilValue(t *testing.T) {
 
 func TestMap_Set(t *testing.T) {
 	const numberOfNodes = 128
-	m := New[string, int]()
+	nm := node.NewManager[string, int](node.Config{})
+	m := New(nm)
 	for i := 0; i < numberOfNodes; i++ {
-		m.Set(newNode[string, int](strconv.Itoa(i), i))
+		m.Set(nm.Create(strconv.Itoa(i), i, 0, 1))
 	}
 	for i := 0; i < numberOfNodes; i++ {
 		n, ok := m.Get(strconv.Itoa(i))
@@ -88,15 +87,16 @@ func TestMap_Set(t *testing.T) {
 
 func TestMap_SetIfAbsent(t *testing.T) {
 	const numberOfNodes = 128
-	m := New[string, int]()
+	nm := node.NewManager[string, int](node.Config{})
+	m := New(nm)
 	for i := 0; i < numberOfNodes; i++ {
-		res := m.SetIfAbsent(newNode[string, int](strconv.Itoa(i), i))
+		res := m.SetIfAbsent(nm.Create(strconv.Itoa(i), i, 0, 1))
 		if res != nil {
 			t.Fatalf("set was dropped. got: %+v", res)
 		}
 	}
 	for i := 0; i < numberOfNodes; i++ {
-		n := newNode[string, int](strconv.Itoa(i), i)
+		n := nm.Create(strconv.Itoa(i), i, 0, 1)
 		res := m.SetIfAbsent(n)
 		if res == nil {
 			t.Fatalf("set was not dropped. node that was set: %+v", res)
@@ -122,7 +122,8 @@ type hasher struct {
 
 func TestMap_SetWithCollisions(t *testing.T) {
 	const numNodes = 1000
-	m := NewWithSize[int, int](numNodes)
+	nm := node.NewManager[int, int](node.Config{})
+	m := NewWithSize(nm, numNodes)
 	table := (*table[int])(atomic.LoadPointer(&m.table))
 	hasher := (*hasher)((unsafe.Pointer)(&table.hasher))
 	hasher.hash = func(ptr unsafe.Pointer, seed uintptr) uintptr {
@@ -131,7 +132,7 @@ func TestMap_SetWithCollisions(t *testing.T) {
 		return 42
 	}
 	for i := 0; i < numNodes; i++ {
-		m.Set(newNode(i, i))
+		m.Set(nm.Create(i, i, 0, 1))
 	}
 	for i := 0; i < numNodes; i++ {
 		v, ok := m.Get(i)
@@ -146,9 +147,10 @@ func TestMap_SetWithCollisions(t *testing.T) {
 
 func TestMap_SetThenDelete(t *testing.T) {
 	const numberOfNodes = 1000
-	m := New[string, int]()
+	nm := node.NewManager[string, int](node.Config{})
+	m := New(nm)
 	for i := 0; i < numberOfNodes; i++ {
-		m.Set(newNode[string, int](strconv.Itoa(i), i))
+		m.Set(nm.Create(strconv.Itoa(i), i, 0, 1))
 	}
 	for i := 0; i < numberOfNodes; i++ {
 		m.Delete(strconv.Itoa(i))
@@ -160,13 +162,14 @@ func TestMap_SetThenDelete(t *testing.T) {
 
 func TestMap_Range(t *testing.T) {
 	const numNodes = 1000
-	m := New[string, int]()
+	nm := node.NewManager[string, int](node.Config{})
+	m := New(nm)
 	for i := 0; i < numNodes; i++ {
-		m.Set(newNode(strconv.Itoa(i), i))
+		m.Set(nm.Create(strconv.Itoa(i), i, 0, 1))
 	}
 	iters := 0
 	met := make(map[string]int)
-	m.Range(func(n *node.Node[string, int]) bool {
+	m.Range(func(n node.Node[string, int]) bool {
 		if n.Key() != strconv.Itoa(n.Value()) {
 			t.Fatalf("got unexpected key/value for iteration %d: %v/%v", iters, n.Key(), n.Value())
 			return false
@@ -186,12 +189,13 @@ func TestMap_Range(t *testing.T) {
 }
 
 func TestMap_RangeFalseReturned(t *testing.T) {
-	m := New[string, int]()
+	nm := node.NewManager[string, int](node.Config{})
+	m := New(nm)
 	for i := 0; i < 100; i++ {
-		m.Set(newNode(strconv.Itoa(i), i))
+		m.Set(nm.Create(strconv.Itoa(i), i, 0, 1))
 	}
 	iters := 0
-	m.Range(func(n *node.Node[string, int]) bool {
+	m.Range(func(n node.Node[string, int]) bool {
 		iters++
 		return iters != 13
 	})
@@ -202,11 +206,12 @@ func TestMap_RangeFalseReturned(t *testing.T) {
 
 func TestMap_RangeNestedDelete(t *testing.T) {
 	const numNodes = 256
-	m := New[string, int]()
+	nm := node.NewManager[string, int](node.Config{})
+	m := New(nm)
 	for i := 0; i < numNodes; i++ {
-		m.Set(newNode(strconv.Itoa(i), i))
+		m.Set(nm.Create(strconv.Itoa(i), i, 0, 1))
 	}
-	m.Range(func(n *node.Node[string, int]) bool {
+	m.Range(func(n node.Node[string, int]) bool {
 		m.Delete(n.Key())
 		return true
 	})
@@ -219,14 +224,15 @@ func TestMap_RangeNestedDelete(t *testing.T) {
 
 func TestMap_Size(t *testing.T) {
 	const numberOfNodes = 1000
-	m := New[string, int]()
+	nm := node.NewManager[string, int](node.Config{})
+	m := New(nm)
 	size := m.Size()
 	if size != 0 {
 		t.Fatalf("zero size expected: %d", size)
 	}
 	expectedSize := 0
 	for i := 0; i < numberOfNodes; i++ {
-		m.Set(newNode[string, int](strconv.Itoa(i), i))
+		m.Set(nm.Create(strconv.Itoa(i), i, 0, 1))
 		expectedSize++
 		size := m.Size()
 		if size != expectedSize {
@@ -245,9 +251,10 @@ func TestMap_Size(t *testing.T) {
 
 func TestMap_Clear(t *testing.T) {
 	const numberOfNodes = 1000
-	m := New[string, int]()
+	nm := node.NewManager[string, int](node.Config{})
+	m := New(nm)
 	for i := 0; i < numberOfNodes; i++ {
-		m.Set(newNode[string, int](strconv.Itoa(i), i))
+		m.Set(nm.Create(strconv.Itoa(i), i, 0, 1))
 	}
 	size := m.Size()
 	if size != numberOfNodes {
@@ -266,7 +273,7 @@ func parallelSeqSetter(t *testing.T, m *Map[string, int], storers, iterations, n
 	for i := 0; i < iterations; i++ {
 		for j := 0; j < nodes; j++ {
 			if storers == 0 || j%storers == 0 {
-				m.Set(newNode[string, int](strconv.Itoa(j), j))
+				m.Set(m.nodeManager.Create(strconv.Itoa(j), j, 0, 1))
 				n, ok := m.Get(strconv.Itoa(j))
 				if !ok {
 					t.Errorf("value was not found for %d", j)
@@ -286,7 +293,8 @@ func TestMap_ParallelSets(t *testing.T) {
 	const storers = 4
 	const iterations = 10_000
 	const nodes = 100
-	m := New[string, int]()
+	nm := node.NewManager[string, int](node.Config{})
+	m := New(nm)
 
 	wg := &sync.WaitGroup{}
 	wg.Add(storers)
@@ -312,7 +320,7 @@ func parallelRandSetter(t *testing.T, m *Map[string, int], iteratinos, nodes int
 	r := rand.New(rand.NewSource(time.Now().UnixNano()))
 	for i := 0; i < iteratinos; i++ {
 		j := r.Intn(nodes)
-		m.Set(newNode[string, int](strconv.Itoa(j), j))
+		m.Set(m.nodeManager.Create(strconv.Itoa(j), j, 0, 1))
 	}
 	wg.Done()
 }
@@ -346,7 +354,8 @@ func parallelGetter(t *testing.T, m *Map[string, int], iterations, nodes int, wg
 func TestMap_ParallelGet(t *testing.T) {
 	const iterations = 100_000
 	const nodes = 100
-	m := New[string, int]()
+	nm := node.NewManager[string, int](node.Config{})
+	m := New(nm)
 
 	wg := &sync.WaitGroup{}
 	wg.Add(3)
@@ -361,7 +370,8 @@ func TestMap_ParallelSetsAndDeletes(t *testing.T) {
 	const workers = 2
 	const iterations = 100_000
 	const nodes = 1000
-	m := New[string, int]()
+	nm := node.NewManager[string, int](node.Config{})
+	m := New(nm)
 	wg := &sync.WaitGroup{}
 	wg.Add(2 * workers)
 	for i := 0; i < workers; i++ {
@@ -377,7 +387,7 @@ func parallelTypedRangeSetter(t *testing.T, m *Map[int, int], numNodes int, stop
 
 	for {
 		for i := 0; i < numNodes; i++ {
-			m.Set(newNode(i, i))
+			m.Set(m.nodeManager.Create(i, i, 0, 1))
 		}
 		if atomic.LoadInt64(stopFlag) != 0 {
 			break
@@ -402,9 +412,10 @@ func parallelTypedRangeDeleter(t *testing.T, m *Map[int, int], numNodes int, sto
 
 func TestMap_ParallelRange(t *testing.T) {
 	const numNodes = 10_000
-	m := New[int, int]()
+	nm := node.NewManager[int, int](node.Config{})
+	m := New(nm)
 	for i := 0; i < numNodes; i++ {
-		m.Set(newNode(i, i))
+		m.Set(nm.Create(i, i, 0, 1))
 	}
 	// Start goroutines that would be storing and deleting items in parallel.
 	cdone := make(chan bool)
@@ -413,7 +424,7 @@ func TestMap_ParallelRange(t *testing.T) {
 	go parallelTypedRangeDeleter(t, m, numNodes, &stopFlag, cdone)
 	// Iterate the map and verify that no duplicate keys were met.
 	met := make(map[int]int)
-	m.Range(func(n *node.Node[int, int]) bool {
+	m.Range(func(n node.Node[int, int]) bool {
 		if n.Key() != n.Value() {
 			t.Fatalf("got unexpected value for key %d: %d", n.Key(), n.Value())
 			return false

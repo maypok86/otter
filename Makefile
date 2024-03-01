@@ -23,7 +23,9 @@ test: test.unit ## Run all the tests
 .PHONY: test.unit
 test.unit: ## Run all unit tests
 	@echo 'mode: atomic' > coverage.txt
-	go test -covermode=atomic -coverprofile=coverage.txt -coverpkg=./... -v -race ./...
+	go test -covermode=atomic -coverprofile=coverage.txt.tmp -coverpkg=./... -v -race ./...
+	cat coverage.txt.tmp | grep -v "/generated/" > coverage.txt
+	rm coverage.txt.tmp
 
 .PHONY: cover
 cover: test.unit ## Run all the tests and opens the coverage report

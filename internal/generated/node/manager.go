@@ -66,6 +66,16 @@ type Node[K comparable, V any] interface {
 	Unmark()
 }
 
+func Equals[K comparable, V any](a, b Node[K, V]) bool {
+	if a == nil {
+		return b == nil || b.AsPointer() == nil
+	}
+	if b == nil {
+		return a.AsPointer() == nil
+	}
+	return a.AsPointer() == b.AsPointer()
+}
+
 type Config struct {
 	WithExpiration bool
 	WithCost       bool
