@@ -49,6 +49,10 @@ func (n *B[K, V]) Prev() Node[K, V] {
 }
 
 func (n *B[K, V]) SetPrev(v Node[K, V]) {
+	if v == nil {
+		n.prev = nil
+		return
+	}
 	n.prev = (*B[K, V])(v.AsPointer())
 }
 
@@ -57,6 +61,10 @@ func (n *B[K, V]) Next() Node[K, V] {
 }
 
 func (n *B[K, V]) SetNext(v Node[K, V]) {
+	if v == nil {
+		n.next = nil
+		return
+	}
 	n.next = (*B[K, V])(v.AsPointer())
 }
 

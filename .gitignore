@@ -15,6 +15,7 @@
 # vendor/
 
 /.idea/
+*.tmp
 *coverage.txt
 *lint.txt
 **/bin/

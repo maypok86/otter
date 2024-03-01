@@ -56,6 +56,10 @@ func (n *BE[K, V]) Prev() Node[K, V] {
 }
 
 func (n *BE[K, V]) SetPrev(v Node[K, V]) {
+	if v == nil {
+		n.prev = nil
+		return
+	}
 	n.prev = (*BE[K, V])(v.AsPointer())
 }
 
@@ -64,6 +68,10 @@ func (n *BE[K, V]) Next() Node[K, V] {
 }
 
 func (n *BE[K, V]) SetNext(v Node[K, V]) {
+	if v == nil {
+		n.next = nil
+		return
+	}
 	n.next = (*BE[K, V])(v.AsPointer())
 }
 
@@ -72,6 +80,10 @@ func (n *BE[K, V]) PrevExp() Node[K, V] {
 }
 
 func (n *BE[K, V]) SetPrevExp(v Node[K, V]) {
+	if v == nil {
+		n.prevExp = nil
+		return
+	}
 	n.prevExp = (*BE[K, V])(v.AsPointer())
 }
 
@@ -80,6 +92,10 @@ func (n *BE[K, V]) NextExp() Node[K, V] {
 }
 
 func (n *BE[K, V]) SetNextExp(v Node[K, V]) {
+	if v == nil {
+		n.nextExp = nil
+		return
+	}
 	n.nextExp = (*BE[K, V])(v.AsPointer())
 }
 

@@ -17,7 +17,7 @@ import (
 
 	"github.com/dolthub/maphash"
 
-	"github.com/maypok86/otter/internal/node"
+	"github.com/maypok86/otter/internal/generated/node"
 	"github.com/maypok86/otter/internal/xmath"
 	"github.com/maypok86/otter/internal/xruntime"
 )
@@ -63,6 +63,7 @@ const (
 type Map[K comparable, V any] struct {
 	table unsafe.Pointer
 
+	nodeManager *node.Manager[K, V]
 	// only used along with resizeCond
 	resizeMutex sync.Mutex
 	// used to wake up resize waiters (concurrent modifications)
@@ -123,17 +124,19 @@ type paddedCounter struct {
 // NewWithSize creates a new Map instance with capacity enough
 // to hold size nodes. If size is zero or negative, the value
 // is ignored.
-func NewWithSize[K comparable, V any](size int) *Map[K, V] {
-	return newMap[K, V](size)
+func NewWithSize[K comparable, V any](nodeManager *node.Manager[K, V], size int) *Map[K, V] {
+	return newMap[K, V](nodeManager, size)
 }
 
 // New creates a new Map instance.
-func New[K comparable, V any]() *Map[K, V] {
-	return newMap[K, V](minNodeCount)
+func New[K comparable, V any](nodeManager *node.Manager[K, V]) *Map[K, V] {
+	return newMap[K, V](nodeManager, minNodeCount)
 }
 
-func newMap[K comparable, V any](size int) *Map[K, V] {
-	m := &Map[K, V]{}
+func newMap[K comparable, V any](nodeManager *node.Manager[K, V], size int) *Map[K, V] {
+	m := &Map[K, V]{
+		nodeManager: nodeManager,
+	}
 	m.resizeCond = *sync.NewCond(&m.resizeMutex)
 	var t *table[K]
 	if size <= minNodeCount {
@@ -165,10 +168,10 @@ func newTable[K comparable](bucketCount int, prevHasher maphash.Hasher[K]) *tabl
 	return t
 }
 
-// Get returns the *node.Node stored in the map for a key, or nil if no node is present.
+// Get returns the node.Node stored in the map for a key, or nil if no node is present.
 //
 // The ok result indicates whether node was found in the map.
-func (m *Map[K, V]) Get(key K) (got *node.Node[K, V], ok bool) {
+func (m *Map[K, V]) Get(key K) (got node.Node[K, V], ok bool) {
 	t := (*table[K])(atomic.LoadPointer(&m.table))
 	hash := t.calcShiftHash(key)
 	bucketIdx := hash & t.mask
@@ -187,7 +190,7 @@ func (m *Map[K, V]) Get(key K) (got *node.Node[K, V], ok bool) {
 				// concurrent write in this node
 				continue
 			}
-			n := (*node.Node[K, V])(nodePtr)
+			n := m.nodeManager.FromPointer(nodePtr)
 			if key != n.Key() {
 				continue
 			}
@@ -202,20 +205,20 @@ func (m *Map[K, V]) Get(key K) (got *node.Node[K, V], ok bool) {
 	}
 }
 
-// Set sets the *node.Node for the key.
+// Set sets the node.Node for the key.
 //
 // Returns the evicted node or nil if the node was inserted.
-func (m *Map[K, V]) Set(n *node.Node[K, V]) *node.Node[K, V] {
+func (m *Map[K, V]) Set(n node.Node[K, V]) node.Node[K, V] {
 	return m.set(n, false)
 }
 
-// SetIfAbsent sets the *node.Node if the specified key is not already associated with a value (or is mapped to null)
+// SetIfAbsent sets the node.Node if the specified key is not already associated with a value (or is mapped to null)
 // associates it with the given value and returns null, else returns the current node.
-func (m *Map[K, V]) SetIfAbsent(n *node.Node[K, V]) *node.Node[K, V] {
+func (m *Map[K, V]) SetIfAbsent(n node.Node[K, V]) node.Node[K, V] {
 	return m.set(n, true)
 }
 
-func (m *Map[K, V]) set(n *node.Node[K, V], onlyIfAbsent bool) *node.Node[K, V] {
+func (m *Map[K, V]) set(n node.Node[K, V], onlyIfAbsent bool) node.Node[K, V] {
 	for {
 	RETRY:
 		var (
@@ -255,7 +258,7 @@ func (m *Map[K, V]) set(n *node.Node[K, V], onlyIfAbsent bool) *node.Node[K, V] 
 				if h != hash {
 					continue
 				}
-				prev := (*node.Node[K, V])(b.nodes[i])
+				prev := m.nodeManager.FromPointer(b.nodes[i])
 				if n.Key() != prev.Key() {
 					continue
 				}
@@ -269,7 +272,7 @@ func (m *Map[K, V]) set(n *node.Node[K, V], onlyIfAbsent bool) *node.Node[K, V] 
 				// thus the live value pointers are unique. Otherwise atomic
 				// snapshot won't be correct in case of multiple Store calls
 				// using the same value.
-				atomic.StorePointer(&b.nodes[i], unsafe.Pointer(n))
+				atomic.StorePointer(&b.nodes[i], n.AsPointer())
 				rootBucket.mutex.Unlock()
 				return prev
 			}
@@ -278,7 +281,7 @@ func (m *Map[K, V]) set(n *node.Node[K, V], onlyIfAbsent bool) *node.Node[K, V] 
 					// insertion into an existing bucket.
 					// first we update the hash, then the entry.
 					atomic.StoreUint64(&emptyBucket.hashes[emptyIdx], hash)
-					atomic.StorePointer(&emptyBucket.nodes[emptyIdx], unsafe.Pointer(n))
+					atomic.StorePointer(&emptyBucket.nodes[emptyIdx], n.AsPointer())
 					rootBucket.mutex.Unlock()
 					t.addSize(bucketIdx, 1)
 					return nil
@@ -294,7 +297,7 @@ func (m *Map[K, V]) set(n *node.Node[K, V], onlyIfAbsent bool) *node.Node[K, V] 
 				// create and append the bucket.
 				newBucket := &paddedBucket{}
 				newBucket.hashes[0] = hash
-				newBucket.nodes[0] = unsafe.Pointer(n)
+				newBucket.nodes[0] = n.AsPointer()
 				atomic.StorePointer(&b.next, unsafe.Pointer(newBucket))
 				rootBucket.mutex.Unlock()
 				t.addSize(bucketIdx, 1)
@@ -308,8 +311,8 @@ func (m *Map[K, V]) set(n *node.Node[K, V], onlyIfAbsent bool) *node.Node[K, V] 
 // Delete deletes the value for a key.
 //
 // Returns the deleted node or nil if the node wasn't deleted.
-func (m *Map[K, V]) Delete(key K) *node.Node[K, V] {
-	return m.delete(key, func(n *node.Node[K, V]) bool {
+func (m *Map[K, V]) Delete(key K) node.Node[K, V] {
+	return m.delete(key, func(n node.Node[K, V]) bool {
 		return key == n.Key()
 	})
 }
@@ -317,13 +320,13 @@ func (m *Map[K, V]) Delete(key K) *node.Node[K, V] {
 // DeleteNode evicts the node for a key.
 //
 // Returns the evicted node or nil if the node wasn't evicted.
-func (m *Map[K, V]) DeleteNode(n *node.Node[K, V]) *node.Node[K, V] {
-	return m.delete(n.Key(), func(current *node.Node[K, V]) bool {
-		return n == current
+func (m *Map[K, V]) DeleteNode(n node.Node[K, V]) node.Node[K, V] {
+	return m.delete(n.Key(), func(current node.Node[K, V]) bool {
+		return node.Equals(n, current)
 	})
 }
 
-func (m *Map[K, V]) delete(key K, cmp func(*node.Node[K, V]) bool) *node.Node[K, V] {
+func (m *Map[K, V]) delete(key K, cmp func(node.Node[K, V]) bool) node.Node[K, V] {
 	for {
 	RETRY:
 		hintNonEmpty := 0
@@ -356,7 +359,7 @@ func (m *Map[K, V]) delete(key K, cmp func(*node.Node[K, V]) bool) *node.Node[K,
 					hintNonEmpty++
 					continue
 				}
-				current := (*node.Node[K, V])(b.nodes[i])
+				current := m.nodeManager.FromPointer(b.nodes[i])
 				if !cmp(current) {
 					hintNonEmpty++
 					continue
@@ -450,7 +453,7 @@ func (m *Map[K, V]) copyBuckets(b *paddedBucket, dest *table[K]) (copied int) {
 			if b.nodes[i] == nil {
 				continue
 			}
-			n := (*node.Node[K, V])(b.nodes[i])
+			n := m.nodeManager.FromPointer(b.nodes[i])
 			hash := dest.calcShiftHash(n.Key())
 			bucketIdx := hash & dest.mask
 			dest.buckets[bucketIdx].add(hash, b.nodes[i])
@@ -493,7 +496,7 @@ func (m *Map[K, V]) waitForResize() {
 // It is safe to modify the map while iterating it. However, the
 // concurrent modification rule apply, i.e. the changes may be not
 // reflected in the subsequently iterated nodes.
-func (m *Map[K, V]) Range(f func(*node.Node[K, V]) bool) {
+func (m *Map[K, V]) Range(f func(node.Node[K, V]) bool) {
 	var zeroPtr unsafe.Pointer
 	// Pre-allocate array big enough to fit nodes for most hash tables.
 	buffer := make([]unsafe.Pointer, 0, 16*bucketSize)
@@ -519,7 +522,7 @@ func (m *Map[K, V]) Range(f func(*node.Node[K, V]) bool) {
 		}
 		// Call the function for all copied nodes.
 		for j := range buffer {
-			n := (*node.Node[K, V])(buffer[j])
+			n := m.nodeManager.FromPointer(buffer[j])
 			if !f(n) {
 				return
 			}

@@ -77,3 +77,10 @@ func Stop() {
 func Now() uint32 {
 	return atomic.LoadUint32(&now)
 }
+
+// SetNow sets the current time.
+//
+// NOTE: use only for testing and debugging.
+func SetNow(t uint32) {
+	atomic.StoreUint32(&now, t)
+}

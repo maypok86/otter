@@ -40,6 +40,7 @@ type baseOptions[K comparable, V any] struct {
 	capacity        int
 	initialCapacity int
 	statsEnabled    bool
+	withCost        bool
 	costFunc        func(key K, value V) uint32
 }
 
@@ -49,6 +50,7 @@ func (o *baseOptions[K, V]) collectStats() {
 
 func (o *baseOptions[K, V]) setCostFunc(costFunc func(key K, value V) uint32) {
 	o.costFunc = costFunc
+	o.withCost = true
 }
 
 func (o *baseOptions[K, V]) setInitialCapacity(initialCapacity int) {
@@ -75,6 +77,7 @@ func (o *baseOptions[K, V]) toConfig() core.Config[K, V] {
 		InitialCapacity: initialCapacity,
 		StatsEnabled:    o.statsEnabled,
 		CostFunc:        o.costFunc,
+		WithCost:        o.withCost,
 	}
 }
 

@@ -12,13 +12,21 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package node
+package task
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/maypok86/otter/internal/generated/node"
+)
 
 func TestTask(t *testing.T) {
-	n := New[int, int](1, 2, 6, 4)
-	oldNode := New[int, int](1, 3, 8, 6)
+	nm := node.NewManager[int, int](node.Config{
+		WithExpiration: true,
+		WithCost:       true,
+	})
+	n := nm.Create(1, 2, 6, 4)
+	oldNode := nm.Create(1, 3, 8, 6)
 
 	addTask := NewAddTask(n)
 	if addTask.Node() != n || !addTask.IsAdd() {

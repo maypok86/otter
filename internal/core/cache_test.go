@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/maypok86/otter/internal/node"
+	"github.com/maypok86/otter/internal/generated/node"
 )
 
 func TestCache_SetWithCost(t *testing.T) {
@@ -48,8 +48,13 @@ func TestCache_Range(t *testing.T) {
 
 	time.Sleep(3 * time.Second)
 
+	nm := node.NewManager[int, int](node.Config{
+		WithExpiration: true,
+		WithCost:       true,
+	})
+
 	c.Set(1, 1)
-	c.hashmap.Set(node.New(2, 2, 1, 1))
+	c.hashmap.Set(nm.Create(2, 2, 1, 1))
 	c.Set(3, 3)
 	aliveNodes := 2
 	iters := 0
