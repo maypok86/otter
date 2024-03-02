@@ -159,7 +159,7 @@ func (c *Cache[K, V]) Has(key K) bool {
 // Get returns the value associated with the key in this cache.
 func (c *Cache[K, V]) Get(key K) (V, bool) {
 	got, ok := c.hashmap.Get(key)
-	if !ok {
+	if !ok || !got.IsAlive() {
 		c.stats.IncMisses()
 		return zeroValue[V](), false
 	}
@@ -249,6 +249,7 @@ func (c *Cache[K, V]) set(key K, value V, expiration uint32, onlyIfAbsent bool) 
 	evicted := c.hashmap.Set(n)
 	if evicted != nil {
 		// update
+		evicted.Die()
 		c.writeBuffer.Insert(task.NewUpdateTask(n, evicted))
 	} else {
 		// insert
@@ -260,15 +261,16 @@ func (c *Cache[K, V]) set(key K, value V, expiration uint32, onlyIfAbsent bool) 
 
 // Delete removes the association for this key from the cache.
 func (c *Cache[K, V]) Delete(key K) {
-	deleted := c.hashmap.Delete(key)
-	if deleted != nil {
-		c.writeBuffer.Insert(task.NewDeleteTask(deleted))
-	}
+	c.afterDelete(c.hashmap.Delete(key))
 }
 
 func (c *Cache[K, V]) deleteNode(n node.Node[K, V]) {
-	deleted := c.hashmap.DeleteNode(n)
+	c.afterDelete(c.hashmap.DeleteNode(n))
+}
+
+func (c *Cache[K, V]) afterDelete(deleted node.Node[K, V]) {
 	if deleted != nil {
+		deleted.Die()
 		c.writeBuffer.Insert(task.NewDeleteTask(deleted))
 	}
 }
@@ -276,7 +278,7 @@ func (c *Cache[K, V]) deleteNode(n node.Node[K, V]) {
 // DeleteByFunc removes the association for this key from the cache when the given function returns true.
 func (c *Cache[K, V]) DeleteByFunc(f func(key K, value V) bool) {
 	c.hashmap.Range(func(n node.Node[K, V]) bool {
-		if n.IsExpired() {
+		if !n.IsAlive() || n.IsExpired() {
 			return true
 		}
 
@@ -305,6 +307,7 @@ func (c *Cache[K, V]) cleanup() {
 
 		for _, n := range e {
 			c.hashmap.DeleteNode(n)
+			n.Die()
 		}
 
 		expired = clearBuffer(expired)
@@ -346,14 +349,19 @@ func (c *Cache[K, V]) process() {
 			c.evictionMutex.Lock()
 
 			for _, t := range buffer {
+				n := t.Node()
 				switch {
 				case t.IsDelete():
-					c.expirePolicy.Delete(t.Node())
+					c.expirePolicy.Delete(n)
 				case t.IsAdd():
-					c.expirePolicy.Add(t.Node())
+					if n.IsAlive() {
+						c.expirePolicy.Add(n)
+					}
 				case t.IsUpdate():
 					c.expirePolicy.Delete(t.OldNode())
-					c.expirePolicy.Add(t.Node())
+					if n.IsAlive() {
+						c.expirePolicy.Add(n)
+					}
 				}
 			}
 
@@ -366,6 +374,7 @@ func (c *Cache[K, V]) process() {
 
 			for _, n := range d {
 				c.hashmap.DeleteNode(n)
+				n.Die()
 			}
 
 			buffer = clearBuffer(buffer)
@@ -379,7 +388,7 @@ func (c *Cache[K, V]) process() {
 // Iteration stops early when the given function returns false.
 func (c *Cache[K, V]) Range(f func(key K, value V) bool) {
 	c.hashmap.Range(func(n node.Node[K, V]) bool {
-		if n.IsExpired() {
+		if !n.IsAlive() || n.IsExpired() {
 			return true
 		}
 

@@ -4,8 +4,10 @@
 package node
 
 import (
-	"github.com/maypok86/otter/internal/unixtime"
+	"sync/atomic"
 	"unsafe"
+
+	"github.com/maypok86/otter/internal/unixtime"
 )
 
 // BEC is a cache entry that provide the following features:
@@ -24,6 +26,7 @@ type BEC[K comparable, V any] struct {
 	nextExp    *BEC[K, V]
 	expiration uint32
 	cost       uint32
+	state      uint32
 	frequency  uint8
 	queueType  uint8
 }
@@ -35,6 +38,7 @@ func NewBEC[K comparable, V any](key K, value V, expiration, cost uint32) Node[K
 		value:      value,
 		expiration: expiration,
 		cost:       cost,
+		state:      aliveState,
 	}
 }
 
@@ -113,6 +117,14 @@ func (n *BEC[K, V]) Expiration() uint32 {
 
 func (n *BEC[K, V]) Cost() uint32 {
 	return n.cost
+}
+
+func (n *BEC[K, V]) IsAlive() bool {
+	return atomic.LoadUint32(&n.state) == aliveState
+}
+
+func (n *BEC[K, V]) Die() {
+	atomic.StoreUint32(&n.state, deadState)
 }
 
 func (n *BEC[K, V]) Frequency() uint8 {
