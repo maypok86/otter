@@ -134,8 +134,10 @@ func newGenerator(nodeType string) *generator {
 func (g *generator) printImports() {
 	g.p("import (")
 	g.in()
+	g.p("\"sync/atomic\"")
 	g.p("\"unsafe\"")
 	if g.features[expiration] {
+		g.p("")
 		g.p("\"github.com/maypok86/otter/internal/unixtime\"")
 	}
 	g.out()
@@ -178,6 +180,7 @@ func (g *generator) printStruct() {
 		g.p("cost       uint32")
 	}
 
+	g.p("state      uint32")
 	g.p("frequency  uint8")
 	g.p("queueType  uint8")
 	g.out()
@@ -199,6 +202,7 @@ func (g *generator) printConstructors() {
 	if g.features[cost] {
 		g.p("cost:       cost,")
 	}
+	g.p("state:      aliveState,")
 	g.out()
 	g.p("}")
 	g.out()
@@ -365,6 +369,14 @@ func (g *generator) printFunctions() {
 	g.p("}")
 
 	const otherFunctions = `
+func (n *%s[K, V]) IsAlive() bool {
+	return atomic.LoadUint32(&n.state) == aliveState
+}
+
+func (n *%s[K, V]) Die() {
+	atomic.StoreUint32(&n.state, deadState)
+}
+
 func (n *%s[K, V]) Frequency() uint8 {
 	return n.frequency
 }
@@ -460,6 +472,11 @@ const (
 	maxFrequency uint8 = 3
 )
 
+const (
+	aliveState uint32 = iota
+	deadState
+)
+
 // Node is a cache entry.
 type Node[K comparable, V any] interface {
 	// Key returns the key.
@@ -490,6 +507,10 @@ type Node[K comparable, V any] interface {
 	Expiration() uint32
 	// Cost returns the cost of the node.
 	Cost() uint32
+	// IsAlive returns true if the entry is available in the hash-table.
+	IsAlive() bool
+	// Die sets the node to the dead state.
+	Die()
 	// Frequency returns the frequency of the node.
 	Frequency() uint8
 	// IncrementFrequency increments the frequency of the node.
@@ -522,11 +543,11 @@ func Equals[K comparable, V any](a, b Node[K, V]) bool {
 
 type Config struct {
 	WithExpiration bool
-	WithCost bool
+	WithCost       bool
 }
 
 type Manager[K comparable, V any] struct {
-	create func(key K, value V, expiration, cost uint32) Node[K, V]
+	create      func(key K, value V, expiration, cost uint32) Node[K, V]
 	fromPointer func(ptr unsafe.Pointer) Node[K, V]
 }
 

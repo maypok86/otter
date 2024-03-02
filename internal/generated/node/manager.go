@@ -16,6 +16,11 @@ const (
 	maxFrequency uint8 = 3
 )
 
+const (
+	aliveState uint32 = iota
+	deadState
+)
+
 // Node is a cache entry.
 type Node[K comparable, V any] interface {
 	// Key returns the key.
@@ -46,6 +51,10 @@ type Node[K comparable, V any] interface {
 	Expiration() uint32
 	// Cost returns the cost of the node.
 	Cost() uint32
+	// IsAlive returns true if the entry is available in the hash-table.
+	IsAlive() bool
+	// Die sets the node to the dead state.
+	Die()
 	// Frequency returns the frequency of the node.
 	Frequency() uint8
 	// IncrementFrequency increments the frequency of the node.

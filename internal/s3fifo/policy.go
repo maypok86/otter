@@ -92,7 +92,7 @@ func (p *Policy[K, V]) Write(
 
 		// already deleted in map
 		if t.IsDelete() {
-			p.delete(t.Node())
+			p.delete(n)
 			continue
 		}
 
@@ -103,7 +103,9 @@ func (p *Policy[K, V]) Write(
 		}
 
 		// add
-		deleted = p.insert(deleted, n)
+		if n.IsAlive() {
+			deleted = p.insert(deleted, n)
+		}
 	}
 	return deleted
 }

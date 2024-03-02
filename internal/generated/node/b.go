@@ -4,6 +4,7 @@
 package node
 
 import (
+	"sync/atomic"
 	"unsafe"
 )
 
@@ -15,6 +16,7 @@ type B[K comparable, V any] struct {
 	value     V
 	prev      *B[K, V]
 	next      *B[K, V]
+	state     uint32
 	frequency uint8
 	queueType uint8
 }
@@ -24,6 +26,7 @@ func NewB[K comparable, V any](key K, value V, expiration, cost uint32) Node[K, 
 	return &B[K, V]{
 		key:   key,
 		value: value,
+		state: aliveState,
 	}
 }
 
@@ -94,6 +97,14 @@ func (n *B[K, V]) Expiration() uint32 {
 
 func (n *B[K, V]) Cost() uint32 {
 	return 1
+}
+
+func (n *B[K, V]) IsAlive() bool {
+	return atomic.LoadUint32(&n.state) == aliveState
+}
+
+func (n *B[K, V]) Die() {
+	atomic.StoreUint32(&n.state, deadState)
 }
 
 func (n *B[K, V]) Frequency() uint8 {
