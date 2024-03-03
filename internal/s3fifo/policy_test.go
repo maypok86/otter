@@ -18,7 +18,6 @@ import (
 	"testing"
 
 	"github.com/maypok86/otter/internal/generated/node"
-	"github.com/maypok86/otter/internal/task"
 )
 
 func newNode(k int) node.Node[int, int] {
@@ -27,26 +26,10 @@ func newNode(k int) node.Node[int, int] {
 	return n
 }
 
-func nodesToAddTasks(nodes []node.Node[int, int]) []task.WriteTask[int, int] {
-	tasks := make([]task.WriteTask[int, int], 0, len(nodes))
-	for _, n := range nodes {
-		tasks = append(tasks, task.NewAddTask(n))
-	}
-	return tasks
-}
-
-func nodesToDeleteTasks(nodes []node.Node[int, int]) []task.WriteTask[int, int] {
-	tasks := make([]task.WriteTask[int, int], 0, len(nodes))
-	for _, n := range nodes {
-		tasks = append(tasks, task.NewDeleteTask(n))
-	}
-	return tasks
-}
-
 func TestPolicy_ReadAndWrite(t *testing.T) {
 	n := newNode(2)
 	p := NewPolicy[int, int](10)
-	p.Write(nil, []task.WriteTask[int, int]{task.NewAddTask(n)})
+	p.Add(nil, n)
 	if !n.IsSmall() {
 		t.Fatalf("not valid node state: %+v", n)
 	}
@@ -65,8 +48,13 @@ func TestPolicy_OneHitWonders(t *testing.T) {
 		popular = append(popular, newNode(i+3))
 	}
 
-	p.Write(nil, nodesToAddTasks(oneHitWonders))
-	p.Write(nil, nodesToAddTasks(popular))
+	for _, n := range oneHitWonders {
+		p.Add(nil, n)
+	}
+
+	for _, n := range popular {
+		p.Add(nil, n)
+	}
 
 	p.Read(oneHitWonders)
 	for i := 0; i < 3; i++ {
@@ -77,7 +65,10 @@ func TestPolicy_OneHitWonders(t *testing.T) {
 	for i := 0; i < cap(newNodes); i++ {
 		newNodes = append(newNodes, newNode(i+12))
 	}
-	p.Write(nil, nodesToAddTasks(newNodes))
+
+	for _, n := range newNodes {
+		p.Add(nil, n)
+	}
 
 	for _, n := range oneHitWonders {
 		if n.IsSmall() || n.IsMain() {
@@ -91,9 +82,15 @@ func TestPolicy_OneHitWonders(t *testing.T) {
 		}
 	}
 
-	p.Write(nil, nodesToDeleteTasks(oneHitWonders))
-	p.Delete(popular)
-	p.Delete(newNodes)
+	for _, n := range oneHitWonders {
+		p.Delete(n)
+	}
+	for _, n := range popular {
+		p.Delete(n)
+	}
+	for _, n := range newNodes {
+		p.Delete(n)
+	}
 
 	if p.small.cost+p.main.cost != 0 {
 		t.Fatalf("queues should be empty, but small size: %d, main size: %d", p.small.cost, p.main.cost)
@@ -107,17 +104,14 @@ func TestPolicy_Update(t *testing.T) {
 	m := node.NewManager[int, int](node.Config{WithCost: true})
 	n1 := m.Create(1, 1, 0, n.Cost()+8)
 
-	p.Write(nil, []task.WriteTask[int, int]{
-		task.NewAddTask(n),
-		task.NewUpdateTask(n1, n),
-	})
+	p.Add(nil, n)
+	p.Delete(n)
+	p.Add(nil, n1)
 
 	p.Read([]node.Node[int, int]{n1, n1})
 
 	n2 := m.Create(2, 1, 0, 92)
-	deleted := p.Write(nil, []task.WriteTask[int, int]{
-		task.NewAddTask(n2),
-	})
+	deleted := p.Add(nil, n2)
 
 	if !n1.IsMain() {
 		t.Fatalf("updated node should be in main queue: %+v", n1)
@@ -128,9 +122,8 @@ func TestPolicy_Update(t *testing.T) {
 	}
 
 	n3 := m.Create(1, 1, 0, 109)
-	deleted = p.Write(nil, []task.WriteTask[int, int]{
-		task.NewUpdateTask(n3, n1),
-	})
+	p.Delete(n1)
+	deleted = p.Add(nil, n3)
 	if n3.IsSmall() || n3.IsMain() || len(deleted) != 1 || deleted[0] != n3 {
 		t.Fatalf("updated node should be evicted: %+v", n3)
 	}

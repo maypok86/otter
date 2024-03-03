@@ -16,7 +16,6 @@ package s3fifo
 
 import (
 	"github.com/maypok86/otter/internal/generated/node"
-	"github.com/maypok86/otter/internal/task"
 )
 
 // Policy is an eviction policy based on S3-FIFO eviction algorithm
@@ -55,7 +54,8 @@ func (p *Policy[K, V]) Read(nodes []node.Node[K, V]) {
 	}
 }
 
-func (p *Policy[K, V]) insert(deleted []node.Node[K, V], n node.Node[K, V]) []node.Node[K, V] {
+// Add adds node to the eviction policy.
+func (p *Policy[K, V]) Add(deleted []node.Node[K, V], n node.Node[K, V]) []node.Node[K, V] {
 	if p.ghost.isGhost(n) {
 		p.main.insert(n)
 		n.ResetFrequency()
@@ -82,42 +82,8 @@ func (p *Policy[K, V]) isFull() bool {
 	return p.small.cost+p.main.cost > p.maxCost
 }
 
-// Write updates the eviction policy based on node updates.
-func (p *Policy[K, V]) Write(
-	deleted []node.Node[K, V],
-	tasks []task.WriteTask[K, V],
-) []node.Node[K, V] {
-	for _, t := range tasks {
-		n := t.Node()
-
-		// already deleted in map
-		if t.IsDelete() {
-			p.delete(n)
-			continue
-		}
-
-		if t.IsUpdate() {
-			// delete old node
-			p.delete(t.OldNode())
-			// insert new node
-		}
-
-		// add
-		if n.IsAlive() {
-			deleted = p.insert(deleted, n)
-		}
-	}
-	return deleted
-}
-
-// Delete deletes nodes from the eviction policy.
-func (p *Policy[K, V]) Delete(buffer []node.Node[K, V]) {
-	for _, n := range buffer {
-		p.delete(n)
-	}
-}
-
-func (p *Policy[K, V]) delete(n node.Node[K, V]) {
+// Delete deletes node from the eviction policy.
+func (p *Policy[K, V]) Delete(n node.Node[K, V]) {
 	if n.IsSmall() {
 		p.small.remove(n)
 		return
