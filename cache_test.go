@@ -185,7 +185,7 @@ func TestCache_SetWithTTL(t *testing.T) {
 	}
 }
 
-func TestBaseCache_DeleteByFunc(t *testing.T) {
+func TestCache_DeleteByFunc(t *testing.T) {
 	size := 256
 	c, err := MustBuilder[int, int](size).
 		InitialCapacity(size).

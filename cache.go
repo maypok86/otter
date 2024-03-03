@@ -18,32 +18,7 @@ import (
 	"time"
 
 	"github.com/maypok86/otter/internal/core"
-	"github.com/maypok86/otter/internal/stats"
 )
-
-// Stats is a thread-safe statistics collector.
-type Stats struct {
-	s *stats.Stats
-}
-
-func newStats(s *stats.Stats) Stats {
-	return Stats{s: s}
-}
-
-// Hits returns the number of cache hits.
-func (s Stats) Hits() int64 {
-	return s.s.Hits()
-}
-
-// Misses returns the number of cache misses.
-func (s Stats) Misses() int64 {
-	return s.s.Misses()
-}
-
-// Ratio returns the cache hit ratio.
-func (s Stats) Ratio() float64 {
-	return s.s.Ratio()
-}
 
 type baseCache[K comparable, V any] struct {
 	cache *core.Cache[K, V]

@@ -14,17 +14,25 @@
 
 package stats
 
+import (
+	"sync/atomic"
+)
+
 // Stats is a thread-safe statistics collector.
 type Stats struct {
-	hits   *counter
-	misses *counter
+	hits         *counter
+	misses       *counter
+	rejectedSets *counter
+	evictedCount atomic.Int64
+	evictedCost  atomic.Int64
 }
 
 // New creates a new Stats collector.
 func New() *Stats {
 	return &Stats{
-		hits:   newCounter(),
-		misses: newCounter(),
+		hits:         newCounter(),
+		misses:       newCounter(),
+		rejectedSets: newCounter(),
 	}
 }
 
@@ -64,18 +72,58 @@ func (s *Stats) Misses() int64 {
 	return s.misses.value()
 }
 
-// Ratio returns the cache hit ratio.
-func (s *Stats) Ratio() float64 {
+// IncRejectedSets increments the rejectedSets counter.
+func (s *Stats) IncRejectedSets() {
 	if s == nil {
-		return 0.0
+		return
 	}
 
-	hits := s.hits.value()
-	misses := s.misses.value()
-	if hits == 0 && misses == 0 {
-		return 0.0
+	s.rejectedSets.increment()
+}
+
+// RejectedSets returns the number of rejected sets.
+func (s *Stats) RejectedSets() int64 {
+	if s == nil {
+		return 0
 	}
-	return float64(hits) / float64(hits+misses)
+
+	return s.rejectedSets.value()
+}
+
+// IncEvictedCount increments the evictedCount counter.
+func (s *Stats) IncEvictedCount() {
+	if s == nil {
+		return
+	}
+
+	s.evictedCount.Add(1)
+}
+
+// EvictedCount returns the number of evicted entries.
+func (s *Stats) EvictedCount() int64 {
+	if s == nil {
+		return 0
+	}
+
+	return s.evictedCount.Load()
+}
+
+// AddEvictedCost adds cost to the evictedCost counter.
+func (s *Stats) AddEvictedCost(cost uint32) {
+	if s == nil {
+		return
+	}
+
+	s.evictedCost.Add(int64(cost))
+}
+
+// EvictedCost returns the sum of costs of evicted entries.
+func (s *Stats) EvictedCost() int64 {
+	if s == nil {
+		return 0
+	}
+
+	return s.evictedCost.Load()
 }
 
 func (s *Stats) Clear() {
@@ -85,4 +133,7 @@ func (s *Stats) Clear() {
 
 	s.hits.reset()
 	s.misses.reset()
+	s.rejectedSets.reset()
+	s.evictedCount.Store(0)
+	s.evictedCost.Store(0)
 }
