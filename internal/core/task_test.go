@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package task
+package core
 
 import (
 	"testing"
@@ -28,28 +28,28 @@ func TestTask(t *testing.T) {
 	n := nm.Create(1, 2, 6, 4)
 	oldNode := nm.Create(1, 3, 8, 6)
 
-	addTask := NewAddTask(n)
-	if addTask.Node() != n || !addTask.IsAdd() {
+	addTask := newAddTask(n)
+	if addTask.node() != n || !addTask.isAdd() {
 		t.Fatalf("not valid add task %+v", addTask)
 	}
 
-	deleteTask := NewDeleteTask(n)
-	if deleteTask.Node() != n || !deleteTask.IsDelete() {
+	deleteTask := newDeleteTask(n)
+	if deleteTask.node() != n || !deleteTask.isDelete() {
 		t.Fatalf("not valid delete task %+v", deleteTask)
 	}
 
-	updateTask := NewUpdateTask(n, oldNode)
-	if updateTask.Node() != n || !updateTask.IsUpdate() || updateTask.OldNode() != oldNode {
+	updateTask := newUpdateTask(n, oldNode)
+	if updateTask.node() != n || !updateTask.isUpdate() || updateTask.oldNode() != oldNode {
 		t.Fatalf("not valid update task %+v", updateTask)
 	}
 
-	clearTask := NewClearTask[int, int]()
-	if clearTask.Node() != nil || !clearTask.IsClear() {
+	clearTask := newClearTask[int, int]()
+	if clearTask.node() != nil || !clearTask.isClear() {
 		t.Fatalf("not valid clear task %+v", clearTask)
 	}
 
-	closeTask := NewCloseTask[int, int]()
-	if closeTask.Node() != nil || !closeTask.IsClose() {
+	closeTask := newCloseTask[int, int]()
+	if closeTask.node() != nil || !closeTask.isClose() {
 		t.Fatalf("not valid close task %+v", closeTask)
 	}
 }
