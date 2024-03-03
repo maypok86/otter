@@ -16,15 +16,19 @@ package stats
 
 import (
 	"sync/atomic"
+	"unsafe"
+
+	"github.com/maypok86/otter/internal/xruntime"
 )
 
 // Stats is a thread-safe statistics collector.
 type Stats struct {
-	hits         *counter
-	misses       *counter
-	rejectedSets *counter
-	evictedCount atomic.Int64
-	evictedCost  atomic.Int64
+	hits                   *counter
+	misses                 *counter
+	rejectedSets           *counter
+	evictedCountersPadding [xruntime.CacheLineSize - 2*unsafe.Sizeof(atomic.Int64{})]byte
+	evictedCount           atomic.Int64
+	evictedCost            atomic.Int64
 }
 
 // New creates a new Stats collector.
