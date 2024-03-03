@@ -231,6 +231,7 @@ func (c *Cache[K, V]) SetIfAbsentWithTTL(key K, value V, ttl time.Duration) bool
 func (c *Cache[K, V]) set(key K, value V, expiration uint32, onlyIfAbsent bool) bool {
 	cost := c.costFunc(key, value)
 	if cost > c.policy.MaxAvailableCost() {
+		c.stats.IncRejectedSets()
 		return false
 	}
 
@@ -242,6 +243,7 @@ func (c *Cache[K, V]) set(key K, value V, expiration uint32, onlyIfAbsent bool) 
 			c.writeBuffer.Insert(newAddTask(n))
 			return true
 		}
+		c.stats.IncRejectedSets()
 		return false
 	}
 
@@ -384,6 +386,8 @@ func (c *Cache[K, V]) process() {
 			for _, n := range deleted {
 				c.hashmap.DeleteNode(n)
 				n.Die()
+				c.stats.IncEvictedCount()
+				c.stats.AddEvictedCost(n.Cost())
 			}
 
 			buffer = clearBuffer(buffer)

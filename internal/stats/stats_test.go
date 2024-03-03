@@ -42,6 +42,11 @@ func TestStats_Nil(t *testing.T) {
 	for _, inc := range []func(){
 		s.IncHits,
 		s.IncMisses,
+		s.IncRejectedSets,
+		s.IncEvictedCount,
+		func() {
+			s.AddEvictedCost(1)
+		},
 		s.IncHits,
 		s.IncMisses,
 	} {
@@ -50,9 +55,9 @@ func TestStats_Nil(t *testing.T) {
 	for _, f := range []func() int64{
 		s.Hits,
 		s.Misses,
-		func() int64 {
-			return int64(s.Ratio())
-		},
+		s.RejectedSets,
+		s.EvictedCount,
+		s.EvictedCost,
 	} {
 		if expected != f() {
 			t.Fatalf("hits and misses for nil stats should always be %d", expected)
@@ -89,25 +94,51 @@ func TestStats_Misses(t *testing.T) {
 	}
 }
 
-func TestStats_Ratio(t *testing.T) {
+func TestStats_RejectedSets(t *testing.T) {
+	expected := generateCount(t)
+
 	s := New()
-	ratio := s.Ratio()
-	if ratio != 0.0 {
-		t.Fatalf("ratio in stats without operations should be 0.0, but got %v", ratio)
+	for i := int64(0); i < expected; i++ {
+		s.IncRejectedSets()
 	}
 
-	count := generateCount(t)
-	for i := int64(0); i < count; i++ {
-		s.IncHits()
+	rejectedSets := s.RejectedSets()
+	if expected != rejectedSets {
+		t.Fatalf("number of rejected sets should be %d, but got %d", expected, rejectedSets)
 	}
-	for i := int64(0); i < count; i++ {
-		s.IncMisses()
+}
+
+func TestStats_EvictedCount(t *testing.T) {
+	expected := generateCount(t)
+
+	s := New()
+	for i := int64(0); i < expected; i++ {
+		s.IncEvictedCount()
 	}
 
-	expected := 0.5
-	ratio = s.Ratio()
-	if expected != ratio {
-		t.Fatalf("ratio should be %v, but got %v", expected, ratio)
+	evictedCount := s.EvictedCount()
+	if expected != evictedCount {
+		t.Fatalf("number of evicted entries should be %d, but got %d", expected, evictedCount)
+	}
+}
+
+func TestStats_EvictedCost(t *testing.T) {
+	expected := generateCount(t)
+
+	s := New()
+	k := int64(0)
+	for k < expected {
+		add := 2
+		if expected-k < 2 {
+			add = 1
+		}
+		k += int64(add)
+		s.AddEvictedCost(uint32(add))
+	}
+
+	evictedCost := s.EvictedCost()
+	if expected != evictedCost {
+		t.Fatalf("sum of costs of evicted entries should be %d, but got %d", expected, evictedCost)
 	}
 }
 
