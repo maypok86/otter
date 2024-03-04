@@ -48,10 +48,10 @@ type PolicyBuffers[K comparable, V any] struct {
 //
 // This implementation is striped to further increase concurrency.
 type Buffer[K comparable, V any] struct {
-	head                 atomic.Uint64
-	headPadding          [xruntime.CacheLineSize - unsafe.Sizeof(atomic.Uint64{})]byte
-	tail                 atomic.Uint64
-	tailPadding          [xruntime.CacheLineSize - unsafe.Sizeof(atomic.Uint64{})]byte
+	head                 uint64
+	headPadding          [xruntime.CacheLineSize - 8]byte
+	tail                 uint64
+	tailPadding          [xruntime.CacheLineSize - 8]byte
 	nodeManager          *node.Manager[K, V]
 	returned             unsafe.Pointer
 	returnedPadding      [xruntime.CacheLineSize - 2*8]byte
@@ -77,14 +77,14 @@ func New[K comparable, V any](nodeManager *node.Manager[K, V]) *Buffer[K, V] {
 //
 // item may be lost due to contention.
 func (b *Buffer[K, V]) Add(n node.Node[K, V]) *PolicyBuffers[K, V] {
-	head := b.head.Load()
-	tail := b.tail.Load()
+	head := atomic.LoadUint64(&b.head)
+	tail := atomic.LoadUint64(&b.tail)
 	size := tail - head
 	if size >= capacity {
 		// full buffer
 		return nil
 	}
-	if b.tail.CompareAndSwap(tail, tail+1) {
+	if atomic.CompareAndSwapUint64(&b.tail, tail, tail+1) {
 		// success
 		index := int(tail & mask)
 		atomic.StorePointer(&b.buffer[index], n.AsPointer())
@@ -108,7 +108,7 @@ func (b *Buffer[K, V]) Add(n node.Node[K, V]) *PolicyBuffers[K, V] {
 				head++
 			}
 
-			b.head.Store(head)
+			atomic.StoreUint64(&b.head, head)
 			return pb
 		}
 	}
@@ -136,6 +136,6 @@ func (b *Buffer[K, V]) Clear() {
 		atomic.StorePointer(&b.buffer[i], nil)
 	}
 	b.Free()
-	b.tail.Store(0)
-	b.head.Store(0)
+	atomic.StoreUint64(&b.tail, 0)
+	atomic.StoreUint64(&b.head, 0)
 }
