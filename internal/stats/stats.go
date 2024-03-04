@@ -16,7 +16,6 @@ package stats
 
 import (
 	"sync/atomic"
-	"unsafe"
 
 	"github.com/maypok86/otter/internal/xruntime"
 )
@@ -26,9 +25,9 @@ type Stats struct {
 	hits                   *counter
 	misses                 *counter
 	rejectedSets           *counter
-	evictedCountersPadding [xruntime.CacheLineSize - 2*unsafe.Sizeof(atomic.Int64{})]byte
-	evictedCount           atomic.Int64
-	evictedCost            atomic.Int64
+	evictedCountersPadding [xruntime.CacheLineSize - 16]byte
+	evictedCount           int64
+	evictedCost            int64
 }
 
 // New creates a new Stats collector.
@@ -100,7 +99,7 @@ func (s *Stats) IncEvictedCount() {
 		return
 	}
 
-	s.evictedCount.Add(1)
+	atomic.AddInt64(&s.evictedCount, 1)
 }
 
 // EvictedCount returns the number of evicted entries.
@@ -109,7 +108,7 @@ func (s *Stats) EvictedCount() int64 {
 		return 0
 	}
 
-	return s.evictedCount.Load()
+	return atomic.LoadInt64(&s.evictedCount)
 }
 
 // AddEvictedCost adds cost to the evictedCost counter.
@@ -118,7 +117,7 @@ func (s *Stats) AddEvictedCost(cost uint32) {
 		return
 	}
 
-	s.evictedCost.Add(int64(cost))
+	atomic.AddInt64(&s.evictedCost, int64(cost))
 }
 
 // EvictedCost returns the sum of costs of evicted entries.
@@ -127,7 +126,7 @@ func (s *Stats) EvictedCost() int64 {
 		return 0
 	}
 
-	return s.evictedCost.Load()
+	return atomic.LoadInt64(&s.evictedCost)
 }
 
 func (s *Stats) Clear() {
@@ -138,6 +137,6 @@ func (s *Stats) Clear() {
 	s.hits.reset()
 	s.misses.reset()
 	s.rejectedSets.reset()
-	s.evictedCount.Store(0)
-	s.evictedCost.Store(0)
+	atomic.StoreInt64(&s.evictedCount, 0)
+	atomic.StoreInt64(&s.evictedCost, 0)
 }
