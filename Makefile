@@ -24,7 +24,7 @@ test: test.unit ## Run all the tests
 test.unit: ## Run all unit tests
 	@echo 'mode: atomic' > coverage.txt
 	go test -covermode=atomic -coverprofile=coverage.txt.tmp -coverpkg=./... -v -race ./...
-	cat coverage.txt.tmp | grep -v "/generated/" > coverage.txt
+	cat coverage.txt.tmp | grep -v -E "/generated/|/cmd/" > coverage.txt
 	rm coverage.txt.tmp
 
 .PHONY: cover
