@@ -12,6 +12,7 @@ package queue
 import (
 	"runtime"
 	"sync/atomic"
+	"unsafe"
 
 	"github.com/maypok86/otter/internal/xruntime"
 )
@@ -35,18 +36,18 @@ func zeroValue[T any]() T {
 type MPSC[T any] struct {
 	capacity     uint64
 	sleep        chan struct{}
-	head         uint64
-	headPadding  [xruntime.CacheLineSize - 8]byte
+	head         atomic.Uint64
+	headPadding  [xruntime.CacheLineSize - unsafe.Sizeof(atomic.Uint64{})]byte
 	tail         uint64
 	tailPadding  [xruntime.CacheLineSize - 8]byte
-	isSleep      uint64
-	sleepPadding [xruntime.CacheLineSize - 8]byte
+	isSleep      atomic.Uint64
+	sleepPadding [xruntime.CacheLineSize - unsafe.Sizeof(atomic.Uint64{})]byte
 	slots        []slot[T]
 }
 
 type slot[T any] struct {
-	// uint64 is used here to get proper 8 byte alignment on 32-bit archs.
-	turn uint64
+	// atomic.Uint64 is used here to get proper 8 byte alignment on 32-bit archs.
+	turn atomic.Uint64
 	item T
 }
 
@@ -62,13 +63,13 @@ func NewMPSC[T any](capacity int) *MPSC[T] {
 // Insert inserts the given item into the queue.
 // Blocks, if the queue is full.
 func (q *MPSC[T]) Insert(item T) {
-	head := atomic.AddUint64(&q.head, 1) - 1
+	head := q.head.Add(1) - 1
 	q.wakeUpConsumer()
 
 	slot := &q.slots[q.idx(head)]
 	turn := q.turn(head) * 2
 	retries := 0
-	for atomic.LoadUint64(&slot.turn) != turn {
+	for slot.turn.Load() != turn {
 		if retries == maxRetries {
 			q.wakeUpConsumer()
 			retries = 0
@@ -79,7 +80,7 @@ func (q *MPSC[T]) Insert(item T) {
 	}
 
 	slot.item = item
-	atomic.StoreUint64(&slot.turn, turn+1)
+	slot.turn.Store(turn + 1)
 }
 
 // Remove retrieves and removes the item from the head of the queue.
@@ -89,7 +90,7 @@ func (q *MPSC[T]) Remove() T {
 	slot := &q.slots[q.idx(tail)]
 	turn := 2*q.turn(tail) + 1
 	retries := 0
-	for atomic.LoadUint64(&slot.turn) != turn {
+	for slot.turn.Load() != turn {
 		if retries == maxRetries {
 			q.sleepConsumer()
 			retries = 0
@@ -100,7 +101,7 @@ func (q *MPSC[T]) Remove() T {
 	}
 	item := slot.item
 	slot.item = zeroValue[T]()
-	atomic.StoreUint64(&slot.turn, turn+1)
+	slot.turn.Store(turn + 1)
 	q.tail++
 	return item
 }
@@ -118,7 +119,7 @@ func (q *MPSC[T]) Capacity() int {
 }
 
 func (q *MPSC[T]) wakeUpConsumer() {
-	if atomic.LoadUint64(&q.isSleep) == 1 && atomic.CompareAndSwapUint64(&q.isSleep, 1, 0) {
+	if q.isSleep.Load() == 1 && q.isSleep.CompareAndSwap(1, 0) {
 		// if the consumer is asleep, we'll wake him up.
 		q.sleep <- struct{}{}
 	}
@@ -126,12 +127,12 @@ func (q *MPSC[T]) wakeUpConsumer() {
 
 func (q *MPSC[T]) sleepConsumer() {
 	// if the queue's been empty for too long, we fall asleep.
-	atomic.StoreUint64(&q.isSleep, 1)
+	q.isSleep.Store(1)
 	<-q.sleep
 }
 
 func (q *MPSC[T]) isEmpty() bool {
-	return q.tail == atomic.LoadUint64(&q.head)
+	return q.tail == q.head.Load()
 }
 
 func (q *MPSC[T]) idx(i uint64) uint64 {

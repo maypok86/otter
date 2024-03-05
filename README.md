@@ -57,7 +57,7 @@ Otter is based on the following papers
 
 ### 📋 Requirements <a id="requirements" />
 
-- Go 1.18+
+- Go 1.19+
 
 ### 🛠️ Installation <a id="installation" />
 

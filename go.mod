@@ -1,6 +1,6 @@
 module github.com/maypok86/otter
 
-go 1.18
+go 1.19
 
 require (
 	github.com/dolthub/maphash v0.1.0

@@ -69,7 +69,7 @@ type Map[K comparable, V any] struct {
 	// used to wake up resize waiters (concurrent modifications)
 	resizeCond sync.Cond
 	// resize in progress flag; updated atomically
-	resizing int64
+	resizing atomic.Int64
 }
 
 type table[K comparable] struct {
@@ -400,7 +400,7 @@ func (m *Map[K, V]) resize(known *table[K], hint resizeHint) {
 		}
 	}
 	// slow path.
-	if !atomic.CompareAndSwapInt64(&m.resizing, 0, 1) {
+	if !m.resizing.CompareAndSwap(0, 1) {
 		// someone else started resize. Wait for it to finish.
 		m.waitForResize()
 		return
@@ -420,7 +420,7 @@ func (m *Map[K, V]) resize(known *table[K], hint resizeHint) {
 		} else {
 			// no need to shrink, wake up all waiters and give up.
 			m.resizeMutex.Lock()
-			atomic.StoreInt64(&m.resizing, 0)
+			m.resizing.Store(0)
 			m.resizeCond.Broadcast()
 			m.resizeMutex.Unlock()
 			return
@@ -440,7 +440,7 @@ func (m *Map[K, V]) resize(known *table[K], hint resizeHint) {
 	// publish the new table and wake up all waiters.
 	atomic.StorePointer(&m.table, unsafe.Pointer(nt))
 	m.resizeMutex.Lock()
-	atomic.StoreInt64(&m.resizing, 0)
+	m.resizing.Store(0)
 	m.resizeCond.Broadcast()
 	m.resizeMutex.Unlock()
 }
@@ -473,7 +473,7 @@ func (m *Map[K, V]) newerTableExists(table *table[K]) bool {
 }
 
 func (m *Map[K, V]) resizeInProgress() bool {
-	return atomic.LoadInt64(&m.resizing) == 1
+	return m.resizing.Load() == 1
 }
 
 func (m *Map[K, V]) waitForResize() {
