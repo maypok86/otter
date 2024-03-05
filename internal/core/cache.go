@@ -178,22 +178,45 @@ func (c *Cache[K, V]) Has(key K) bool {
 
 // Get returns the value associated with the key in this cache.
 func (c *Cache[K, V]) Get(key K) (V, bool) {
-	got, ok := c.hashmap.Get(key)
-	if !ok || !got.IsAlive() {
-		c.stats.IncMisses()
+	n, ok := c.GetNode(key)
+	if !ok {
 		return zeroValue[V](), false
 	}
 
-	if got.IsExpired() {
-		c.writeBuffer.Push(newDeleteTask(got))
+	return n.Value(), true
+}
+
+// GetNode returns the node associated with the key in this cache.
+func (c *Cache[K, V]) GetNode(key K) (node.Node[K, V], bool) {
+	n, ok := c.hashmap.Get(key)
+	if !ok || !n.IsAlive() {
 		c.stats.IncMisses()
-		return zeroValue[V](), false
+		return nil, false
 	}
 
-	c.afterGet(got)
+	if n.IsExpired() {
+		c.writeBuffer.Push(newDeleteTask(n))
+		c.stats.IncMisses()
+		return nil, false
+	}
+
+	c.afterGet(n)
 	c.stats.IncHits()
 
-	return got.Value(), ok
+	return n, true
+}
+
+// GetNodeQuietly returns the node associated with the key in this cache.
+//
+// Unlike GetNode, this function does not produce any side effects
+// such as updating statistics or the eviction policy.
+func (c *Cache[K, V]) GetNodeQuietly(key K) (node.Node[K, V], bool) {
+	n, ok := c.hashmap.Get(key)
+	if !ok || !n.IsAlive() || n.IsExpired() {
+		return nil, false
+	}
+
+	return n, true
 }
 
 func (c *Cache[K, V]) afterGet(got node.Node[K, V]) {
@@ -498,6 +521,11 @@ func (c *Cache[K, V]) Capacity() int {
 // Stats returns a current snapshot of this cache's cumulative statistics.
 func (c *Cache[K, V]) Stats() *stats.Stats {
 	return c.stats
+}
+
+// WithExpiration returns true if the cache was configured with the expiration policy enabled.
+func (c *Cache[K, V]) WithExpiration() bool {
+	return c.withExpiration
 }
 
 func clearBuffer[T any](buffer []T) []T {

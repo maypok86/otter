@@ -44,7 +44,7 @@ func newBaseCache[K comparable, V any](c core.Config[K, V]) baseCache[K, V] {
 	}
 }
 
-// Has checks if there is an item with the given key in the cache.
+// Has checks if there is an entry with the given key in the cache.
 func (bs baseCache[K, V]) Has(key K) bool {
 	return bs.cache.Has(key)
 }
@@ -64,7 +64,7 @@ func (bs baseCache[K, V]) DeleteByFunc(f func(key K, value V) bool) {
 	bs.cache.DeleteByFunc(f)
 }
 
-// Range iterates over all items in the cache.
+// Range iterates over all entries in the cache.
 //
 // Iteration stops early when the given function returns false.
 func (bs baseCache[K, V]) Range(f func(key K, value V) bool) {
@@ -85,7 +85,7 @@ func (bs baseCache[K, V]) Close() {
 	bs.cache.Close()
 }
 
-// Size returns the current number of items in the cache.
+// Size returns the current number of entries in the cache.
 func (bs baseCache[K, V]) Size() int {
 	return bs.cache.Size()
 }
@@ -98,6 +98,13 @@ func (bs baseCache[K, V]) Capacity() int {
 // Stats returns a current snapshot of this cache's cumulative statistics.
 func (bs baseCache[K, V]) Stats() Stats {
 	return newStats(bs.cache.Stats())
+}
+
+// Advanced returns access to inspect and perform low-level operations on this cache based on its runtime
+// characteristics. These operations are optional and dependent on how the cache was constructed
+// and what abilities the implementation exposes.
+func (bs baseCache[K, V]) Advanced() Advanced[K, V] {
+	return newAdvanced(bs.cache)
 }
 
 // Cache is a structure performs a best-effort bounding of a hash table using eviction algorithm
@@ -114,7 +121,7 @@ func newCache[K comparable, V any](c core.Config[K, V]) Cache[K, V] {
 
 // Set associates the value with the key in this cache.
 //
-// If it returns false, then the key-value item had too much setCostFunc and the Set was dropped.
+// If it returns false, then the key-value pair had too much cost and the Set was dropped.
 func (c Cache[K, V]) Set(key K, value V) bool {
 	return c.cache.Set(key, value)
 }
@@ -123,7 +130,7 @@ func (c Cache[K, V]) Set(key K, value V) bool {
 //
 // If the specified key is not already associated with a value, then it returns false.
 //
-// Also, it returns false if the key-value item had too much setCostFunc and the SetIfAbsent was dropped.
+// Also, it returns false if the key-value pair had too much cost and the SetIfAbsent was dropped.
 func (c Cache[K, V]) SetIfAbsent(key K, value V) bool {
 	return c.cache.SetIfAbsent(key, value)
 }
@@ -140,19 +147,19 @@ func newCacheWithVariableTTL[K comparable, V any](c core.Config[K, V]) CacheWith
 	}
 }
 
-// Set associates the value with the key in this cache and sets the custom ttl for this key-value item.
+// Set associates the value with the key in this cache and sets the custom ttl for this key-value pair.
 //
-// If it returns false, then the key-value item had too much setCostFunc and the Set was dropped.
+// If it returns false, then the key-value pair had too much cost and the Set was dropped.
 func (c CacheWithVariableTTL[K, V]) Set(key K, value V, ttl time.Duration) bool {
 	return c.cache.SetWithTTL(key, value, ttl)
 }
 
 // SetIfAbsent if the specified key is not already associated with a value associates it with the given value
-// and sets the custom ttl for this key-value item.
+// and sets the custom ttl for this key-value pair.
 //
 // If the specified key is not already associated with a value, then it returns false.
 //
-// Also, it returns false if the key-value item had too much setCostFunc and the SetIfAbsent was dropped.
+// Also, it returns false if the key-value pair had too much cost and the SetIfAbsent was dropped.
 func (c CacheWithVariableTTL[K, V]) SetIfAbsent(key K, value V, ttl time.Duration) bool {
 	return c.cache.SetIfAbsentWithTTL(key, value, ttl)
 }
