@@ -1,3 +1,9 @@
+## 1.1.1 - 2024-03-06
+
+### 🐞 Bug Fixes
+
+- Fixed alignment issues on 32-bit archs
+
 ## 1.1.0 - 2024-03-04
 
 The main innovation of this release is node code generation. Thanks to it, the cache will no longer consume more memory due to features that it does not use. For example, if you do not need an expiration policy, then otter will not store the expiration time of each entry. It also allows otter to use more effective expiration policies.
