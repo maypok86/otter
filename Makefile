@@ -27,6 +27,10 @@ test.unit: ## Run all unit tests
 	cat coverage.txt.tmp | grep -v -E "/generated/|/cmd/" > coverage.txt
 	rm coverage.txt.tmp
 
+.PHONY: test.32-bit
+test.32-bit: ## Run tests on 32-bit arch
+	GOARCH=386 go test -v ./...
+
 .PHONY: cover
 cover: test.unit ## Run all the tests and opens the coverage report
 	go tool cover -html=coverage.txt
