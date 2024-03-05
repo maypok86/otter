@@ -1,9 +1,6 @@
 name: Lint
 
-on:
-  push:
-    branches-ignore:
-      - release
+on: [push]
 
 jobs:
   lint:

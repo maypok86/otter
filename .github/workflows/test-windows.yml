@@ -3,12 +3,12 @@ name: Test
 on: [push]
 
 jobs:
-  test:
+  test-windows:
     strategy:
       matrix:
         go-version: [ 1.19.x, 1.20.x, 1.21.x ]
 
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
 
     steps:
       - name: Set up Go 1.x
@@ -22,11 +22,3 @@ jobs:
 
       - name: Unit tests
         run: make test.unit
-
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v4
-        with:
-          fail_ci_if_error: true
-          files: ./coverage.txt
-          token: ${{ secrets.CODECOV_TOKEN }}
-          verbose: true

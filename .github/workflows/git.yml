@@ -1,7 +1,6 @@
 name: Git Checks
 
-on:
-  pull_request:
+on: [pull_request]
 
 jobs:
   block-fixup:
