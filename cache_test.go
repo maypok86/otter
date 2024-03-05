@@ -317,6 +317,60 @@ func TestCache_DeleteByFunc(t *testing.T) {
 	}
 }
 
+func TestCache_Advanced(t *testing.T) {
+	size := 256
+	defaultTTL := time.Hour
+	c, err := MustBuilder[int, int](size).
+		WithTTL(defaultTTL).
+		Build()
+	if err != nil {
+		t.Fatalf("can not create builder: %v", err)
+	}
+
+	for i := 0; i < size; i++ {
+		c.Set(i, i)
+	}
+
+	k1 := 4
+	v1, ok := c.Advanced().GetQuietly(k1)
+	if !ok {
+		t.Fatalf("not found key %d", k1)
+	}
+
+	e1, ok := c.Advanced().GetEntryQuietly(k1)
+	if !ok {
+		t.Fatalf("not found key %d", k1)
+	}
+
+	e2, ok := c.Advanced().GetEntry(k1)
+	if !ok {
+		t.Fatalf("not found key %d", k1)
+	}
+
+	time.Sleep(time.Second)
+
+	isValidEntries := e1.Key() == k1 &&
+		e1.Value() == v1 &&
+		e1.Cost() == 1 &&
+		e1 == e2 &&
+		e1.TTL() < defaultTTL &&
+		!e1.IsExpired()
+
+	if !isValidEntries {
+		t.Fatalf("found not valid entries. e1: %+v, e2: %+v, v1:%d", e1, e2, v1)
+	}
+
+	if _, ok := c.Advanced().GetQuietly(size); ok {
+		t.Fatalf("found not valid key: %d", size)
+	}
+	if _, ok := c.Advanced().GetEntryQuietly(size); ok {
+		t.Fatalf("found not valid key: %d", size)
+	}
+	if _, ok := c.Advanced().GetEntry(size); ok {
+		t.Fatalf("found not valid key: %d", size)
+	}
+}
+
 func TestCache_Ratio(t *testing.T) {
 	var mutex sync.Mutex
 	m := make(map[DeletionCause]int)

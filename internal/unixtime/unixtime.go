@@ -23,7 +23,8 @@ import (
 var (
 	// We need this package because time.Now() is slower, allocates memory,
 	// and we don't need a more precise time for the expiry time (and most other operations).
-	now uint32
+	now       uint32
+	startTime int64
 
 	mutex         sync.Mutex
 	countInstance int
@@ -32,7 +33,7 @@ var (
 
 func startTimer() {
 	done = make(chan struct{})
-	startTime := time.Now().Unix()
+	atomic.StoreInt64(&startTime, time.Now().Unix())
 	atomic.StoreUint32(&now, uint32(0))
 
 	go func() {
@@ -41,7 +42,7 @@ func startTimer() {
 		for {
 			select {
 			case t := <-ticker.C:
-				atomic.StoreUint32(&now, uint32(t.Unix()-startTime))
+				atomic.StoreUint32(&now, uint32(t.Unix()-StartTime()))
 			case <-done:
 				return
 			}
@@ -83,4 +84,9 @@ func Now() uint32 {
 // NOTE: use only for testing and debugging.
 func SetNow(t uint32) {
 	atomic.StoreUint32(&now, t)
+}
+
+// StartTime returns the start time of the program.
+func StartTime() int64 {
+	return atomic.LoadInt64(&startTime)
 }
