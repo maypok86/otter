@@ -336,10 +336,10 @@ func (g *generator) printFunctions() {
 	g.p("}")
 	g.p("")
 
-	g.p("func (n *%s[K, V]) IsExpired() bool {", g.structName)
+	g.p("func (n *%s[K, V]) HasExpired() bool {", g.structName)
 	g.in()
 	if g.features[expiration] {
-		g.p("return n.expiration > 0 && n.expiration < unixtime.Now()")
+		g.p("return n.expiration <= unixtime.Now()")
 	} else {
 		g.p("return false")
 	}
@@ -501,8 +501,8 @@ type Node[K comparable, V any] interface {
 	NextExp() Node[K, V]
 	// SetNextExp sets the next node in the expiration policy.
 	SetNextExp(v Node[K, V])
-	// IsExpired returns true if node is expired.
-	IsExpired() bool
+	// HasExpired returns true if node has expired.
+	HasExpired() bool
 	// Expiration returns the expiration time.
 	Expiration() uint32
 	// Cost returns the cost of the node.

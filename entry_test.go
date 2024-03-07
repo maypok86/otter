@@ -46,7 +46,7 @@ func TestEntry(t *testing.T) {
 	if ttl := e.TTL(); ttl != -1 {
 		t.Fatalf("not valid ttl. want -1, got %d", ttl)
 	}
-	if e.IsExpired() {
+	if e.HasExpired() {
 		t.Fatal("entry should not be expire")
 	}
 
@@ -55,7 +55,7 @@ func TestEntry(t *testing.T) {
 	if ttl := e.TTL(); ttl <= 0 || ttl > time.Duration(newTTL)*time.Second {
 		t.Fatalf("ttl should be in the range (0, %d] seconds, but got %d seconds", newTTL, ttl/time.Second)
 	}
-	if e.IsExpired() {
+	if e.HasExpired() {
 		t.Fatal("entry should not be expire")
 	}
 
@@ -63,7 +63,7 @@ func TestEntry(t *testing.T) {
 	if ttl := e.TTL(); ttl != 0 {
 		t.Fatalf("ttl should be 0 seconds, but got %d seconds", ttl/time.Second)
 	}
-	if !e.IsExpired() {
+	if !e.HasExpired() {
 		t.Fatalf("entry should have expired")
 	}
 }

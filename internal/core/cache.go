@@ -18,7 +18,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/maypok86/otter/internal/expire"
+	"github.com/maypok86/otter/internal/expiry"
 	"github.com/maypok86/otter/internal/generated/node"
 	"github.com/maypok86/otter/internal/hashtable"
 	"github.com/maypok86/otter/internal/lossy"
@@ -53,9 +53,12 @@ func zeroValue[V any]() V {
 	return zero
 }
 
+func getTTL(ttl time.Duration) uint32 {
+	return uint32((ttl + time.Second - 1) / time.Second)
+}
+
 func getExpiration(ttl time.Duration) uint32 {
-	ttlSecond := (ttl + time.Second - 1) / time.Second
-	return unixtime.Now() + uint32(ttlSecond)
+	return unixtime.Now() + getTTL(ttl)
 }
 
 // Config is a set of cache settings.
@@ -70,7 +73,7 @@ type Config[K comparable, V any] struct {
 	DeletionListener func(key K, value V, cause DeletionCause)
 }
 
-type expirePolicy[K comparable, V any] interface {
+type expiryPolicy[K comparable, V any] interface {
 	Add(n node.Node[K, V])
 	Delete(n node.Node[K, V])
 	RemoveExpired(expired []node.Node[K, V]) []node.Node[K, V]
@@ -83,7 +86,7 @@ type Cache[K comparable, V any] struct {
 	nodeManager      *node.Manager[K, V]
 	hashmap          *hashtable.Map[K, V]
 	policy           *s3fifo.Policy[K, V]
-	expirePolicy     expirePolicy[K, V]
+	expiryPolicy     expiryPolicy[K, V]
 	stats            *stats.Stats
 	readBuffers      []*lossy.Buffer[K, V]
 	writeBuffer      *queue.Growable[task[K, V]]
@@ -123,21 +126,21 @@ func NewCache[K comparable, V any](c Config[K, V]) *Cache[K, V] {
 		hashmap = hashtable.NewWithSize[K, V](nodeManager, *c.InitialCapacity)
 	}
 
-	var expPolicy expirePolicy[K, V]
+	var expPolicy expiryPolicy[K, V]
 	switch {
 	case c.TTL != nil:
-		expPolicy = expire.NewFixed[K, V]()
+		expPolicy = expiry.NewFixed[K, V]()
 	case c.WithVariableTTL:
-		expPolicy = expire.NewVariable[K, V](nodeManager)
+		expPolicy = expiry.NewVariable[K, V](nodeManager)
 	default:
-		expPolicy = expire.NewDisabled[K, V]()
+		expPolicy = expiry.NewDisabled[K, V]()
 	}
 
 	cache := &Cache[K, V]{
 		nodeManager:      nodeManager,
 		hashmap:          hashmap,
 		policy:           s3fifo.NewPolicy[K, V](uint32(c.Capacity)),
-		expirePolicy:     expPolicy,
+		expiryPolicy:     expPolicy,
 		readBuffers:      readBuffers,
 		writeBuffer:      queue.NewGrowable[task[K, V]](minWriteBufferCapacity, maxWriteBufferCapacity),
 		doneClear:        make(chan struct{}),
@@ -151,7 +154,7 @@ func NewCache[K comparable, V any](c Config[K, V]) *Cache[K, V] {
 		cache.stats = stats.New()
 	}
 	if c.TTL != nil {
-		cache.ttl = uint32((*c.TTL + time.Second - 1) / time.Second)
+		cache.ttl = getTTL(*c.TTL)
 	}
 
 	cache.withExpiration = c.TTL != nil || c.WithVariableTTL
@@ -194,7 +197,7 @@ func (c *Cache[K, V]) GetNode(key K) (node.Node[K, V], bool) {
 		return nil, false
 	}
 
-	if n.IsExpired() {
+	if n.HasExpired() {
 		c.writeBuffer.Push(newDeleteTask(n))
 		c.stats.IncMisses()
 		return nil, false
@@ -212,7 +215,7 @@ func (c *Cache[K, V]) GetNode(key K) (node.Node[K, V], bool) {
 // such as updating statistics or the eviction policy.
 func (c *Cache[K, V]) GetNodeQuietly(key K) (node.Node[K, V], bool) {
 	n, ok := c.hashmap.Get(key)
-	if !ok || !n.IsAlive() || n.IsExpired() {
+	if !ok || !n.IsAlive() || n.HasExpired() {
 		return nil, false
 	}
 
@@ -323,7 +326,7 @@ func (c *Cache[K, V]) afterDelete(deleted node.Node[K, V]) {
 // DeleteByFunc deletes the association for this key from the cache when the given function returns true.
 func (c *Cache[K, V]) DeleteByFunc(f func(key K, value V) bool) {
 	c.hashmap.Range(func(n node.Node[K, V]) bool {
-		if !n.IsAlive() || n.IsExpired() {
+		if !n.IsAlive() || n.HasExpired() {
 			return true
 		}
 
@@ -354,7 +357,7 @@ func (c *Cache[K, V]) cleanup() {
 			return
 		}
 
-		expired = c.expirePolicy.RemoveExpired(expired)
+		expired = c.expiryPolicy.RemoveExpired(expired)
 		for _, n := range expired {
 			c.policy.Delete(n)
 		}
@@ -388,7 +391,7 @@ func (c *Cache[K, V]) process() {
 
 			c.evictionMutex.Lock()
 			c.policy.Clear()
-			c.expirePolicy.Clear()
+			c.expiryPolicy.Clear()
 			if t.isClose() {
 				c.isClosed = true
 			}
@@ -412,26 +415,26 @@ func (c *Cache[K, V]) process() {
 				n := t.node()
 				switch {
 				case t.isDelete():
-					c.expirePolicy.Delete(n)
+					c.expiryPolicy.Delete(n)
 					c.policy.Delete(n)
 				case t.isAdd():
 					if n.IsAlive() {
-						c.expirePolicy.Add(n)
+						c.expiryPolicy.Add(n)
 						deleted = c.policy.Add(deleted, n)
 					}
 				case t.isUpdate():
 					oldNode := t.oldNode()
-					c.expirePolicy.Delete(oldNode)
+					c.expiryPolicy.Delete(oldNode)
 					c.policy.Delete(oldNode)
 					if n.IsAlive() {
-						c.expirePolicy.Add(n)
+						c.expiryPolicy.Add(n)
 						deleted = c.policy.Add(deleted, n)
 					}
 				}
 			}
 
 			for _, n := range deleted {
-				c.expirePolicy.Delete(n)
+				c.expiryPolicy.Delete(n)
 			}
 
 			c.evictionMutex.Unlock()
@@ -469,7 +472,7 @@ func (c *Cache[K, V]) process() {
 // Iteration stops early when the given function returns false.
 func (c *Cache[K, V]) Range(f func(key K, value V) bool) {
 	c.hashmap.Range(func(n node.Node[K, V]) bool {
-		if !n.IsAlive() || n.IsExpired() {
+		if !n.IsAlive() || n.HasExpired() {
 			return true
 		}
 
