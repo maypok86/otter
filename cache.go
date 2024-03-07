@@ -20,6 +20,20 @@ import (
 	"github.com/maypok86/otter/internal/core"
 )
 
+// DeletionCause the cause why a cached entry was deleted.
+type DeletionCause = core.DeletionCause
+
+const (
+	// Explicit the entry was manually deleted by the user.
+	Explicit = core.Explicit
+	// Replaced the entry itself was not actually deleted, but its value was replaced by the user.
+	Replaced = core.Replaced
+	// Size the entry was evicted due to size constraints.
+	Size = core.Size
+	// Expired the entry's expiration timestamp has passed.
+	Expired = core.Expired
+)
+
 type baseCache[K comparable, V any] struct {
 	cache *core.Cache[K, V]
 }

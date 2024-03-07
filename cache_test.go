@@ -26,8 +26,18 @@ import (
 )
 
 func TestCache_Set(t *testing.T) {
-	const size = 100
-	c, err := MustBuilder[int, int](size).WithTTL(time.Minute).CollectStats().Build()
+	const size = 256
+	var mutex sync.Mutex
+	m := make(map[DeletionCause]int)
+	c, err := MustBuilder[int, int](size).
+		WithTTL(time.Minute).
+		CollectStats().
+		DeletionListener(func(key int, value int, cause DeletionCause) {
+			mutex.Lock()
+			m[cause]++
+			mutex.Unlock()
+		}).
+		Build()
 	if err != nil {
 		t.Fatalf("can not create cache: %v", err)
 	}
@@ -71,6 +81,12 @@ func TestCache_Set(t *testing.T) {
 	ratio := c.Stats().Ratio()
 	if ratio != 1.0 {
 		t.Fatalf("cache hit ratio should be 1.0, but got %v", ratio)
+	}
+
+	mutex.Lock()
+	defer mutex.Unlock()
+	if len(m) != 1 || m[Replaced] != size {
+		t.Fatalf("cache was supposed to replace %d, but replaced %d entries", size, m[Replaced])
 	}
 }
 
@@ -133,9 +149,16 @@ func TestCache_SetIfAbsent(t *testing.T) {
 
 func TestCache_SetWithTTL(t *testing.T) {
 	size := 256
+	var mutex sync.Mutex
+	m := make(map[DeletionCause]int)
 	c, err := MustBuilder[int, int](size).
 		InitialCapacity(size).
 		WithTTL(time.Second).
+		DeletionListener(func(key int, value int, cause DeletionCause) {
+			mutex.Lock()
+			m[cause]++
+			mutex.Unlock()
+		}).
 		Build()
 	if err != nil {
 		t.Fatalf("can not create builder: %v", err)
@@ -158,7 +181,23 @@ func TestCache_SetWithTTL(t *testing.T) {
 		t.Fatalf("c.Size() = %d, want = %d", cacheSize, 0)
 	}
 
-	cc, err := MustBuilder[int, int](size).WithVariableTTL().CollectStats().Build()
+	mutex.Lock()
+	if e := m[Expired]; len(m) != 1 || e != size {
+		mutex.Unlock()
+		t.Fatalf("cache was supposed to expire %d, but expired %d entries", size, e)
+	}
+	mutex.Unlock()
+
+	m = make(map[DeletionCause]int)
+	cc, err := MustBuilder[int, int](size).
+		WithVariableTTL().
+		CollectStats().
+		DeletionListener(func(key int, value int, cause DeletionCause) {
+			mutex.Lock()
+			m[cause]++
+			mutex.Unlock()
+		}).
+		Build()
 	if err != nil {
 		t.Fatalf("can not create builder: %v", err)
 	}
@@ -183,13 +222,71 @@ func TestCache_SetWithTTL(t *testing.T) {
 	if misses := cc.Stats().Misses(); misses != int64(size) {
 		t.Fatalf("c.Stats().Misses() = %d, want = %d", misses, size)
 	}
+	mutex.Lock()
+	defer mutex.Unlock()
+	if len(m) != 1 || m[Expired] != size {
+		t.Fatalf("cache was supposed to expire %d, but expired %d entries", size, m[Expired])
+	}
+}
+
+func TestCache_Delete(t *testing.T) {
+	size := 256
+	var mutex sync.Mutex
+	m := make(map[DeletionCause]int)
+	c, err := MustBuilder[int, int](size).
+		InitialCapacity(size).
+		WithTTL(time.Hour).
+		DeletionListener(func(key int, value int, cause DeletionCause) {
+			mutex.Lock()
+			m[cause]++
+			mutex.Unlock()
+		}).
+		Build()
+	if err != nil {
+		t.Fatalf("can not create builder: %v", err)
+	}
+
+	for i := 0; i < size; i++ {
+		c.Set(i, i)
+	}
+
+	for i := 0; i < size; i++ {
+		if !c.Has(i) {
+			t.Fatalf("key should exists: %d", i)
+		}
+	}
+
+	for i := 0; i < size; i++ {
+		c.Delete(i)
+	}
+
+	for i := 0; i < size; i++ {
+		if c.Has(i) {
+			t.Fatalf("key should not exists: %d", i)
+		}
+	}
+
+	time.Sleep(time.Second)
+
+	mutex.Lock()
+	defer mutex.Unlock()
+	if len(m) != 1 || m[Explicit] != size {
+		t.Fatalf("cache was supposed to delete %d, but deleted %d entries", size, m[Explicit])
+	}
 }
 
 func TestCache_DeleteByFunc(t *testing.T) {
 	size := 256
+	var mutex sync.Mutex
+	m := make(map[DeletionCause]int)
 	c, err := MustBuilder[int, int](size).
 		InitialCapacity(size).
 		WithTTL(time.Hour).
+		DeletionListener(func(key int, value int, cause DeletionCause) {
+			mutex.Lock()
+			m[cause]++
+			mutex.Unlock()
+		}).
 		Build()
 	if err != nil {
 		t.Fatalf("can not create builder: %v", err)
@@ -209,10 +306,28 @@ func TestCache_DeleteByFunc(t *testing.T) {
 		}
 		return true
 	})
+
+	time.Sleep(time.Second)
+
+	expected := size / 2
+	mutex.Lock()
+	defer mutex.Unlock()
+	if len(m) != 1 || m[Explicit] != expected {
+		t.Fatalf("cache was supposed to delete %d, but deleted %d entries", expected, m[Explicit])
+	}
 }
 
 func TestCache_Ratio(t *testing.T) {
-	c, err := MustBuilder[uint64, uint64](100).CollectStats().Build()
+	var mutex sync.Mutex
+	m := make(map[DeletionCause]int)
+	c, err := MustBuilder[uint64, uint64](100).
+		CollectStats().
+		DeletionListener(func(key uint64, value uint64, cause DeletionCause) {
+			mutex.Lock()
+			m[cause]++
+			mutex.Unlock()
+		}).
+		Build()
 	if err != nil {
 		t.Fatalf("can not create cache: %v", err)
 	}
@@ -231,6 +346,13 @@ func TestCache_Ratio(t *testing.T) {
 
 	t.Logf("actual size: %d, capacity: %d", c.Size(), c.Capacity())
 	t.Logf("actual: %.2f, optimal: %.2f", c.Stats().Ratio(), o.Ratio())
+
+	mutex.Lock()
+	defer mutex.Unlock()
+	t.Logf("evicted: %d", m[Size])
+	if len(m) != 1 || m[Size] <= 0 || m[Size] > 5000 {
+		t.Fatalf("cache was supposed to evict positive number of entries, but evicted %d entries", m[Size])
+	}
 }
 
 type optimal struct {
