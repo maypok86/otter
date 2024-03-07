@@ -37,11 +37,12 @@ var (
 )
 
 type baseOptions[K comparable, V any] struct {
-	capacity        int
-	initialCapacity int
-	statsEnabled    bool
-	withCost        bool
-	costFunc        func(key K, value V) uint32
+	capacity         int
+	initialCapacity  int
+	statsEnabled     bool
+	withCost         bool
+	costFunc         func(key K, value V) uint32
+	deletionListener func(key K, value V, cause DeletionCause)
 }
 
 func (o *baseOptions[K, V]) collectStats() {
@@ -55,6 +56,10 @@ func (o *baseOptions[K, V]) setCostFunc(costFunc func(key K, value V) uint32) {
 
 func (o *baseOptions[K, V]) setInitialCapacity(initialCapacity int) {
 	o.initialCapacity = initialCapacity
+}
+
+func (o *baseOptions[K, V]) setDeletionListener(deletionListener func(key K, value V, cause DeletionCause)) {
+	o.deletionListener = deletionListener
 }
 
 func (o *baseOptions[K, V]) validate() error {
@@ -73,11 +78,12 @@ func (o *baseOptions[K, V]) toConfig() core.Config[K, V] {
 		initialCapacity = &o.initialCapacity
 	}
 	return core.Config[K, V]{
-		Capacity:        o.capacity,
-		InitialCapacity: initialCapacity,
-		StatsEnabled:    o.statsEnabled,
-		CostFunc:        o.costFunc,
-		WithCost:        o.withCost,
+		Capacity:         o.capacity,
+		InitialCapacity:  initialCapacity,
+		StatsEnabled:     o.statsEnabled,
+		CostFunc:         o.costFunc,
+		WithCost:         o.withCost,
+		DeletionListener: o.deletionListener,
 	}
 }
 
@@ -169,6 +175,14 @@ func (b *Builder[K, V]) Cost(costFunc func(key K, value V) uint32) *Builder[K, V
 	return b
 }
 
+// DeletionListener specifies a listener instance that caches should notify each time an entry is deleted for any
+// DeletionCause cause. The cache will invoke this listener in the background goroutine
+// after the entry's deletion operation has completed.
+func (b *Builder[K, V]) DeletionListener(deletionListener func(key K, value V, cause DeletionCause)) *Builder[K, V] {
+	b.setDeletionListener(deletionListener)
+	return b
+}
+
 // WithTTL specifies that each item should be automatically removed from the cache once a fixed duration
 // has elapsed after the item's creation.
 func (b *Builder[K, V]) WithTTL(ttl time.Duration) *ConstTTLBuilder[K, V] {
@@ -231,6 +245,14 @@ func (b *ConstTTLBuilder[K, V]) Cost(costFunc func(key K, value V) uint32) *Cons
 	return b
 }
 
+// DeletionListener specifies a listener instance that caches should notify each time an entry is deleted for any
+// DeletionCause cause. The cache will invoke this listener in the background goroutine
+// after the entry's deletion operation has completed.
+func (b *ConstTTLBuilder[K, V]) DeletionListener(deletionListener func(key K, value V, cause DeletionCause)) *ConstTTLBuilder[K, V] {
+	b.setDeletionListener(deletionListener)
+	return b
+}
+
 // Build creates a configured cache or
 // returns an error if invalid parameters were passed to the builder.
 func (b *ConstTTLBuilder[K, V]) Build() (Cache[K, V], error) {
@@ -267,6 +289,14 @@ func (b *VariableTTLBuilder[K, V]) InitialCapacity(initialCapacity int) *Variabl
 // By default, this function always returns 1.
 func (b *VariableTTLBuilder[K, V]) Cost(costFunc func(key K, value V) uint32) *VariableTTLBuilder[K, V] {
 	b.setCostFunc(costFunc)
+	return b
+}
+
+// DeletionListener specifies a listener instance that caches should notify each time an entry is deleted for any
+// DeletionCause cause. The cache will invoke this listener in the background goroutine
+// after the entry's deletion operation has completed.
+func (b *VariableTTLBuilder[K, V]) DeletionListener(deletionListener func(key K, value V, cause DeletionCause)) *VariableTTLBuilder[K, V] {
+	b.setDeletionListener(deletionListener)
 	return b
 }
 

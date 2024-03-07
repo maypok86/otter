@@ -92,6 +92,8 @@ func TestBuilder_BuildSuccess(t *testing.T) {
 
 	cc, err := b.WithTTL(time.Minute).CollectStats().Cost(func(key int, value int) uint32 {
 		return 2
+	}).DeletionListener(func(key int, value int, cause DeletionCause) {
+		fmt.Println("const ttl")
 	}).Build()
 	if err != nil {
 		t.Fatalf("builded cache with error: %v", err)
@@ -103,6 +105,8 @@ func TestBuilder_BuildSuccess(t *testing.T) {
 
 	cv, err := b.WithVariableTTL().CollectStats().Cost(func(key int, value int) uint32 {
 		return 2
+	}).DeletionListener(func(key int, value int, cause DeletionCause) {
+		fmt.Println("variable ttl")
 	}).Build()
 	if err != nil {
 		t.Fatalf("builded cache with error: %v", err)

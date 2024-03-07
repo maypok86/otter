@@ -30,6 +30,20 @@ import (
 	"github.com/maypok86/otter/internal/xruntime"
 )
 
+// DeletionCause the cause why a cached entry was deleted.
+type DeletionCause uint8
+
+const (
+	// Explicit the entry was manually deleted by the user.
+	Explicit DeletionCause = iota
+	// Replaced the entry itself was not actually deleted, but its value was replaced by the user.
+	Replaced
+	// Size the entry was evicted due to size constraints.
+	Size
+	// Expired the entry's expiration timestamp has passed.
+	Expired
+)
+
 func zeroValue[V any]() V {
 	var zero V
 	return zero
@@ -42,13 +56,14 @@ func getExpiration(ttl time.Duration) uint32 {
 
 // Config is a set of cache settings.
 type Config[K comparable, V any] struct {
-	Capacity        int
-	InitialCapacity *int
-	StatsEnabled    bool
-	TTL             *time.Duration
-	WithVariableTTL bool
-	CostFunc        func(key K, value V) uint32
-	WithCost        bool
+	Capacity         int
+	InitialCapacity  *int
+	StatsEnabled     bool
+	TTL              *time.Duration
+	WithVariableTTL  bool
+	CostFunc         func(key K, value V) uint32
+	WithCost         bool
+	DeletionListener func(key K, value V, cause DeletionCause)
 }
 
 type expirePolicy[K comparable, V any] interface {
@@ -61,22 +76,23 @@ type expirePolicy[K comparable, V any] interface {
 // Cache is a structure performs a best-effort bounding of a hash table using eviction algorithm
 // to determine which entries to evict when the capacity is exceeded.
 type Cache[K comparable, V any] struct {
-	nodeManager    *node.Manager[K, V]
-	hashmap        *hashtable.Map[K, V]
-	policy         *s3fifo.Policy[K, V]
-	expirePolicy   expirePolicy[K, V]
-	stats          *stats.Stats
-	readBuffers    []*lossy.Buffer[K, V]
-	writeBuffer    *queue.MPSC[task[K, V]]
-	evictionMutex  sync.Mutex
-	closeOnce      sync.Once
-	doneClear      chan struct{}
-	costFunc       func(key K, value V) uint32
-	capacity       int
-	mask           uint32
-	ttl            uint32
-	withExpiration bool
-	isClosed       bool
+	nodeManager      *node.Manager[K, V]
+	hashmap          *hashtable.Map[K, V]
+	policy           *s3fifo.Policy[K, V]
+	expirePolicy     expirePolicy[K, V]
+	stats            *stats.Stats
+	readBuffers      []*lossy.Buffer[K, V]
+	writeBuffer      *queue.MPSC[task[K, V]]
+	evictionMutex    sync.Mutex
+	closeOnce        sync.Once
+	doneClear        chan struct{}
+	costFunc         func(key K, value V) uint32
+	deletionListener func(key K, value V, cause DeletionCause)
+	capacity         int
+	mask             uint32
+	ttl              uint32
+	withExpiration   bool
+	isClosed         bool
 }
 
 // NewCache returns a new cache instance based on the settings from Config.
@@ -114,16 +130,17 @@ func NewCache[K comparable, V any](c Config[K, V]) *Cache[K, V] {
 	}
 
 	cache := &Cache[K, V]{
-		nodeManager:  nodeManager,
-		hashmap:      hashmap,
-		policy:       s3fifo.NewPolicy[K, V](uint32(c.Capacity)),
-		expirePolicy: expPolicy,
-		readBuffers:  readBuffers,
-		writeBuffer:  queue.NewMPSC[task[K, V]](writeBufferCapacity),
-		doneClear:    make(chan struct{}),
-		mask:         uint32(readBuffersCount - 1),
-		costFunc:     c.CostFunc,
-		capacity:     c.Capacity,
+		nodeManager:      nodeManager,
+		hashmap:          hashmap,
+		policy:           s3fifo.NewPolicy[K, V](uint32(c.Capacity)),
+		expirePolicy:     expPolicy,
+		readBuffers:      readBuffers,
+		writeBuffer:      queue.NewMPSC[task[K, V]](writeBufferCapacity),
+		doneClear:        make(chan struct{}),
+		mask:             uint32(readBuffersCount - 1),
+		costFunc:         c.CostFunc,
+		deletionListener: c.DeletionListener,
+		capacity:         c.Capacity,
 	}
 
 	if c.StatsEnabled {
@@ -260,7 +277,7 @@ func (c *Cache[K, V]) set(key K, value V, expiration uint32, onlyIfAbsent bool) 
 	return true
 }
 
-// Delete removes the association for this key from the cache.
+// Delete deletes the association for this key from the cache.
 func (c *Cache[K, V]) Delete(key K) {
 	c.afterDelete(c.hashmap.Delete(key))
 }
@@ -276,7 +293,7 @@ func (c *Cache[K, V]) afterDelete(deleted node.Node[K, V]) {
 	}
 }
 
-// DeleteByFunc removes the association for this key from the cache when the given function returns true.
+// DeleteByFunc deletes the association for this key from the cache when the given function returns true.
 func (c *Cache[K, V]) DeleteByFunc(f func(key K, value V) bool) {
 	c.hashmap.Range(func(n node.Node[K, V]) bool {
 		if !n.IsAlive() || n.IsExpired() {
@@ -289,6 +306,14 @@ func (c *Cache[K, V]) DeleteByFunc(f func(key K, value V) bool) {
 
 		return true
 	})
+}
+
+func (c *Cache[K, V]) notifyDeletion(key K, value V, cause DeletionCause) {
+	if c.deletionListener == nil {
+		return
+	}
+
+	c.deletionListener(key, value, cause)
 }
 
 func (c *Cache[K, V]) cleanup() {
@@ -312,6 +337,7 @@ func (c *Cache[K, V]) cleanup() {
 		for _, n := range expired {
 			c.hashmap.DeleteNode(n)
 			n.Die()
+			c.notifyDeletion(n.Key(), n.Value(), Expired)
 		}
 
 		expired = clearBuffer(expired)
@@ -383,9 +409,21 @@ func (c *Cache[K, V]) process() {
 
 			c.evictionMutex.Unlock()
 
+			for _, t := range buffer {
+				switch {
+				case t.isDelete():
+					n := t.node()
+					c.notifyDeletion(n.Key(), n.Value(), Explicit)
+				case t.isUpdate():
+					n := t.oldNode()
+					c.notifyDeletion(n.Key(), n.Value(), Replaced)
+				}
+			}
+
 			for _, n := range deleted {
 				c.hashmap.DeleteNode(n)
 				n.Die()
+				c.notifyDeletion(n.Key(), n.Value(), Size)
 				c.stats.IncEvictedCount()
 				c.stats.AddEvictedCost(n.Cost())
 			}
