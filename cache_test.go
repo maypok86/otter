@@ -354,7 +354,7 @@ func TestCache_Advanced(t *testing.T) {
 		e1.Cost() == 1 &&
 		e1 == e2 &&
 		e1.TTL() < defaultTTL &&
-		!e1.IsExpired()
+		!e1.HasExpired()
 
 	if !isValidEntries {
 		t.Fatalf("found not valid entries. e1: %+v, e2: %+v, v1:%d", e1, e2, v1)

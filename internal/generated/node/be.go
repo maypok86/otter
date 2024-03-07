@@ -103,8 +103,8 @@ func (n *BE[K, V]) SetNextExp(v Node[K, V]) {
 	n.nextExp = (*BE[K, V])(v.AsPointer())
 }
 
-func (n *BE[K, V]) IsExpired() bool {
-	return n.expiration > 0 && n.expiration < unixtime.Now()
+func (n *BE[K, V]) HasExpired() bool {
+	return n.expiration <= unixtime.Now()
 }
 
 func (n *BE[K, V]) Expiration() uint32 {

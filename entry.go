@@ -64,8 +64,8 @@ func (e Entry[K, V]) TTL() time.Duration {
 	return time.Duration(expiration-now) * time.Second
 }
 
-// IsExpired returns true if the entry is expired.
-func (e Entry[K, V]) IsExpired() bool {
+// HasExpired returns true if the entry has expired.
+func (e Entry[K, V]) HasExpired() bool {
 	expiration := e.Expiration()
 	if expiration == 0 {
 		return false

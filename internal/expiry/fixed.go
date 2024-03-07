@@ -12,25 +12,35 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package expire
+package expiry
 
 import "github.com/maypok86/otter/internal/generated/node"
 
-type Disabled[K comparable, V any] struct{}
-
-func NewDisabled[K comparable, V any]() *Disabled[K, V] {
-	return &Disabled[K, V]{}
+type Fixed[K comparable, V any] struct {
+	q *queue[K, V]
 }
 
-func (d *Disabled[K, V]) Add(n node.Node[K, V]) {
+func NewFixed[K comparable, V any]() *Fixed[K, V] {
+	return &Fixed[K, V]{
+		q: newQueue[K, V](),
+	}
 }
 
-func (d *Disabled[K, V]) Delete(n node.Node[K, V]) {
+func (f *Fixed[K, V]) Add(n node.Node[K, V]) {
+	f.q.push(n)
 }
 
-func (d *Disabled[K, V]) RemoveExpired(expired []node.Node[K, V]) []node.Node[K, V] {
+func (f *Fixed[K, V]) Delete(n node.Node[K, V]) {
+	f.q.remove(n)
+}
+
+func (f *Fixed[K, V]) RemoveExpired(expired []node.Node[K, V]) []node.Node[K, V] {
+	for !f.q.isEmpty() && f.q.head.HasExpired() {
+		expired = append(expired, f.q.pop())
+	}
 	return expired
 }
 
-func (d *Disabled[K, V]) Clear() {
+func (f *Fixed[K, V]) Clear() {
+	f.q.clear()
 }

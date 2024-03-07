@@ -44,7 +44,7 @@ func (m *main[K, V]) evict(deleted []node.Node[K, V]) []node.Node[K, V] {
 	for m.cost > 0 {
 		n := m.q.pop()
 
-		if !n.IsAlive() || n.IsExpired() || n.Frequency() == 0 {
+		if !n.IsAlive() || n.HasExpired() || n.Frequency() == 0 {
 			n.Unmark()
 			m.cost -= n.Cost()
 			return append(deleted, n)

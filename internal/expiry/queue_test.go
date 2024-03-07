@@ -9,7 +9,7 @@
 // license that can be found in the LICENSE file.
 // That can be found at https://cs.opensource.google/go/go/+/refs/tags/go1.21.5:LICENSE
 
-package expire
+package expiry
 
 import (
 	"strconv"

@@ -45,8 +45,8 @@ type Node[K comparable, V any] interface {
 	NextExp() Node[K, V]
 	// SetNextExp sets the next node in the expiration policy.
 	SetNextExp(v Node[K, V])
-	// IsExpired returns true if node is expired.
-	IsExpired() bool
+	// HasExpired returns true if node has expired.
+	HasExpired() bool
 	// Expiration returns the expiration time.
 	Expiration() uint32
 	// Cost returns the cost of the node.

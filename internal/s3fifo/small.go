@@ -53,7 +53,7 @@ func (s *small[K, V]) evict(deleted []node.Node[K, V]) []node.Node[K, V] {
 	n := s.q.pop()
 	s.cost -= n.Cost()
 	n.Unmark()
-	if !n.IsAlive() || n.IsExpired() {
+	if !n.IsAlive() || n.HasExpired() {
 		return append(deleted, n)
 	}
 

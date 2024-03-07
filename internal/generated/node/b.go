@@ -87,7 +87,7 @@ func (n *B[K, V]) SetNextExp(v Node[K, V]) {
 	panic("not implemented")
 }
 
-func (n *B[K, V]) IsExpired() bool {
+func (n *B[K, V]) HasExpired() bool {
 	return false
 }
 
