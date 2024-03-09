@@ -44,6 +44,10 @@ const (
 	Expired
 )
 
+const (
+	minWriteBufferCapacity uint32 = 4
+)
+
 func zeroValue[V any]() V {
 	var zero V
 	return zero
@@ -82,7 +86,7 @@ type Cache[K comparable, V any] struct {
 	expirePolicy     expirePolicy[K, V]
 	stats            *stats.Stats
 	readBuffers      []*lossy.Buffer[K, V]
-	writeBuffer      *queue.MPSC[task[K, V]]
+	writeBuffer      *queue.Growable[task[K, V]]
 	evictionMutex    sync.Mutex
 	closeOnce        sync.Once
 	doneClear        chan struct{}
@@ -99,7 +103,7 @@ type Cache[K comparable, V any] struct {
 func NewCache[K comparable, V any](c Config[K, V]) *Cache[K, V] {
 	parallelism := xruntime.Parallelism()
 	roundedParallelism := int(xmath.RoundUpPowerOf2(parallelism))
-	writeBufferCapacity := 128 * roundedParallelism
+	maxWriteBufferCapacity := uint32(128 * roundedParallelism)
 	readBuffersCount := 4 * roundedParallelism
 
 	nodeManager := node.NewManager[K, V](node.Config{
@@ -135,7 +139,7 @@ func NewCache[K comparable, V any](c Config[K, V]) *Cache[K, V] {
 		policy:           s3fifo.NewPolicy[K, V](uint32(c.Capacity)),
 		expirePolicy:     expPolicy,
 		readBuffers:      readBuffers,
-		writeBuffer:      queue.NewMPSC[task[K, V]](writeBufferCapacity),
+		writeBuffer:      queue.NewGrowable[task[K, V]](minWriteBufferCapacity, maxWriteBufferCapacity),
 		doneClear:        make(chan struct{}),
 		mask:             uint32(readBuffersCount - 1),
 		costFunc:         c.CostFunc,
@@ -181,7 +185,7 @@ func (c *Cache[K, V]) Get(key K) (V, bool) {
 	}
 
 	if got.IsExpired() {
-		c.writeBuffer.Insert(newDeleteTask(got))
+		c.writeBuffer.Push(newDeleteTask(got))
 		c.stats.IncMisses()
 		return zeroValue[V](), false
 	}
@@ -257,7 +261,7 @@ func (c *Cache[K, V]) set(key K, value V, expiration uint32, onlyIfAbsent bool) 
 		res := c.hashmap.SetIfAbsent(n)
 		if res == nil {
 			// insert
-			c.writeBuffer.Insert(newAddTask(n))
+			c.writeBuffer.Push(newAddTask(n))
 			return true
 		}
 		c.stats.IncRejectedSets()
@@ -268,10 +272,10 @@ func (c *Cache[K, V]) set(key K, value V, expiration uint32, onlyIfAbsent bool) 
 	if evicted != nil {
 		// update
 		evicted.Die()
-		c.writeBuffer.Insert(newUpdateTask(n, evicted))
+		c.writeBuffer.Push(newUpdateTask(n, evicted))
 	} else {
 		// insert
-		c.writeBuffer.Insert(newAddTask(n))
+		c.writeBuffer.Push(newAddTask(n))
 	}
 
 	return true
@@ -289,7 +293,7 @@ func (c *Cache[K, V]) deleteNode(n node.Node[K, V]) {
 func (c *Cache[K, V]) afterDelete(deleted node.Node[K, V]) {
 	if deleted != nil {
 		deleted.Die()
-		c.writeBuffer.Insert(newDeleteTask(deleted))
+		c.writeBuffer.Push(newDeleteTask(deleted))
 	}
 }
 
@@ -353,7 +357,7 @@ func (c *Cache[K, V]) process() {
 	deleted := make([]node.Node[K, V], 0, bufferCapacity)
 	i := 0
 	for {
-		t := c.writeBuffer.Remove()
+		t := c.writeBuffer.Pop()
 
 		if t.isClear() || t.isClose() {
 			buffer = clearBuffer(buffer)
@@ -463,7 +467,7 @@ func (c *Cache[K, V]) clear(t task[K, V]) {
 		c.readBuffers[i].Clear()
 	}
 
-	c.writeBuffer.Insert(t)
+	c.writeBuffer.Push(t)
 	<-c.doneClear
 
 	c.stats.Clear()
