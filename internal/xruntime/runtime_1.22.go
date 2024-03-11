@@ -1,4 +1,4 @@
-//go:build !go1.22
+//go:build go1.22
 
 // Copyright (c) 2023 Alexey Mayshev. All rights reserved.
 //
@@ -21,5 +21,5 @@ import (
 )
 
 //go:noescape
-//go:linkname Fastrand runtime.fastrand
+//go:linkname Fastrand runtime.cheaprand
 func Fastrand() uint32
