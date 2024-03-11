@@ -1,5 +1,3 @@
-//go:build !go1.22
-
 // Copyright (c) 2023 Alexey Mayshev. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,9 +15,20 @@
 package xruntime
 
 import (
-	_ "unsafe"
+	"runtime"
 )
 
-//go:noescape
-//go:linkname Fastrand runtime.fastrand
-func Fastrand() uint32
+const (
+	// CacheLineSize is useful for preventing false sharing.
+	CacheLineSize = 64
+)
+
+// Parallelism returns the maximum possible number of concurrently running goroutines.
+func Parallelism() uint32 {
+	maxProcs := uint32(runtime.GOMAXPROCS(0))
+	numCPU := uint32(runtime.NumCPU())
+	if maxProcs < numCPU {
+		return maxProcs
+	}
+	return numCPU
+}
