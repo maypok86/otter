@@ -332,17 +332,17 @@ func TestCache_Advanced(t *testing.T) {
 	}
 
 	k1 := 4
-	v1, ok := c.Advanced().GetQuietly(k1)
+	v1, ok := c.Extension().GetQuietly(k1)
 	if !ok {
 		t.Fatalf("not found key %d", k1)
 	}
 
-	e1, ok := c.Advanced().GetEntryQuietly(k1)
+	e1, ok := c.Extension().GetEntryQuietly(k1)
 	if !ok {
 		t.Fatalf("not found key %d", k1)
 	}
 
-	e2, ok := c.Advanced().GetEntry(k1)
+	e2, ok := c.Extension().GetEntry(k1)
 	if !ok {
 		t.Fatalf("not found key %d", k1)
 	}
@@ -360,13 +360,13 @@ func TestCache_Advanced(t *testing.T) {
 		t.Fatalf("found not valid entries. e1: %+v, e2: %+v, v1:%d", e1, e2, v1)
 	}
 
-	if _, ok := c.Advanced().GetQuietly(size); ok {
+	if _, ok := c.Extension().GetQuietly(size); ok {
 		t.Fatalf("found not valid key: %d", size)
 	}
-	if _, ok := c.Advanced().GetEntryQuietly(size); ok {
+	if _, ok := c.Extension().GetEntryQuietly(size); ok {
 		t.Fatalf("found not valid key: %d", size)
 	}
-	if _, ok := c.Advanced().GetEntry(size); ok {
+	if _, ok := c.Extension().GetEntry(size); ok {
 		t.Fatalf("found not valid key: %d", size)
 	}
 }
