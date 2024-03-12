@@ -25,22 +25,22 @@ func zeroValue[V any]() V {
 	return zero
 }
 
-// Advanced is an access point for inspecting and performing low-level operations based on the cache's runtime
+// Extension is an access point for inspecting and performing low-level operations based on the cache's runtime
 // characteristics. These operations are optional and dependent on how the cache was constructed
 // and what abilities the implementation exposes.
-type Advanced[K comparable, V any] struct {
+type Extension[K comparable, V any] struct {
 	cache *core.Cache[K, V]
 }
 
-func newAdvanced[K comparable, V any](cache *core.Cache[K, V]) Advanced[K, V] {
-	return Advanced[K, V]{
+func newExtension[K comparable, V any](cache *core.Cache[K, V]) Extension[K, V] {
+	return Extension[K, V]{
 		cache: cache,
 	}
 }
 
-func (a Advanced[K, V]) createEntry(n node.Node[K, V]) Entry[K, V] {
+func (e Extension[K, V]) createEntry(n node.Node[K, V]) Entry[K, V] {
 	var expiration int64
-	if a.cache.WithExpiration() {
+	if e.cache.WithExpiration() {
 		expiration = unixtime.StartTime() + int64(n.Expiration())
 	}
 
@@ -56,8 +56,8 @@ func (a Advanced[K, V]) createEntry(n node.Node[K, V]) Entry[K, V] {
 //
 // Unlike Get in the cache, this function does not produce any side effects
 // such as updating statistics or the eviction policy.
-func (a Advanced[K, V]) GetQuietly(key K) (V, bool) {
-	n, ok := a.cache.GetNodeQuietly(key)
+func (e Extension[K, V]) GetQuietly(key K) (V, bool) {
+	n, ok := e.cache.GetNodeQuietly(key)
 	if !ok {
 		return zeroValue[V](), false
 	}
@@ -66,24 +66,24 @@ func (a Advanced[K, V]) GetQuietly(key K) (V, bool) {
 }
 
 // GetEntry returns the cache entry associated with the key in this cache.
-func (a Advanced[K, V]) GetEntry(key K) (Entry[K, V], bool) {
-	n, ok := a.cache.GetNode(key)
+func (e Extension[K, V]) GetEntry(key K) (Entry[K, V], bool) {
+	n, ok := e.cache.GetNode(key)
 	if !ok {
 		return Entry[K, V]{}, false
 	}
 
-	return a.createEntry(n), true
+	return e.createEntry(n), true
 }
 
 // GetEntryQuietly returns the cache entry associated with the key in this cache.
 //
 // Unlike GetEntry, this function does not produce any side effects
 // such as updating statistics or the eviction policy.
-func (a Advanced[K, V]) GetEntryQuietly(key K) (Entry[K, V], bool) {
-	n, ok := a.cache.GetNodeQuietly(key)
+func (e Extension[K, V]) GetEntryQuietly(key K) (Entry[K, V], bool) {
+	n, ok := e.cache.GetNodeQuietly(key)
 	if !ok {
 		return Entry[K, V]{}, false
 	}
 
-	return a.createEntry(n), true
+	return e.createEntry(n), true
 }

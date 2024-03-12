@@ -100,11 +100,11 @@ func (bs baseCache[K, V]) Stats() Stats {
 	return newStats(bs.cache.Stats())
 }
 
-// Advanced returns access to inspect and perform low-level operations on this cache based on its runtime
+// Extension returns access to inspect and perform low-level operations on this cache based on its runtime
 // characteristics. These operations are optional and dependent on how the cache was constructed
 // and what abilities the implementation exposes.
-func (bs baseCache[K, V]) Advanced() Advanced[K, V] {
-	return newAdvanced(bs.cache)
+func (bs baseCache[K, V]) Extension() Extension[K, V] {
+	return newExtension(bs.cache)
 }
 
 // Cache is a structure performs a best-effort bounding of a hash table using eviction algorithm
