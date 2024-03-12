@@ -1,3 +1,32 @@
+## 1.2.0 - 2024-03-12
+
+The main innovation of this release is the addition of an `Extension`, which makes it easy to add a huge number of features to otter.
+
+Usage example:
+
+```go
+key := 1
+...
+entry, ok := cache.Extension().GetEntry(key)
+...
+key := entry.Key()
+value := entry.Value()
+cost := entry.Cost()
+expiration := entry.Expiration()
+ttl := entry.TTL()
+hasExpired := entry.HasExpired()
+```
+
+### ✨️Features
+
+- Added `DeletionListener` to the builder ([#63](https://github.com/maypok86/otter/issues/63))
+- Added `Extension` ([#56](https://github.com/maypok86/otter/issues/56))
+
+### 🚀 Improvements
+
+- Added support for Go 1.22
+- Memory consumption with small cache sizes is reduced to the level of other libraries ([#66](https://github.com/maypok86/otter/issues/66))
+
 ## 1.1.1 - 2024-03-06
 
 ### 🐞 Bug Fixes
