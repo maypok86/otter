@@ -16,7 +16,6 @@ package s3fifo
 
 import (
 	"github.com/dolthub/maphash"
-	"github.com/dolthub/swiss"
 	"github.com/gammazero/deque"
 
 	"github.com/maypok86/otter/internal/generated/node"
@@ -24,7 +23,7 @@ import (
 
 type ghost[K comparable, V any] struct {
 	q      *deque.Deque[uint64]
-	m      *swiss.Map[uint64, struct{}]
+	m      map[uint64]struct{}
 	main   *main[K, V]
 	small  *small[K, V]
 	hasher maphash.Hasher[K]
@@ -33,14 +32,15 @@ type ghost[K comparable, V any] struct {
 func newGhost[K comparable, V any](main *main[K, V]) *ghost[K, V] {
 	return &ghost[K, V]{
 		q:      deque.New[uint64](),
-		m:      swiss.NewMap[uint64, struct{}](64),
+		m:      make(map[uint64]struct{}),
 		main:   main,
 		hasher: maphash.NewHasher[K](),
 	}
 }
 
 func (g *ghost[K, V]) isGhost(n node.Node[K, V]) bool {
-	_, ok := g.m.Get(g.hasher.Hash(n.Key()))
+	h := g.hasher.Hash(n.Key())
+	_, ok := g.m[h]
 	return ok
 }
 
@@ -49,7 +49,7 @@ func (g *ghost[K, V]) insert(deleted []node.Node[K, V], n node.Node[K, V]) []nod
 
 	h := g.hasher.Hash(n.Key())
 
-	if _, ok := g.m.Get(h); ok {
+	if _, ok := g.m[h]; ok {
 		return deleted
 	}
 
@@ -60,16 +60,18 @@ func (g *ghost[K, V]) insert(deleted []node.Node[K, V], n node.Node[K, V]) []nod
 
 	for g.q.Len() >= maxLength {
 		v := g.q.PopFront()
-		g.m.Delete(v)
+		delete(g.m, v)
 	}
 
 	g.q.PushBack(h)
-	g.m.Put(h, struct{}{})
+	g.m[h] = struct{}{}
 
 	return deleted
 }
 
 func (g *ghost[K, V]) clear() {
 	g.q.Clear()
-	g.m.Clear()
+	for k := range g.m {
+		delete(g.m, k)
+	}
 }
