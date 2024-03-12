@@ -17,9 +17,9 @@
 package xruntime
 
 import (
-	_ "unsafe"
+	"math/rand/v2"
 )
 
-//go:noescape
-//go:linkname Fastrand runtime.cheaprand
-func Fastrand() uint32
+func Fastrand() uint32 {
+	return rand.Uint32()
+}
