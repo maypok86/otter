@@ -16,7 +16,7 @@ func TestCache_SetWithCost(t *testing.T) {
 		},
 	})
 
-	goodCost := int(c.policy.MaxAvailableCost())
+	goodCost := c.policy.MaxAvailableCost()
 	badCost := goodCost + 1
 
 	added := c.Set(goodCost, 1)

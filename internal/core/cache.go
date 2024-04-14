@@ -139,7 +139,7 @@ func NewCache[K comparable, V any](c Config[K, V]) *Cache[K, V] {
 	cache := &Cache[K, V]{
 		nodeManager:      nodeManager,
 		hashmap:          hashmap,
-		policy:           s3fifo.NewPolicy[K, V](uint32(c.Capacity)),
+		policy:           s3fifo.NewPolicy[K, V](c.Capacity),
 		expiryPolicy:     expPolicy,
 		readBuffers:      readBuffers,
 		writeBuffer:      queue.NewGrowable[task[K, V]](minWriteBufferCapacity, maxWriteBufferCapacity),
@@ -277,7 +277,7 @@ func (c *Cache[K, V]) SetIfAbsentWithTTL(key K, value V, ttl time.Duration) bool
 
 func (c *Cache[K, V]) set(key K, value V, expiration uint32, onlyIfAbsent bool) bool {
 	cost := c.costFunc(key, value)
-	if cost > c.policy.MaxAvailableCost() {
+	if int(cost) > c.policy.MaxAvailableCost() {
 		c.stats.IncRejectedSets()
 		return false
 	}

@@ -22,11 +22,11 @@ const maxReinsertions = 20
 
 type main[K comparable, V any] struct {
 	q       *queue[K, V]
-	cost    uint32
-	maxCost uint32
+	cost    int
+	maxCost int
 }
 
-func newMain[K comparable, V any](maxCost uint32) *main[K, V] {
+func newMain[K comparable, V any](maxCost int) *main[K, V] {
 	return &main[K, V]{
 		q:       newQueue[K, V](),
 		maxCost: maxCost,
@@ -36,7 +36,7 @@ func newMain[K comparable, V any](maxCost uint32) *main[K, V] {
 func (m *main[K, V]) insert(n node.Node[K, V]) {
 	m.q.push(n)
 	n.MarkMain()
-	m.cost += n.Cost()
+	m.cost += int(n.Cost())
 }
 
 func (m *main[K, V]) evict(deleted []node.Node[K, V]) []node.Node[K, V] {
@@ -46,7 +46,7 @@ func (m *main[K, V]) evict(deleted []node.Node[K, V]) []node.Node[K, V] {
 
 		if !n.IsAlive() || n.HasExpired() || n.Frequency() == 0 {
 			n.Unmark()
-			m.cost -= n.Cost()
+			m.cost -= int(n.Cost())
 			return append(deleted, n)
 		}
 
@@ -54,7 +54,7 @@ func (m *main[K, V]) evict(deleted []node.Node[K, V]) []node.Node[K, V] {
 		reinsertions++
 		if reinsertions >= maxReinsertions {
 			n.Unmark()
-			m.cost -= n.Cost()
+			m.cost -= int(n.Cost())
 			return append(deleted, n)
 		}
 
@@ -65,7 +65,7 @@ func (m *main[K, V]) evict(deleted []node.Node[K, V]) []node.Node[K, V] {
 }
 
 func (m *main[K, V]) remove(n node.Node[K, V]) {
-	m.cost -= n.Cost()
+	m.cost -= int(n.Cost())
 	n.Unmark()
 	m.q.remove(n)
 }
