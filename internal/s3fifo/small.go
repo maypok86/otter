@@ -22,12 +22,12 @@ type small[K comparable, V any] struct {
 	q       *queue[K, V]
 	main    *main[K, V]
 	ghost   *ghost[K, V]
-	cost    uint32
-	maxCost uint32
+	cost    int
+	maxCost int
 }
 
 func newSmall[K comparable, V any](
-	maxCost uint32,
+	maxCost int,
 	main *main[K, V],
 	ghost *ghost[K, V],
 ) *small[K, V] {
@@ -42,7 +42,7 @@ func newSmall[K comparable, V any](
 func (s *small[K, V]) insert(n node.Node[K, V]) {
 	s.q.push(n)
 	n.MarkSmall()
-	s.cost += n.Cost()
+	s.cost += int(n.Cost())
 }
 
 func (s *small[K, V]) evict(deleted []node.Node[K, V]) []node.Node[K, V] {
@@ -51,7 +51,7 @@ func (s *small[K, V]) evict(deleted []node.Node[K, V]) []node.Node[K, V] {
 	}
 
 	n := s.q.pop()
-	s.cost -= n.Cost()
+	s.cost -= int(n.Cost())
 	n.Unmark()
 	if !n.IsAlive() || n.HasExpired() {
 		return append(deleted, n)
@@ -70,7 +70,7 @@ func (s *small[K, V]) evict(deleted []node.Node[K, V]) []node.Node[K, V] {
 }
 
 func (s *small[K, V]) remove(n node.Node[K, V]) {
-	s.cost -= n.Cost()
+	s.cost -= int(n.Cost())
 	n.Unmark()
 	s.q.remove(n)
 }

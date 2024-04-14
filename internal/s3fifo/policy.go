@@ -24,12 +24,12 @@ type Policy[K comparable, V any] struct {
 	small                *small[K, V]
 	main                 *main[K, V]
 	ghost                *ghost[K, V]
-	maxCost              uint32
-	maxAvailableNodeCost uint32
+	maxCost              int
+	maxAvailableNodeCost int
 }
 
 // NewPolicy creates a new Policy.
-func NewPolicy[K comparable, V any](maxCost uint32) *Policy[K, V] {
+func NewPolicy[K comparable, V any](maxCost int) *Policy[K, V] {
 	smallMaxCost := maxCost / 10
 	mainMaxCost := maxCost - smallMaxCost
 
@@ -95,7 +95,7 @@ func (p *Policy[K, V]) Delete(n node.Node[K, V]) {
 }
 
 // MaxAvailableCost returns the maximum available cost of the node.
-func (p *Policy[K, V]) MaxAvailableCost() uint32 {
+func (p *Policy[K, V]) MaxAvailableCost() int {
 	return p.maxAvailableNodeCost
 }
 
