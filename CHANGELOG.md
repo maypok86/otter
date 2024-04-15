@@ -1,3 +1,9 @@
+## 1.2.1 - 2024-04-15
+
+### 🐞 Bug Fixes
+
+- Fixed uint32 capacity overflow.
+
 ## 1.2.0 - 2024-03-12
 
 The main innovation of this release is the addition of an `Extension`, which makes it easy to add a huge number of features to otter.
