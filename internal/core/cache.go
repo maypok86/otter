@@ -349,9 +349,10 @@ func (c *Cache[K, V]) notifyDeletion(key K, value V, cause DeletionCause) {
 func (c *Cache[K, V]) cleanup() {
 	bufferCapacity := 64
 	expired := make([]node.Node[K, V], 0, bufferCapacity)
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
 	for {
-		time.Sleep(time.Second)
-
+		_ = <-ticker.C
 		c.evictionMutex.Lock()
 		if c.isClosed {
 			return
