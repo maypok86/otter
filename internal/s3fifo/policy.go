@@ -29,13 +29,13 @@ type Policy[K comparable, V any] struct {
 }
 
 // NewPolicy creates a new Policy.
-func NewPolicy[K comparable, V any](maxCost int) *Policy[K, V] {
+func NewPolicy[K comparable, V any](maxCost int, evictNode func(node.Node[K, V])) *Policy[K, V] {
 	smallMaxCost := maxCost / 10
 	mainMaxCost := maxCost - smallMaxCost
 
-	main := newMain[K, V](mainMaxCost)
-	ghost := newGhost(main)
-	small := newSmall(smallMaxCost, main, ghost)
+	main := newMain[K, V](mainMaxCost, evictNode)
+	ghost := newGhost(main, evictNode)
+	small := newSmall(smallMaxCost, main, ghost, evictNode)
 	ghost.small = small
 
 	return &Policy[K, V]{
@@ -55,7 +55,7 @@ func (p *Policy[K, V]) Read(nodes []node.Node[K, V]) {
 }
 
 // Add adds node to the eviction policy.
-func (p *Policy[K, V]) Add(deleted []node.Node[K, V], n node.Node[K, V]) []node.Node[K, V] {
+func (p *Policy[K, V]) Add(n node.Node[K, V]) {
 	if p.ghost.isGhost(n) {
 		p.main.insert(n)
 		n.ResetFrequency()
@@ -64,18 +64,17 @@ func (p *Policy[K, V]) Add(deleted []node.Node[K, V], n node.Node[K, V]) []node.
 	}
 
 	for p.isFull() {
-		deleted = p.evict(deleted)
+		p.evict()
 	}
-
-	return deleted
 }
 
-func (p *Policy[K, V]) evict(deleted []node.Node[K, V]) []node.Node[K, V] {
+func (p *Policy[K, V]) evict() {
 	if p.small.cost >= p.maxCost/10 {
-		return p.small.evict(deleted)
+		p.small.evict()
+		return
 	}
 
-	return p.main.evict(deleted)
+	p.main.evict()
 }
 
 func (p *Policy[K, V]) isFull() bool {
@@ -85,12 +84,12 @@ func (p *Policy[K, V]) isFull() bool {
 // Delete deletes node from the eviction policy.
 func (p *Policy[K, V]) Delete(n node.Node[K, V]) {
 	if n.IsSmall() {
-		p.small.remove(n)
+		p.small.delete(n)
 		return
 	}
 
 	if n.IsMain() {
-		p.main.remove(n)
+		p.main.delete(n)
 	}
 }
 

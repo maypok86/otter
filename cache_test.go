@@ -25,8 +25,21 @@ import (
 	"github.com/maypok86/otter/internal/xruntime"
 )
 
+func getRandomSize(t *testing.T) int {
+	t.Helper()
+
+	const (
+		minSize = 10
+		maxSize = 1000
+	)
+
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+
+	return r.Intn(maxSize-minSize) + minSize
+}
+
 func TestCache_Set(t *testing.T) {
-	const size = 256
+	size := getRandomSize(t)
 	var mutex sync.Mutex
 	m := make(map[DeletionCause]int)
 	c, err := MustBuilder[int, int](size).
@@ -60,7 +73,7 @@ func TestCache_Set(t *testing.T) {
 
 			r := rand.New(rand.NewSource(time.Now().UnixNano()))
 			for a := 0; a < 10000; a++ {
-				k := r.Int() % 100
+				k := r.Int() % size
 				val, ok := c.Get(k)
 				if !ok {
 					err = fmt.Errorf("expected %d but got nil", k)
@@ -91,7 +104,7 @@ func TestCache_Set(t *testing.T) {
 }
 
 func TestCache_SetIfAbsent(t *testing.T) {
-	const size = 100
+	size := getRandomSize(t)
 	c, err := MustBuilder[int, int](size).WithTTL(time.Minute).CollectStats().Build()
 	if err != nil {
 		t.Fatalf("can not create cache: %v", err)
@@ -140,7 +153,7 @@ func TestCache_SetIfAbsent(t *testing.T) {
 		}
 	}
 
-	if hits := cc.Stats().Hits(); hits != size {
+	if hits := cc.Stats().Hits(); hits != int64(size) {
 		t.Fatalf("hit ratio should be 100%%. Hits: %d", hits)
 	}
 
@@ -148,7 +161,7 @@ func TestCache_SetIfAbsent(t *testing.T) {
 }
 
 func TestCache_SetWithTTL(t *testing.T) {
-	size := 256
+	size := getRandomSize(t)
 	var mutex sync.Mutex
 	m := make(map[DeletionCause]int)
 	c, err := MustBuilder[int, int](size).
@@ -230,7 +243,7 @@ func TestCache_SetWithTTL(t *testing.T) {
 }
 
 func TestCache_Delete(t *testing.T) {
-	size := 256
+	size := getRandomSize(t)
 	var mutex sync.Mutex
 	m := make(map[DeletionCause]int)
 	c, err := MustBuilder[int, int](size).
@@ -276,7 +289,7 @@ func TestCache_Delete(t *testing.T) {
 }
 
 func TestCache_DeleteByFunc(t *testing.T) {
-	size := 256
+	size := getRandomSize(t)
 	var mutex sync.Mutex
 	m := make(map[DeletionCause]int)
 	c, err := MustBuilder[int, int](size).
@@ -318,7 +331,7 @@ func TestCache_DeleteByFunc(t *testing.T) {
 }
 
 func TestCache_Advanced(t *testing.T) {
-	size := 256
+	size := getRandomSize(t)
 	defaultTTL := time.Hour
 	c, err := MustBuilder[int, int](size).
 		WithTTL(defaultTTL).

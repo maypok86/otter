@@ -39,11 +39,11 @@ func (q *queue[K, V]) pop() node.Node[K, V] {
 	}
 
 	result := q.head
-	q.remove(result)
+	q.delete(result)
 	return result
 }
 
-func (q *queue[K, V]) remove(n node.Node[K, V]) {
+func (q *queue[K, V]) delete(n node.Node[K, V]) {
 	next := n.Next()
 	prev := n.Prev()
 

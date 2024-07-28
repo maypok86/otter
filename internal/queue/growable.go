@@ -75,6 +75,18 @@ func (g *Growable[T]) Pop() T {
 	return item
 }
 
+func (g *Growable[T]) TryPop() (T, bool) {
+	var zero T
+	g.mutex.Lock()
+	if g.count == 0 {
+		g.mutex.Unlock()
+		return zero, false
+	}
+	item := g.pop()
+	g.mutex.Unlock()
+	return item, true
+}
+
 func (g *Growable[T]) pop() T {
 	var zero T
 

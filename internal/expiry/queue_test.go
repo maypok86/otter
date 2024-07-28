@@ -76,10 +76,10 @@ func TestQueue(t *testing.T) {
 	e := newNode("a")
 	q.push(e)
 	checkQueuePointers(t, q, []node.Node[string, string]{e})
-	q.remove(e)
+	q.delete(e)
 	q.push(e)
 	checkQueuePointers(t, q, []node.Node[string, string]{e})
-	q.remove(e)
+	q.delete(e)
 	checkQueuePointers(t, q, []node.Node[string, string]{})
 
 	// Bigger queue
@@ -93,11 +93,11 @@ func TestQueue(t *testing.T) {
 	q.push(e4)
 	checkQueuePointers(t, q, []node.Node[string, string]{e1, e2, e3, e4})
 
-	q.remove(e2)
+	q.delete(e2)
 	checkQueuePointers(t, q, []node.Node[string, string]{e1, e3, e4})
 
 	// move from middle
-	q.remove(e3)
+	q.delete(e3)
 	q.push(e3)
 	checkQueuePointers(t, q, []node.Node[string, string]{e1, e4, e3})
 
@@ -108,7 +108,7 @@ func TestQueue(t *testing.T) {
 	checkQueuePointers(t, q, []node.Node[string, string]{e3, e1, e4})
 
 	// should be no-op
-	q.remove(e3)
+	q.delete(e3)
 	q.push(e3)
 	checkQueuePointers(t, q, []node.Node[string, string]{e1, e4, e3})
 
@@ -129,7 +129,7 @@ func TestQueue(t *testing.T) {
 	var next node.Node[string, string]
 	for e := q.head; !node.Equals(e, nil); e = next {
 		next = e.NextExp()
-		q.remove(e)
+		q.delete(e)
 	}
 	checkQueuePointers(t, q, []node.Node[string, string]{})
 }
@@ -143,8 +143,8 @@ func TestQueue_Remove(t *testing.T) {
 	q.push(e2)
 	checkQueuePointers(t, q, []node.Node[int, int]{e1, e2})
 	e := q.head
-	q.remove(e)
+	q.delete(e)
 	checkQueuePointers(t, q, []node.Node[int, int]{e2})
-	q.remove(e)
+	q.delete(e)
 	checkQueuePointers(t, q, []node.Node[int, int]{e2})
 }

@@ -28,15 +28,17 @@ func newNode(k int) node.Node[int, int] {
 
 func TestPolicy_ReadAndWrite(t *testing.T) {
 	n := newNode(2)
-	p := NewPolicy[int, int](10)
-	p.Add(nil, n)
+	p := NewPolicy[int, int](10, func(n node.Node[int, int]) {
+	})
+	p.Add(n)
 	if !n.IsSmall() {
 		t.Fatalf("not valid node state: %+v", n)
 	}
 }
 
 func TestPolicy_OneHitWonders(t *testing.T) {
-	p := NewPolicy[int, int](10)
+	p := NewPolicy[int, int](10, func(n node.Node[int, int]) {
+	})
 
 	oneHitWonders := make([]node.Node[int, int], 0, 2)
 	for i := 0; i < cap(oneHitWonders); i++ {
@@ -49,11 +51,11 @@ func TestPolicy_OneHitWonders(t *testing.T) {
 	}
 
 	for _, n := range oneHitWonders {
-		p.Add(nil, n)
+		p.Add(n)
 	}
 
 	for _, n := range popular {
-		p.Add(nil, n)
+		p.Add(n)
 	}
 
 	p.Read(oneHitWonders)
@@ -67,7 +69,7 @@ func TestPolicy_OneHitWonders(t *testing.T) {
 	}
 
 	for _, n := range newNodes {
-		p.Add(nil, n)
+		p.Add(n)
 	}
 
 	for _, n := range oneHitWonders {
@@ -98,20 +100,28 @@ func TestPolicy_OneHitWonders(t *testing.T) {
 }
 
 func TestPolicy_Update(t *testing.T) {
-	p := NewPolicy[int, int](100)
+	collect := false
+	var deleted []node.Node[int, int]
+	p := NewPolicy[int, int](100, func(n node.Node[int, int]) {
+		if collect {
+			deleted = deleted[:0]
+			deleted = append(deleted, n)
+		}
+	})
 
 	n := newNode(1)
 	m := node.NewManager[int, int](node.Config{WithCost: true})
 	n1 := m.Create(1, 1, 0, n.Cost()+8)
 
-	p.Add(nil, n)
+	p.Add(n)
 	p.Delete(n)
-	p.Add(nil, n1)
+	p.Add(n1)
 
 	p.Read([]node.Node[int, int]{n1, n1})
 
 	n2 := m.Create(2, 1, 0, 92)
-	deleted := p.Add(nil, n2)
+	collect = true
+	p.Add(n2)
 
 	if !n1.IsMain() {
 		t.Fatalf("updated node should be in main queue: %+v", n1)
@@ -123,7 +133,7 @@ func TestPolicy_Update(t *testing.T) {
 
 	n3 := m.Create(1, 1, 0, 109)
 	p.Delete(n1)
-	deleted = p.Add(nil, n3)
+	p.Add(n3)
 	if n3.IsSmall() || n3.IsMain() || len(deleted) != 1 || deleted[0] != n3 {
 		t.Fatalf("updated node should be evicted: %+v", n3)
 	}
