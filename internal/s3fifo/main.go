@@ -21,15 +21,17 @@ import (
 const maxReinsertions = 20
 
 type main[K comparable, V any] struct {
-	q       *queue[K, V]
-	cost    int
-	maxCost int
+	q         *queue[K, V]
+	cost      int
+	maxCost   int
+	evictNode func(node.Node[K, V])
 }
 
-func newMain[K comparable, V any](maxCost int) *main[K, V] {
+func newMain[K comparable, V any](maxCost int, evictNode func(node.Node[K, V])) *main[K, V] {
 	return &main[K, V]{
-		q:       newQueue[K, V](),
-		maxCost: maxCost,
+		q:         newQueue[K, V](),
+		maxCost:   maxCost,
+		evictNode: evictNode,
 	}
 }
 
@@ -39,7 +41,7 @@ func (m *main[K, V]) insert(n node.Node[K, V]) {
 	m.cost += int(n.Cost())
 }
 
-func (m *main[K, V]) evict(deleted []node.Node[K, V]) []node.Node[K, V] {
+func (m *main[K, V]) evict() {
 	reinsertions := 0
 	for m.cost > 0 {
 		n := m.q.pop()
@@ -47,7 +49,8 @@ func (m *main[K, V]) evict(deleted []node.Node[K, V]) []node.Node[K, V] {
 		if !n.IsAlive() || n.HasExpired() || n.Frequency() == 0 {
 			n.Unmark()
 			m.cost -= int(n.Cost())
-			return append(deleted, n)
+			m.evictNode(n)
+			return
 		}
 
 		// to avoid the worst case O(n), we remove the 20th reinserted consecutive element.
@@ -55,19 +58,19 @@ func (m *main[K, V]) evict(deleted []node.Node[K, V]) []node.Node[K, V] {
 		if reinsertions >= maxReinsertions {
 			n.Unmark()
 			m.cost -= int(n.Cost())
-			return append(deleted, n)
+			m.evictNode(n)
+			return
 		}
 
 		m.q.push(n)
 		n.DecrementFrequency()
 	}
-	return deleted
 }
 
-func (m *main[K, V]) remove(n node.Node[K, V]) {
+func (m *main[K, V]) delete(n node.Node[K, V]) {
 	m.cost -= int(n.Cost())
 	n.Unmark()
-	m.q.remove(n)
+	m.q.delete(n)
 }
 
 func (m *main[K, V]) length() int {

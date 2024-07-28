@@ -19,23 +19,26 @@ import (
 )
 
 type small[K comparable, V any] struct {
-	q       *queue[K, V]
-	main    *main[K, V]
-	ghost   *ghost[K, V]
-	cost    int
-	maxCost int
+	q         *queue[K, V]
+	main      *main[K, V]
+	ghost     *ghost[K, V]
+	cost      int
+	maxCost   int
+	evictNode func(node.Node[K, V])
 }
 
 func newSmall[K comparable, V any](
 	maxCost int,
 	main *main[K, V],
 	ghost *ghost[K, V],
+	evictNode func(node.Node[K, V]),
 ) *small[K, V] {
 	return &small[K, V]{
-		q:       newQueue[K, V](),
-		main:    main,
-		ghost:   ghost,
-		maxCost: maxCost,
+		q:         newQueue[K, V](),
+		main:      main,
+		ghost:     ghost,
+		maxCost:   maxCost,
+		evictNode: evictNode,
 	}
 }
 
@@ -45,34 +48,35 @@ func (s *small[K, V]) insert(n node.Node[K, V]) {
 	s.cost += int(n.Cost())
 }
 
-func (s *small[K, V]) evict(deleted []node.Node[K, V]) []node.Node[K, V] {
+func (s *small[K, V]) evict() {
 	if s.cost == 0 {
-		return deleted
+		return
 	}
 
 	n := s.q.pop()
 	s.cost -= int(n.Cost())
 	n.Unmark()
 	if !n.IsAlive() || n.HasExpired() {
-		return append(deleted, n)
+		s.evictNode(n)
+		return
 	}
 
 	if n.Frequency() > 1 {
 		s.main.insert(n)
 		for s.main.isFull() {
-			deleted = s.main.evict(deleted)
+			s.main.evict()
 		}
 		n.ResetFrequency()
-		return deleted
+		return
 	}
 
-	return s.ghost.insert(deleted, n)
+	s.ghost.insert(n)
 }
 
-func (s *small[K, V]) remove(n node.Node[K, V]) {
+func (s *small[K, V]) delete(n node.Node[K, V]) {
 	s.cost -= int(n.Cost())
 	n.Unmark()
-	s.q.remove(n)
+	s.q.delete(n)
 }
 
 func (s *small[K, V]) length() int {

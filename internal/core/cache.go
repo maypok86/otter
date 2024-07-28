@@ -60,8 +60,20 @@ func (dc DeletionCause) String() string {
 }
 
 const (
-	minWriteBufferCapacity uint32 = 4
+	minWriteBufferSize uint32 = 4
 )
+
+var (
+	maxWriteBufferSize   uint32
+	maxStripedBufferSize int
+)
+
+func init() {
+	parallelism := xruntime.Parallelism()
+	roundedParallelism := int(xmath.RoundUpPowerOf2(parallelism))
+	maxWriteBufferSize = uint32(128 * roundedParallelism)
+	maxStripedBufferSize = 4 * roundedParallelism
+}
 
 func zeroValue[V any]() V {
 	var zero V
@@ -91,7 +103,7 @@ type Config[K comparable, V any] struct {
 type expiryPolicy[K comparable, V any] interface {
 	Add(n node.Node[K, V])
 	Delete(n node.Node[K, V])
-	RemoveExpired(expired []node.Node[K, V]) []node.Node[K, V]
+	DeleteExpired()
 	Clear()
 }
 
@@ -103,7 +115,7 @@ type Cache[K comparable, V any] struct {
 	policy           *s3fifo.Policy[K, V]
 	expiryPolicy     expiryPolicy[K, V]
 	stats            *stats.Stats
-	readBuffers      []*lossy.Buffer[K, V]
+	stripedBuffer    []*lossy.Buffer[K, V]
 	writeBuffer      *queue.Growable[task[K, V]]
 	evictionMutex    sync.Mutex
 	closeOnce        sync.Once
@@ -119,19 +131,14 @@ type Cache[K comparable, V any] struct {
 
 // NewCache returns a new cache instance based on the settings from Config.
 func NewCache[K comparable, V any](c Config[K, V]) *Cache[K, V] {
-	parallelism := xruntime.Parallelism()
-	roundedParallelism := int(xmath.RoundUpPowerOf2(parallelism))
-	maxWriteBufferCapacity := uint32(128 * roundedParallelism)
-	readBuffersCount := 4 * roundedParallelism
-
 	nodeManager := node.NewManager[K, V](node.Config{
 		WithExpiration: c.TTL != nil || c.WithVariableTTL,
 		WithCost:       c.WithCost,
 	})
 
-	readBuffers := make([]*lossy.Buffer[K, V], 0, readBuffersCount)
-	for i := 0; i < readBuffersCount; i++ {
-		readBuffers = append(readBuffers, lossy.New[K, V](nodeManager))
+	stripedBuffer := make([]*lossy.Buffer[K, V], 0, maxStripedBufferSize)
+	for i := 0; i < maxStripedBufferSize; i++ {
+		stripedBuffer = append(stripedBuffer, lossy.New[K, V](nodeManager))
 	}
 
 	var hashmap *hashtable.Map[K, V]
@@ -141,28 +148,27 @@ func NewCache[K comparable, V any](c Config[K, V]) *Cache[K, V] {
 		hashmap = hashtable.NewWithSize[K, V](nodeManager, *c.InitialCapacity)
 	}
 
-	var expPolicy expiryPolicy[K, V]
-	switch {
-	case c.TTL != nil:
-		expPolicy = expiry.NewFixed[K, V]()
-	case c.WithVariableTTL:
-		expPolicy = expiry.NewVariable[K, V](nodeManager)
-	default:
-		expPolicy = expiry.NewDisabled[K, V]()
-	}
-
 	cache := &Cache[K, V]{
 		nodeManager:      nodeManager,
 		hashmap:          hashmap,
-		policy:           s3fifo.NewPolicy[K, V](c.Capacity),
-		expiryPolicy:     expPolicy,
-		readBuffers:      readBuffers,
-		writeBuffer:      queue.NewGrowable[task[K, V]](minWriteBufferCapacity, maxWriteBufferCapacity),
+		stripedBuffer:    stripedBuffer,
+		writeBuffer:      queue.NewGrowable[task[K, V]](minWriteBufferSize, maxWriteBufferSize),
 		doneClear:        make(chan struct{}),
-		mask:             uint32(readBuffersCount - 1),
+		mask:             uint32(maxStripedBufferSize - 1),
 		costFunc:         c.CostFunc,
 		deletionListener: c.DeletionListener,
 		capacity:         c.Capacity,
+	}
+
+	cache.policy = s3fifo.NewPolicy(c.Capacity, cache.evictNode)
+
+	switch {
+	case c.TTL != nil:
+		cache.expiryPolicy = expiry.NewFixed[K, V](cache.deleteExpiredNode)
+	case c.WithVariableTTL:
+		cache.expiryPolicy = expiry.NewVariable[K, V](nodeManager, cache.deleteExpiredNode)
+	default:
+		cache.expiryPolicy = expiry.NewDisabled[K, V]()
 	}
 
 	if c.StatsEnabled {
@@ -239,13 +245,13 @@ func (c *Cache[K, V]) GetNodeQuietly(key K) (node.Node[K, V], bool) {
 
 func (c *Cache[K, V]) afterGet(got node.Node[K, V]) {
 	idx := c.getReadBufferIdx()
-	pb := c.readBuffers[idx].Add(got)
+	pb := c.stripedBuffer[idx].Add(got)
 	if pb != nil {
 		c.evictionMutex.Lock()
 		c.policy.Read(pb.Returned)
 		c.evictionMutex.Unlock()
 
-		c.readBuffers[idx].Free()
+		c.stripedBuffer[idx].Free()
 	}
 }
 
@@ -361,124 +367,105 @@ func (c *Cache[K, V]) notifyDeletion(key K, value V, cause DeletionCause) {
 	c.deletionListener(key, value, cause)
 }
 
+func (c *Cache[K, V]) deleteExpiredNode(n node.Node[K, V]) {
+	c.policy.Delete(n)
+	deleted := c.hashmap.DeleteNode(n)
+	if deleted != nil {
+		n.Die()
+		c.notifyDeletion(n.Key(), n.Value(), Expired)
+	}
+}
+
 func (c *Cache[K, V]) cleanup() {
-	bufferCapacity := 64
-	expired := make([]node.Node[K, V], 0, bufferCapacity)
 	for {
 		time.Sleep(time.Second)
 
 		c.evictionMutex.Lock()
 		if c.isClosed {
+			c.evictionMutex.Unlock()
 			return
 		}
 
-		expired = c.expiryPolicy.RemoveExpired(expired)
-		for _, n := range expired {
-			c.policy.Delete(n)
-		}
+		c.expiryPolicy.DeleteExpired()
 
 		c.evictionMutex.Unlock()
+	}
+}
 
-		for _, n := range expired {
-			c.hashmap.DeleteNode(n)
-			n.Die()
-			c.notifyDeletion(n.Key(), n.Value(), Expired)
+func (c *Cache[K, V]) evictNode(n node.Node[K, V]) {
+	c.expiryPolicy.Delete(n)
+	deleted := c.hashmap.DeleteNode(n)
+	if deleted != nil {
+		n.Die()
+		c.notifyDeletion(n.Key(), n.Value(), Size)
+		c.stats.IncEvictedCount()
+		c.stats.AddEvictedCost(n.Cost())
+	}
+}
+
+func (c *Cache[K, V]) onWrite(t task[K, V]) {
+	if t.isClear() || t.isClose() {
+		c.writeBuffer.Clear()
+
+		c.policy.Clear()
+		c.expiryPolicy.Clear()
+		if t.isClose() {
+			c.isClosed = true
 		}
 
-		expired = clearBuffer(expired)
-		if cap(expired) > 3*bufferCapacity {
-			expired = make([]node.Node[K, V], 0, bufferCapacity)
+		c.doneClear <- struct{}{}
+		return
+	}
+
+	n := t.node()
+	switch {
+	case t.isAdd():
+		if n.IsAlive() {
+			c.expiryPolicy.Add(n)
+			c.policy.Add(n)
 		}
+	case t.isUpdate():
+		oldNode := t.oldNode()
+		c.expiryPolicy.Delete(oldNode)
+		c.policy.Delete(oldNode)
+		if n.IsAlive() {
+			c.expiryPolicy.Add(n)
+			c.policy.Add(n)
+		}
+		c.notifyDeletion(oldNode.Key(), oldNode.Value(), Replaced)
+	case t.isDelete():
+		c.expiryPolicy.Delete(n)
+		c.policy.Delete(n)
+		c.notifyDeletion(n.Key(), n.Value(), Explicit)
 	}
 }
 
 func (c *Cache[K, V]) process() {
-	bufferCapacity := 64
-	buffer := make([]task[K, V], 0, bufferCapacity)
-	deleted := make([]node.Node[K, V], 0, bufferCapacity)
-	i := 0
 	for {
 		t := c.writeBuffer.Pop()
-
-		if t.isClear() || t.isClose() {
-			buffer = clearBuffer(buffer)
-			c.writeBuffer.Clear()
-
-			c.evictionMutex.Lock()
-			c.policy.Clear()
-			c.expiryPolicy.Clear()
-			if t.isClose() {
-				c.isClosed = true
-			}
+		c.evictionMutex.Lock()
+		c.onWrite(t)
+		if t.isClose() {
 			c.evictionMutex.Unlock()
-
-			c.doneClear <- struct{}{}
-			if t.isClose() {
-				break
-			}
+			break
+		} else if t.isClear() {
+			c.evictionMutex.Unlock()
 			continue
 		}
-
-		buffer = append(buffer, t)
-		i++
-		if i >= bufferCapacity {
-			i -= bufferCapacity
-
-			c.evictionMutex.Lock()
-
-			for _, t := range buffer {
-				n := t.node()
-				switch {
-				case t.isDelete():
-					c.expiryPolicy.Delete(n)
-					c.policy.Delete(n)
-				case t.isAdd():
-					if n.IsAlive() {
-						c.expiryPolicy.Add(n)
-						deleted = c.policy.Add(deleted, n)
-					}
-				case t.isUpdate():
-					oldNode := t.oldNode()
-					c.expiryPolicy.Delete(oldNode)
-					c.policy.Delete(oldNode)
-					if n.IsAlive() {
-						c.expiryPolicy.Add(n)
-						deleted = c.policy.Add(deleted, n)
-					}
-				}
+		for i := uint32(0); i < maxWriteBufferSize; i++ {
+			t, ok := c.writeBuffer.TryPop()
+			if !ok {
+				break
 			}
-
-			for _, n := range deleted {
-				c.expiryPolicy.Delete(n)
-			}
-
-			c.evictionMutex.Unlock()
-
-			for _, t := range buffer {
-				switch {
-				case t.isDelete():
-					n := t.node()
-					c.notifyDeletion(n.Key(), n.Value(), Explicit)
-				case t.isUpdate():
-					n := t.oldNode()
-					c.notifyDeletion(n.Key(), n.Value(), Replaced)
-				}
-			}
-
-			for _, n := range deleted {
-				c.hashmap.DeleteNode(n)
-				n.Die()
-				c.notifyDeletion(n.Key(), n.Value(), Size)
-				c.stats.IncEvictedCount()
-				c.stats.AddEvictedCost(n.Cost())
-			}
-
-			buffer = clearBuffer(buffer)
-			deleted = clearBuffer(deleted)
-			if cap(deleted) > 3*bufferCapacity {
-				deleted = make([]node.Node[K, V], 0, bufferCapacity)
+			c.onWrite(t)
+			if t.isClose() {
+				c.evictionMutex.Unlock()
+				return
+			} else if t.isClear() {
+				break
 			}
 		}
+		c.evictionMutex.Unlock()
 	}
 }
 
@@ -504,8 +491,8 @@ func (c *Cache[K, V]) Clear() {
 
 func (c *Cache[K, V]) clear(t task[K, V]) {
 	c.hashmap.Clear()
-	for i := 0; i < len(c.readBuffers); i++ {
-		c.readBuffers[i].Clear()
+	for i := 0; i < len(c.stripedBuffer); i++ {
+		c.stripedBuffer[i].Clear()
 	}
 
 	c.writeBuffer.Push(t)
@@ -544,12 +531,4 @@ func (c *Cache[K, V]) Stats() *stats.Stats {
 // WithExpiration returns true if the cache was configured with the expiration policy enabled.
 func (c *Cache[K, V]) WithExpiration() bool {
 	return c.withExpiration
-}
-
-func clearBuffer[T any](buffer []T) []T {
-	var zero T
-	for i := 0; i < len(buffer); i++ {
-		buffer[i] = zero
-	}
-	return buffer[:0]
 }

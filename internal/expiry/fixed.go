@@ -17,12 +17,14 @@ package expiry
 import "github.com/maypok86/otter/internal/generated/node"
 
 type Fixed[K comparable, V any] struct {
-	q *queue[K, V]
+	q          *queue[K, V]
+	deleteNode func(node.Node[K, V])
 }
 
-func NewFixed[K comparable, V any]() *Fixed[K, V] {
+func NewFixed[K comparable, V any](deleteNode func(node.Node[K, V])) *Fixed[K, V] {
 	return &Fixed[K, V]{
-		q: newQueue[K, V](),
+		q:          newQueue[K, V](),
+		deleteNode: deleteNode,
 	}
 }
 
@@ -31,14 +33,13 @@ func (f *Fixed[K, V]) Add(n node.Node[K, V]) {
 }
 
 func (f *Fixed[K, V]) Delete(n node.Node[K, V]) {
-	f.q.remove(n)
+	f.q.delete(n)
 }
 
-func (f *Fixed[K, V]) RemoveExpired(expired []node.Node[K, V]) []node.Node[K, V] {
+func (f *Fixed[K, V]) DeleteExpired() {
 	for !f.q.isEmpty() && f.q.head.HasExpired() {
-		expired = append(expired, f.q.pop())
+		f.deleteNode(f.q.pop())
 	}
-	return expired
 }
 
 func (f *Fixed[K, V]) Clear() {

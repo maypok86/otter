@@ -56,7 +56,8 @@ func TestVariable_Add(t *testing.T) {
 		nm.Create("k2", "", 69, 1),
 		nm.Create("k3", "", 4399, 1),
 	}
-	v := NewVariable[string, string](nm)
+	v := NewVariable[string, string](nm, func(n node.Node[string, string]) {
+	})
 
 	for _, n := range nodes {
 		v.Add(n)
@@ -93,7 +94,7 @@ func TestVariable_Add(t *testing.T) {
 	}
 }
 
-func TestVariable_RemoveExpired(t *testing.T) {
+func TestVariable_DeleteExpired(t *testing.T) {
 	nm := node.NewManager[string, string](node.Config{
 		WithExpiration: true,
 	})
@@ -106,36 +107,38 @@ func TestVariable_RemoveExpired(t *testing.T) {
 		nm.Create("k6", "", 142000, 1),
 		nm.Create("k7", "", 1420000, 1),
 	}
-	v := NewVariable[string, string](nm)
+	var expired []node.Node[string, string]
+	v := NewVariable[string, string](nm, func(n node.Node[string, string]) {
+		expired = append(expired, n)
+	})
 
 	for _, n := range nodes {
 		v.Add(n)
 	}
 
-	var expired []node.Node[string, string]
 	var keys []string
 	unixtime.SetNow(64)
-	expired = v.RemoveExpired(expired)
+	v.DeleteExpired()
 	keys = append(keys, "k1", "k2", "k3")
 	match(t, expired, keys)
 
 	unixtime.SetNow(200)
-	expired = v.RemoveExpired(expired)
+	v.DeleteExpired()
 	keys = append(keys, "k4")
 	match(t, expired, keys)
 
 	unixtime.SetNow(12000)
-	expired = v.RemoveExpired(expired)
+	v.DeleteExpired()
 	keys = append(keys, "k5")
 	match(t, expired, keys)
 
 	unixtime.SetNow(350000)
-	expired = v.RemoveExpired(expired)
+	v.DeleteExpired()
 	keys = append(keys, "k6")
 	match(t, expired, keys)
 
 	unixtime.SetNow(1520000)
-	expired = v.RemoveExpired(expired)
+	v.DeleteExpired()
 	keys = append(keys, "k7")
 	match(t, expired, keys)
 }

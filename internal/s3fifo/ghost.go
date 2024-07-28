@@ -22,19 +22,21 @@ import (
 )
 
 type ghost[K comparable, V any] struct {
-	q      *deque.Deque[uint64]
-	m      map[uint64]struct{}
-	main   *main[K, V]
-	small  *small[K, V]
-	hasher maphash.Hasher[K]
+	q         *deque.Deque[uint64]
+	m         map[uint64]struct{}
+	main      *main[K, V]
+	small     *small[K, V]
+	hasher    maphash.Hasher[K]
+	evictNode func(node.Node[K, V])
 }
 
-func newGhost[K comparable, V any](main *main[K, V]) *ghost[K, V] {
+func newGhost[K comparable, V any](main *main[K, V], evictNode func(node.Node[K, V])) *ghost[K, V] {
 	return &ghost[K, V]{
-		q:      deque.New[uint64](),
-		m:      make(map[uint64]struct{}),
-		main:   main,
-		hasher: maphash.NewHasher[K](),
+		q:         deque.New[uint64](),
+		m:         make(map[uint64]struct{}),
+		main:      main,
+		hasher:    maphash.NewHasher[K](),
+		evictNode: evictNode,
 	}
 }
 
@@ -44,18 +46,18 @@ func (g *ghost[K, V]) isGhost(n node.Node[K, V]) bool {
 	return ok
 }
 
-func (g *ghost[K, V]) insert(deleted []node.Node[K, V], n node.Node[K, V]) []node.Node[K, V] {
-	deleted = append(deleted, n)
+func (g *ghost[K, V]) insert(n node.Node[K, V]) {
+	g.evictNode(n)
 
 	h := g.hasher.Hash(n.Key())
 
 	if _, ok := g.m[h]; ok {
-		return deleted
+		return
 	}
 
 	maxLength := g.small.length() + g.main.length()
 	if maxLength == 0 {
-		return deleted
+		return
 	}
 
 	for g.q.Len() >= maxLength {
@@ -65,8 +67,6 @@ func (g *ghost[K, V]) insert(deleted []node.Node[K, V], n node.Node[K, V]) []nod
 
 	g.q.PushBack(h)
 	g.m[h] = struct{}{}
-
-	return deleted
 }
 
 func (g *ghost[K, V]) clear() {

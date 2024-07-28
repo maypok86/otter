@@ -44,11 +44,12 @@ var (
 )
 
 type Variable[K comparable, V any] struct {
-	wheel [][]node.Node[K, V]
-	time  uint32
+	wheel      [][]node.Node[K, V]
+	time       uint32
+	deleteNode func(node.Node[K, V])
 }
 
-func NewVariable[K comparable, V any](nodeManager *node.Manager[K, V]) *Variable[K, V] {
+func NewVariable[K comparable, V any](nodeManager *node.Manager[K, V], deleteNode func(node.Node[K, V])) *Variable[K, V] {
 	wheel := make([][]node.Node[K, V], len(buckets))
 	for i := 0; i < len(wheel); i++ {
 		wheel[i] = make([]node.Node[K, V], buckets[i])
@@ -62,7 +63,8 @@ func NewVariable[K comparable, V any](nodeManager *node.Manager[K, V]) *Variable
 		}
 	}
 	return &Variable[K, V]{
-		wheel: wheel,
+		wheel:      wheel,
+		deleteNode: deleteNode,
 	}
 }
 
@@ -93,7 +95,7 @@ func (v *Variable[K, V]) Delete(n node.Node[K, V]) {
 	n.SetPrevExp(nil)
 }
 
-func (v *Variable[K, V]) RemoveExpired(expired []node.Node[K, V]) []node.Node[K, V] {
+func (v *Variable[K, V]) DeleteExpired() {
 	currentTime := unixtime.Now()
 	prevTime := v.time
 	v.time = currentTime
@@ -106,13 +108,11 @@ func (v *Variable[K, V]) RemoveExpired(expired []node.Node[K, V]) []node.Node[K,
 			break
 		}
 
-		expired = v.removeExpiredFromBucket(expired, i, previousTicks, delta)
+		v.deleteExpiredFromBucket(i, previousTicks, delta)
 	}
-
-	return expired
 }
 
-func (v *Variable[K, V]) removeExpiredFromBucket(expired []node.Node[K, V], index int, prevTicks, delta uint32) []node.Node[K, V] {
+func (v *Variable[K, V]) deleteExpiredFromBucket(index int, prevTicks, delta uint32) {
 	mask := buckets[index] - 1
 	steps := buckets[index]
 	if delta < steps {
@@ -133,7 +133,7 @@ func (v *Variable[K, V]) removeExpiredFromBucket(expired []node.Node[K, V], inde
 			n.SetNextExp(nil)
 
 			if n.Expiration() <= v.time {
-				expired = append(expired, n)
+				v.deleteNode(n)
 			} else {
 				v.Add(n)
 			}
@@ -141,8 +141,6 @@ func (v *Variable[K, V]) removeExpiredFromBucket(expired []node.Node[K, V], inde
 			n = next
 		}
 	}
-
-	return expired
 }
 
 func (v *Variable[K, V]) Clear() {
@@ -150,7 +148,7 @@ func (v *Variable[K, V]) Clear() {
 		for j := 0; j < len(v.wheel[i]); j++ {
 			root := v.wheel[i][j]
 			n := root.NextExp()
-			// NOTE(maypok86): Maybe we should use the same approach as in RemoveExpired?
+			// NOTE(maypok86): Maybe we should use the same approach as in DeleteExpired?
 
 			for !node.Equals(n, root) {
 				next := n.NextExp()
