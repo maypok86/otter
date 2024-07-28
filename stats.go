@@ -80,7 +80,10 @@ func checkedAdd(a, b int64) int64 {
 		return naiveSum
 	}
 	// we did over/under flow, if the sign is negative we should return math.MaxInt64 otherwise math.MinInt64.
-	return math.MaxInt64 + ((naiveSum >> 63) ^ 1)
+	if naiveSum < 0 {
+		return math.MaxInt64
+	}
+	return math.MinInt64
 }
 
 func negativeToMax(v int64) int64 {
