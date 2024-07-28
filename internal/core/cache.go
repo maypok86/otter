@@ -44,6 +44,21 @@ const (
 	Expired
 )
 
+func (dc DeletionCause) String() string {
+	switch dc {
+	case Explicit:
+		return "Explicit"
+	case Replaced:
+		return "Replaced"
+	case Size:
+		return "Size"
+	case Expired:
+		return "Expired"
+	default:
+		panic("unknown deletion cause")
+	}
+}
+
 const (
 	minWriteBufferCapacity uint32 = 4
 )
