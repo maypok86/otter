@@ -17,6 +17,7 @@ package otter
 import (
 	"math"
 	"testing"
+	"unsafe"
 )
 
 func TestStats(t *testing.T) {
@@ -57,5 +58,31 @@ func TestStats(t *testing.T) {
 
 	if s.EvictedCost() != expected {
 		t.Fatalf("not valid evicted cost. want %d, got %d", expected, s.EvictedCost())
+	}
+}
+
+func TestCheckedAdd_Overflow(t *testing.T) {
+	if unsafe.Sizeof(t) != 8 {
+		t.Skip()
+	}
+
+	a := int64(math.MaxInt64)
+	b := int64(23)
+
+	if got := checkedAdd(a, b); got != math.MaxInt64 {
+		t.Fatalf("wrong overflow in checkedAdd. want %d, got %d", int64(math.MaxInt64), got)
+	}
+}
+
+func TestCheckedAdd_Underflow(t *testing.T) {
+	if unsafe.Sizeof(t) != 8 {
+		t.Skip()
+	}
+
+	a := int64(math.MinInt64 + 10)
+	b := int64(-23)
+
+	if got := checkedAdd(a, b); got != math.MinInt64 {
+		t.Fatalf("wrong underflow in checkedAdd. want %d, got %d", int64(math.MinInt64), got)
 	}
 }
