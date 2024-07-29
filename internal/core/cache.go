@@ -443,29 +443,14 @@ func (c *Cache[K, V]) onWrite(t task[K, V]) {
 func (c *Cache[K, V]) process() {
 	for {
 		t := c.writeBuffer.Pop()
+
 		c.evictionMutex.Lock()
 		c.onWrite(t)
-		if t.isClose() {
-			c.evictionMutex.Unlock()
-			break
-		} else if t.isClear() {
-			c.evictionMutex.Unlock()
-			continue
-		}
-		for i := uint32(0); i < maxWriteBufferSize; i++ {
-			t, ok := c.writeBuffer.TryPop()
-			if !ok {
-				break
-			}
-			c.onWrite(t)
-			if t.isClose() {
-				c.evictionMutex.Unlock()
-				return
-			} else if t.isClear() {
-				break
-			}
-		}
 		c.evictionMutex.Unlock()
+
+		if t.isClose() {
+			break
+		}
 	}
 }
 
