@@ -13,11 +13,12 @@
 <a href="https://github.com/avelino/awesome-go"><img src="https://awesome.re/mentioned-badge.svg" alt="Mentioned in Awesome Go"></a>
 </p>
 
+Otter is one of the most powerful caching libraries for Go based on researches in caching and concurrent data structures. Otter also uses the experience of designing caching libraries in other languages (for example, [caffeine](https://github.com/ben-manes/caffeine)).
+
 ## 📖 Contents
 
-- [Motivation](#motivation)
-- [Related works](#related-works)
 - [Features](#features)
+- [Related works](#related-works)
 - [Usage](#usage)
   - [Requirements](#requirements)
   - [Installation](#installation)
@@ -25,23 +26,9 @@
 - [Performance](#performance)
   - [Throughput](#throughput)
   - [Hit ratio](#hit-ratio)
+  - [Memory consumption](#memory-consumption)
 - [Contribute](#contribute)
 - [License](#license)
-
-## 💡 Motivation <a id="motivation" />
-
-I once came across the fact that none of the Go cache libraries are truly contention-free. Most of them are a map with a mutex and an eviction policy. Unfortunately, these are not able to reach the speed of caches in other languages (such as [Caffeine](https://github.com/ben-manes/caffeine)). For example, the fastest cache from Dgraph labs called [Ristretto](https://github.com/dgraph-io/ristretto), was faster than competitors by 30% at best (Otter is many times faster) but had [poor hit ratio](https://github.com/dgraph-io/ristretto/issues/336), even though its README says otherwise. This can be a problem in real-world applications, because no one wants to bump into performance of a cache library 🙂. As a result, I wanted to make the fastest, easiest-to-use cache with excellent hit ratio.
-
-**Please leave a ⭐ as motivation if you liked the idea 😄**
-
-## 🗃 Related works <a id="related-works" />
-
-Otter is based on the following papers
-
-- [BP-Wrapper: A Framework Making Any Replacement Algorithms (Almost) Lock Contention Free](https://www.researchgate.net/publication/220966845_BP-Wrapper_A_System_Framework_Making_Any_Replacement_Algorithms_Almost_Lock_Contention_Free)
-- [FIFO queues are all you need for cache eviction](https://dl.acm.org/doi/10.1145/3600006.3613147)
-- [Bucket-Based Expiration Algorithm: Improving Eviction Efficiency for In-Memory Key-Value Database](https://dl.acm.org/doi/fullHtml/10.1145/3422575.3422797)
-- [A large scale analysis of hundreds of in-memory cache clusters at Twitter](https://www.usenix.org/system/files/osdi20-yang.pdf)
 
 ## ✨ Features <a id="features" />
 
@@ -49,9 +36,19 @@ Otter is based on the following papers
 - **Autoconfiguration**: Otter is automatically configured based on the parallelism of your application
 - **Generics**: You can safely use any comparable types as keys and any types as values
 - **TTL**: Expired values will be automatically deleted from the cache
-- **Cost-based eviction**: Otter supports eviction based on the cost of each item
-- **Excellent throughput**: Otter is currently the fastest cache library with a huge lead over the [competition](#throughput)
+- **Cost-based eviction**: Otter supports eviction based on the cost of each entry
+- **Deletion listener**: You can pass a callback function in the builder that will be called when an entry is deleted from the cache
+- **Stats**: You can collect various usage statistics
+- **Excellent throughput**: Otter can handle a [huge number of requests](#throughput)
 - **Great hit ratio**: New S3-FIFO algorithm is used, which shows excellent [results](#hit-ratio)
+
+## 🗃 Related works <a id="related-works" />
+
+Otter is based on the following papers:
+
+- [BP-Wrapper: A Framework Making Any Replacement Algorithms (Almost) Lock Contention Free](https://www.researchgate.net/publication/220966845_BP-Wrapper_A_System_Framework_Making_Any_Replacement_Algorithms_Almost_Lock_Contention_Free)
+- [FIFO queues are all you need for cache eviction](https://dl.acm.org/doi/10.1145/3600006.3613147)
+- [A large scale analysis of hundreds of in-memory cache clusters at Twitter](https://www.usenix.org/system/files/osdi20-yang.pdf)
 
 ## 📚 Usage <a id="usage" />
 
@@ -161,87 +158,24 @@ The benchmark code can be found [here](https://github.com/maypok86/benchmarks).
 
 ### 🚀 Throughput <a id="throughput" />
 
-Throughput benchmarks are a Go port of the caffeine [benchmarks](https://github.com/ben-manes/caffeine/blob/master/caffeine/src/jmh/java/com/github/benmanes/caffeine/cache/GetPutBenchmark.java).
+Throughput benchmarks are a Go port of the caffeine [benchmarks](https://github.com/ben-manes/caffeine/blob/master/caffeine/src/jmh/java/com/github/benmanes/caffeine/cache/GetPutBenchmark.java). This microbenchmark compares the throughput of caches on a zipf distribution, which allows to show various inefficient places in implementations.
 
-#### Read (100%)
-
-In this [benchmark](https://github.com/maypok86/benchmarks/blob/main/throughput/bench_test.go) **8 threads** concurrently read from a cache configured with a maximum size.
-
-<img width="60%" src="assets/results/reads=100,writes=0.png" alt="reads=100%,writes=0%" />
-
-#### Read (75%) / Write (25%)
-
-In this [benchmark](https://github.com/maypok86/benchmarks/blob/main/throughput/bench_test.go) **6 threads** concurrently read from and **2 threads** write to a cache configured with a maximum size.
-
-<img width="60%" src="assets/results/reads=75,writes=25.png" alt="reads=75%,writes=25%" />
-
-#### Read (50%) / Write (50%)
-
-In this [benchmark](https://github.com/maypok86/benchmarks/blob/main/throughput/bench_test.go) **4 threads** concurrently read from and **4 threads** write to a cache configured with a maximum size.
-
-<img width="60%" src="assets/results/reads=50,writes=50.png" alt="reads=50%,writes=50%" />
-
-#### Read (25%) / Write (75%)
-
-In this [benchmark](https://github.com/maypok86/benchmarks/blob/main/throughput/bench_test.go) **2 threads** concurrently read from and **6 threads** write to a cache configured with a maximum size.
-
-<img width="60%" src="assets/results/reads=25,writes=75.png" alt="reads=25%,writes=75%" />
-
-#### Write (100%)
-
-In this [benchmark](https://github.com/maypok86/benchmarks/blob/main/throughput/bench_test.go) **8 threads** concurrently write to a cache configured with a maximum size.
-
-<img width="60%" src="assets/results/reads=0,writes=100.png" alt="reads=0%,writes=100%" />
-
-Otter shows fantastic speed under all workloads except extreme write-heavy, but such a workload is very rare for caches and usually indicates that the cache has a very small hit ratio.
+You can find results [here](https://maypok86.github.io/otter/performance/throughput/).
 
 ### 🎯 Hit ratio <a id="hit-ratio" />
 
-#### Zipf
+The hit ratio simulator tests caches on various traces:
+1. Synthetic (zipf distribution)
+2. Traditional (widely known and used in various projects and papers)
+3. Modern (recently collected from the production of the largest companies in the world)
 
-<img width="60%" src="./assets/results/zipf.png" alt="zipf" />
+You can find results [here](https://maypok86.github.io/otter/performance/hit-ratio/).
 
-#### S3
+### 💾 Memory consumption <a id="memory-consumption" />
 
-This trace is described as "disk read accesses initiated by a large commercial search engine in response to various web search requests."
+The memory overhead benchmark shows how much additional memory the cache will require at different capacities.
 
-<img width="60%" src="./assets/results/s3.png" alt="s3" />
-
-#### DS1
-
-This trace is described as "a database server running at a commercial site running an ERP application on top of a commercial database."
-
-<img width="60%" src="./assets/results/ds1.png" alt="ds1" />
-
-#### P3
-
-The trace P3 was collected from workstations running Windows NT by using Vtrace
-which captures disk operations through the use of device
-filters
-
-<img width="60%" src="./assets/results/p3.png" alt="p3" />
-
-#### P8
-
-The trace P8 was collected from workstations running Windows NT by using Vtrace
-which captures disk operations through the use of device
-filters
-
-<img width="60%" src="./assets/results/p8.png" alt="p8" />
-
-#### LOOP
-
-This trace demonstrates a looping access pattern.
-
-<img width="60%" src="./assets/results/loop.png" alt="loop" />
-
-#### OLTP
-
-This trace is described as "references to a CODASYL database for a one hour period."
-
-<img width="60%" src="./assets/results/oltp.png" alt="oltp" />
-
-In summary, we have that S3-FIFO (otter) is inferior to W-TinyLFU (theine) on lfu friendly traces (databases, search, analytics), but has a greater or equal hit ratio on web traces.
+You can find results [here](https://maypok86.github.io/otter/performance/memory-consumption/).
 
 ## 👏 Contribute <a id="contribute" />
 
