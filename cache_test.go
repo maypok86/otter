@@ -488,3 +488,25 @@ func (h *optimalHeap) Pop() any {
 	*h = old[0 : n-1]
 	return x
 }
+
+func Test_GetExpired(t *testing.T) {
+	c, err := MustBuilder[string, string](1000000).
+		CollectStats().
+		DeletionListener(func(key string, value string, cause DeletionCause) {
+			fmt.Println(cause)
+			if cause != Expired {
+				t.Fatalf("err not expired: %v", cause)
+			}
+		}).
+		WithVariableTTL().
+		Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Set("test1", "123456", time.Duration(12)*time.Second)
+	for i := 0; i < 5; i++ {
+		c.Get("test1")
+		time.Sleep(3 * time.Second)
+	}
+	time.Sleep(1 * time.Second)
+}
