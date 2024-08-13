@@ -219,7 +219,8 @@ func (c *Cache[K, V]) GetNode(key K) (node.Node[K, V], bool) {
 	}
 
 	if n.HasExpired() {
-		c.writeBuffer.Push(newDeleteTask(n))
+		n.Die()
+		c.writeBuffer.Push(newExpiredTask(n))
 		c.stats.IncMisses()
 		return nil, false
 	}
@@ -437,6 +438,10 @@ func (c *Cache[K, V]) onWrite(t task[K, V]) {
 		c.expiryPolicy.Delete(n)
 		c.policy.Delete(n)
 		c.notifyDeletion(n.Key(), n.Value(), Explicit)
+	case t.isExpired():
+		c.expiryPolicy.Delete(n)
+		c.policy.Delete(n)
+		c.notifyDeletion(n.Key(), n.Value(), Expired)
 	}
 }
 

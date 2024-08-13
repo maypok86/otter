@@ -27,6 +27,7 @@ const (
 	updateReason
 	clearReason
 	closeReason
+	expiredReason
 )
 
 // task is a set of information to update the cache:
@@ -50,6 +51,14 @@ func newDeleteTask[K comparable, V any](n node.Node[K, V]) task[K, V] {
 	return task[K, V]{
 		n:           n,
 		writeReason: deleteReason,
+	}
+}
+
+// newExpireTask creates a task to delete a expired node from policies.
+func newExpiredTask[K comparable, V any](n node.Node[K, V]) task[K, V] {
+	return task[K, V]{
+		n:           n,
+		writeReason: expiredReason,
 	}
 }
 
@@ -94,6 +103,11 @@ func (t *task[K, V]) isAdd() bool {
 // isDelete returns true if this is a delete task.
 func (t *task[K, V]) isDelete() bool {
 	return t.writeReason == deleteReason
+}
+
+// isExpired returns true if this is an expired task.
+func (t *task[K, V]) isExpired() bool {
+	return t.writeReason == expiredReason
 }
 
 // isUpdate returns true if this is an update task.
