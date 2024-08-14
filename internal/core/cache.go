@@ -219,8 +219,12 @@ func (c *Cache[K, V]) GetNode(key K) (node.Node[K, V], bool) {
 	}
 
 	if n.HasExpired() {
-		n.Die()
-		c.writeBuffer.Push(newExpiredTask(n))
+		// avoid duplicate push
+		deleted := c.hashmap.DeleteNode(n)
+		if deleted != nil {
+			n.Die()
+			c.writeBuffer.Push(newExpiredTask(n))
+		}
 		c.stats.IncMisses()
 		return nil, false
 	}
