@@ -1,3 +1,15 @@
+## 1.2.2 - 2024-08-14
+
+### ✨️Features
+
+- Implemented `fmt.Stringer` interface for `DeletionReason` type ([#100](https://github.com/maypok86/otter/issues/100))
+
+### 🐞 Bug Fixes
+
+- Fixed processing of an expired entry in the `Get` method ([#98](https://github.com/maypok86/otter/issues/98))
+- Fixed inconsistent deletion listener behavior ([#98](https://github.com/maypok86/otter/issues/98))
+- Fixed the behavior of `checkedAdd` when over/underflow ([#91](https://github.com/maypok86/otter/issues/91))
+
 ## 1.2.1 - 2024-04-15
 
 ### 🐞 Bug Fixes
