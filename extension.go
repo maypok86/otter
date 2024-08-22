@@ -15,9 +15,9 @@
 package otter
 
 import (
-	"github.com/maypok86/otter/internal/core"
-	"github.com/maypok86/otter/internal/generated/node"
-	"github.com/maypok86/otter/internal/unixtime"
+	"github.com/maypok86/otter/v2/internal/core"
+	"github.com/maypok86/otter/v2/internal/generated/node"
+	"github.com/maypok86/otter/v2/internal/unixtime"
 )
 
 func zeroValue[V any]() V {

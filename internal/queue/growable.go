@@ -17,7 +17,7 @@ package queue
 import (
 	"sync"
 
-	"github.com/maypok86/otter/internal/xmath"
+	"github.com/maypok86/otter/v2/internal/xmath"
 )
 
 type Growable[T any] struct {

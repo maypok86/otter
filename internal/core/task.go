@@ -15,7 +15,7 @@
 package core
 
 import (
-	"github.com/maypok86/otter/internal/generated/node"
+	"github.com/maypok86/otter/v2/internal/generated/node"
 )
 
 // reason represents the reason for writing the item to the cache.

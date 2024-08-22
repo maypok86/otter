@@ -138,7 +138,7 @@ func (g *generator) printImports() {
 	g.p("\"unsafe\"")
 	if g.features[expiration] {
 		g.p("")
-		g.p("\"github.com/maypok86/otter/internal/unixtime\"")
+		g.p("\"github.com/maypok86/otter/v2/internal/unixtime\"")
 	}
 	g.out()
 	g.p(")")
