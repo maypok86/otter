@@ -18,7 +18,7 @@ import (
 	"github.com/dolthub/maphash"
 	"github.com/gammazero/deque"
 
-	"github.com/maypok86/otter/internal/generated/node"
+	"github.com/maypok86/otter/v2/internal/generated/node"
 )
 
 type ghost[K comparable, V any] struct {

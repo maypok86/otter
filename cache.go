@@ -17,7 +17,7 @@ package otter
 import (
 	"time"
 
-	"github.com/maypok86/otter/internal/core"
+	"github.com/maypok86/otter/v2/internal/core"
 )
 
 // DeletionCause the cause why a cached entry was deleted.

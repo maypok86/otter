@@ -13,8 +13,8 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/maypok86/otter/internal/xmath"
-	"github.com/maypok86/otter/internal/xruntime"
+	"github.com/maypok86/otter/v2/internal/xmath"
+	"github.com/maypok86/otter/v2/internal/xruntime"
 )
 
 // pool for P tokens.

@@ -14,7 +14,7 @@
 
 package expiry
 
-import "github.com/maypok86/otter/internal/generated/node"
+import "github.com/maypok86/otter/v2/internal/generated/node"
 
 type Disabled[K comparable, V any] struct{}
 

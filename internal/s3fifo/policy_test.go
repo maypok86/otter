@@ -17,7 +17,7 @@ package s3fifo
 import (
 	"testing"
 
-	"github.com/maypok86/otter/internal/generated/node"
+	"github.com/maypok86/otter/v2/internal/generated/node"
 )
 
 func newNode(k int) node.Node[int, int] {
