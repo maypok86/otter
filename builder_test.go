@@ -61,10 +61,10 @@ func TestBuilder_NewFailed(t *testing.T) {
 		t.Fatalf("should fail with an error %v, but got %v", ErrIllegalInitialCapacity, err)
 	}
 
-	// nil cost func
-	_, err = MustBuilder[int, int](capacity).Cost(nil).Build()
-	if err == nil || !errors.Is(err, ErrNilCostFunc) {
-		t.Fatalf("should fail with an error %v, but got %v", ErrNilCostFunc, err)
+	// nil weigher
+	_, err = MustBuilder[int, int](capacity).Weigher(nil).Build()
+	if err == nil || !errors.Is(err, ErrNilWeigher) {
+		t.Fatalf("should fail with an error %v, but got %v", ErrNilWeigher, err)
 	}
 }
 
@@ -79,7 +79,7 @@ func TestBuilder_BuildSuccess(t *testing.T) {
 	c, err := b.
 		CollectStats().
 		InitialCapacity(10).
-		Cost(func(key int, value int) uint32 {
+		Weigher(func(key int, value int) uint32 {
 			return 2
 		}).Build()
 	if err != nil {
@@ -90,7 +90,7 @@ func TestBuilder_BuildSuccess(t *testing.T) {
 		t.Fatalf("builder returned a different type of cache: %v", err)
 	}
 
-	cc, err := b.WithTTL(time.Minute).CollectStats().Cost(func(key int, value int) uint32 {
+	cc, err := b.WithTTL(time.Minute).CollectStats().Weigher(func(key int, value int) uint32 {
 		return 2
 	}).DeletionListener(func(key int, value int, cause DeletionCause) {
 		fmt.Println("const ttl")
@@ -103,7 +103,7 @@ func TestBuilder_BuildSuccess(t *testing.T) {
 		t.Fatalf("builder returned a different type of cache: %v", err)
 	}
 
-	cv, err := b.WithVariableTTL().CollectStats().Cost(func(key int, value int) uint32 {
+	cv, err := b.WithVariableTTL().CollectStats().Weigher(func(key int, value int) uint32 {
 		return 2
 	}).DeletionListener(func(key int, value int, cause DeletionCause) {
 		fmt.Println("variable ttl")

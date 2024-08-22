@@ -30,8 +30,8 @@ var (
 	ErrIllegalCapacity = errors.New("capacity should be positive")
 	// ErrIllegalInitialCapacity means that a non-positive capacity has been passed to the Builder.InitialCapacity.
 	ErrIllegalInitialCapacity = errors.New("initial capacity should be positive")
-	// ErrNilCostFunc means that a nil cost func has been passed to the Builder.Cost.
-	ErrNilCostFunc = errors.New("setCostFunc func should not be nil")
+	// ErrNilWeigher means that a nil weigher has been passed to the Builder.Weigher.
+	ErrNilWeigher = errors.New("weigher func should not be nil")
 	// ErrIllegalTTL means that a non-positive ttl has been passed to the Builder.WithTTL.
 	ErrIllegalTTL = errors.New("ttl should be positive")
 )
@@ -40,8 +40,8 @@ type baseOptions[K comparable, V any] struct {
 	capacity         int
 	initialCapacity  int
 	statsEnabled     bool
-	withCost         bool
-	costFunc         func(key K, value V) uint32
+	withWeight       bool
+	weigher          func(key K, value V) uint32
 	deletionListener func(key K, value V, cause DeletionCause)
 }
 
@@ -49,9 +49,9 @@ func (o *baseOptions[K, V]) collectStats() {
 	o.statsEnabled = true
 }
 
-func (o *baseOptions[K, V]) setCostFunc(costFunc func(key K, value V) uint32) {
-	o.costFunc = costFunc
-	o.withCost = true
+func (o *baseOptions[K, V]) setWeigher(weigher func(key K, value V) uint32) {
+	o.weigher = weigher
+	o.withWeight = true
 }
 
 func (o *baseOptions[K, V]) setInitialCapacity(initialCapacity int) {
@@ -66,8 +66,8 @@ func (o *baseOptions[K, V]) validate() error {
 	if o.initialCapacity <= 0 && o.initialCapacity != unsetCapacity {
 		return ErrIllegalInitialCapacity
 	}
-	if o.costFunc == nil {
-		return ErrNilCostFunc
+	if o.weigher == nil {
+		return ErrNilWeigher
 	}
 	return nil
 }
@@ -81,8 +81,8 @@ func (o *baseOptions[K, V]) toConfig() core.Config[K, V] {
 		Capacity:         o.capacity,
 		InitialCapacity:  initialCapacity,
 		StatsEnabled:     o.statsEnabled,
-		CostFunc:         o.costFunc,
-		WithCost:         o.withCost,
+		Weigher:          o.weigher,
+		WithWeight:       o.withWeight,
 		DeletionListener: o.deletionListener,
 	}
 }
@@ -144,7 +144,7 @@ func NewBuilder[K comparable, V any](capacity int) (*Builder[K, V], error) {
 			capacity:        capacity,
 			initialCapacity: unsetCapacity,
 			statsEnabled:    false,
-			costFunc: func(key K, value V) uint32 {
+			weigher: func(key K, value V) uint32 {
 				return 1
 			},
 		},
@@ -167,11 +167,11 @@ func (b *Builder[K, V]) InitialCapacity(initialCapacity int) *Builder[K, V] {
 	return b
 }
 
-// Cost sets a function to dynamically calculate the cost of an item.
+// Weigher sets a function to dynamically calculate the weight of an item.
 //
 // By default, this function always returns 1.
-func (b *Builder[K, V]) Cost(costFunc func(key K, value V) uint32) *Builder[K, V] {
-	b.setCostFunc(costFunc)
+func (b *Builder[K, V]) Weigher(weigher func(key K, value V) uint32) *Builder[K, V] {
+	b.setWeigher(weigher)
 	return b
 }
 
@@ -237,11 +237,11 @@ func (b *ConstTTLBuilder[K, V]) InitialCapacity(initialCapacity int) *ConstTTLBu
 	return b
 }
 
-// Cost sets a function to dynamically calculate the cost of an item.
+// Weigher sets a function to dynamically calculate the weight of an item.
 //
 // By default, this function always returns 1.
-func (b *ConstTTLBuilder[K, V]) Cost(costFunc func(key K, value V) uint32) *ConstTTLBuilder[K, V] {
-	b.setCostFunc(costFunc)
+func (b *ConstTTLBuilder[K, V]) Weigher(weigher func(key K, value V) uint32) *ConstTTLBuilder[K, V] {
+	b.setWeigher(weigher)
 	return b
 }
 
@@ -284,11 +284,11 @@ func (b *VariableTTLBuilder[K, V]) InitialCapacity(initialCapacity int) *Variabl
 	return b
 }
 
-// Cost sets a function to dynamically calculate the cost of an item.
+// Weigher sets a function to dynamically calculate the weight of an item.
 //
 // By default, this function always returns 1.
-func (b *VariableTTLBuilder[K, V]) Cost(costFunc func(key K, value V) uint32) *VariableTTLBuilder[K, V] {
-	b.setCostFunc(costFunc)
+func (b *VariableTTLBuilder[K, V]) Weigher(weigher func(key K, value V) uint32) *VariableTTLBuilder[K, V] {
+	b.setWeigher(weigher)
 	return b
 }
 

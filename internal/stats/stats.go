@@ -28,7 +28,7 @@ type Stats struct {
 	rejectedSets           *counter
 	evictedCountersPadding [xruntime.CacheLineSize - 2*unsafe.Sizeof(atomic.Int64{})]byte
 	evictedCount           atomic.Int64
-	evictedCost            atomic.Int64
+	evictedWeight          atomic.Int64
 }
 
 // New creates a new Stats collector.
@@ -112,22 +112,22 @@ func (s *Stats) EvictedCount() int64 {
 	return s.evictedCount.Load()
 }
 
-// AddEvictedCost adds cost to the evictedCost counter.
-func (s *Stats) AddEvictedCost(cost uint32) {
+// AddEvictedWeight adds weight to the evictedWeight counter.
+func (s *Stats) AddEvictedWeight(weight uint32) {
 	if s == nil {
 		return
 	}
 
-	s.evictedCost.Add(int64(cost))
+	s.evictedWeight.Add(int64(weight))
 }
 
-// EvictedCost returns the sum of costs of evicted entries.
-func (s *Stats) EvictedCost() int64 {
+// EvictedWeight returns the sum of weights of evicted entries.
+func (s *Stats) EvictedWeight() int64 {
 	if s == nil {
 		return 0
 	}
 
-	return s.evictedCost.Load()
+	return s.evictedWeight.Load()
 }
 
 func (s *Stats) Clear() {
@@ -139,5 +139,5 @@ func (s *Stats) Clear() {
 	s.misses.reset()
 	s.rejectedSets.reset()
 	s.evictedCount.Store(0)
-	s.evictedCost.Store(0)
+	s.evictedWeight.Store(0)
 }

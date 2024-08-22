@@ -49,8 +49,8 @@ type Node[K comparable, V any] interface {
 	HasExpired() bool
 	// Expiration returns the expiration time.
 	Expiration() uint32
-	// Cost returns the cost of the node.
-	Cost() uint32
+	// Weight returns the weight of the node.
+	Weight() uint32
 	// IsAlive returns true if the entry is available in the hash-table.
 	IsAlive() bool
 	// Die sets the node to the dead state.
@@ -87,11 +87,11 @@ func Equals[K comparable, V any](a, b Node[K, V]) bool {
 
 type Config struct {
 	WithExpiration bool
-	WithCost       bool
+	WithWeight     bool
 }
 
 type Manager[K comparable, V any] struct {
-	create      func(key K, value V, expiration, cost uint32) Node[K, V]
+	create      func(key K, value V, expiration, weight uint32) Node[K, V]
 	fromPointer func(ptr unsafe.Pointer) Node[K, V]
 }
 
@@ -101,19 +101,19 @@ func NewManager[K comparable, V any](c Config) *Manager[K, V] {
 	if c.WithExpiration {
 		sb.WriteString("e")
 	}
-	if c.WithCost {
-		sb.WriteString("c")
+	if c.WithWeight {
+		sb.WriteString("w")
 	}
 	nodeType := sb.String()
 	m := &Manager[K, V]{}
 
 	switch nodeType {
-	case "bec":
-		m.create = NewBEC[K, V]
-		m.fromPointer = CastPointerToBEC[K, V]
-	case "bc":
-		m.create = NewBC[K, V]
-		m.fromPointer = CastPointerToBC[K, V]
+	case "bew":
+		m.create = NewBEW[K, V]
+		m.fromPointer = CastPointerToBEW[K, V]
+	case "bw":
+		m.create = NewBW[K, V]
+		m.fromPointer = CastPointerToBW[K, V]
 	case "be":
 		m.create = NewBE[K, V]
 		m.fromPointer = CastPointerToBE[K, V]
@@ -126,8 +126,8 @@ func NewManager[K comparable, V any](c Config) *Manager[K, V] {
 	return m
 }
 
-func (m *Manager[K, V]) Create(key K, value V, expiration, cost uint32) Node[K, V] {
-	return m.create(key, value, expiration, cost)
+func (m *Manager[K, V]) Create(key K, value V, expiration, weight uint32) Node[K, V] {
+	return m.create(key, value, expiration, weight)
 }
 
 func (m *Manager[K, V]) FromPointer(ptr unsafe.Pointer) Node[K, V] {

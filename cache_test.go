@@ -381,7 +381,7 @@ func TestCache_Advanced(t *testing.T) {
 
 	isValidEntries := e1.Key() == k1 &&
 		e1.Value() == v1 &&
-		e1.Cost() == 1 &&
+		e1.Weight() == 1 &&
 		e1 == e2 &&
 		e1.TTL() < defaultTTL &&
 		!e1.HasExpired()

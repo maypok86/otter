@@ -64,7 +64,7 @@ func checkQueuePointers[K comparable, V any](t *testing.T, q *queue[K, V], nodes
 }
 
 func newFakeNode[K comparable](e K) node.Node[K, K] {
-	m := node.NewManager[K, K](node.Config{WithCost: true})
+	m := node.NewManager[K, K](node.Config{WithWeight: true})
 	return m.Create(e, e, 0, 0)
 }
 

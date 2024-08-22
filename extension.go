@@ -48,7 +48,7 @@ func (e Extension[K, V]) createEntry(n node.Node[K, V]) Entry[K, V] {
 		key:        n.Key(),
 		value:      n.Value(),
 		expiration: expiration,
-		cost:       n.Cost(),
+		weight:     n.Weight(),
 	}
 }
 

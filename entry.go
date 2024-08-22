@@ -24,7 +24,7 @@ type Entry[K comparable, V any] struct {
 	key        K
 	value      V
 	expiration int64
-	cost       uint32
+	weight     uint32
 }
 
 // Key returns the entry's key.
@@ -74,9 +74,9 @@ func (e Entry[K, V]) HasExpired() bool {
 	return expiration <= time.Now().Unix()
 }
 
-// Cost returns the entry's cost.
+// Weight returns the entry's weight.
 //
-// If the cache was not configured with a cost then this value is always 1.
-func (e Entry[K, V]) Cost() uint32 {
-	return e.cost
+// If the cache was not configured with a weight then this value is always 1.
+func (e Entry[K, V]) Weight() uint32 {
+	return e.weight
 }

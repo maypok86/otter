@@ -29,7 +29,7 @@ type BE[K comparable, V any] struct {
 }
 
 // NewBE creates a new BE.
-func NewBE[K comparable, V any](key K, value V, expiration, cost uint32) Node[K, V] {
+func NewBE[K comparable, V any](key K, value V, expiration, weight uint32) Node[K, V] {
 	return &BE[K, V]{
 		key:        key,
 		value:      value,
@@ -111,7 +111,7 @@ func (n *BE[K, V]) Expiration() uint32 {
 	return n.expiration
 }
 
-func (n *BE[K, V]) Cost() uint32 {
+func (n *BE[K, V]) Weight() uint32 {
 	return 1
 }
 

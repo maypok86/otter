@@ -23,7 +23,7 @@ import (
 func TestTask(t *testing.T) {
 	nm := node.NewManager[int, int](node.Config{
 		WithExpiration: true,
-		WithCost:       true,
+		WithWeight:     true,
 	})
 	n := nm.Create(1, 2, 6, 4)
 	oldNode := nm.Create(1, 3, 8, 6)

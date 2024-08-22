@@ -29,11 +29,11 @@ func TestStats(t *testing.T) {
 	expected := int64(math.MaxInt64)
 
 	s = Stats{
-		hits:         math.MaxInt64,
-		misses:       math.MaxInt64,
-		rejectedSets: math.MaxInt64,
-		evictedCount: math.MaxInt64,
-		evictedCost:  math.MaxInt64,
+		hits:          math.MaxInt64,
+		misses:        math.MaxInt64,
+		rejectedSets:  math.MaxInt64,
+		evictedCount:  math.MaxInt64,
+		evictedWeight: math.MaxInt64,
 	}
 
 	if s.Hits() != expected {
@@ -56,8 +56,8 @@ func TestStats(t *testing.T) {
 		t.Fatalf("not valid evicted count. want %d, got %d", expected, s.EvictedCount())
 	}
 
-	if s.EvictedCost() != expected {
-		t.Fatalf("not valid evicted cost. want %d, got %d", expected, s.EvictedCost())
+	if s.EvictedWeight() != expected {
+		t.Fatalf("not valid evicted weight. want %d, got %d", expected, s.EvictedWeight())
 	}
 }
 

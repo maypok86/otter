@@ -7,30 +7,30 @@ import (
 	"github.com/maypok86/otter/v2/internal/generated/node"
 )
 
-func TestCache_SetWithCost(t *testing.T) {
+func TestCache_SetWithWeight(t *testing.T) {
 	size := 10
 	c := NewCache[int, int](Config[int, int]{
 		Capacity: size,
-		CostFunc: func(key int, value int) uint32 {
+		Weigher: func(key int, value int) uint32 {
 			return uint32(key)
 		},
 	})
 
-	goodCost := c.policy.MaxAvailableCost()
-	badCost := goodCost + 1
+	goodWeight := c.policy.MaxAvailableWeight()
+	badWeight := goodWeight + 1
 
-	added := c.Set(goodCost, 1)
+	added := c.Set(goodWeight, 1)
 	if !added {
-		t.Fatalf("Set was dropped, even though it shouldn't have been. Max available cost: %d, actual cost: %d",
-			c.policy.MaxAvailableCost(),
-			c.costFunc(goodCost, 1),
+		t.Fatalf("Set was dropped, even though it shouldn't have been. Max available weight: %d, actual weight: %d",
+			c.policy.MaxAvailableWeight(),
+			c.weigher(goodWeight, 1),
 		)
 	}
-	added = c.Set(badCost, 1)
+	added = c.Set(badWeight, 1)
 	if added {
-		t.Fatalf("Set wasn't dropped, though it should have been. Max available cost: %d, actual cost: %d",
-			c.policy.MaxAvailableCost(),
-			c.costFunc(badCost, 1),
+		t.Fatalf("Set wasn't dropped, though it should have been. Max available weight: %d, actual weight: %d",
+			c.policy.MaxAvailableWeight(),
+			c.weigher(badWeight, 1),
 		)
 	}
 }
@@ -40,7 +40,7 @@ func TestCache_Range(t *testing.T) {
 	ttl := time.Hour
 	c := NewCache[int, int](Config[int, int]{
 		Capacity: size,
-		CostFunc: func(key int, value int) uint32 {
+		Weigher: func(key int, value int) uint32 {
 			return 1
 		},
 		TTL: &ttl,
@@ -50,7 +50,7 @@ func TestCache_Range(t *testing.T) {
 
 	nm := node.NewManager[int, int](node.Config{
 		WithExpiration: true,
-		WithCost:       true,
+		WithWeight:     true,
 	})
 
 	c.Set(1, 1)
@@ -75,7 +75,7 @@ func TestCache_Close(t *testing.T) {
 	size := 10
 	c := NewCache[int, int](Config[int, int]{
 		Capacity: size,
-		CostFunc: func(key int, value int) uint32 {
+		Weigher: func(key int, value int) uint32 {
 			return 1
 		},
 	})
@@ -113,7 +113,7 @@ func TestCache_Clear(t *testing.T) {
 	size := 10
 	c := NewCache[int, int](Config[int, int]{
 		Capacity: size,
-		CostFunc: func(key int, value int) uint32 {
+		Weigher: func(key int, value int) uint32 {
 			return 1
 		},
 	})

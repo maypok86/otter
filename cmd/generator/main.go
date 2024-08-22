@@ -25,11 +25,11 @@ func (f feature) alias() string {
 
 var (
 	expiration = newFeature("expiration")
-	cost       = newFeature("cost")
+	weight     = newFeature("weight")
 
 	declaredFeatures = []feature{
 		expiration,
-		cost,
+		weight,
 	}
 
 	nodeTypes      []string
@@ -177,8 +177,8 @@ func (g *generator) printStruct() {
 		g.p("nextExp    *%s[K, V]", g.structName)
 		g.p("expiration uint32")
 	}
-	if g.features[cost] {
-		g.p("cost       uint32")
+	if g.features[weight] {
+		g.p("weight     uint32")
 	}
 
 	g.p("state      uint32")
@@ -191,7 +191,7 @@ func (g *generator) printStruct() {
 
 func (g *generator) printConstructors() {
 	g.p("// New%s creates a new %s.", g.structName, g.structName)
-	g.p("func New%s[K comparable, V any](key K, value V, expiration, cost uint32) Node[K, V] {", g.structName)
+	g.p("func New%s[K comparable, V any](key K, value V, expiration, weight uint32) Node[K, V] {", g.structName)
 	g.in()
 	g.p("return &%s[K, V]{", g.structName)
 	g.in()
@@ -200,8 +200,8 @@ func (g *generator) printConstructors() {
 	if g.features[expiration] {
 		g.p("expiration: expiration,")
 	}
-	if g.features[cost] {
-		g.p("cost:       cost,")
+	if g.features[weight] {
+		g.p("weight:     weight,")
 	}
 	g.p("state:      aliveState,")
 	g.out()
@@ -359,10 +359,10 @@ func (g *generator) printFunctions() {
 	g.p("}")
 	g.p("")
 
-	g.p("func (n *%s[K, V]) Cost() uint32 {", g.structName)
+	g.p("func (n *%s[K, V]) Weight() uint32 {", g.structName)
 	g.in()
-	if g.features[cost] {
-		g.p("return n.cost")
+	if g.features[weight] {
+		g.p("return n.weight")
 	} else {
 		g.p("return 1")
 	}
@@ -469,7 +469,7 @@ const (
 	unknownQueueType uint8 = iota
 	smallQueueType
 	mainQueueType
-	
+
 	maxFrequency uint8 = 3
 )
 
@@ -506,8 +506,8 @@ type Node[K comparable, V any] interface {
 	HasExpired() bool
 	// Expiration returns the expiration time.
 	Expiration() uint32
-	// Cost returns the cost of the node.
-	Cost() uint32
+	// Weight returns the weight of the node.
+	Weight() uint32
 	// IsAlive returns true if the entry is available in the hash-table.
 	IsAlive() bool
 	// Die sets the node to the dead state.
@@ -544,11 +544,11 @@ func Equals[K comparable, V any](a, b Node[K, V]) bool {
 
 type Config struct {
 	WithExpiration bool
-	WithCost       bool
+	WithWeight     bool
 }
 
 type Manager[K comparable, V any] struct {
-	create      func(key K, value V, expiration, cost uint32) Node[K, V]
+	create      func(key K, value V, expiration, weight uint32) Node[K, V]
 	fromPointer func(ptr unsafe.Pointer) Node[K, V]
 }
 
@@ -558,8 +558,8 @@ func NewManager[K comparable, V any](c Config) *Manager[K, V] {
 	if c.WithExpiration {
 		sb.WriteString("e")
 	}
-	if c.WithCost {
-		sb.WriteString("c")
+	if c.WithWeight {
+		sb.WriteString("w")
 	}
 	nodeType := sb.String()
 	m := &Manager[K, V]{}
@@ -568,8 +568,8 @@ func NewManager[K comparable, V any](c Config) *Manager[K, V] {
 	const nodeFooter = `return m
 }
 
-func (m *Manager[K, V]) Create(key K, value V, expiration, cost uint32) Node[K, V] {
-	return m.create(key, value, expiration, cost)
+func (m *Manager[K, V]) Create(key K, value V, expiration, weight uint32) Node[K, V] {
+	return m.create(key, value, expiration, weight)
 }
 
 func (m *Manager[K, V]) FromPointer(ptr unsafe.Pointer) Node[K, V] {

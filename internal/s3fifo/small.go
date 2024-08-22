@@ -22,13 +22,13 @@ type small[K comparable, V any] struct {
 	q         *queue[K, V]
 	main      *main[K, V]
 	ghost     *ghost[K, V]
-	cost      int
-	maxCost   int
+	weight    int
+	maxWeight int
 	evictNode func(node.Node[K, V])
 }
 
 func newSmall[K comparable, V any](
-	maxCost int,
+	maxWeight int,
 	main *main[K, V],
 	ghost *ghost[K, V],
 	evictNode func(node.Node[K, V]),
@@ -37,7 +37,7 @@ func newSmall[K comparable, V any](
 		q:         newQueue[K, V](),
 		main:      main,
 		ghost:     ghost,
-		maxCost:   maxCost,
+		maxWeight: maxWeight,
 		evictNode: evictNode,
 	}
 }
@@ -45,16 +45,16 @@ func newSmall[K comparable, V any](
 func (s *small[K, V]) insert(n node.Node[K, V]) {
 	s.q.push(n)
 	n.MarkSmall()
-	s.cost += int(n.Cost())
+	s.weight += int(n.Weight())
 }
 
 func (s *small[K, V]) evict() {
-	if s.cost == 0 {
+	if s.weight == 0 {
 		return
 	}
 
 	n := s.q.pop()
-	s.cost -= int(n.Cost())
+	s.weight -= int(n.Weight())
 	n.Unmark()
 	if !n.IsAlive() || n.HasExpired() {
 		s.evictNode(n)
@@ -74,7 +74,7 @@ func (s *small[K, V]) evict() {
 }
 
 func (s *small[K, V]) delete(n node.Node[K, V]) {
-	s.cost -= int(n.Cost())
+	s.weight -= int(n.Weight())
 	n.Unmark()
 	s.q.delete(n)
 }
@@ -85,5 +85,5 @@ func (s *small[K, V]) length() int {
 
 func (s *small[K, V]) clear() {
 	s.q.clear()
-	s.cost = 0
+	s.weight = 0
 }

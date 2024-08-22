@@ -22,20 +22,20 @@ import (
 
 // Stats is a statistics snapshot.
 type Stats struct {
-	hits         int64
-	misses       int64
-	rejectedSets int64
-	evictedCount int64
-	evictedCost  int64
+	hits          int64
+	misses        int64
+	rejectedSets  int64
+	evictedCount  int64
+	evictedWeight int64
 }
 
 func newStats(s *stats.Stats) Stats {
 	return Stats{
-		hits:         negativeToMax(s.Hits()),
-		misses:       negativeToMax(s.Misses()),
-		rejectedSets: negativeToMax(s.RejectedSets()),
-		evictedCount: negativeToMax(s.EvictedCount()),
-		evictedCost:  negativeToMax(s.EvictedCost()),
+		hits:          negativeToMax(s.Hits()),
+		misses:        negativeToMax(s.Misses()),
+		rejectedSets:  negativeToMax(s.RejectedSets()),
+		evictedCount:  negativeToMax(s.EvictedCount()),
+		evictedWeight: negativeToMax(s.EvictedWeight()),
 	}
 }
 
@@ -68,9 +68,9 @@ func (s Stats) EvictedCount() int64 {
 	return s.evictedCount
 }
 
-// EvictedCost returns the sum of costs of evicted entries.
-func (s Stats) EvictedCost() int64 {
-	return s.evictedCost
+// EvictedWeight returns the sum of weights of evicted entries.
+func (s Stats) EvictedWeight() int64 {
+	return s.evictedWeight
 }
 
 func checkedAdd(a, b int64) int64 {
