@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/maypok86/otter/v2/internal/generated/node"
 	"github.com/maypok86/otter/v2/internal/xruntime"
 )
 
@@ -38,11 +39,130 @@ func getRandomSize(t *testing.T) int {
 	return r.Intn(maxSize-minSize) + minSize
 }
 
+func TestCache_SetWithWeight(t *testing.T) {
+	size := 10
+	c, err := NewBuilder[int, int](size).
+		Weigher(func(key int, value int) uint32 {
+			return uint32(key)
+		}).
+		Build()
+	if err != nil {
+		t.Fatalf("can not create cache: %v", err)
+	}
+
+	goodWeight := c.policy.MaxAvailableWeight()
+	badWeight := goodWeight + 1
+
+	added := c.Set(goodWeight, 1)
+	if !added {
+		t.Fatalf("Set was dropped, even though it shouldn't have been. Max available weight: %d, actual weight: %d",
+			c.policy.MaxAvailableWeight(),
+			c.weigher(goodWeight, 1),
+		)
+	}
+	added = c.Set(badWeight, 1)
+	if added {
+		t.Fatalf("Set wasn't dropped, though it should have been. Max available weight: %d, actual weight: %d",
+			c.policy.MaxAvailableWeight(),
+			c.weigher(badWeight, 1),
+		)
+	}
+}
+
+func TestCache_Range(t *testing.T) {
+	size := 10
+	ttl := time.Hour
+	c, err := NewBuilder[int, int](size).
+		WithTTL(ttl).
+		Build()
+	if err != nil {
+		t.Fatalf("can not create cache: %v", err)
+	}
+
+	time.Sleep(3 * time.Second)
+
+	nm := node.NewManager[int, int](node.Config{
+		WithExpiration: true,
+		WithWeight:     true,
+	})
+
+	c.Set(1, 1)
+	c.hashmap.Set(nm.Create(2, 2, 1, 1))
+	c.Set(3, 3)
+	aliveNodes := 2
+	iters := 0
+	c.Range(func(key, value int) bool {
+		if key != value {
+			t.Fatalf("got unexpected key/value for iteration %d: %d/%d", iters, key, value)
+			return false
+		}
+		iters++
+		return true
+	})
+	if iters != aliveNodes {
+		t.Fatalf("got unexpected number of iterations: %d", iters)
+	}
+}
+
+func TestCache_Close(t *testing.T) {
+	size := 10
+	c, err := NewBuilder[int, int](size).Build()
+	if err != nil {
+		t.Fatalf("can not create cache: %v", err)
+	}
+
+	for i := 0; i < size; i++ {
+		c.Set(i, i)
+	}
+
+	if cacheSize := c.Size(); cacheSize != size {
+		t.Fatalf("c.Size() = %d, want = %d", cacheSize, size)
+	}
+
+	c.Close()
+
+	time.Sleep(10 * time.Millisecond)
+
+	if cacheSize := c.Size(); cacheSize != 0 {
+		t.Fatalf("c.Size() = %d, want = %d", cacheSize, 0)
+	}
+
+	c.Close()
+
+	if cacheSize := c.Size(); cacheSize != 0 {
+		t.Fatalf("c.Size() = %d, want = %d", cacheSize, 0)
+	}
+}
+
+func TestCache_Clear(t *testing.T) {
+	size := 10
+	c, err := NewBuilder[int, int](size).Build()
+	if err != nil {
+		t.Fatalf("can not create cache: %v", err)
+	}
+
+	for i := 0; i < size; i++ {
+		c.Set(i, i)
+	}
+
+	if cacheSize := c.Size(); cacheSize != size {
+		t.Fatalf("c.Size() = %d, want = %d", cacheSize, size)
+	}
+
+	c.Clear()
+
+	time.Sleep(10 * time.Millisecond)
+
+	if cacheSize := c.Size(); cacheSize != 0 {
+		t.Fatalf("c.Size() = %d, want = %d", cacheSize, 0)
+	}
+}
+
 func TestCache_Set(t *testing.T) {
 	size := getRandomSize(t)
 	var mutex sync.Mutex
 	m := make(map[DeletionCause]int)
-	c, err := MustBuilder[int, int](size).
+	c, err := NewBuilder[int, int](size).
 		WithTTL(time.Minute).
 		CollectStats().
 		DeletionListener(func(key int, value int, cause DeletionCause) {
@@ -105,7 +225,7 @@ func TestCache_Set(t *testing.T) {
 
 func TestCache_SetIfAbsent(t *testing.T) {
 	size := getRandomSize(t)
-	c, err := MustBuilder[int, int](size).WithTTL(time.Minute).CollectStats().Build()
+	c, err := NewBuilder[int, int](size).WithTTL(time.Minute).CollectStats().Build()
 	if err != nil {
 		t.Fatalf("can not create cache: %v", err)
 	}
@@ -130,13 +250,13 @@ func TestCache_SetIfAbsent(t *testing.T) {
 
 	c.Clear()
 
-	cc, err := MustBuilder[int, int](size).WithVariableTTL().CollectStats().Build()
+	cc, err := NewBuilder[int, int](size).WithVariableTTL().CollectStats().Build()
 	if err != nil {
 		t.Fatalf("can not create cache: %v", err)
 	}
 
 	for i := 0; i < size; i++ {
-		if !cc.SetIfAbsent(i, i, time.Hour) {
+		if !cc.SetIfAbsentWithTTL(i, i, time.Hour) {
 			t.Fatalf("set was dropped. key: %d", i)
 		}
 	}
@@ -148,7 +268,7 @@ func TestCache_SetIfAbsent(t *testing.T) {
 	}
 
 	for i := 0; i < size; i++ {
-		if cc.SetIfAbsent(i, i, time.Second) {
+		if cc.SetIfAbsentWithTTL(i, i, time.Second) {
 			t.Fatalf("set wasn't dropped. key: %d", i)
 		}
 	}
@@ -164,7 +284,7 @@ func TestCache_SetWithTTL(t *testing.T) {
 	size := getRandomSize(t)
 	var mutex sync.Mutex
 	m := make(map[DeletionCause]int)
-	c, err := MustBuilder[int, int](size).
+	c, err := NewBuilder[int, int](size).
 		CollectStats().
 		InitialCapacity(size).
 		WithTTL(time.Second).
@@ -211,7 +331,7 @@ func TestCache_SetWithTTL(t *testing.T) {
 	mutex.Unlock()
 
 	m = make(map[DeletionCause]int)
-	cc, err := MustBuilder[int, int](size).
+	cc, err := NewBuilder[int, int](size).
 		WithVariableTTL().
 		CollectStats().
 		DeletionListener(func(key int, value int, cause DeletionCause) {
@@ -225,7 +345,7 @@ func TestCache_SetWithTTL(t *testing.T) {
 	}
 
 	for i := 0; i < size; i++ {
-		cc.Set(i, i, 5*time.Second)
+		cc.SetWithTTL(i, i, 5*time.Second)
 	}
 
 	time.Sleep(7 * time.Second)
@@ -263,7 +383,7 @@ func TestCache_Delete(t *testing.T) {
 	size := getRandomSize(t)
 	var mutex sync.Mutex
 	m := make(map[DeletionCause]int)
-	c, err := MustBuilder[int, int](size).
+	c, err := NewBuilder[int, int](size).
 		InitialCapacity(size).
 		WithTTL(time.Hour).
 		DeletionListener(func(key int, value int, cause DeletionCause) {
@@ -309,7 +429,7 @@ func TestCache_DeleteByFunc(t *testing.T) {
 	size := getRandomSize(t)
 	var mutex sync.Mutex
 	m := make(map[DeletionCause]int)
-	c, err := MustBuilder[int, int](size).
+	c, err := NewBuilder[int, int](size).
 		InitialCapacity(size).
 		WithTTL(time.Hour).
 		DeletionListener(func(key int, value int, cause DeletionCause) {
@@ -350,7 +470,7 @@ func TestCache_DeleteByFunc(t *testing.T) {
 func TestCache_Advanced(t *testing.T) {
 	size := getRandomSize(t)
 	defaultTTL := time.Hour
-	c, err := MustBuilder[int, int](size).
+	c, err := NewBuilder[int, int](size).
 		WithTTL(defaultTTL).
 		Build()
 	if err != nil {
@@ -404,7 +524,7 @@ func TestCache_Advanced(t *testing.T) {
 func TestCache_Ratio(t *testing.T) {
 	var mutex sync.Mutex
 	m := make(map[DeletionCause]int)
-	c, err := MustBuilder[uint64, uint64](100).
+	c, err := NewBuilder[uint64, uint64](100).
 		CollectStats().
 		DeletionListener(func(key uint64, value uint64, cause DeletionCause) {
 			mutex.Lock()
@@ -507,7 +627,7 @@ func (h *optimalHeap) Pop() any {
 }
 
 func Test_GetExpired(t *testing.T) {
-	c, err := MustBuilder[string, string](1000000).
+	c, err := NewBuilder[string, string](1000000).
 		CollectStats().
 		DeletionListener(func(key string, value string, cause DeletionCause) {
 			fmt.Println(cause)
@@ -520,7 +640,7 @@ func Test_GetExpired(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c.Set("test1", "123456", time.Duration(12)*time.Second)
+	c.SetWithTTL("test1", "123456", time.Duration(12)*time.Second)
 	for i := 0; i < 5; i++ {
 		c.Get("test1")
 		time.Sleep(3 * time.Second)

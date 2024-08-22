@@ -15,7 +15,6 @@
 package otter
 
 import (
-	"github.com/maypok86/otter/v2/internal/core"
 	"github.com/maypok86/otter/v2/internal/generated/node"
 	"github.com/maypok86/otter/v2/internal/unixtime"
 )
@@ -29,10 +28,10 @@ func zeroValue[V any]() V {
 // characteristics. These operations are optional and dependent on how the cache was constructed
 // and what abilities the implementation exposes.
 type Extension[K comparable, V any] struct {
-	cache *core.Cache[K, V]
+	cache *Cache[K, V]
 }
 
-func newExtension[K comparable, V any](cache *core.Cache[K, V]) Extension[K, V] {
+func newExtension[K comparable, V any](cache *Cache[K, V]) Extension[K, V] {
 	return Extension[K, V]{
 		cache: cache,
 	}

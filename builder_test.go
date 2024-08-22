@@ -15,104 +15,56 @@
 package otter
 
 import (
-	"errors"
-	"fmt"
-	"reflect"
 	"testing"
 	"time"
 )
 
-func TestBuilder_MustFailed(t *testing.T) {
-	defer func() {
-		if r := recover(); r != nil {
-			fmt.Println("recover: ", r)
-		}
-	}()
-	MustBuilder[int, int](-1)
-	t.Fatal("no panic detected")
-}
-
 func TestBuilder_NewFailed(t *testing.T) {
-	_, err := NewBuilder[int, int](-63)
-	if err == nil || !errors.Is(err, ErrIllegalCapacity) {
-		t.Fatalf("should fail with an error %v, but got %v", ErrIllegalCapacity, err)
+	_, err := NewBuilder[int, int](-63).Build()
+	if err == nil {
+		t.Fatalf("should fail with an error")
 	}
 
 	capacity := 100
 	// negative const ttl
-	_, err = MustBuilder[int, int](capacity).WithTTL(-1).Build()
-	if err == nil || !errors.Is(err, ErrIllegalTTL) {
-		t.Fatalf("should fail with an error %v, but got %v", ErrIllegalTTL, err)
+	_, err = NewBuilder[int, int](capacity).WithTTL(-1).Build()
+	if err == nil {
+		t.Fatalf("should fail with an error")
 	}
 
 	// negative initial capacity
-	_, err = MustBuilder[int, int](capacity).InitialCapacity(-2).Build()
-	if err == nil || !errors.Is(err, ErrIllegalInitialCapacity) {
-		t.Fatalf("should fail with an error %v, but got %v", ErrIllegalInitialCapacity, err)
+	_, err = NewBuilder[int, int](capacity).InitialCapacity(-2).Build()
+	if err == nil {
+		t.Fatalf("should fail with an error")
 	}
 
-	_, err = MustBuilder[int, int](capacity).WithTTL(time.Hour).InitialCapacity(0).Build()
-	if err == nil || !errors.Is(err, ErrIllegalInitialCapacity) {
-		t.Fatalf("should fail with an error %v, but got %v", ErrIllegalInitialCapacity, err)
+	_, err = NewBuilder[int, int](capacity).WithTTL(time.Hour).InitialCapacity(0).Build()
+	if err == nil {
+		t.Fatalf("should fail with an error")
 	}
 
-	_, err = MustBuilder[int, int](capacity).WithVariableTTL().InitialCapacity(-5).Build()
-	if err == nil || !errors.Is(err, ErrIllegalInitialCapacity) {
-		t.Fatalf("should fail with an error %v, but got %v", ErrIllegalInitialCapacity, err)
+	_, err = NewBuilder[int, int](capacity).WithVariableTTL().InitialCapacity(-5).Build()
+	if err == nil {
+		t.Fatalf("should fail with an error")
 	}
 
 	// nil weigher
-	_, err = MustBuilder[int, int](capacity).Weigher(nil).Build()
-	if err == nil || !errors.Is(err, ErrNilWeigher) {
-		t.Fatalf("should fail with an error %v, but got %v", ErrNilWeigher, err)
+	_, err = NewBuilder[int, int](capacity).Weigher(nil).Build()
+	if err == nil {
+		t.Fatalf("should fail with an error")
 	}
 }
 
 func TestBuilder_BuildSuccess(t *testing.T) {
-	b := MustBuilder[int, int](10)
-
-	_, err := b.InitialCapacity(unsetCapacity).Build()
-	if err != nil {
-		t.Fatalf("builded cache with error: %v", err)
-	}
-
-	c, err := b.
+	_, err := NewBuilder[int, int](10).
 		CollectStats().
 		InitialCapacity(10).
 		Weigher(func(key int, value int) uint32 {
 			return 2
-		}).Build()
+		}).
+		WithTTL(time.Hour).
+		Build()
 	if err != nil {
 		t.Fatalf("builded cache with error: %v", err)
-	}
-
-	if !reflect.DeepEqual(reflect.TypeOf(Cache[int, int]{}), reflect.TypeOf(c)) {
-		t.Fatalf("builder returned a different type of cache: %v", err)
-	}
-
-	cc, err := b.WithTTL(time.Minute).CollectStats().Weigher(func(key int, value int) uint32 {
-		return 2
-	}).DeletionListener(func(key int, value int, cause DeletionCause) {
-		fmt.Println("const ttl")
-	}).Build()
-	if err != nil {
-		t.Fatalf("builded cache with error: %v", err)
-	}
-
-	if !reflect.DeepEqual(reflect.TypeOf(Cache[int, int]{}), reflect.TypeOf(cc)) {
-		t.Fatalf("builder returned a different type of cache: %v", err)
-	}
-
-	cv, err := b.WithVariableTTL().CollectStats().Weigher(func(key int, value int) uint32 {
-		return 2
-	}).DeletionListener(func(key int, value int, cause DeletionCause) {
-		fmt.Println("variable ttl")
-	}).Build()
-	if err != nil {
-		t.Fatalf("builded cache with error: %v", err)
-	}
-
-	if !reflect.DeepEqual(reflect.TypeOf(CacheWithVariableTTL[int, int]{}), reflect.TypeOf(cv)) {
-		t.Fatalf("builder returned a different type of cache: %v", err)
 	}
 }
