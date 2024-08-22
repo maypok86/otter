@@ -36,7 +36,7 @@ Otter is one of the most powerful caching libraries for Go based on researches i
 - **Autoconfiguration**: Otter is automatically configured based on the parallelism of your application
 - **Generics**: You can safely use any comparable types as keys and any types as values
 - **TTL**: Expired values will be automatically deleted from the cache
-- **Cost-based eviction**: Otter supports eviction based on the cost of each entry
+- **Weight-based eviction**: Otter supports eviction based on the weight of each entry
 - **Deletion listener**: You can pass a callback function in the builder that will be called when an entry is deleted from the cache
 - **Stats**: You can collect various usage statistics
 - **Excellent throughput**: Otter can handle a [huge number of requests](#throughput)
@@ -74,14 +74,14 @@ import (
     "fmt"
     "time"
 
-    "github.com/maypok86/otter"
+    "github.com/maypok86/otter/v2"
 )
 
 func main() {
     // create a cache with capacity equal to 10000 elements
     cache, err := otter.MustBuilder[string, string](10_000).
         CollectStats().
-        Cost(func(key string, value string) uint32 {
+        Weigher(func(key string, value string) uint32 {
             return 1
         }).
         WithTTL(time.Hour).
@@ -116,14 +116,14 @@ import (
     "fmt"
     "time"
 
-    "github.com/maypok86/otter"
+    "github.com/maypok86/otter/v2"
 )
 
 func main() {
     // create a cache with capacity equal to 10000 elements
     cache, err := otter.MustBuilder[string, string](10_000).
         CollectStats().
-        Cost(func(key string, value string) uint32 {
+        Weigher(func(key string, value string) uint32 {
             return 1
         }).
         WithVariableTTL().

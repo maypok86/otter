@@ -21,29 +21,29 @@ import (
 // Policy is an eviction policy based on S3-FIFO eviction algorithm
 // from the following paper: https://dl.acm.org/doi/10.1145/3600006.3613147.
 type Policy[K comparable, V any] struct {
-	small                *small[K, V]
-	main                 *main[K, V]
-	ghost                *ghost[K, V]
-	maxCost              int
-	maxAvailableNodeCost int
+	small                  *small[K, V]
+	main                   *main[K, V]
+	ghost                  *ghost[K, V]
+	maxWeight              int
+	maxAvailableNodeWeight int
 }
 
 // NewPolicy creates a new Policy.
-func NewPolicy[K comparable, V any](maxCost int, evictNode func(node.Node[K, V])) *Policy[K, V] {
-	smallMaxCost := maxCost / 10
-	mainMaxCost := maxCost - smallMaxCost
+func NewPolicy[K comparable, V any](maxWeight int, evictNode func(node.Node[K, V])) *Policy[K, V] {
+	smallMaxWeight := maxWeight / 10
+	mainMaxWeight := maxWeight - smallMaxWeight
 
-	main := newMain[K, V](mainMaxCost, evictNode)
+	main := newMain[K, V](mainMaxWeight, evictNode)
 	ghost := newGhost(main, evictNode)
-	small := newSmall(smallMaxCost, main, ghost, evictNode)
+	small := newSmall(smallMaxWeight, main, ghost, evictNode)
 	ghost.small = small
 
 	return &Policy[K, V]{
-		small:                small,
-		main:                 main,
-		ghost:                ghost,
-		maxCost:              maxCost,
-		maxAvailableNodeCost: smallMaxCost,
+		small:                  small,
+		main:                   main,
+		ghost:                  ghost,
+		maxWeight:              maxWeight,
+		maxAvailableNodeWeight: smallMaxWeight,
 	}
 }
 
@@ -69,7 +69,7 @@ func (p *Policy[K, V]) Add(n node.Node[K, V]) {
 }
 
 func (p *Policy[K, V]) evict() {
-	if p.small.cost >= p.maxCost/10 {
+	if p.small.weight >= p.maxWeight/10 {
 		p.small.evict()
 		return
 	}
@@ -78,7 +78,7 @@ func (p *Policy[K, V]) evict() {
 }
 
 func (p *Policy[K, V]) isFull() bool {
-	return p.small.cost+p.main.cost > p.maxCost
+	return p.small.weight+p.main.weight > p.maxWeight
 }
 
 // Delete deletes node from the eviction policy.
@@ -93,9 +93,9 @@ func (p *Policy[K, V]) Delete(n node.Node[K, V]) {
 	}
 }
 
-// MaxAvailableCost returns the maximum available cost of the node.
-func (p *Policy[K, V]) MaxAvailableCost() int {
-	return p.maxAvailableNodeCost
+// MaxAvailableWeight returns the maximum available weight of the node.
+func (p *Policy[K, V]) MaxAvailableWeight() int {
+	return p.maxAvailableNodeWeight
 }
 
 // Clear clears the eviction policy and returns it to the default state.

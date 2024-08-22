@@ -94,8 +94,8 @@ func TestPolicy_OneHitWonders(t *testing.T) {
 		p.Delete(n)
 	}
 
-	if p.small.cost+p.main.cost != 0 {
-		t.Fatalf("queues should be empty, but small size: %d, main size: %d", p.small.cost, p.main.cost)
+	if p.small.weight+p.main.weight != 0 {
+		t.Fatalf("queues should be empty, but small size: %d, main size: %d", p.small.weight, p.main.weight)
 	}
 }
 
@@ -110,8 +110,8 @@ func TestPolicy_Update(t *testing.T) {
 	})
 
 	n := newNode(1)
-	m := node.NewManager[int, int](node.Config{WithCost: true})
-	n1 := m.Create(1, 1, 0, n.Cost()+8)
+	m := node.NewManager[int, int](node.Config{WithWeight: true})
+	n1 := m.Create(1, 1, 0, n.Weight()+8)
 
 	p.Add(n)
 	p.Delete(n)

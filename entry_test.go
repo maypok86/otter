@@ -23,12 +23,12 @@ func TestEntry(t *testing.T) {
 	k := 2
 	v := 3
 	exp := int64(0)
-	c := uint32(5)
+	w := uint32(5)
 	e := Entry[int, int]{
 		key:        k,
 		value:      v,
 		expiration: exp,
-		cost:       c,
+		weight:     w,
 	}
 
 	if e.Key() != k {
@@ -37,8 +37,8 @@ func TestEntry(t *testing.T) {
 	if e.Value() != v {
 		t.Fatalf("not valid value. want %d, got %d", v, e.Value())
 	}
-	if e.Cost() != c {
-		t.Fatalf("not valid cost. want %d, got %d", c, e.Cost())
+	if e.Weight() != w {
+		t.Fatalf("not valid weight. want %d, got %d", w, e.Weight())
 	}
 	if e.Expiration() != exp {
 		t.Fatalf("not valid expiration. want %d, got %d", exp, e.Expiration())

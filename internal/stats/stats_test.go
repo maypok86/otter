@@ -45,7 +45,7 @@ func TestStats_Nil(t *testing.T) {
 		s.IncRejectedSets,
 		s.IncEvictedCount,
 		func() {
-			s.AddEvictedCost(1)
+			s.AddEvictedWeight(1)
 		},
 		s.IncHits,
 		s.IncMisses,
@@ -57,7 +57,7 @@ func TestStats_Nil(t *testing.T) {
 		s.Misses,
 		s.RejectedSets,
 		s.EvictedCount,
-		s.EvictedCost,
+		s.EvictedWeight,
 	} {
 		if expected != f() {
 			t.Fatalf("hits and misses for nil stats should always be %d", expected)
@@ -122,7 +122,7 @@ func TestStats_EvictedCount(t *testing.T) {
 	}
 }
 
-func TestStats_EvictedCost(t *testing.T) {
+func TestStats_EvictedWeight(t *testing.T) {
 	expected := generateCount(t)
 
 	s := New()
@@ -133,12 +133,12 @@ func TestStats_EvictedCost(t *testing.T) {
 			add = 1
 		}
 		k += int64(add)
-		s.AddEvictedCost(uint32(add))
+		s.AddEvictedWeight(uint32(add))
 	}
 
-	evictedCost := s.EvictedCost()
-	if expected != evictedCost {
-		t.Fatalf("sum of costs of evicted entries should be %d, but got %d", expected, evictedCost)
+	evictedWeight := s.EvictedWeight()
+	if expected != evictedWeight {
+		t.Fatalf("sum of weights of evicted entries should be %d, but got %d", expected, evictedWeight)
 	}
 }
 

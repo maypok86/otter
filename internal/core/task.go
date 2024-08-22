@@ -31,7 +31,7 @@ const (
 )
 
 // task is a set of information to update the cache:
-// node, reason for write, difference after node cost change, etc.
+// node, reason for write, difference after node weight change, etc.
 type task[K comparable, V any] struct {
 	n           node.Node[K, V]
 	old         node.Node[K, V]

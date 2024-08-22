@@ -95,8 +95,8 @@ type Config[K comparable, V any] struct {
 	StatsEnabled     bool
 	TTL              *time.Duration
 	WithVariableTTL  bool
-	CostFunc         func(key K, value V) uint32
-	WithCost         bool
+	Weigher          func(key K, value V) uint32
+	WithWeight       bool
 	DeletionListener func(key K, value V, cause DeletionCause)
 }
 
@@ -120,7 +120,7 @@ type Cache[K comparable, V any] struct {
 	evictionMutex    sync.Mutex
 	closeOnce        sync.Once
 	doneClear        chan struct{}
-	costFunc         func(key K, value V) uint32
+	weigher          func(key K, value V) uint32
 	deletionListener func(key K, value V, cause DeletionCause)
 	capacity         int
 	mask             uint32
@@ -133,7 +133,7 @@ type Cache[K comparable, V any] struct {
 func NewCache[K comparable, V any](c Config[K, V]) *Cache[K, V] {
 	nodeManager := node.NewManager[K, V](node.Config{
 		WithExpiration: c.TTL != nil || c.WithVariableTTL,
-		WithCost:       c.WithCost,
+		WithWeight:     c.WithWeight,
 	})
 
 	stripedBuffer := make([]*lossy.Buffer[K, V], 0, maxStripedBufferSize)
@@ -155,7 +155,7 @@ func NewCache[K comparable, V any](c Config[K, V]) *Cache[K, V] {
 		writeBuffer:      queue.NewGrowable[task[K, V]](minWriteBufferSize, maxWriteBufferSize),
 		doneClear:        make(chan struct{}),
 		mask:             uint32(maxStripedBufferSize - 1),
-		costFunc:         c.CostFunc,
+		weigher:          c.Weigher,
 		deletionListener: c.DeletionListener,
 		capacity:         c.Capacity,
 	}
@@ -262,7 +262,7 @@ func (c *Cache[K, V]) afterGet(got node.Node[K, V]) {
 
 // Set associates the value with the key in this cache.
 //
-// If it returns false, then the key-value item had too much cost and the Set was dropped.
+// If it returns false, then the key-value item had too much weight and the Set was dropped.
 func (c *Cache[K, V]) Set(key K, value V) bool {
 	return c.set(key, value, c.defaultExpiration(), false)
 }
@@ -277,7 +277,7 @@ func (c *Cache[K, V]) defaultExpiration() uint32 {
 
 // SetWithTTL associates the value with the key in this cache and sets the custom ttl for this key-value item.
 //
-// If it returns false, then the key-value item had too much cost and the SetWithTTL was dropped.
+// If it returns false, then the key-value item had too much weight and the SetWithTTL was dropped.
 func (c *Cache[K, V]) SetWithTTL(key K, value V, ttl time.Duration) bool {
 	return c.set(key, value, getExpiration(ttl), false)
 }
@@ -286,7 +286,7 @@ func (c *Cache[K, V]) SetWithTTL(key K, value V, ttl time.Duration) bool {
 //
 // If the specified key is not already associated with a value, then it returns false.
 //
-// Also, it returns false if the key-value item had too much cost and the SetIfAbsent was dropped.
+// Also, it returns false if the key-value item had too much weight and the SetIfAbsent was dropped.
 func (c *Cache[K, V]) SetIfAbsent(key K, value V) bool {
 	return c.set(key, value, c.defaultExpiration(), true)
 }
@@ -296,19 +296,19 @@ func (c *Cache[K, V]) SetIfAbsent(key K, value V) bool {
 //
 // If the specified key is not already associated with a value, then it returns false.
 //
-// Also, it returns false if the key-value item had too much cost and the SetIfAbsent was dropped.
+// Also, it returns false if the key-value item had too much weight and the SetIfAbsent was dropped.
 func (c *Cache[K, V]) SetIfAbsentWithTTL(key K, value V, ttl time.Duration) bool {
 	return c.set(key, value, getExpiration(ttl), true)
 }
 
 func (c *Cache[K, V]) set(key K, value V, expiration uint32, onlyIfAbsent bool) bool {
-	cost := c.costFunc(key, value)
-	if int(cost) > c.policy.MaxAvailableCost() {
+	weight := c.weigher(key, value)
+	if int(weight) > c.policy.MaxAvailableWeight() {
 		c.stats.IncRejectedSets()
 		return false
 	}
 
-	n := c.nodeManager.Create(key, value, expiration, cost)
+	n := c.nodeManager.Create(key, value, expiration, weight)
 	if onlyIfAbsent {
 		res := c.hashmap.SetIfAbsent(n)
 		if res == nil {
@@ -404,7 +404,7 @@ func (c *Cache[K, V]) evictNode(n node.Node[K, V]) {
 		n.Die()
 		c.notifyDeletion(n.Key(), n.Value(), Size)
 		c.stats.IncEvictedCount()
-		c.stats.AddEvictedCost(n.Cost())
+		c.stats.AddEvictedWeight(n.Weight())
 	}
 }
 
