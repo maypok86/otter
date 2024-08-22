@@ -120,13 +120,13 @@ type Cache[K comparable, V any] struct {
 	evictionMutex    sync.Mutex
 	closeOnce        sync.Once
 	doneClear        chan struct{}
+	doneClose        chan struct{}
 	weigher          func(key K, value V) uint32
 	deletionListener func(key K, value V, cause DeletionCause)
 	capacity         int
 	mask             uint32
 	ttl              uint32
 	withExpiration   bool
-	isClosed         bool
 }
 
 // NewCache returns a new cache instance based on the settings from Config.
@@ -154,6 +154,7 @@ func NewCache[K comparable, V any](c Config[K, V]) *Cache[K, V] {
 		stripedBuffer:    stripedBuffer,
 		writeBuffer:      queue.NewGrowable[task[K, V]](minWriteBufferSize, maxWriteBufferSize),
 		doneClear:        make(chan struct{}),
+		doneClose:        make(chan struct{}, 1),
 		mask:             uint32(maxStripedBufferSize - 1),
 		weigher:          c.Weigher,
 		deletionListener: c.DeletionListener,
@@ -382,18 +383,17 @@ func (c *Cache[K, V]) deleteExpiredNode(n node.Node[K, V]) {
 }
 
 func (c *Cache[K, V]) cleanup() {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
 	for {
-		time.Sleep(time.Second)
-
-		c.evictionMutex.Lock()
-		if c.isClosed {
-			c.evictionMutex.Unlock()
+		select {
+		case <-c.doneClose:
 			return
+		case <-ticker.C:
+			c.evictionMutex.Lock()
+			c.expiryPolicy.DeleteExpired()
+			c.evictionMutex.Unlock()
 		}
-
-		c.expiryPolicy.DeleteExpired()
-
-		c.evictionMutex.Unlock()
 	}
 }
 
@@ -414,10 +414,10 @@ func (c *Cache[K, V]) onWrite(t task[K, V]) {
 
 		c.policy.Clear()
 		c.expiryPolicy.Clear()
-		if t.isClose() {
-			c.isClosed = true
-		}
 
+		if t.isClose() {
+			c.doneClose <- struct{}{}
+		}
 		c.doneClear <- struct{}{}
 		return
 	}

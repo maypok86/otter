@@ -95,17 +95,11 @@ func TestCache_Close(t *testing.T) {
 	if cacheSize := c.Size(); cacheSize != 0 {
 		t.Fatalf("c.Size() = %d, want = %d", cacheSize, 0)
 	}
-	if !c.isClosed {
-		t.Fatalf("cache should be closed")
-	}
 
 	c.Close()
 
 	if cacheSize := c.Size(); cacheSize != 0 {
 		t.Fatalf("c.Size() = %d, want = %d", cacheSize, 0)
-	}
-	if !c.isClosed {
-		t.Fatalf("cache should be closed")
 	}
 }
 
@@ -132,8 +126,5 @@ func TestCache_Clear(t *testing.T) {
 
 	if cacheSize := c.Size(); cacheSize != 0 {
 		t.Fatalf("c.Size() = %d, want = %d", cacheSize, 0)
-	}
-	if c.isClosed {
-		t.Fatalf("cache shouldn't be closed")
 	}
 }
