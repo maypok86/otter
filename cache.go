@@ -1,4 +1,4 @@
-// Copyright (c) 2024 Alexey Mayshev. All rights reserved.
+// Copyright (c) 2023 Alexey Mayshev. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,151 +15,516 @@
 package otter
 
 import (
+	"sync"
 	"time"
 
-	"github.com/maypok86/otter/v2/internal/core"
+	"github.com/maypok86/otter/v2/internal/expiry"
+	"github.com/maypok86/otter/v2/internal/generated/node"
+	"github.com/maypok86/otter/v2/internal/hashtable"
+	"github.com/maypok86/otter/v2/internal/lossy"
+	"github.com/maypok86/otter/v2/internal/queue"
+	"github.com/maypok86/otter/v2/internal/s3fifo"
+	"github.com/maypok86/otter/v2/internal/stats"
+	"github.com/maypok86/otter/v2/internal/unixtime"
+	"github.com/maypok86/otter/v2/internal/xmath"
+	"github.com/maypok86/otter/v2/internal/xruntime"
 )
 
 // DeletionCause the cause why a cached entry was deleted.
-type DeletionCause = core.DeletionCause
+type DeletionCause uint8
 
 const (
 	// Explicit the entry was manually deleted by the user.
-	Explicit = core.Explicit
+	Explicit DeletionCause = iota
 	// Replaced the entry itself was not actually deleted, but its value was replaced by the user.
-	Replaced = core.Replaced
+	Replaced
 	// Size the entry was evicted due to size constraints.
-	Size = core.Size
+	Size
 	// Expired the entry's expiration timestamp has passed.
-	Expired = core.Expired
+	Expired
 )
 
-type baseCache[K comparable, V any] struct {
-	cache *core.Cache[K, V]
-}
-
-func newBaseCache[K comparable, V any](c core.Config[K, V]) baseCache[K, V] {
-	return baseCache[K, V]{
-		cache: core.NewCache(c),
+func (dc DeletionCause) String() string {
+	switch dc {
+	case Explicit:
+		return "Explicit"
+	case Replaced:
+		return "Replaced"
+	case Size:
+		return "Size"
+	case Expired:
+		return "Expired"
+	default:
+		panic("unknown deletion cause")
 	}
 }
 
-// Has checks if there is an entry with the given key in the cache.
-func (bs baseCache[K, V]) Has(key K) bool {
-	return bs.cache.Has(key)
+const (
+	minWriteBufferSize uint32 = 4
+)
+
+var (
+	maxWriteBufferSize   uint32
+	maxStripedBufferSize int
+)
+
+func init() {
+	parallelism := xruntime.Parallelism()
+	roundedParallelism := int(xmath.RoundUpPowerOf2(parallelism))
+	maxWriteBufferSize = uint32(128 * roundedParallelism)
+	maxStripedBufferSize = 4 * roundedParallelism
 }
 
-// Get returns the value associated with the key in this cache.
-func (bs baseCache[K, V]) Get(key K) (V, bool) {
-	return bs.cache.Get(key)
+func getTTL(ttl time.Duration) uint32 {
+	return uint32((ttl + time.Second - 1) / time.Second)
 }
 
-// Delete removes the association for this key from the cache.
-func (bs baseCache[K, V]) Delete(key K) {
-	bs.cache.Delete(key)
+func getExpiration(ttl time.Duration) uint32 {
+	return unixtime.Now() + getTTL(ttl)
 }
 
-// DeleteByFunc removes the association for this key from the cache when the given function returns true.
-func (bs baseCache[K, V]) DeleteByFunc(f func(key K, value V) bool) {
-	bs.cache.DeleteByFunc(f)
+// config is a set of cache settings.
+type config[K comparable, V any] struct {
+	capacity         int
+	initialCapacity  *int
+	statsEnabled     bool
+	ttl              *time.Duration
+	withVariableTTL  bool
+	weigher          func(key K, value V) uint32
+	withWeight       bool
+	deletionListener func(key K, value V, cause DeletionCause)
 }
 
-// Range iterates over all entries in the cache.
-//
-// Iteration stops early when the given function returns false.
-func (bs baseCache[K, V]) Range(f func(key K, value V) bool) {
-	bs.cache.Range(f)
-}
-
-// Clear clears the hash table, all policies, buffers, etc.
-//
-// NOTE: this operation must be performed when no requests are made to the cache otherwise the behavior is undefined.
-func (bs baseCache[K, V]) Clear() {
-	bs.cache.Clear()
-}
-
-// Close clears the hash table, all policies, buffers, etc and stop all goroutines.
-//
-// NOTE: this operation must be performed when no requests are made to the cache otherwise the behavior is undefined.
-func (bs baseCache[K, V]) Close() {
-	bs.cache.Close()
-}
-
-// Size returns the current number of entries in the cache.
-func (bs baseCache[K, V]) Size() int {
-	return bs.cache.Size()
-}
-
-// Capacity returns the cache capacity.
-func (bs baseCache[K, V]) Capacity() int {
-	return bs.cache.Capacity()
-}
-
-// Stats returns a current snapshot of this cache's cumulative statistics.
-func (bs baseCache[K, V]) Stats() Stats {
-	return newStats(bs.cache.Stats())
-}
-
-// Extension returns access to inspect and perform low-level operations on this cache based on its runtime
-// characteristics. These operations are optional and dependent on how the cache was constructed
-// and what abilities the implementation exposes.
-func (bs baseCache[K, V]) Extension() Extension[K, V] {
-	return newExtension(bs.cache)
+type expiryPolicy[K comparable, V any] interface {
+	Add(n node.Node[K, V])
+	Delete(n node.Node[K, V])
+	DeleteExpired()
+	Clear()
 }
 
 // Cache is a structure performs a best-effort bounding of a hash table using eviction algorithm
 // to determine which entries to evict when the capacity is exceeded.
 type Cache[K comparable, V any] struct {
-	baseCache[K, V]
+	nodeManager      *node.Manager[K, V]
+	hashmap          *hashtable.Map[K, V]
+	policy           *s3fifo.Policy[K, V]
+	expiryPolicy     expiryPolicy[K, V]
+	stats            *stats.Stats
+	stripedBuffer    []*lossy.Buffer[K, V]
+	writeBuffer      *queue.Growable[task[K, V]]
+	evictionMutex    sync.Mutex
+	closeOnce        sync.Once
+	doneClear        chan struct{}
+	doneClose        chan struct{}
+	weigher          func(key K, value V) uint32
+	deletionListener func(key K, value V, cause DeletionCause)
+	capacity         int
+	mask             uint32
+	ttl              uint32
+	withExpiration   bool
 }
 
-func newCache[K comparable, V any](c core.Config[K, V]) Cache[K, V] {
-	return Cache[K, V]{
-		baseCache: newBaseCache(c),
+// newCache returns a new cache instance based on the settings from Config.
+func newCache[K comparable, V any](b *Builder[K, V]) *Cache[K, V] {
+	nodeManager := node.NewManager[K, V](node.Config{
+		WithExpiration: b.ttl != nil || b.withVariableTTL,
+		WithWeight:     b.withWeight,
+	})
+
+	stripedBuffer := make([]*lossy.Buffer[K, V], 0, maxStripedBufferSize)
+	for i := 0; i < maxStripedBufferSize; i++ {
+		stripedBuffer = append(stripedBuffer, lossy.New[K, V](nodeManager))
+	}
+
+	var hashmap *hashtable.Map[K, V]
+	if b.initialCapacity == nil {
+		hashmap = hashtable.New[K, V](nodeManager)
+	} else {
+		hashmap = hashtable.NewWithSize[K, V](nodeManager, *b.initialCapacity)
+	}
+
+	cache := &Cache[K, V]{
+		nodeManager:      nodeManager,
+		hashmap:          hashmap,
+		stripedBuffer:    stripedBuffer,
+		writeBuffer:      queue.NewGrowable[task[K, V]](minWriteBufferSize, maxWriteBufferSize),
+		doneClear:        make(chan struct{}),
+		doneClose:        make(chan struct{}, 1),
+		mask:             uint32(maxStripedBufferSize - 1),
+		weigher:          b.weigher,
+		deletionListener: b.deletionListener,
+		capacity:         *b.capacity,
+	}
+
+	cache.policy = s3fifo.NewPolicy(*b.capacity, cache.evictNode)
+
+	switch {
+	case b.ttl != nil:
+		cache.expiryPolicy = expiry.NewFixed[K, V](cache.deleteExpiredNode)
+	case b.withVariableTTL:
+		cache.expiryPolicy = expiry.NewVariable[K, V](nodeManager, cache.deleteExpiredNode)
+	default:
+		cache.expiryPolicy = expiry.NewDisabled[K, V]()
+	}
+
+	if b.statsEnabled {
+		cache.stats = stats.New()
+	}
+	if b.ttl != nil {
+		cache.ttl = getTTL(*b.ttl)
+	}
+
+	cache.withExpiration = b.ttl != nil || b.withVariableTTL
+
+	if cache.withExpiration {
+		unixtime.Start()
+		go cache.cleanup()
+	}
+
+	go cache.process()
+
+	return cache
+}
+
+func (c *Cache[K, V]) getReadBufferIdx() int {
+	return int(xruntime.Fastrand() & c.mask)
+}
+
+// Has checks if there is an item with the given key in the cache.
+func (c *Cache[K, V]) Has(key K) bool {
+	_, ok := c.Get(key)
+	return ok
+}
+
+// Get returns the value associated with the key in this cache.
+func (c *Cache[K, V]) Get(key K) (V, bool) {
+	n, ok := c.GetNode(key)
+	if !ok {
+		return zeroValue[V](), false
+	}
+
+	return n.Value(), true
+}
+
+// GetNode returns the node associated with the key in this cache.
+func (c *Cache[K, V]) GetNode(key K) (node.Node[K, V], bool) {
+	n, ok := c.hashmap.Get(key)
+	if !ok || !n.IsAlive() {
+		c.stats.IncMisses()
+		return nil, false
+	}
+
+	if n.HasExpired() {
+		// avoid duplicate push
+		deleted := c.hashmap.DeleteNode(n)
+		if deleted != nil {
+			n.Die()
+			c.writeBuffer.Push(newExpiredTask(n))
+		}
+		c.stats.IncMisses()
+		return nil, false
+	}
+
+	c.afterGet(n)
+	c.stats.IncHits()
+
+	return n, true
+}
+
+// GetNodeQuietly returns the node associated with the key in this cache.
+//
+// Unlike GetNode, this function does not produce any side effects
+// such as updating statistics or the eviction policy.
+func (c *Cache[K, V]) GetNodeQuietly(key K) (node.Node[K, V], bool) {
+	n, ok := c.hashmap.Get(key)
+	if !ok || !n.IsAlive() || n.HasExpired() {
+		return nil, false
+	}
+
+	return n, true
+}
+
+func (c *Cache[K, V]) afterGet(got node.Node[K, V]) {
+	idx := c.getReadBufferIdx()
+	pb := c.stripedBuffer[idx].Add(got)
+	if pb != nil {
+		c.evictionMutex.Lock()
+		c.policy.Read(pb.Returned)
+		c.evictionMutex.Unlock()
+
+		c.stripedBuffer[idx].Free()
 	}
 }
 
 // Set associates the value with the key in this cache.
 //
-// If it returns false, then the key-value pair had too much weight and the Set was dropped.
-func (c Cache[K, V]) Set(key K, value V) bool {
-	return c.cache.Set(key, value)
+// If it returns false, then the key-value item had too much weight and the Set was dropped.
+func (c *Cache[K, V]) Set(key K, value V) bool {
+	return c.set(key, value, c.defaultExpiration(), false)
+}
+
+func (c *Cache[K, V]) defaultExpiration() uint32 {
+	if c.ttl == 0 {
+		return 0
+	}
+
+	return unixtime.Now() + c.ttl
+}
+
+// SetWithTTL associates the value with the key in this cache and sets the custom ttl for this key-value item.
+//
+// If it returns false, then the key-value item had too much weight and the SetWithTTL was dropped.
+func (c *Cache[K, V]) SetWithTTL(key K, value V, ttl time.Duration) bool {
+	return c.set(key, value, getExpiration(ttl), false)
 }
 
 // SetIfAbsent if the specified key is not already associated with a value associates it with the given value.
 //
 // If the specified key is not already associated with a value, then it returns false.
 //
-// Also, it returns false if the key-value pair had too much weight and the SetIfAbsent was dropped.
-func (c Cache[K, V]) SetIfAbsent(key K, value V) bool {
-	return c.cache.SetIfAbsent(key, value)
+// Also, it returns false if the key-value item had too much weight and the SetIfAbsent was dropped.
+func (c *Cache[K, V]) SetIfAbsent(key K, value V) bool {
+	return c.set(key, value, c.defaultExpiration(), true)
 }
 
-// CacheWithVariableTTL is a structure performs a best-effort bounding of a hash table using eviction algorithm
-// to determine which entries to evict when the capacity is exceeded.
-type CacheWithVariableTTL[K comparable, V any] struct {
-	baseCache[K, V]
-}
-
-func newCacheWithVariableTTL[K comparable, V any](c core.Config[K, V]) CacheWithVariableTTL[K, V] {
-	return CacheWithVariableTTL[K, V]{
-		baseCache: newBaseCache(c),
-	}
-}
-
-// Set associates the value with the key in this cache and sets the custom ttl for this key-value pair.
-//
-// If it returns false, then the key-value pair had too much weight and the Set was dropped.
-func (c CacheWithVariableTTL[K, V]) Set(key K, value V, ttl time.Duration) bool {
-	return c.cache.SetWithTTL(key, value, ttl)
-}
-
-// SetIfAbsent if the specified key is not already associated with a value associates it with the given value
-// and sets the custom ttl for this key-value pair.
+// SetIfAbsentWithTTL if the specified key is not already associated with a value associates it with the given value
+// and sets the custom ttl for this key-value item.
 //
 // If the specified key is not already associated with a value, then it returns false.
 //
-// Also, it returns false if the key-value pair had too much weight and the SetIfAbsent was dropped.
-func (c CacheWithVariableTTL[K, V]) SetIfAbsent(key K, value V, ttl time.Duration) bool {
-	return c.cache.SetIfAbsentWithTTL(key, value, ttl)
+// Also, it returns false if the key-value item had too much weight and the SetIfAbsent was dropped.
+func (c *Cache[K, V]) SetIfAbsentWithTTL(key K, value V, ttl time.Duration) bool {
+	return c.set(key, value, getExpiration(ttl), true)
+}
+
+func (c *Cache[K, V]) set(key K, value V, expiration uint32, onlyIfAbsent bool) bool {
+	weight := c.weigher(key, value)
+	if int(weight) > c.policy.MaxAvailableWeight() {
+		c.stats.IncRejectedSets()
+		return false
+	}
+
+	n := c.nodeManager.Create(key, value, expiration, weight)
+	if onlyIfAbsent {
+		res := c.hashmap.SetIfAbsent(n)
+		if res == nil {
+			// insert
+			c.writeBuffer.Push(newAddTask(n))
+			return true
+		}
+		c.stats.IncRejectedSets()
+		return false
+	}
+
+	evicted := c.hashmap.Set(n)
+	if evicted != nil {
+		// update
+		evicted.Die()
+		c.writeBuffer.Push(newUpdateTask(n, evicted))
+	} else {
+		// insert
+		c.writeBuffer.Push(newAddTask(n))
+	}
+
+	return true
+}
+
+// Delete deletes the association for this key from the cache.
+func (c *Cache[K, V]) Delete(key K) {
+	c.afterDelete(c.hashmap.Delete(key))
+}
+
+func (c *Cache[K, V]) deleteNode(n node.Node[K, V]) {
+	c.afterDelete(c.hashmap.DeleteNode(n))
+}
+
+func (c *Cache[K, V]) afterDelete(deleted node.Node[K, V]) {
+	if deleted != nil {
+		deleted.Die()
+		c.writeBuffer.Push(newDeleteTask(deleted))
+	}
+}
+
+// DeleteByFunc deletes the association for this key from the cache when the given function returns true.
+func (c *Cache[K, V]) DeleteByFunc(f func(key K, value V) bool) {
+	c.hashmap.Range(func(n node.Node[K, V]) bool {
+		if !n.IsAlive() || n.HasExpired() {
+			return true
+		}
+
+		if f(n.Key(), n.Value()) {
+			c.deleteNode(n)
+		}
+
+		return true
+	})
+}
+
+func (c *Cache[K, V]) notifyDeletion(key K, value V, cause DeletionCause) {
+	if c.deletionListener == nil {
+		return
+	}
+
+	c.deletionListener(key, value, cause)
+}
+
+func (c *Cache[K, V]) deleteExpiredNode(n node.Node[K, V]) {
+	c.policy.Delete(n)
+	deleted := c.hashmap.DeleteNode(n)
+	if deleted != nil {
+		n.Die()
+		c.notifyDeletion(n.Key(), n.Value(), Expired)
+	}
+}
+
+func (c *Cache[K, V]) cleanup() {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-c.doneClose:
+			return
+		case <-ticker.C:
+			c.evictionMutex.Lock()
+			c.expiryPolicy.DeleteExpired()
+			c.evictionMutex.Unlock()
+		}
+	}
+}
+
+func (c *Cache[K, V]) evictNode(n node.Node[K, V]) {
+	c.expiryPolicy.Delete(n)
+	deleted := c.hashmap.DeleteNode(n)
+	if deleted != nil {
+		n.Die()
+		c.notifyDeletion(n.Key(), n.Value(), Size)
+		c.stats.IncEvictedCount()
+		c.stats.AddEvictedWeight(n.Weight())
+	}
+}
+
+func (c *Cache[K, V]) onWrite(t task[K, V]) {
+	if t.isClear() || t.isClose() {
+		c.writeBuffer.Clear()
+
+		c.policy.Clear()
+		c.expiryPolicy.Clear()
+
+		if t.isClose() {
+			c.doneClose <- struct{}{}
+		}
+		c.doneClear <- struct{}{}
+		return
+	}
+
+	n := t.node()
+	switch {
+	case t.isAdd():
+		if n.IsAlive() {
+			c.expiryPolicy.Add(n)
+			c.policy.Add(n)
+		}
+	case t.isUpdate():
+		oldNode := t.oldNode()
+		c.expiryPolicy.Delete(oldNode)
+		c.policy.Delete(oldNode)
+		if n.IsAlive() {
+			c.expiryPolicy.Add(n)
+			c.policy.Add(n)
+		}
+		c.notifyDeletion(oldNode.Key(), oldNode.Value(), Replaced)
+	case t.isDelete():
+		c.expiryPolicy.Delete(n)
+		c.policy.Delete(n)
+		c.notifyDeletion(n.Key(), n.Value(), Explicit)
+	case t.isExpired():
+		c.expiryPolicy.Delete(n)
+		c.policy.Delete(n)
+		c.notifyDeletion(n.Key(), n.Value(), Expired)
+	}
+}
+
+func (c *Cache[K, V]) process() {
+	for {
+		t := c.writeBuffer.Pop()
+
+		c.evictionMutex.Lock()
+		c.onWrite(t)
+		c.evictionMutex.Unlock()
+
+		if t.isClose() {
+			break
+		}
+	}
+}
+
+// Range iterates over all items in the cache.
+//
+// Iteration stops early when the given function returns false.
+func (c *Cache[K, V]) Range(f func(key K, value V) bool) {
+	c.hashmap.Range(func(n node.Node[K, V]) bool {
+		if !n.IsAlive() || n.HasExpired() {
+			return true
+		}
+
+		return f(n.Key(), n.Value())
+	})
+}
+
+// Clear clears the hash table, all policies, buffers, etc.
+//
+// NOTE: this operation must be performed when no requests are made to the cache otherwise the behavior is undefined.
+func (c *Cache[K, V]) Clear() {
+	c.clear(newClearTask[K, V]())
+}
+
+func (c *Cache[K, V]) clear(t task[K, V]) {
+	c.hashmap.Clear()
+	for i := 0; i < len(c.stripedBuffer); i++ {
+		c.stripedBuffer[i].Clear()
+	}
+
+	c.writeBuffer.Push(t)
+	<-c.doneClear
+
+	c.stats.Clear()
+}
+
+// Close clears the hash table, all policies, buffers, etc and stop all goroutines.
+//
+// NOTE: this operation must be performed when no requests are made to the cache otherwise the behavior is undefined.
+func (c *Cache[K, V]) Close() {
+	c.closeOnce.Do(func() {
+		c.clear(newCloseTask[K, V]())
+		if c.withExpiration {
+			unixtime.Stop()
+		}
+	})
+}
+
+// Size returns the current number of items in the cache.
+func (c *Cache[K, V]) Size() int {
+	return c.hashmap.Size()
+}
+
+// Capacity returns the cache capacity.
+func (c *Cache[K, V]) Capacity() int {
+	return c.capacity
+}
+
+// Stats returns a current snapshot of this cache's cumulative statistics.
+func (c *Cache[K, V]) Stats() Stats {
+	return newStats(c.stats)
+}
+
+// Extension returns access to inspect and perform low-level operations on this cache based on its runtime
+// characteristics. These operations are optional and dependent on how the cache was constructed
+// and what abilities the implementation exposes.
+func (c *Cache[K, V]) Extension() Extension[K, V] {
+	return newExtension(c)
+}
+
+// WithExpiration returns true if the cache was configured with the expiration policy enabled.
+func (c *Cache[K, V]) WithExpiration() bool {
+	return c.withExpiration
 }
