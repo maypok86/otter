@@ -24,7 +24,6 @@ import (
 	"github.com/maypok86/otter/v2/internal/lossy"
 	"github.com/maypok86/otter/v2/internal/queue"
 	"github.com/maypok86/otter/v2/internal/s3fifo"
-	"github.com/maypok86/otter/v2/internal/stats"
 	"github.com/maypok86/otter/v2/internal/unixtime"
 	"github.com/maypok86/otter/v2/internal/xmath"
 	"github.com/maypok86/otter/v2/internal/xruntime"
@@ -83,18 +82,6 @@ func getExpiration(ttl time.Duration) uint32 {
 	return unixtime.Now() + getTTL(ttl)
 }
 
-// config is a set of cache settings.
-type config[K comparable, V any] struct {
-	capacity         int
-	initialCapacity  *int
-	statsEnabled     bool
-	ttl              *time.Duration
-	withVariableTTL  bool
-	weigher          func(key K, value V) uint32
-	withWeight       bool
-	deletionListener func(key K, value V, cause DeletionCause)
-}
-
 type expiryPolicy[K comparable, V any] interface {
 	Add(n node.Node[K, V])
 	Delete(n node.Node[K, V])
@@ -109,7 +96,7 @@ type Cache[K comparable, V any] struct {
 	hashmap          *hashtable.Map[K, V]
 	policy           *s3fifo.Policy[K, V]
 	expiryPolicy     expiryPolicy[K, V]
-	stats            *stats.Stats
+	stats            statsCollector
 	stripedBuffer    []*lossy.Buffer[K, V]
 	writeBuffer      *queue.Growable[task[K, V]]
 	evictionMutex    sync.Mutex
@@ -146,6 +133,7 @@ func newCache[K comparable, V any](b *Builder[K, V]) *Cache[K, V] {
 	cache := &Cache[K, V]{
 		nodeManager:      nodeManager,
 		hashmap:          hashmap,
+		stats:            newStatsCollector(b.statsCollector),
 		stripedBuffer:    stripedBuffer,
 		writeBuffer:      queue.NewGrowable[task[K, V]](minWriteBufferSize, maxWriteBufferSize),
 		doneClear:        make(chan struct{}),
@@ -167,9 +155,6 @@ func newCache[K comparable, V any](b *Builder[K, V]) *Cache[K, V] {
 		cache.expiryPolicy = expiry.NewDisabled[K, V]()
 	}
 
-	if b.statsEnabled {
-		cache.stats = stats.New()
-	}
 	if b.ttl != nil {
 		cache.ttl = getTTL(*b.ttl)
 	}
@@ -210,7 +195,7 @@ func (c *Cache[K, V]) Get(key K) (V, bool) {
 func (c *Cache[K, V]) GetNode(key K) (node.Node[K, V], bool) {
 	n, ok := c.hashmap.Get(key)
 	if !ok || !n.IsAlive() {
-		c.stats.IncMisses()
+		c.stats.CollectMisses(1)
 		return nil, false
 	}
 
@@ -221,12 +206,12 @@ func (c *Cache[K, V]) GetNode(key K) (node.Node[K, V], bool) {
 			n.Die()
 			c.writeBuffer.Push(newExpiredTask(n))
 		}
-		c.stats.IncMisses()
+		c.stats.CollectMisses(1)
 		return nil, false
 	}
 
 	c.afterGet(n)
-	c.stats.IncHits()
+	c.stats.CollectHits(1)
 
 	return n, true
 }
@@ -300,7 +285,7 @@ func (c *Cache[K, V]) SetIfAbsentWithTTL(key K, value V, ttl time.Duration) bool
 func (c *Cache[K, V]) set(key K, value V, expiration uint32, onlyIfAbsent bool) bool {
 	weight := c.weigher(key, value)
 	if int(weight) > c.policy.MaxAvailableWeight() {
-		c.stats.IncRejectedSets()
+		c.stats.CollectRejectedSets(1)
 		return false
 	}
 
@@ -312,7 +297,6 @@ func (c *Cache[K, V]) set(key K, value V, expiration uint32, onlyIfAbsent bool) 
 			c.writeBuffer.Push(newAddTask(n))
 			return true
 		}
-		c.stats.IncRejectedSets()
 		return false
 	}
 
@@ -374,6 +358,7 @@ func (c *Cache[K, V]) deleteExpiredNode(n node.Node[K, V]) {
 	if deleted != nil {
 		n.Die()
 		c.notifyDeletion(n.Key(), n.Value(), Expired)
+		c.stats.CollectEviction(n.Weight())
 	}
 }
 
@@ -398,8 +383,7 @@ func (c *Cache[K, V]) evictNode(n node.Node[K, V]) {
 	if deleted != nil {
 		n.Die()
 		c.notifyDeletion(n.Key(), n.Value(), Size)
-		c.stats.IncEvictedCount()
-		c.stats.AddEvictedWeight(n.Weight())
+		c.stats.CollectEviction(n.Weight())
 	}
 }
 
@@ -486,8 +470,6 @@ func (c *Cache[K, V]) clear(t task[K, V]) {
 
 	c.writeBuffer.Push(t)
 	<-c.doneClear
-
-	c.stats.Clear()
 }
 
 // Close clears the hash table, all policies, buffers, etc and stop all goroutines.
@@ -510,11 +492,6 @@ func (c *Cache[K, V]) Size() int {
 // Capacity returns the cache capacity.
 func (c *Cache[K, V]) Capacity() int {
 	return c.capacity
-}
-
-// Stats returns a current snapshot of this cache's cumulative statistics.
-func (c *Cache[K, V]) Stats() Stats {
-	return newStats(c.stats)
 }
 
 // Extension returns access to inspect and perform low-level operations on this cache based on its runtime

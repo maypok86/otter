@@ -128,7 +128,7 @@ func TestStats(t *testing.T) {
 			23,
 			36,
 			19.0/36,
-			23/36,
+			0,
 		)
 	})
 

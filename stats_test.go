@@ -15,74 +15,23 @@
 package otter
 
 import (
-	"math"
 	"testing"
-	"unsafe"
+	"time"
 )
 
-func TestStats(t *testing.T) {
-	var s Stats
-	if s.Ratio() != 0.0 {
-		t.Fatalf("not valid hit ratio. want 0.0, got %.2f", s.Ratio())
-	}
+type testStatsCollector struct{}
 
-	expected := int64(math.MaxInt64)
+func (np testStatsCollector) CollectHits(count int)                     {}
+func (np testStatsCollector) CollectMisses(count int)                   {}
+func (np testStatsCollector) CollectEviction(weight uint32)             {}
+func (np testStatsCollector) CollectRejectedSets(count int)             {}
+func (np testStatsCollector) CollectLoadFailure(loadTime time.Duration) {}
+func (np testStatsCollector) CollectLoadSuccess(loadTime time.Duration) {}
 
-	s = Stats{
-		hits:          math.MaxInt64,
-		misses:        math.MaxInt64,
-		rejectedSets:  math.MaxInt64,
-		evictedCount:  math.MaxInt64,
-		evictedWeight: math.MaxInt64,
-	}
+func TestStatsCollector(t *testing.T) {
+	sc := newStatsCollector(testStatsCollector{})
 
-	if s.Hits() != expected {
-		t.Fatalf("not valid hits. want %d, got %d", expected, s.Hits())
-	}
-
-	if s.Misses() != expected {
-		t.Fatalf("not valid misses. want %d, got %d", expected, s.Misses())
-	}
-
-	if s.Ratio() != 1.0 {
-		t.Fatalf("not valid hit ratio. want 1.0, got %.2f", s.Ratio())
-	}
-
-	if s.RejectedSets() != expected {
-		t.Fatalf("not valid rejected sets. want %d, got %d", expected, s.RejectedSets())
-	}
-
-	if s.EvictedCount() != expected {
-		t.Fatalf("not valid evicted count. want %d, got %d", expected, s.EvictedCount())
-	}
-
-	if s.EvictedWeight() != expected {
-		t.Fatalf("not valid evicted weight. want %d, got %d", expected, s.EvictedWeight())
-	}
-}
-
-func TestCheckedAdd_Overflow(t *testing.T) {
-	if unsafe.Sizeof(t) != 8 {
-		t.Skip()
-	}
-
-	a := int64(math.MaxInt64)
-	b := int64(23)
-
-	if got := checkedAdd(a, b); got != math.MaxInt64 {
-		t.Fatalf("wrong overflow in checkedAdd. want %d, got %d", int64(math.MaxInt64), got)
-	}
-}
-
-func TestCheckedAdd_Underflow(t *testing.T) {
-	if unsafe.Sizeof(t) != 8 {
-		t.Skip()
-	}
-
-	a := int64(math.MinInt64 + 10)
-	b := int64(-23)
-
-	if got := checkedAdd(a, b); got != math.MinInt64 {
-		t.Fatalf("wrong underflow in checkedAdd. want %d, got %d", int64(math.MinInt64), got)
+	if _, ok := sc.(*statsCollectorComposition); !ok {
+		t.Fatalf("not valid for stats counter. got: %T", sc)
 	}
 }

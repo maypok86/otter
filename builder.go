@@ -23,7 +23,7 @@ import (
 type Builder[K comparable, V any] struct {
 	capacity         *int
 	initialCapacity  *int
-	statsEnabled     bool
+	statsCollector   StatsCollector
 	ttl              *time.Duration
 	withVariableTTL  bool
 	weigher          func(key K, value V) uint32
@@ -38,14 +38,16 @@ func NewBuilder[K comparable, V any](capacity int) *Builder[K, V] {
 		weigher: func(key K, value V) uint32 {
 			return 1
 		},
+		statsCollector: noopStatsCollector{},
 	}
 }
 
-// CollectStats determines whether statistics should be calculated when the cache is running.
+// CollectStats enables the accumulation of statistics during the operation of the cache.
 //
-// By default, statistics calculating is disabled.
-func (b *Builder[K, V]) CollectStats() *Builder[K, V] {
-	b.statsEnabled = true
+// NOTE: collecting statistics requires bookkeeping to be performed with each operation,
+// and thus imposes a performance penalty on cache operations.
+func (b *Builder[K, V]) CollectStats(statsCollector StatsCollector) *Builder[K, V] {
+	b.statsCollector = statsCollector
 	return b
 }
 
@@ -99,6 +101,9 @@ func (b *Builder[K, V]) validate() error {
 	}
 	if b.weigher == nil {
 		return errors.New("otter: weigher should not be nil")
+	}
+	if b.statsCollector == nil {
+		return errors.New("otter: stats collector should not be nil")
 	}
 	if b.ttl != nil && *b.ttl <= 0 {
 		return errors.New("otter: ttl should be positive")

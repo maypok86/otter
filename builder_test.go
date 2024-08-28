@@ -17,6 +17,8 @@ package otter
 import (
 	"testing"
 	"time"
+
+	"github.com/maypok86/otter/v2/stats"
 )
 
 func TestBuilder_NewFailed(t *testing.T) {
@@ -53,11 +55,17 @@ func TestBuilder_NewFailed(t *testing.T) {
 	if err == nil {
 		t.Fatalf("should fail with an error")
 	}
+
+	// nil stats collector
+	_, err = NewBuilder[int, int](capacity).CollectStats(nil).Build()
+	if err == nil {
+		t.Fatalf("should fail with an error")
+	}
 }
 
 func TestBuilder_BuildSuccess(t *testing.T) {
 	_, err := NewBuilder[int, int](10).
-		CollectStats().
+		CollectStats(stats.NewCounter()).
 		InitialCapacity(10).
 		Weigher(func(key int, value int) uint32 {
 			return 2
