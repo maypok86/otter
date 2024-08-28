@@ -24,6 +24,7 @@ import (
 
 	"github.com/maypok86/otter/v2/internal/generated/node"
 	"github.com/maypok86/otter/v2/internal/xruntime"
+	"github.com/maypok86/otter/v2/stats"
 )
 
 func getRandomSize(t *testing.T) int {
@@ -162,9 +163,10 @@ func TestCache_Set(t *testing.T) {
 	size := getRandomSize(t)
 	var mutex sync.Mutex
 	m := make(map[DeletionCause]int)
+	statsCounter := stats.NewCounter()
 	c, err := NewBuilder[int, int](size).
 		WithTTL(time.Minute).
-		CollectStats().
+		CollectStats(statsCounter).
 		DeletionListener(func(key int, value int, cause DeletionCause) {
 			mutex.Lock()
 			m[cause]++
@@ -211,7 +213,7 @@ func TestCache_Set(t *testing.T) {
 	if err != nil {
 		t.Fatalf("not found key: %v", err)
 	}
-	ratio := c.Stats().Ratio()
+	ratio := statsCounter.Snapshot().HitRatio()
 	if ratio != 1.0 {
 		t.Fatalf("cache hit ratio should be 1.0, but got %v", ratio)
 	}
@@ -225,7 +227,8 @@ func TestCache_Set(t *testing.T) {
 
 func TestCache_SetIfAbsent(t *testing.T) {
 	size := getRandomSize(t)
-	c, err := NewBuilder[int, int](size).WithTTL(time.Minute).CollectStats().Build()
+	statsCounter := stats.NewCounter()
+	c, err := NewBuilder[int, int](size).WithTTL(time.Hour).CollectStats(statsCounter).Build()
 	if err != nil {
 		t.Fatalf("can not create cache: %v", err)
 	}
@@ -250,7 +253,7 @@ func TestCache_SetIfAbsent(t *testing.T) {
 
 	c.Clear()
 
-	cc, err := NewBuilder[int, int](size).WithVariableTTL().CollectStats().Build()
+	cc, err := NewBuilder[int, int](size).WithVariableTTL().CollectStats(statsCounter).Build()
 	if err != nil {
 		t.Fatalf("can not create cache: %v", err)
 	}
@@ -273,8 +276,8 @@ func TestCache_SetIfAbsent(t *testing.T) {
 		}
 	}
 
-	if hits := cc.Stats().Hits(); hits != int64(size) {
-		t.Fatalf("hit ratio should be 100%%. Hits: %d", hits)
+	if hitRatio := statsCounter.Snapshot().HitRatio(); hitRatio != 1.0 {
+		t.Fatalf("hit rate should be 100%%. Hite rate: %.2f", hitRatio*100)
 	}
 
 	cc.Close()
@@ -284,8 +287,9 @@ func TestCache_SetWithTTL(t *testing.T) {
 	size := getRandomSize(t)
 	var mutex sync.Mutex
 	m := make(map[DeletionCause]int)
+	statsCounter := stats.NewCounter()
 	c, err := NewBuilder[int, int](size).
-		CollectStats().
+		CollectStats(statsCounter).
 		InitialCapacity(size).
 		WithTTL(time.Second).
 		DeletionListener(func(key int, value int, cause DeletionCause) {
@@ -320,20 +324,21 @@ func TestCache_SetWithTTL(t *testing.T) {
 		mutex.Unlock()
 		t.Fatalf("cache was supposed to expire %d, but expired %d entries", size, e)
 	}
-	if c.Stats().EvictedCount() != int64(m[Expired]) {
+	if statsCounter.Snapshot().Evictions() != uint64(m[Expired]) {
 		mutex.Unlock()
 		t.Fatalf(
-			"Eviction statistics are not collected for expiration. EvictedCount: %d, expired entries: %d",
-			c.Stats().EvictedCount(),
+			"Eviction statistics are not collected for expiration. Evictions: %d, expired entries: %d",
+			statsCounter.Snapshot().Evictions(),
 			m[Expired],
 		)
 	}
 	mutex.Unlock()
 
 	m = make(map[DeletionCause]int)
+	statsCounter = stats.NewCounter()
 	cc, err := NewBuilder[int, int](size).
 		WithVariableTTL().
-		CollectStats().
+		CollectStats(statsCounter).
 		DeletionListener(func(key int, value int, cause DeletionCause) {
 			mutex.Lock()
 			m[cause]++
@@ -361,7 +366,7 @@ func TestCache_SetWithTTL(t *testing.T) {
 	if cacheSize := cc.Size(); cacheSize != 0 {
 		t.Fatalf("c.Size() = %d, want = %d", cacheSize, 0)
 	}
-	if misses := cc.Stats().Misses(); misses != int64(size) {
+	if misses := statsCounter.Snapshot().Misses(); misses != uint64(size) {
 		t.Fatalf("c.Stats().Misses() = %d, want = %d", misses, size)
 	}
 	mutex.Lock()
@@ -369,11 +374,11 @@ func TestCache_SetWithTTL(t *testing.T) {
 	if len(m) != 1 || m[Expired] != size {
 		t.Fatalf("cache was supposed to expire %d, but expired %d entries", size, m[Expired])
 	}
-	if c.Stats().EvictedCount() != int64(m[Expired]) {
+	if statsCounter.Snapshot().Evictions() != uint64(m[Expired]) {
 		mutex.Unlock()
 		t.Fatalf(
-			"Eviction statistics are not collected for expiration. EvictedCount: %d, expired entries: %d",
-			c.Stats().EvictedCount(),
+			"Eviction statistics are not collected for expiration. Evictions: %d, expired entries: %d",
+			statsCounter.Snapshot().Evictions(),
 			m[Expired],
 		)
 	}
@@ -524,8 +529,9 @@ func TestCache_Advanced(t *testing.T) {
 func TestCache_Ratio(t *testing.T) {
 	var mutex sync.Mutex
 	m := make(map[DeletionCause]int)
+	statsCounter := stats.NewCounter()
 	c, err := NewBuilder[uint64, uint64](100).
-		CollectStats().
+		CollectStats(statsCounter).
 		DeletionListener(func(key uint64, value uint64, cause DeletionCause) {
 			mutex.Lock()
 			m[cause]++
@@ -549,7 +555,7 @@ func TestCache_Ratio(t *testing.T) {
 	}
 
 	t.Logf("actual size: %d, capacity: %d", c.Size(), c.Capacity())
-	t.Logf("actual: %.2f, optimal: %.2f", c.Stats().Ratio(), o.Ratio())
+	t.Logf("actual: %.2f, optimal: %.2f", statsCounter.Snapshot().HitRatio(), o.Ratio())
 
 	mutex.Lock()
 	defer mutex.Unlock()
@@ -628,7 +634,7 @@ func (h *optimalHeap) Pop() any {
 
 func Test_GetExpired(t *testing.T) {
 	c, err := NewBuilder[string, string](1000000).
-		CollectStats().
+		CollectStats(stats.NewCounter()).
 		DeletionListener(func(key string, value string, cause DeletionCause) {
 			fmt.Println(cause)
 			if cause != Expired {

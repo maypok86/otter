@@ -49,9 +49,7 @@ func BenchmarkAdder(b *testing.B) {
 func benchmarkAtomicUint64(b *testing.B, writeRatio int) {
 	b.Helper()
 	var c atomic.Uint64
-	runBenchAdder(b, func() uint64 {
-		return c.Load()
-	}, func() {
+	runBenchAdder(b, c.Load, func() {
 		c.Add(1)
 	}, writeRatio)
 }
