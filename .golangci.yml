@@ -17,11 +17,11 @@ linters:
     - bidichk
     - bodyclose
     - contextcheck
+    - copyloopvar
     - durationcheck
     - errcheck
     - errname
     - errorlint
-    - exportloopref
     - gocheckcompilerdirectives
     - gocritic
     - godot
