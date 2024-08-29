@@ -61,6 +61,12 @@ func TestBuilder_NewFailed(t *testing.T) {
 	if err == nil {
 		t.Fatalf("should fail with an error")
 	}
+
+	// nil logger
+	_, err = NewBuilder[int, int](capacity).Logger(nil).Build()
+	if err == nil {
+		t.Fatalf("should fail with an error")
+	}
 }
 
 func TestBuilder_BuildSuccess(t *testing.T) {

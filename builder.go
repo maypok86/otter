@@ -29,6 +29,7 @@ type Builder[K comparable, V any] struct {
 	weigher          func(key K, value V) uint32
 	withWeight       bool
 	deletionListener func(key K, value V, cause DeletionCause)
+	logger           Logger
 }
 
 // NewBuilder creates a builder and sets the future cache capacity.
@@ -39,6 +40,7 @@ func NewBuilder[K comparable, V any](capacity int) *Builder[K, V] {
 			return 1
 		},
 		statsCollector: noopStatsCollector{},
+		logger:         noopLogger{},
 	}
 }
 
@@ -92,6 +94,14 @@ func (b *Builder[K, V]) WithVariableTTL() *Builder[K, V] {
 	return b
 }
 
+// Logger specifies the Logger implementation that will be used for logging warning and errors.
+//
+// Logging is disabled by default.
+func (b *Builder[K, V]) Logger(logger Logger) *Builder[K, V] {
+	b.logger = logger
+	return b
+}
+
 func (b *Builder[K, V]) validate() error {
 	if b.capacity == nil || *b.capacity <= 0 {
 		return errors.New("otter: not valid capacity")
@@ -104,6 +114,9 @@ func (b *Builder[K, V]) validate() error {
 	}
 	if b.statsCollector == nil {
 		return errors.New("otter: stats collector should not be nil")
+	}
+	if b.logger == nil {
+		return errors.New("otter: logger should not be nil")
 	}
 	if b.ttl != nil && *b.ttl <= 0 {
 		return errors.New("otter: ttl should be positive")
