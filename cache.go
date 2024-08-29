@@ -97,6 +97,7 @@ type Cache[K comparable, V any] struct {
 	policy           *s3fifo.Policy[K, V]
 	expiryPolicy     expiryPolicy[K, V]
 	stats            statsCollector
+	logger           Logger
 	stripedBuffer    []*lossy.Buffer[K, V]
 	writeBuffer      *queue.Growable[task[K, V]]
 	evictionMutex    sync.Mutex
@@ -134,6 +135,7 @@ func newCache[K comparable, V any](b *Builder[K, V]) *Cache[K, V] {
 		nodeManager:      nodeManager,
 		hashmap:          hashmap,
 		stats:            newStatsCollector(b.statsCollector),
+		logger:           b.logger,
 		stripedBuffer:    stripedBuffer,
 		writeBuffer:      queue.NewGrowable[task[K, V]](minWriteBufferSize, maxWriteBufferSize),
 		doneClear:        make(chan struct{}),
