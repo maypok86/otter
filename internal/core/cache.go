@@ -71,6 +71,7 @@ var (
 func init() {
 	parallelism := xruntime.Parallelism()
 	roundedParallelism := int(xmath.RoundUpPowerOf2(parallelism))
+	//nolint:gosec // there will never be an overflow
 	maxWriteBufferSize = uint32(128 * roundedParallelism)
 	maxStripedBufferSize = 4 * roundedParallelism
 }
@@ -81,6 +82,7 @@ func zeroValue[V any]() V {
 }
 
 func getTTL(ttl time.Duration) uint32 {
+	//nolint:gosec // there will never be an overflow
 	return uint32((ttl + time.Second - 1) / time.Second)
 }
 
@@ -149,11 +151,12 @@ func NewCache[K comparable, V any](c Config[K, V]) *Cache[K, V] {
 	}
 
 	cache := &Cache[K, V]{
-		nodeManager:      nodeManager,
-		hashmap:          hashmap,
-		stripedBuffer:    stripedBuffer,
-		writeBuffer:      queue.NewGrowable[task[K, V]](minWriteBufferSize, maxWriteBufferSize),
-		doneClear:        make(chan struct{}),
+		nodeManager:   nodeManager,
+		hashmap:       hashmap,
+		stripedBuffer: stripedBuffer,
+		writeBuffer:   queue.NewGrowable[task[K, V]](minWriteBufferSize, maxWriteBufferSize),
+		doneClear:     make(chan struct{}),
+		//nolint:gosec // there will never be an overflow
 		mask:             uint32(maxStripedBufferSize - 1),
 		costFunc:         c.CostFunc,
 		deletionListener: c.DeletionListener,

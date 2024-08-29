@@ -86,6 +86,7 @@ func (b *Buffer[K, V]) Add(n node.Node[K, V]) *PolicyBuffers[K, V] {
 	}
 	if b.tail.CompareAndSwap(tail, tail+1) {
 		// success
+		//nolint:gosec // there will never be an overflow
 		index := int(tail & mask)
 		atomic.StorePointer(&b.buffer[index], n.AsPointer())
 		if size == capacity-1 {
@@ -97,6 +98,7 @@ func (b *Buffer[K, V]) Add(n node.Node[K, V]) *PolicyBuffers[K, V] {
 
 			pb := (*PolicyBuffers[K, V])(b.policyBuffers)
 			for i := 0; i < capacity; i++ {
+				//nolint:gosec // there will never be an overflow
 				index := int(head & mask)
 				v := atomic.LoadPointer(&b.buffer[index])
 				if v != nil {

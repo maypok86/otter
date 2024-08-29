@@ -142,6 +142,7 @@ func newMap[K comparable, V any](nodeManager *node.Manager[K, V], size int) *Map
 	if size <= minNodeCount {
 		t = newTable(minBucketCount, maphash.NewHasher[K]())
 	} else {
+		//nolint:gosec // there will never be an overflow
 		bucketCount := xmath.RoundUpPowerOf2(uint32(size / bucketSize))
 		t = newTable(int(bucketCount), maphash.NewHasher[K]())
 	}

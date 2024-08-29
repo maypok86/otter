@@ -42,6 +42,7 @@ func startTimer() {
 		for {
 			select {
 			case t := <-ticker.C:
+				//nolint:gosec // there will never be an overflow
 				atomic.StoreUint32(&now, uint32(t.Unix()-StartTime()))
 			case <-done:
 				return
