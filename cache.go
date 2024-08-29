@@ -70,11 +70,13 @@ var (
 func init() {
 	parallelism := xruntime.Parallelism()
 	roundedParallelism := int(xmath.RoundUpPowerOf2(parallelism))
+	//nolint:gosec // there will never be an overflow
 	maxWriteBufferSize = uint32(128 * roundedParallelism)
 	maxStripedBufferSize = 4 * roundedParallelism
 }
 
 func getTTL(ttl time.Duration) uint32 {
+	//nolint:gosec // there will never be an overflow
 	return uint32((ttl + time.Second - 1) / time.Second)
 }
 
@@ -132,14 +134,15 @@ func newCache[K comparable, V any](b *Builder[K, V]) *Cache[K, V] {
 	}
 
 	cache := &Cache[K, V]{
-		nodeManager:      nodeManager,
-		hashmap:          hashmap,
-		stats:            newStatsCollector(b.statsCollector),
-		logger:           b.logger,
-		stripedBuffer:    stripedBuffer,
-		writeBuffer:      queue.NewGrowable[task[K, V]](minWriteBufferSize, maxWriteBufferSize),
-		doneClear:        make(chan struct{}),
-		doneClose:        make(chan struct{}, 1),
+		nodeManager:   nodeManager,
+		hashmap:       hashmap,
+		stats:         newStatsCollector(b.statsCollector),
+		logger:        b.logger,
+		stripedBuffer: stripedBuffer,
+		writeBuffer:   queue.NewGrowable[task[K, V]](minWriteBufferSize, maxWriteBufferSize),
+		doneClear:     make(chan struct{}),
+		doneClose:     make(chan struct{}, 1),
+		//nolint:gosec // there will never be an overflow
 		mask:             uint32(maxStripedBufferSize - 1),
 		weigher:          b.weigher,
 		deletionListener: b.deletionListener,

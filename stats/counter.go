@@ -65,7 +65,8 @@ func (c *Counter) Snapshot() Stats {
 		rejectedSets:   c.rejectedSets.Value(),
 		loadSuccesses:  c.loadSuccesses.Value(),
 		loadFailures:   c.loadFailures.Value(),
-		totalLoadTime:  time.Duration(totalLoadTime),
+		//nolint:gosec // overflow is handled above
+		totalLoadTime: time.Duration(totalLoadTime),
 	}
 }
 
