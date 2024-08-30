@@ -21,7 +21,7 @@ import (
 
 // Builder is a one-shot builder for creating a cache instance.
 type Builder[K comparable, V any] struct {
-	capacity         *int
+	capacity         *uint64
 	initialCapacity  *int
 	statsCollector   StatsCollector
 	ttl              *time.Duration
@@ -33,7 +33,7 @@ type Builder[K comparable, V any] struct {
 }
 
 // NewBuilder creates a builder and sets the future cache capacity.
-func NewBuilder[K comparable, V any](capacity int) *Builder[K, V] {
+func NewBuilder[K comparable, V any](capacity uint64) *Builder[K, V] {
 	return &Builder[K, V]{
 		capacity: &capacity,
 		weigher: func(key K, value V) uint32 {
