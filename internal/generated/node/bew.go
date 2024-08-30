@@ -6,8 +6,6 @@ package node
 import (
 	"sync/atomic"
 	"unsafe"
-
-	"github.com/maypok86/otter/v2/internal/unixtime"
 )
 
 // BEW is a cache entry that provide the following features:
@@ -24,7 +22,7 @@ type BEW[K comparable, V any] struct {
 	next       *BEW[K, V]
 	prevExp    *BEW[K, V]
 	nextExp    *BEW[K, V]
-	expiration uint32
+	expiration int64
 	weight     uint32
 	state      uint32
 	frequency  uint8
@@ -32,7 +30,7 @@ type BEW[K comparable, V any] struct {
 }
 
 // NewBEW creates a new BEW.
-func NewBEW[K comparable, V any](key K, value V, expiration, weight uint32) Node[K, V] {
+func NewBEW[K comparable, V any](key K, value V, expiration int64, weight uint32) Node[K, V] {
 	return &BEW[K, V]{
 		key:        key,
 		value:      value,
@@ -107,11 +105,11 @@ func (n *BEW[K, V]) SetNextExp(v Node[K, V]) {
 	n.nextExp = (*BEW[K, V])(v.AsPointer())
 }
 
-func (n *BEW[K, V]) HasExpired() bool {
-	return n.expiration <= unixtime.Now()
+func (n *BEW[K, V]) HasExpired(now int64) bool {
+	return n.expiration <= now
 }
 
-func (n *BEW[K, V]) Expiration() uint32 {
+func (n *BEW[K, V]) Expiration() int64 {
 	return n.expiration
 }
 

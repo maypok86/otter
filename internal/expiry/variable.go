@@ -20,32 +20,30 @@ import (
 	"time"
 
 	"github.com/maypok86/otter/v2/internal/generated/node"
-	"github.com/maypok86/otter/v2/internal/unixtime"
-	"github.com/maypok86/otter/v2/internal/xmath"
 )
 
 var (
-	buckets = []uint32{64, 64, 32, 4, 1}
-	spans   = []uint32{
-		xmath.RoundUpPowerOf2(uint32((1 * time.Second).Seconds())),             // 1s
-		xmath.RoundUpPowerOf2(uint32((1 * time.Minute).Seconds())),             // 1.07m
-		xmath.RoundUpPowerOf2(uint32((1 * time.Hour).Seconds())),               // 1.13h
-		xmath.RoundUpPowerOf2(uint32((24 * time.Hour).Seconds())),              // 1.52d
-		buckets[3] * xmath.RoundUpPowerOf2(uint32((24 * time.Hour).Seconds())), // 6.07d
-		buckets[3] * xmath.RoundUpPowerOf2(uint32((24 * time.Hour).Seconds())), // 6.07d
+	buckets = []uint64{64, 64, 32, 4, 1}
+	spans   = []uint64{
+		roundUpPowerOf2(uint64((1 * time.Second).Nanoseconds())),             // 1.07s
+		roundUpPowerOf2(uint64((1 * time.Minute).Nanoseconds())),             // 1.14m
+		roundUpPowerOf2(uint64((1 * time.Hour).Nanoseconds())),               // 1.22h
+		roundUpPowerOf2(uint64((24 * time.Hour).Nanoseconds())),              // 1.63d
+		buckets[3] * roundUpPowerOf2(uint64((24 * time.Hour).Nanoseconds())), // 6.5d
+		buckets[3] * roundUpPowerOf2(uint64((24 * time.Hour).Nanoseconds())), // 6.5d
 	}
-	shift = []uint32{
-		uint32(bits.TrailingZeros32(spans[0])),
-		uint32(bits.TrailingZeros32(spans[1])),
-		uint32(bits.TrailingZeros32(spans[2])),
-		uint32(bits.TrailingZeros32(spans[3])),
-		uint32(bits.TrailingZeros32(spans[4])),
+	shift = []uint64{
+		uint64(bits.TrailingZeros64(spans[0])),
+		uint64(bits.TrailingZeros64(spans[1])),
+		uint64(bits.TrailingZeros64(spans[2])),
+		uint64(bits.TrailingZeros64(spans[3])),
+		uint64(bits.TrailingZeros64(spans[4])),
 	}
 )
 
 type Variable[K comparable, V any] struct {
 	wheel      [][]node.Node[K, V]
-	time       uint32
+	time       uint64
 	deleteNode func(node.Node[K, V])
 }
 
@@ -69,7 +67,7 @@ func NewVariable[K comparable, V any](nodeManager *node.Manager[K, V], deleteNod
 }
 
 // findBucket determines the bucket that the timer event should be added to.
-func (v *Variable[K, V]) findBucket(expiration uint32) node.Node[K, V] {
+func (v *Variable[K, V]) findBucket(expiration uint64) node.Node[K, V] {
 	duration := expiration - v.time
 	length := len(v.wheel) - 1
 	for i := 0; i < length; i++ {
@@ -84,7 +82,7 @@ func (v *Variable[K, V]) findBucket(expiration uint32) node.Node[K, V] {
 
 // Add schedules a timer event for the node.
 func (v *Variable[K, V]) Add(n node.Node[K, V]) {
-	root := v.findBucket(n.Expiration())
+	root := v.findBucket(uint64(n.Expiration()))
 	link(root, n)
 }
 
@@ -95,8 +93,8 @@ func (v *Variable[K, V]) Delete(n node.Node[K, V]) {
 	n.SetPrevExp(nil)
 }
 
-func (v *Variable[K, V]) DeleteExpired() {
-	currentTime := unixtime.Now()
+func (v *Variable[K, V]) DeleteExpired(nowNanos int64) {
+	currentTime := uint64(nowNanos)
 	prevTime := v.time
 	v.time = currentTime
 
@@ -112,7 +110,7 @@ func (v *Variable[K, V]) DeleteExpired() {
 	}
 }
 
-func (v *Variable[K, V]) deleteExpiredFromBucket(index int, prevTicks, delta uint32) {
+func (v *Variable[K, V]) deleteExpiredFromBucket(index int, prevTicks, delta uint64) {
 	mask := buckets[index] - 1
 	steps := buckets[index]
 	if delta < steps {
@@ -132,7 +130,7 @@ func (v *Variable[K, V]) deleteExpiredFromBucket(index int, prevTicks, delta uin
 			n.SetPrevExp(nil)
 			n.SetNextExp(nil)
 
-			if n.Expiration() <= v.time {
+			if uint64(n.Expiration()) <= v.time {
 				v.deleteNode(n)
 			} else {
 				v.Add(n)
@@ -158,7 +156,6 @@ func (v *Variable[K, V]) Clear() {
 			}
 		}
 	}
-	v.time = unixtime.Now()
 }
 
 // link adds the entry at the tail of the bucket's list.
@@ -178,4 +175,20 @@ func unlink[K comparable, V any](n node.Node[K, V]) {
 		next.SetPrevExp(prev)
 		prev.SetNextExp(next)
 	}
+}
+
+// roundUpPowerOf2 is based on https://graphics.stanford.edu/~seander/bithacks.html#RoundUpPowerOf2.
+func roundUpPowerOf2(v uint64) uint64 {
+	if v == 0 {
+		return 1
+	}
+	v--
+	v |= v >> 1
+	v |= v >> 2
+	v |= v >> 4
+	v |= v >> 8
+	v |= v >> 16
+	v |= v >> 32
+	v++
+	return v
 }

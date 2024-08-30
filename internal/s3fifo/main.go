@@ -41,12 +41,12 @@ func (m *main[K, V]) insert(n node.Node[K, V]) {
 	m.weight += int(n.Weight())
 }
 
-func (m *main[K, V]) evict() {
+func (m *main[K, V]) evict(nowNanos int64) {
 	reinsertions := 0
 	for m.weight > 0 {
 		n := m.q.pop()
 
-		if !n.IsAlive() || n.HasExpired() || n.Frequency() == 0 {
+		if !n.IsAlive() || n.HasExpired(nowNanos) || n.Frequency() == 0 {
 			n.Unmark()
 			m.weight -= int(n.Weight())
 			m.evictNode(n)

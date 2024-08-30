@@ -38,7 +38,7 @@ func (e Entry[K, V]) Value() V {
 }
 
 // Expiration returns the entry's expiration time as a unix time,
-// the number of seconds elapsed since January 1, 1970 UTC.
+// the number of nanoseconds elapsed since January 1, 1970 UTC.
 //
 // If the cache was not configured with an expiration policy then this value is always 0.
 func (e Entry[K, V]) Expiration() int64 {
@@ -56,12 +56,12 @@ func (e Entry[K, V]) TTL() time.Duration {
 		return -1
 	}
 
-	now := time.Now().Unix()
+	now := time.Now().UnixNano()
 	if expiration <= now {
 		return 0
 	}
 
-	return time.Duration(expiration-now) * time.Second
+	return time.Duration(expiration - now)
 }
 
 // HasExpired returns true if the entry has expired.
@@ -71,7 +71,7 @@ func (e Entry[K, V]) HasExpired() bool {
 		return false
 	}
 
-	return expiration <= time.Now().Unix()
+	return expiration <= time.Now().UnixNano()
 }
 
 // Weight returns the entry's weight.

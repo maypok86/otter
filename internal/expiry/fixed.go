@@ -36,8 +36,8 @@ func (f *Fixed[K, V]) Delete(n node.Node[K, V]) {
 	f.q.delete(n)
 }
 
-func (f *Fixed[K, V]) DeleteExpired() {
-	for !f.q.isEmpty() && f.q.head.HasExpired() {
+func (f *Fixed[K, V]) DeleteExpired(nowNanos int64) {
+	for !f.q.isEmpty() && f.q.head.HasExpired(nowNanos) {
 		f.deleteNode(f.q.pop())
 	}
 }

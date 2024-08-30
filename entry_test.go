@@ -51,7 +51,7 @@ func TestEntry(t *testing.T) {
 	}
 
 	newTTL := int64(10)
-	e.expiration = time.Now().Unix() + newTTL
+	e.expiration = time.Now().UnixNano() + (time.Duration(newTTL) * time.Second).Nanoseconds()
 	if ttl := e.TTL(); ttl <= 0 || ttl > time.Duration(newTTL)*time.Second {
 		t.Fatalf("ttl should be in the range (0, %d] seconds, but got %d seconds", newTTL, ttl/time.Second)
 	}
@@ -59,7 +59,7 @@ func TestEntry(t *testing.T) {
 		t.Fatal("entry should not be expire")
 	}
 
-	e.expiration -= 2 * newTTL
+	e.expiration -= 2 * (time.Duration(newTTL) * time.Second).Nanoseconds()
 	if ttl := e.TTL(); ttl != 0 {
 		t.Fatalf("ttl should be 0 seconds, but got %d seconds", ttl/time.Second)
 	}

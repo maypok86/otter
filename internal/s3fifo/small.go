@@ -48,7 +48,7 @@ func (s *small[K, V]) insert(n node.Node[K, V]) {
 	s.weight += int(n.Weight())
 }
 
-func (s *small[K, V]) evict() {
+func (s *small[K, V]) evict(nowNanos int64) {
 	if s.weight == 0 {
 		return
 	}
@@ -56,7 +56,7 @@ func (s *small[K, V]) evict() {
 	n := s.q.pop()
 	s.weight -= int(n.Weight())
 	n.Unmark()
-	if !n.IsAlive() || n.HasExpired() {
+	if !n.IsAlive() || n.HasExpired(nowNanos) {
 		s.evictNode(n)
 		return
 	}
@@ -64,7 +64,7 @@ func (s *small[K, V]) evict() {
 	if n.Frequency() > 1 {
 		s.main.insert(n)
 		for s.main.isFull() {
-			s.main.evict()
+			s.main.evict(nowNanos)
 		}
 		n.ResetFrequency()
 		return
