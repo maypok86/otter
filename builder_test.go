@@ -22,12 +22,12 @@ import (
 )
 
 func TestBuilder_NewFailed(t *testing.T) {
-	_, err := NewBuilder[int, int](-63).Build()
+	_, err := NewBuilder[int, int](0).Build()
 	if err == nil {
 		t.Fatalf("should fail with an error")
 	}
 
-	capacity := 100
+	capacity := uint64(100)
 	// negative const ttl
 	_, err = NewBuilder[int, int](capacity).WithTTL(-1).Build()
 	if err == nil {

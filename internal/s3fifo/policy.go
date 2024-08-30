@@ -24,12 +24,12 @@ type Policy[K comparable, V any] struct {
 	small                  *small[K, V]
 	main                   *main[K, V]
 	ghost                  *ghost[K, V]
-	maxWeight              int
-	maxAvailableNodeWeight int
+	maxWeight              uint64
+	maxAvailableNodeWeight uint64
 }
 
 // NewPolicy creates a new Policy.
-func NewPolicy[K comparable, V any](maxWeight int, evictNode func(node.Node[K, V])) *Policy[K, V] {
+func NewPolicy[K comparable, V any](maxWeight uint64, evictNode func(node.Node[K, V])) *Policy[K, V] {
 	smallMaxWeight := maxWeight / 10
 	mainMaxWeight := maxWeight - smallMaxWeight
 
@@ -94,7 +94,7 @@ func (p *Policy[K, V]) Delete(n node.Node[K, V]) {
 }
 
 // MaxAvailableWeight returns the maximum available weight of the node.
-func (p *Policy[K, V]) MaxAvailableWeight() int {
+func (p *Policy[K, V]) MaxAvailableWeight() uint64 {
 	return p.maxAvailableNodeWeight
 }
 

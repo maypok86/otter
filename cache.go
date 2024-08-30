@@ -100,7 +100,6 @@ type Cache[K comparable, V any] struct {
 	doneClose        chan struct{}
 	weigher          func(key K, value V) uint32
 	deletionListener func(key K, value V, cause DeletionCause)
-	capacity         int
 	mask             uint32
 	ttl              time.Duration
 	withExpiration   bool
@@ -139,7 +138,6 @@ func newCache[K comparable, V any](b *Builder[K, V]) *Cache[K, V] {
 		mask:             uint32(maxStripedBufferSize - 1),
 		weigher:          b.weigher,
 		deletionListener: b.deletionListener,
-		capacity:         *b.capacity,
 	}
 
 	cache.policy = s3fifo.NewPolicy(*b.capacity, cache.evictNode)
@@ -285,7 +283,7 @@ func (c *Cache[K, V]) SetIfAbsentWithTTL(key K, value V, ttl time.Duration) bool
 
 func (c *Cache[K, V]) set(key K, value V, expiration int64, onlyIfAbsent bool) bool {
 	weight := c.weigher(key, value)
-	if int(weight) > c.policy.MaxAvailableWeight() {
+	if uint64(weight) > c.policy.MaxAvailableWeight() {
 		c.stats.CollectRejectedSets(1)
 		return false
 	}
@@ -485,11 +483,6 @@ func (c *Cache[K, V]) Close() {
 // Size returns the current number of items in the cache.
 func (c *Cache[K, V]) Size() int {
 	return c.hashmap.Size()
-}
-
-// Capacity returns the cache capacity.
-func (c *Cache[K, V]) Capacity() int {
-	return c.capacity
 }
 
 // Extension returns access to inspect and perform low-level operations on this cache based on its runtime
