@@ -16,10 +16,14 @@ package expiry
 
 import (
 	"testing"
+	"time"
 
 	"github.com/maypok86/otter/v2/internal/generated/node"
-	"github.com/maypok86/otter/v2/internal/unixtime"
 )
+
+func getTestExp(sec int64) int64 {
+	return (time.Duration(sec) * time.Second).Nanoseconds()
+}
 
 func contains[K comparable, V any](root, f node.Node[K, V]) bool {
 	n := root.NextExp()
@@ -52,9 +56,9 @@ func TestVariable_Add(t *testing.T) {
 		WithExpiration: true,
 	})
 	nodes := []node.Node[string, string]{
-		nm.Create("k1", "", 1, 1),
-		nm.Create("k2", "", 69, 1),
-		nm.Create("k3", "", 4399, 1),
+		nm.Create("k1", "", getTestExp(1), 1),
+		nm.Create("k2", "", getTestExp(69), 1),
+		nm.Create("k3", "", getTestExp(4399), 1),
 	}
 	v := NewVariable[string, string](nm, func(n node.Node[string, string]) {
 	})
@@ -67,6 +71,7 @@ func TestVariable_Add(t *testing.T) {
 	for _, root := range v.wheel[0] {
 		if contains(root, nodes[0]) {
 			found = true
+			break
 		}
 	}
 	if !found {
@@ -77,6 +82,7 @@ func TestVariable_Add(t *testing.T) {
 	for _, root := range v.wheel[1] {
 		if contains(root, nodes[1]) {
 			found = true
+			break
 		}
 	}
 	if !found {
@@ -87,6 +93,7 @@ func TestVariable_Add(t *testing.T) {
 	for _, root := range v.wheel[2] {
 		if contains(root, nodes[2]) {
 			found = true
+			break
 		}
 	}
 	if !found {
@@ -99,13 +106,13 @@ func TestVariable_DeleteExpired(t *testing.T) {
 		WithExpiration: true,
 	})
 	nodes := []node.Node[string, string]{
-		nm.Create("k1", "", 1, 1),
-		nm.Create("k2", "", 10, 1),
-		nm.Create("k3", "", 30, 1),
-		nm.Create("k4", "", 120, 1),
-		nm.Create("k5", "", 6500, 1),
-		nm.Create("k6", "", 142000, 1),
-		nm.Create("k7", "", 1420000, 1),
+		nm.Create("k1", "", getTestExp(1), 1),
+		nm.Create("k2", "", getTestExp(10), 1),
+		nm.Create("k3", "", getTestExp(30), 1),
+		nm.Create("k4", "", getTestExp(120), 1),
+		nm.Create("k5", "", getTestExp(6500), 1),
+		nm.Create("k6", "", getTestExp(142000), 1),
+		nm.Create("k7", "", getTestExp(1420000), 1),
 	}
 	var expired []node.Node[string, string]
 	v := NewVariable[string, string](nm, func(n node.Node[string, string]) {
@@ -117,28 +124,23 @@ func TestVariable_DeleteExpired(t *testing.T) {
 	}
 
 	var keys []string
-	unixtime.SetNow(64)
-	v.DeleteExpired()
+	v.DeleteExpired(getTestExp(64))
 	keys = append(keys, "k1", "k2", "k3")
 	match(t, expired, keys)
 
-	unixtime.SetNow(200)
-	v.DeleteExpired()
+	v.DeleteExpired(getTestExp(200))
 	keys = append(keys, "k4")
 	match(t, expired, keys)
 
-	unixtime.SetNow(12000)
-	v.DeleteExpired()
+	v.DeleteExpired(getTestExp(12000))
 	keys = append(keys, "k5")
 	match(t, expired, keys)
 
-	unixtime.SetNow(350000)
-	v.DeleteExpired()
+	v.DeleteExpired(getTestExp(350000))
 	keys = append(keys, "k6")
 	match(t, expired, keys)
 
-	unixtime.SetNow(1520000)
-	v.DeleteExpired()
+	v.DeleteExpired(getTestExp(1520000))
 	keys = append(keys, "k7")
 	match(t, expired, keys)
 }

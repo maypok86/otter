@@ -12,24 +12,24 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package expiry
+package clock
 
-import "github.com/maypok86/otter/v2/internal/generated/node"
+import "time"
 
-type Disabled[K comparable, V any] struct{}
-
-func NewDisabled[K comparable, V any]() *Disabled[K, V] {
-	return &Disabled[K, V]{}
+type Clock struct {
+	start time.Time
 }
 
-func (d *Disabled[K, V]) Add(n node.Node[K, V]) {
+func New() *Clock {
+	return &Clock{
+		start: time.Now(),
+	}
 }
 
-func (d *Disabled[K, V]) Delete(n node.Node[K, V]) {
+func (c *Clock) Offset() int64 {
+	return time.Since(c.start).Nanoseconds()
 }
 
-func (d *Disabled[K, V]) DeleteExpired(nowNanos int64) {
-}
-
-func (d *Disabled[K, V]) Clear() {
+func (c *Clock) Time(offset int64) time.Time {
+	return c.start.Add(time.Duration(offset))
 }

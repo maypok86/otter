@@ -1,4 +1,4 @@
-// Copyright (c) 2023 Alexey Mayshev. All rights reserved.
+// Copyright (c) 2024 Alexey Mayshev. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,39 +12,51 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package unixtime
+package clock
 
 import (
 	"sync/atomic"
 	"testing"
 	"time"
+	_ "unsafe"
 )
 
-func BenchmarkNow(b *testing.B) {
-	Start()
+//go:linkname nanotime runtime.nanotime
+func nanotime() int64
 
+func BenchmarkTimeNow(b *testing.B) {
 	b.ReportAllocs()
 	b.RunParallel(func(pb *testing.PB) {
-		var ts uint32
+		var ts int64
 		for pb.Next() {
-			ts += Now()
+			ts += time.Now().UnixNano()
 		}
-		atomic.StoreUint32(&sink, ts)
+		atomic.StoreInt64(&sink, ts)
 	})
-
-	Stop()
 }
 
-func BenchmarkTimeNowUnix(b *testing.B) {
+func BenchmarkNanotime(b *testing.B) {
 	b.ReportAllocs()
 	b.RunParallel(func(pb *testing.PB) {
-		var ts uint32
+		var ts int64
 		for pb.Next() {
-			ts += uint32(time.Now().Unix())
+			ts += nanotime()
 		}
-		atomic.StoreUint32(&sink, ts)
+		atomic.StoreInt64(&sink, ts)
+	})
+}
+
+func BenchmarkClock(b *testing.B) {
+	b.ReportAllocs()
+	b.RunParallel(func(pb *testing.PB) {
+		var ts int64
+		c := New()
+		for pb.Next() {
+			ts += c.Offset()
+		}
+		atomic.StoreInt64(&sink, ts)
 	})
 }
 
 // sink should prevent from code elimination by optimizing compiler.
-var sink uint32
+var sink int64

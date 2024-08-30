@@ -55,7 +55,7 @@ func (p *Policy[K, V]) Read(nodes []node.Node[K, V]) {
 }
 
 // Add adds node to the eviction policy.
-func (p *Policy[K, V]) Add(n node.Node[K, V]) {
+func (p *Policy[K, V]) Add(n node.Node[K, V], nowNanos int64) {
 	if p.ghost.isGhost(n) {
 		p.main.insert(n)
 		n.ResetFrequency()
@@ -64,17 +64,17 @@ func (p *Policy[K, V]) Add(n node.Node[K, V]) {
 	}
 
 	for p.isFull() {
-		p.evict()
+		p.evict(nowNanos)
 	}
 }
 
-func (p *Policy[K, V]) evict() {
+func (p *Policy[K, V]) evict(nowNanos int64) {
 	if p.small.weight >= p.maxWeight/10 {
-		p.small.evict()
+		p.small.evict(nowNanos)
 		return
 	}
 
-	p.main.evict()
+	p.main.evict(nowNanos)
 }
 
 func (p *Policy[K, V]) isFull() bool {

@@ -16,7 +16,6 @@ package otter
 
 import (
 	"github.com/maypok86/otter/v2/internal/generated/node"
-	"github.com/maypok86/otter/v2/internal/unixtime"
 )
 
 func zeroValue[V any]() V {
@@ -39,8 +38,8 @@ func newExtension[K comparable, V any](cache *Cache[K, V]) Extension[K, V] {
 
 func (e Extension[K, V]) createEntry(n node.Node[K, V]) Entry[K, V] {
 	var expiration int64
-	if e.cache.WithExpiration() {
-		expiration = unixtime.StartTime() + int64(n.Expiration())
+	if e.cache.withExpiration {
+		expiration = e.cache.clock.Time(n.Expiration()).UnixNano()
 	}
 
 	return Entry[K, V]{

@@ -18,13 +18,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/maypok86/otter/v2/internal/clock"
 	"github.com/maypok86/otter/v2/internal/expiry"
 	"github.com/maypok86/otter/v2/internal/generated/node"
 	"github.com/maypok86/otter/v2/internal/hashtable"
 	"github.com/maypok86/otter/v2/internal/lossy"
 	"github.com/maypok86/otter/v2/internal/queue"
 	"github.com/maypok86/otter/v2/internal/s3fifo"
-	"github.com/maypok86/otter/v2/internal/unixtime"
 	"github.com/maypok86/otter/v2/internal/xmath"
 	"github.com/maypok86/otter/v2/internal/xruntime"
 )
@@ -75,19 +75,10 @@ func init() {
 	maxStripedBufferSize = 4 * roundedParallelism
 }
 
-func getTTL(ttl time.Duration) uint32 {
-	//nolint:gosec // there will never be an overflow
-	return uint32((ttl + time.Second - 1) / time.Second)
-}
-
-func getExpiration(ttl time.Duration) uint32 {
-	return unixtime.Now() + getTTL(ttl)
-}
-
 type expiryPolicy[K comparable, V any] interface {
 	Add(n node.Node[K, V])
 	Delete(n node.Node[K, V])
-	DeleteExpired()
+	DeleteExpired(nowNanos int64)
 	Clear()
 }
 
@@ -100,6 +91,7 @@ type Cache[K comparable, V any] struct {
 	expiryPolicy     expiryPolicy[K, V]
 	stats            statsCollector
 	logger           Logger
+	clock            *clock.Clock
 	stripedBuffer    []*lossy.Buffer[K, V]
 	writeBuffer      *queue.Growable[task[K, V]]
 	evictionMutex    sync.Mutex
@@ -110,7 +102,7 @@ type Cache[K comparable, V any] struct {
 	deletionListener func(key K, value V, cause DeletionCause)
 	capacity         int
 	mask             uint32
-	ttl              uint32
+	ttl              time.Duration
 	withExpiration   bool
 }
 
@@ -138,6 +130,7 @@ func newCache[K comparable, V any](b *Builder[K, V]) *Cache[K, V] {
 		hashmap:       hashmap,
 		stats:         newStatsCollector(b.statsCollector),
 		logger:        b.logger,
+		clock:         clock.New(),
 		stripedBuffer: stripedBuffer,
 		writeBuffer:   queue.NewGrowable[task[K, V]](minWriteBufferSize, maxWriteBufferSize),
 		doneClear:     make(chan struct{}),
@@ -161,13 +154,12 @@ func newCache[K comparable, V any](b *Builder[K, V]) *Cache[K, V] {
 	}
 
 	if b.ttl != nil {
-		cache.ttl = getTTL(*b.ttl)
+		cache.ttl = *b.ttl
 	}
 
 	cache.withExpiration = b.ttl != nil || b.withVariableTTL
 
 	if cache.withExpiration {
-		unixtime.Start()
 		go cache.cleanup()
 	}
 
@@ -178,6 +170,10 @@ func newCache[K comparable, V any](b *Builder[K, V]) *Cache[K, V] {
 
 func (c *Cache[K, V]) getReadBufferIdx() int {
 	return int(xruntime.Fastrand() & c.mask)
+}
+
+func (c *Cache[K, V]) getExpiration(duration time.Duration) int64 {
+	return c.clock.Offset() + duration.Nanoseconds()
 }
 
 // Has checks if there is an item with the given key in the cache.
@@ -204,7 +200,7 @@ func (c *Cache[K, V]) GetNode(key K) (node.Node[K, V], bool) {
 		return nil, false
 	}
 
-	if n.HasExpired() {
+	if n.HasExpired(c.clock.Offset()) {
 		// avoid duplicate push
 		deleted := c.hashmap.DeleteNode(n)
 		if deleted != nil {
@@ -227,7 +223,7 @@ func (c *Cache[K, V]) GetNode(key K) (node.Node[K, V], bool) {
 // such as updating statistics or the eviction policy.
 func (c *Cache[K, V]) GetNodeQuietly(key K) (node.Node[K, V], bool) {
 	n, ok := c.hashmap.Get(key)
-	if !ok || !n.IsAlive() || n.HasExpired() {
+	if !ok || !n.IsAlive() || n.HasExpired(c.clock.Offset()) {
 		return nil, false
 	}
 
@@ -253,19 +249,19 @@ func (c *Cache[K, V]) Set(key K, value V) bool {
 	return c.set(key, value, c.defaultExpiration(), false)
 }
 
-func (c *Cache[K, V]) defaultExpiration() uint32 {
+func (c *Cache[K, V]) defaultExpiration() int64 {
 	if c.ttl == 0 {
 		return 0
 	}
 
-	return unixtime.Now() + c.ttl
+	return c.getExpiration(c.ttl)
 }
 
 // SetWithTTL associates the value with the key in this cache and sets the custom ttl for this key-value item.
 //
 // If it returns false, then the key-value item had too much weight and the SetWithTTL was dropped.
 func (c *Cache[K, V]) SetWithTTL(key K, value V, ttl time.Duration) bool {
-	return c.set(key, value, getExpiration(ttl), false)
+	return c.set(key, value, c.getExpiration(ttl), false)
 }
 
 // SetIfAbsent if the specified key is not already associated with a value associates it with the given value.
@@ -284,10 +280,10 @@ func (c *Cache[K, V]) SetIfAbsent(key K, value V) bool {
 //
 // Also, it returns false if the key-value item had too much weight and the SetIfAbsent was dropped.
 func (c *Cache[K, V]) SetIfAbsentWithTTL(key K, value V, ttl time.Duration) bool {
-	return c.set(key, value, getExpiration(ttl), true)
+	return c.set(key, value, c.getExpiration(ttl), true)
 }
 
-func (c *Cache[K, V]) set(key K, value V, expiration uint32, onlyIfAbsent bool) bool {
+func (c *Cache[K, V]) set(key K, value V, expiration int64, onlyIfAbsent bool) bool {
 	weight := c.weigher(key, value)
 	if int(weight) > c.policy.MaxAvailableWeight() {
 		c.stats.CollectRejectedSets(1)
@@ -337,7 +333,7 @@ func (c *Cache[K, V]) afterDelete(deleted node.Node[K, V]) {
 // DeleteByFunc deletes the association for this key from the cache when the given function returns true.
 func (c *Cache[K, V]) DeleteByFunc(f func(key K, value V) bool) {
 	c.hashmap.Range(func(n node.Node[K, V]) bool {
-		if !n.IsAlive() || n.HasExpired() {
+		if !n.IsAlive() || n.HasExpired(c.clock.Offset()) {
 			return true
 		}
 
@@ -376,7 +372,7 @@ func (c *Cache[K, V]) cleanup() {
 			return
 		case <-ticker.C:
 			c.evictionMutex.Lock()
-			c.expiryPolicy.DeleteExpired()
+			c.expiryPolicy.DeleteExpired(c.clock.Offset())
 			c.evictionMutex.Unlock()
 		}
 	}
@@ -411,7 +407,7 @@ func (c *Cache[K, V]) onWrite(t task[K, V]) {
 	case t.isAdd():
 		if n.IsAlive() {
 			c.expiryPolicy.Add(n)
-			c.policy.Add(n)
+			c.policy.Add(n, c.clock.Offset())
 		}
 	case t.isUpdate():
 		oldNode := t.oldNode()
@@ -419,7 +415,7 @@ func (c *Cache[K, V]) onWrite(t task[K, V]) {
 		c.policy.Delete(oldNode)
 		if n.IsAlive() {
 			c.expiryPolicy.Add(n)
-			c.policy.Add(n)
+			c.policy.Add(n, c.clock.Offset())
 		}
 		c.notifyDeletion(oldNode.Key(), oldNode.Value(), Replaced)
 	case t.isDelete():
@@ -452,7 +448,7 @@ func (c *Cache[K, V]) process() {
 // Iteration stops early when the given function returns false.
 func (c *Cache[K, V]) Range(f func(key K, value V) bool) {
 	c.hashmap.Range(func(n node.Node[K, V]) bool {
-		if !n.IsAlive() || n.HasExpired() {
+		if !n.IsAlive() || n.HasExpired(c.clock.Offset()) {
 			return true
 		}
 
@@ -483,9 +479,6 @@ func (c *Cache[K, V]) clear(t task[K, V]) {
 func (c *Cache[K, V]) Close() {
 	c.closeOnce.Do(func() {
 		c.clear(newCloseTask[K, V]())
-		if c.withExpiration {
-			unixtime.Stop()
-		}
 	})
 }
 
@@ -504,9 +497,4 @@ func (c *Cache[K, V]) Capacity() int {
 // and what abilities the implementation exposes.
 func (c *Cache[K, V]) Extension() Extension[K, V] {
 	return newExtension(c)
-}
-
-// WithExpiration returns true if the cache was configured with the expiration policy enabled.
-func (c *Cache[K, V]) WithExpiration() bool {
-	return c.withExpiration
 }

@@ -1,3 +1,17 @@
+// Copyright (c) 2024 Alexey Mayshev. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package main
 
 import (
@@ -136,10 +150,6 @@ func (g *generator) printImports() {
 	g.in()
 	g.p("\"sync/atomic\"")
 	g.p("\"unsafe\"")
-	if g.features[expiration] {
-		g.p("")
-		g.p("\"github.com/maypok86/otter/v2/internal/unixtime\"")
-	}
 	g.out()
 	g.p(")")
 	g.p("")
@@ -175,7 +185,7 @@ func (g *generator) printStruct() {
 	if g.features[expiration] {
 		g.p("prevExp    *%s[K, V]", g.structName)
 		g.p("nextExp    *%s[K, V]", g.structName)
-		g.p("expiration uint32")
+		g.p("expiration int64")
 	}
 	if g.features[weight] {
 		g.p("weight     uint32")
@@ -191,7 +201,7 @@ func (g *generator) printStruct() {
 
 func (g *generator) printConstructors() {
 	g.p("// New%s creates a new %s.", g.structName, g.structName)
-	g.p("func New%s[K comparable, V any](key K, value V, expiration, weight uint32) Node[K, V] {", g.structName)
+	g.p("func New%s[K comparable, V any](key K, value V, expiration int64, weight uint32) Node[K, V] {", g.structName)
 	g.in()
 	g.p("return &%s[K, V]{", g.structName)
 	g.in()
@@ -337,10 +347,10 @@ func (g *generator) printFunctions() {
 	g.p("}")
 	g.p("")
 
-	g.p("func (n *%s[K, V]) HasExpired() bool {", g.structName)
+	g.p("func (n *%s[K, V]) HasExpired(now int64) bool {", g.structName)
 	g.in()
 	if g.features[expiration] {
-		g.p("return n.expiration <= unixtime.Now()")
+		g.p("return n.expiration <= now")
 	} else {
 		g.p("return false")
 	}
@@ -348,7 +358,7 @@ func (g *generator) printFunctions() {
 	g.p("}")
 	g.p("")
 
-	g.p("func (n *%s[K, V]) Expiration() uint32 {", g.structName)
+	g.p("func (n *%s[K, V]) Expiration() int64 {", g.structName)
 	g.in()
 	if g.features[expiration] {
 		g.p("return n.expiration")
@@ -503,9 +513,9 @@ type Node[K comparable, V any] interface {
 	// SetNextExp sets the next node in the expiration policy.
 	SetNextExp(v Node[K, V])
 	// HasExpired returns true if node has expired.
-	HasExpired() bool
+	HasExpired(now int64) bool
 	// Expiration returns the expiration time.
-	Expiration() uint32
+	Expiration() int64
 	// Weight returns the weight of the node.
 	Weight() uint32
 	// IsAlive returns true if the entry is available in the hash-table.
@@ -548,7 +558,7 @@ type Config struct {
 }
 
 type Manager[K comparable, V any] struct {
-	create      func(key K, value V, expiration, weight uint32) Node[K, V]
+	create      func(key K, value V, expiration int64, weight uint32) Node[K, V]
 	fromPointer func(ptr unsafe.Pointer) Node[K, V]
 }
 
@@ -568,7 +578,7 @@ func NewManager[K comparable, V any](c Config) *Manager[K, V] {
 	const nodeFooter = `return m
 }
 
-func (m *Manager[K, V]) Create(key K, value V, expiration, weight uint32) Node[K, V] {
+func (m *Manager[K, V]) Create(key K, value V, expiration int64, weight uint32) Node[K, V] {
 	return m.create(key, value, expiration, weight)
 }
 
