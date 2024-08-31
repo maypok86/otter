@@ -109,7 +109,7 @@ type Cache[K comparable, V any] struct {
 func newCache[K comparable, V any](b *Builder[K, V]) *Cache[K, V] {
 	nodeManager := node.NewManager[K, V](node.Config{
 		WithExpiration: b.ttl != nil || b.withVariableTTL,
-		WithWeight:     b.withWeight,
+		WithWeight:     b.weigher != nil,
 	})
 
 	stripedBuffer := make([]*lossy.Buffer[K, V], 0, maxStripedBufferSize)
@@ -136,11 +136,11 @@ func newCache[K comparable, V any](b *Builder[K, V]) *Cache[K, V] {
 		doneClose:     make(chan struct{}, 1),
 		//nolint:gosec // there will never be an overflow
 		mask:             uint32(maxStripedBufferSize - 1),
-		weigher:          b.weigher,
+		weigher:          b.getWeigher(),
 		deletionListener: b.deletionListener,
 	}
 
-	cache.policy = s3fifo.NewPolicy(*b.capacity, cache.evictNode)
+	cache.policy = s3fifo.NewPolicy(*b.getMaximum(), cache.evictNode)
 
 	switch {
 	case b.ttl != nil:

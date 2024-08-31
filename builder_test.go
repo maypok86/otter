@@ -21,64 +21,124 @@ import (
 	"github.com/maypok86/otter/v2/stats"
 )
 
-func TestBuilder_NewFailed(t *testing.T) {
-	_, err := NewBuilder[int, int](0).Build()
-	if err == nil {
-		t.Fatalf("should fail with an error")
-	}
-
-	capacity := uint64(100)
-	// negative const ttl
-	_, err = NewBuilder[int, int](capacity).WithTTL(-1).Build()
-	if err == nil {
-		t.Fatalf("should fail with an error")
-	}
-
-	// negative initial capacity
-	_, err = NewBuilder[int, int](capacity).InitialCapacity(-2).Build()
-	if err == nil {
-		t.Fatalf("should fail with an error")
-	}
-
-	_, err = NewBuilder[int, int](capacity).WithTTL(time.Hour).InitialCapacity(0).Build()
-	if err == nil {
-		t.Fatalf("should fail with an error")
-	}
-
-	_, err = NewBuilder[int, int](capacity).WithVariableTTL().InitialCapacity(-5).Build()
-	if err == nil {
-		t.Fatalf("should fail with an error")
-	}
-
-	// nil weigher
-	_, err = NewBuilder[int, int](capacity).Weigher(nil).Build()
-	if err == nil {
-		t.Fatalf("should fail with an error")
-	}
-
-	// nil stats collector
-	_, err = NewBuilder[int, int](capacity).CollectStats(nil).Build()
-	if err == nil {
-		t.Fatalf("should fail with an error")
-	}
-
-	// nil logger
-	_, err = NewBuilder[int, int](capacity).Logger(nil).Build()
-	if err == nil {
-		t.Fatalf("should fail with an error")
-	}
+func ptr[T any](t T) *T {
+	return &t
 }
 
-func TestBuilder_BuildSuccess(t *testing.T) {
-	_, err := NewBuilder[int, int](10).
-		CollectStats(stats.NewCounter()).
-		InitialCapacity(10).
-		Weigher(func(key int, value int) uint32 {
-			return 2
-		}).
-		WithTTL(time.Hour).
-		Build()
-	if err != nil {
-		t.Fatalf("builded cache with error: %v", err)
+func TestBuilder_Build(t *testing.T) {
+	for _, test := range []struct {
+		fn   func(b *Builder[string, string])
+		want *string
+	}{
+		{
+			fn: func(b *Builder[string, string]) {
+				b.MaximumSize(100).MaximumWeight(uint64(1000))
+			},
+			want: ptr("otter: both maximumSize and maximumWeight are set"),
+		},
+		{
+			fn: func(b *Builder[string, string]) {
+				b.MaximumSize(100).Weigher(func(key string, value string) uint32 {
+					return 1
+				})
+			},
+			want: ptr("otter: both maximumSize and weigher are set"),
+		},
+		{
+			fn: func(b *Builder[string, string]) {
+				b.MaximumSize(0)
+			},
+			want: ptr("otter: maximumSize should be positive"),
+		},
+		{
+			fn: func(b *Builder[string, string]) {
+				b.MaximumWeight(0).Weigher(func(key string, value string) uint32 {
+					return 1
+				})
+			},
+			want: ptr("otter: maximumWeight should be positive"),
+		},
+		{
+			fn: func(b *Builder[string, string]) {
+				b.MaximumWeight(10)
+			},
+			want: ptr("otter: maximumWeight requires weigher"),
+		},
+		{
+			fn: func(b *Builder[string, string]) {
+				b.Weigher(func(key string, value string) uint32 {
+					return 0
+				})
+			},
+			want: ptr("otter: weigher requires maximumWeight"),
+		},
+		{
+			fn: func(b *Builder[string, string]) {
+				b.Weigher(func(key string, value string) uint32 {
+					return 0
+				})
+			},
+			want: ptr("otter: weigher requires maximumWeight"),
+		},
+		{
+			fn: func(b *Builder[string, string]) {
+				b.Weigher(func(key string, value string) uint32 {
+					return 0
+				})
+			},
+			want: ptr("otter: weigher requires maximumWeight"),
+		},
+		{
+			fn: func(b *Builder[string, string]) {
+				b.InitialCapacity(0)
+			},
+			want: ptr("otter: initial capacity should be positive"),
+		},
+		{
+			fn: func(b *Builder[string, string]) {
+				b.InitialCapacity(0)
+			},
+			want: ptr("otter: initial capacity should be positive"),
+		},
+		{
+			fn: func(b *Builder[string, string]) {
+				b.CollectStats(nil)
+			},
+			want: ptr("otter: stats collector should not be nil"),
+		},
+		{
+			fn: func(b *Builder[string, string]) {
+				b.Logger(nil)
+			},
+			want: ptr("otter: logger should not be nil"),
+		},
+		{
+			fn: func(b *Builder[string, string]) {
+				b.WithTTL(-1)
+			},
+			want: ptr("otter: ttl should be positive"),
+		},
+		{
+			fn: func(b *Builder[string, string]) {
+				b.MaximumWeight(10).
+					CollectStats(stats.NewCounter()).
+					InitialCapacity(10).
+					Weigher(func(key string, value string) uint32 {
+						return 2
+					}).
+					WithTTL(time.Hour)
+			},
+			want: nil,
+		},
+	} {
+		b := NewBuilder[string, string]()
+		test.fn(b)
+		_, err := b.Build()
+		if test.want == nil && err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if test.want != nil && err == nil {
+			t.Fatalf("wanted error: %s, but got nil", *test.want)
+		}
 	}
 }
