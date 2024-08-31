@@ -21,27 +21,52 @@ import (
 
 // Builder is a one-shot builder for creating a cache instance.
 type Builder[K comparable, V any] struct {
-	capacity         *uint64
+	maximumSize      *int
+	maximumWeight    *uint64
 	initialCapacity  *int
 	statsCollector   StatsCollector
 	ttl              *time.Duration
 	withVariableTTL  bool
 	weigher          func(key K, value V) uint32
-	withWeight       bool
 	deletionListener func(key K, value V, cause DeletionCause)
 	logger           Logger
 }
 
 // NewBuilder creates a builder and sets the future cache capacity.
-func NewBuilder[K comparable, V any](capacity uint64) *Builder[K, V] {
+func NewBuilder[K comparable, V any]() *Builder[K, V] {
 	return &Builder[K, V]{
-		capacity: &capacity,
-		weigher: func(key K, value V) uint32 {
-			return 1
-		},
 		statsCollector: noopStatsCollector{},
 		logger:         noopLogger{},
 	}
+}
+
+// MaximumSize specifies the maximum number of entries the cache may contain.
+//
+// This option cannot be used in conjunction with MaximumWeight.
+//
+// NOTE: the cache may evict an entry before this limit is exceeded or temporarily exceed the threshold while evicting.
+// As the cache size grows close to the maximum, the cache evicts entries that are less likely to be used again.
+// For example, the cache may evict an entry because it hasn't been used recently or very often.
+func (b *Builder[K, V]) MaximumSize(maximumSize int) *Builder[K, V] {
+	b.maximumSize = &maximumSize
+	return b
+}
+
+// MaximumWeight specifies the maximum weight of entries the cache may contain. Weight is determined using the
+// callback specified with Weigher.
+// Use of this method requires a corresponding call to Weigher prior to calling Build.
+//
+// This option cannot be used in conjunction with MaximumSize.
+//
+// NOTE: the cache may evict an entry before this limit is exceeded or temporarily exceed the threshold while evicting.
+// As the cache size grows close to the maximum, the cache evicts entries that are less likely to be used again.
+// For example, the cache may evict an entry because it hasn't been used recently or very often.
+//
+// NOTE: weight is only used to determine whether the cache is over capacity; it has no effect
+// on selecting which entry should be evicted next.
+func (b *Builder[K, V]) MaximumWeight(maximumWeight uint64) *Builder[K, V] {
+	b.maximumWeight = &maximumWeight
+	return b
 }
 
 // CollectStats enables the accumulation of statistics during the operation of the cache.
@@ -61,12 +86,13 @@ func (b *Builder[K, V]) InitialCapacity(initialCapacity int) *Builder[K, V] {
 	return b
 }
 
-// Weigher sets a function to dynamically calculate the weight of an item.
-//
-// By default, this function always returns 1.
+// Weigher specifies the weigher to use in determining the weight of entries. Entry weight is taken into
+// consideration by MaximumWeight when determining which entries to evict, and use
+// of this method requires a corresponding call to MaximumWeight prior to calling Build.
+// Weights are measured and recorded when entries are inserted into or updated in
+// the cache, and are thus effectively static during the lifetime of a cache entry.
 func (b *Builder[K, V]) Weigher(weigher func(key K, value V) uint32) *Builder[K, V] {
 	b.weigher = weigher
-	b.withWeight = true
 	return b
 }
 
@@ -102,15 +128,49 @@ func (b *Builder[K, V]) Logger(logger Logger) *Builder[K, V] {
 	return b
 }
 
-func (b *Builder[K, V]) validate() error {
-	if b.capacity == nil || *b.capacity <= 0 {
-		return errors.New("otter: not valid capacity")
+func (b *Builder[K, V]) getMaximum() *uint64 {
+	if b.maximumSize != nil {
+		ms := uint64(*b.maximumSize)
+		return &ms
 	}
+	if b.maximumWeight != nil {
+		return b.maximumWeight
+	}
+	return nil
+}
+
+func (b *Builder[K, V]) getWeigher() func(key K, value V) uint32 {
+	if b.weigher == nil {
+		return func(key K, value V) uint32 {
+			return 1
+		}
+	}
+	return b.weigher
+}
+
+func (b *Builder[K, V]) validate() error {
+	if b.maximumSize != nil && b.maximumWeight != nil {
+		return errors.New("otter: both maximumSize and maximumWeight are set")
+	}
+	if b.maximumSize != nil && b.weigher != nil {
+		return errors.New("otter: both maximumSize and weigher are set")
+	}
+	if b.maximumSize != nil && *b.maximumSize <= 0 {
+		return errors.New("otter: maximumSize should be positive")
+	}
+
+	if b.maximumWeight != nil && *b.maximumWeight <= 0 {
+		return errors.New("otter: maximumWeight should be positive")
+	}
+	if b.maximumWeight != nil && b.weigher == nil {
+		return errors.New("otter: maximumWeight requires weigher")
+	}
+	if b.weigher != nil && b.maximumWeight == nil {
+		return errors.New("otter: weigher requires maximumWeight")
+	}
+
 	if b.initialCapacity != nil && *b.initialCapacity <= 0 {
 		return errors.New("otter: initial capacity should be positive")
-	}
-	if b.weigher == nil {
-		return errors.New("otter: weigher should not be nil")
 	}
 	if b.statsCollector == nil {
 		return errors.New("otter: stats collector should not be nil")

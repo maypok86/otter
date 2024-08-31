@@ -42,7 +42,8 @@ func getRandomSize(t *testing.T) int {
 
 func TestCache_SetWithWeight(t *testing.T) {
 	size := uint64(10)
-	c, err := NewBuilder[uint32, int](size).
+	c, err := NewBuilder[uint32, int]().
+		MaximumWeight(size).
 		Weigher(func(key uint32, value int) uint32 {
 			return key
 		}).
@@ -73,7 +74,8 @@ func TestCache_SetWithWeight(t *testing.T) {
 func TestCache_Range(t *testing.T) {
 	size := 10
 	ttl := time.Hour
-	c, err := NewBuilder[int, int](uint64(size)).
+	c, err := NewBuilder[int, int]().
+		MaximumSize(size).
 		WithTTL(ttl).
 		Build()
 	if err != nil {
@@ -107,7 +109,9 @@ func TestCache_Range(t *testing.T) {
 
 func TestCache_Close(t *testing.T) {
 	size := 10
-	c, err := NewBuilder[int, int](uint64(size)).Build()
+	c, err := NewBuilder[int, int]().
+		MaximumSize(size).
+		Build()
 	if err != nil {
 		t.Fatalf("can not create cache: %v", err)
 	}
@@ -137,7 +141,9 @@ func TestCache_Close(t *testing.T) {
 
 func TestCache_Clear(t *testing.T) {
 	size := 10
-	c, err := NewBuilder[int, int](uint64(size)).Build()
+	c, err := NewBuilder[int, int]().
+		MaximumSize(size).
+		Build()
 	if err != nil {
 		t.Fatalf("can not create cache: %v", err)
 	}
@@ -164,7 +170,8 @@ func TestCache_Set(t *testing.T) {
 	var mutex sync.Mutex
 	m := make(map[DeletionCause]int)
 	statsCounter := stats.NewCounter()
-	c, err := NewBuilder[int, int](uint64(size)).
+	c, err := NewBuilder[int, int]().
+		MaximumSize(size).
 		WithTTL(time.Minute).
 		CollectStats(statsCounter).
 		DeletionListener(func(key int, value int, cause DeletionCause) {
@@ -228,7 +235,11 @@ func TestCache_Set(t *testing.T) {
 func TestCache_SetIfAbsent(t *testing.T) {
 	size := getRandomSize(t)
 	statsCounter := stats.NewCounter()
-	c, err := NewBuilder[int, int](uint64(size)).WithTTL(time.Hour).CollectStats(statsCounter).Build()
+	c, err := NewBuilder[int, int]().
+		MaximumSize(size).
+		WithTTL(time.Hour).
+		CollectStats(statsCounter).
+		Build()
 	if err != nil {
 		t.Fatalf("can not create cache: %v", err)
 	}
@@ -253,7 +264,11 @@ func TestCache_SetIfAbsent(t *testing.T) {
 
 	c.Clear()
 
-	cc, err := NewBuilder[int, int](uint64(size)).WithVariableTTL().CollectStats(statsCounter).Build()
+	cc, err := NewBuilder[int, int]().
+		MaximumSize(size).
+		WithVariableTTL().
+		CollectStats(statsCounter).
+		Build()
 	if err != nil {
 		t.Fatalf("can not create cache: %v", err)
 	}
@@ -288,9 +303,10 @@ func TestCache_SetWithTTL(t *testing.T) {
 	var mutex sync.Mutex
 	m := make(map[DeletionCause]int)
 	statsCounter := stats.NewCounter()
-	c, err := NewBuilder[int, int](uint64(size)).
-		CollectStats(statsCounter).
+	c, err := NewBuilder[int, int]().
+		MaximumSize(size).
 		InitialCapacity(size).
+		CollectStats(statsCounter).
 		WithTTL(time.Second).
 		DeletionListener(func(key int, value int, cause DeletionCause) {
 			mutex.Lock()
@@ -336,7 +352,8 @@ func TestCache_SetWithTTL(t *testing.T) {
 
 	m = make(map[DeletionCause]int)
 	statsCounter = stats.NewCounter()
-	cc, err := NewBuilder[int, int](uint64(size)).
+	cc, err := NewBuilder[int, int]().
+		MaximumSize(size).
 		WithVariableTTL().
 		CollectStats(statsCounter).
 		DeletionListener(func(key int, value int, cause DeletionCause) {
@@ -388,7 +405,8 @@ func TestCache_Delete(t *testing.T) {
 	size := getRandomSize(t)
 	var mutex sync.Mutex
 	m := make(map[DeletionCause]int)
-	c, err := NewBuilder[int, int](uint64(size)).
+	c, err := NewBuilder[int, int]().
+		MaximumSize(size).
 		InitialCapacity(size).
 		WithTTL(time.Hour).
 		DeletionListener(func(key int, value int, cause DeletionCause) {
@@ -434,7 +452,8 @@ func TestCache_DeleteByFunc(t *testing.T) {
 	size := getRandomSize(t)
 	var mutex sync.Mutex
 	m := make(map[DeletionCause]int)
-	c, err := NewBuilder[int, int](uint64(size)).
+	c, err := NewBuilder[int, int]().
+		MaximumSize(size).
 		InitialCapacity(size).
 		WithTTL(time.Hour).
 		DeletionListener(func(key int, value int, cause DeletionCause) {
@@ -475,7 +494,8 @@ func TestCache_DeleteByFunc(t *testing.T) {
 func TestCache_Advanced(t *testing.T) {
 	size := getRandomSize(t)
 	defaultTTL := time.Hour
-	c, err := NewBuilder[int, int](uint64(size)).
+	c, err := NewBuilder[int, int]().
+		MaximumSize(size).
 		WithTTL(defaultTTL).
 		Build()
 	if err != nil {
@@ -531,7 +551,8 @@ func TestCache_Ratio(t *testing.T) {
 	m := make(map[DeletionCause]int)
 	statsCounter := stats.NewCounter()
 	capacity := 100
-	c, err := NewBuilder[uint64, uint64](uint64(100)).
+	c, err := NewBuilder[uint64, uint64]().
+		MaximumSize(capacity).
 		CollectStats(statsCounter).
 		DeletionListener(func(key uint64, value uint64, cause DeletionCause) {
 			mutex.Lock()
@@ -634,7 +655,8 @@ func (h *optimalHeap) Pop() any {
 }
 
 func Test_GetExpired(t *testing.T) {
-	c, err := NewBuilder[string, string](1000000).
+	c, err := NewBuilder[string, string]().
+		MaximumSize(1000000).
 		CollectStats(stats.NewCounter()).
 		DeletionListener(func(key string, value string, cause DeletionCause) {
 			fmt.Println(cause)
