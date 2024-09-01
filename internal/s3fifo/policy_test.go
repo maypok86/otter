@@ -21,7 +21,7 @@ import (
 )
 
 func newNode(k int) node.Node[int, int] {
-	m := node.NewManager[int, int](node.Config{})
+	m := node.NewManager[int, int](node.Config{WithSize: true})
 	n := m.Create(k, k, 0, 1)
 	return n
 }

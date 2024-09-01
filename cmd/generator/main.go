@@ -20,6 +20,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -38,10 +39,12 @@ func (f feature) alias() string {
 }
 
 var (
+	size       = newFeature("size")
 	expiration = newFeature("expiration")
 	weight     = newFeature("weight")
 
 	declaredFeatures = []feature{
+		size,
 		expiration,
 		weight,
 	}
@@ -77,16 +80,41 @@ func init() {
 		combinations = append(combinations, combination)
 	}
 
-	nodeTypes = make([]string, 0, len(combinations))
+	featureToIdx := make(map[feature]int, len(declaredFeatures))
+	for i, f := range declaredFeatures {
+		featureToIdx[f] = i
+	}
+
+	nodeTypesSet := make(map[string]bool, len(combinations))
 	for _, combination := range combinations {
-		var sb strings.Builder
-		sb.WriteString("b")
+		featureSet := make(map[feature]bool)
 		for i := 0; i < len(combination); i++ {
 			if combination[i] {
-				sb.WriteString(declaredFeatures[i].alias())
+				featureSet[declaredFeatures[i]] = true
 			}
 		}
-		nodeTypes = append(nodeTypes, sb.String())
+		if featureSet[size] {
+			delete(featureSet, weight)
+		}
+		features := make([]feature, 0, len(featureSet))
+		for f := range featureSet {
+			features = append(features, f)
+		}
+		sort.Slice(features, func(i, j int) bool {
+			return featureToIdx[features[i]] < featureToIdx[features[j]]
+		})
+
+		var sb strings.Builder
+		sb.WriteString("b")
+		for _, f := range features {
+			sb.WriteString(f.alias())
+		}
+		nodeTypesSet[sb.String()] = true
+	}
+
+	nodeTypes = make([]string, 0, len(nodeTypesSet))
+	for nodeType := range nodeTypesSet {
+		nodeTypes = append(nodeTypes, nodeType)
 	}
 }
 
@@ -145,6 +173,10 @@ func newGenerator(nodeType string) *generator {
 	}
 }
 
+func (g *generator) isBounded() bool {
+	return g.features[size] || g.features[weight]
+}
+
 func (g *generator) printImports() {
 	g.p("import (")
 	g.in()
@@ -179,9 +211,11 @@ func (g *generator) printStruct() {
 	g.in()
 	g.p("key        K")
 	g.p("value      V")
-	g.p("prev       *%s[K, V]", g.structName)
-	g.p("next       *%s[K, V]", g.structName)
 
+	if g.isBounded() {
+		g.p("prev       *%s[K, V]", g.structName)
+		g.p("next       *%s[K, V]", g.structName)
+	}
 	if g.features[expiration] {
 		g.p("prevExp    *%s[K, V]", g.structName)
 		g.p("nextExp    *%s[K, V]", g.structName)
@@ -192,8 +226,10 @@ func (g *generator) printStruct() {
 	}
 
 	g.p("state      uint32")
-	g.p("frequency  uint8")
-	g.p("queueType  uint8")
+	if g.isBounded() {
+		g.p("frequency  uint8")
+		g.p("queueType  uint8")
+	}
 	g.out()
 	g.p("}")
 	g.p("")
@@ -253,40 +289,56 @@ func (g *generator) printFunctions() {
 
 	g.p("func (n *%s[K, V]) Prev() Node[K, V] {", g.structName)
 	g.in()
-	g.p("return n.prev")
+	if g.isBounded() {
+		g.p("return n.prev")
+	} else {
+		g.p("panic(\"not implemented\")")
+	}
 	g.out()
 	g.p("}")
 	g.p("")
 
 	g.p("func (n *%s[K, V]) SetPrev(v Node[K, V]) {", g.structName)
 	g.in()
-	g.p("if v == nil {")
-	g.in()
-	g.p("n.prev = nil")
-	g.p("return")
-	g.out()
-	g.p("}")
-	g.p("n.prev = (*%s[K, V])(v.AsPointer())", g.structName)
+	if g.isBounded() {
+		g.p("if v == nil {")
+		g.in()
+		g.p("n.prev = nil")
+		g.p("return")
+		g.out()
+		g.p("}")
+		g.p("n.prev = (*%s[K, V])(v.AsPointer())", g.structName)
+	} else {
+		g.p("panic(\"not implemented\")")
+	}
 	g.out()
 	g.p("}")
 	g.p("")
 
 	g.p("func (n *%s[K, V]) Next() Node[K, V] {", g.structName)
 	g.in()
-	g.p("return n.next")
+	if g.isBounded() {
+		g.p("return n.next")
+	} else {
+		g.p("panic(\"not implemented\")")
+	}
 	g.out()
 	g.p("}")
 	g.p("")
 
 	g.p("func (n *%s[K, V]) SetNext(v Node[K, V]) {", g.structName)
 	g.in()
-	g.p("if v == nil {")
-	g.in()
-	g.p("n.next = nil")
-	g.p("return")
-	g.out()
-	g.p("}")
-	g.p("n.next = (*%s[K, V])(v.AsPointer())", g.structName)
+	if g.isBounded() {
+		g.p("if v == nil {")
+		g.in()
+		g.p("n.next = nil")
+		g.p("return")
+		g.out()
+		g.p("}")
+		g.p("n.next = (*%s[K, V])(v.AsPointer())", g.structName)
+	} else {
+		g.p("panic(\"not implemented\")")
+	}
 	g.out()
 	g.p("}")
 	g.p("")
@@ -378,66 +430,126 @@ func (g *generator) printFunctions() {
 	}
 	g.out()
 	g.p("}")
+	g.p("")
 
-	const otherFunctions = `
-func (n *%s[K, V]) IsAlive() bool {
-	return atomic.LoadUint32(&n.state) == aliveState
-}
+	g.p("func (n *%s[K, V]) IsAlive() bool {", g.structName)
+	g.in()
+	g.p("return atomic.LoadUint32(&n.state) == aliveState")
+	g.out()
+	g.p("}")
+	g.p("")
 
-func (n *%s[K, V]) Die() {
-	atomic.StoreUint32(&n.state, deadState)
-}
+	g.p("func (n *%s[K, V]) Die() {", g.structName)
+	g.in()
+	g.p("atomic.StoreUint32(&n.state, deadState)")
+	g.out()
+	g.p("}")
+	g.p("")
 
-func (n *%s[K, V]) Frequency() uint8 {
-	return n.frequency
-}
-
-func (n *%s[K, V]) IncrementFrequency() {
-	n.frequency = minUint8(n.frequency+1, maxFrequency)
-}
-
-func (n *%s[K, V]) DecrementFrequency() {
-	n.frequency--
-}
-
-func (n *%s[K, V]) ResetFrequency() {
-	n.frequency = 0
-}
-
-func (n *%s[K, V]) MarkSmall() {
-	n.queueType = smallQueueType
-}
-
-func (n *%s[K, V]) IsSmall() bool {
-	return n.queueType == smallQueueType
-}
-
-func (n *%s[K, V]) MarkMain() {
-	n.queueType = mainQueueType
-}
-
-func (n *%s[K, V]) IsMain() bool {
-	return n.queueType == mainQueueType
-}
-
-func (n *%s[K, V]) Unmark() {
-	n.queueType = unknownQueueType
-}`
-
-	count := strings.Count(otherFunctions, "%s")
-	args := make([]any, 0, count)
-	for i := 0; i < count; i++ {
-		args = append(args, g.structName)
+	g.p("func (n *%s[K, V]) Frequency() uint8 {", g.structName)
+	g.in()
+	if g.isBounded() {
+		g.p("return n.frequency")
+	} else {
+		g.p("panic(\"not implemented\")")
 	}
+	g.out()
+	g.p("}")
+	g.p("")
 
-	g.p(otherFunctions, args...)
+	g.p("func (n *%s[K, V]) IncrementFrequency() {", g.structName)
+	g.in()
+	if g.isBounded() {
+		g.p("n.frequency = minUint8(n.frequency+1, maxFrequency)")
+	} else {
+		g.p("panic(\"not implemented\")")
+	}
+	g.out()
+	g.p("}")
+	g.p("")
+
+	g.p("func (n *%s[K, V]) DecrementFrequency() {", g.structName)
+	g.in()
+	if g.isBounded() {
+		g.p("n.frequency--")
+	} else {
+		g.p("panic(\"not implemented\")")
+	}
+	g.out()
+	g.p("}")
+	g.p("")
+
+	g.p("func (n *%s[K, V]) ResetFrequency() {", g.structName)
+	g.in()
+	if g.isBounded() {
+		g.p("n.frequency = 0")
+	} else {
+		g.p("panic(\"not implemented\")")
+	}
+	g.out()
+	g.p("}")
+	g.p("")
+
+	g.p("func (n *%s[K, V]) MarkSmall() {", g.structName)
+	g.in()
+	if g.isBounded() {
+		g.p("n.queueType = smallQueueType")
+	} else {
+		g.p("panic(\"not implemented\")")
+	}
+	g.out()
+	g.p("}")
+	g.p("")
+
+	g.p("func (n *%s[K, V]) IsSmall() bool {", g.structName)
+	g.in()
+	if g.isBounded() {
+		g.p("return n.queueType == smallQueueType")
+	} else {
+		g.p("panic(\"not implemented\")")
+	}
+	g.out()
+	g.p("}")
+	g.p("")
+
+	g.p("func (n *%s[K, V]) MarkMain() {", g.structName)
+	g.in()
+	if g.isBounded() {
+		g.p("n.queueType = mainQueueType")
+	} else {
+		g.p("panic(\"not implemented\")")
+	}
+	g.out()
+	g.p("}")
+	g.p("")
+
+	g.p("func (n *%s[K, V]) IsMain() bool {", g.structName)
+	g.in()
+	if g.isBounded() {
+		g.p("return n.queueType == mainQueueType")
+	} else {
+		g.p("panic(\"not implemented\")")
+	}
+	g.out()
+	g.p("}")
+	g.p("")
+
+	g.p("func (n *%s[K, V]) Unmark() {", g.structName)
+	g.in()
+	if g.isBounded() {
+		g.p("n.queueType = unknownQueueType")
+	} else {
+		g.p("panic(\"not implemented\")")
+	}
+	g.out()
+	g.p("}")
 }
 
 func run(nodeType, dir string) error {
 	g := newGenerator(nodeType)
 	g.p("// Code generated by NodeGenerator. DO NOT EDIT.")
 	g.p("")
-	g.p("// Package node is a generated generator package.")
+	g.p("// Package node is a generated by the generator.")
 	g.p("package node")
 	g.p("")
 
@@ -553,6 +665,7 @@ func Equals[K comparable, V any](a, b Node[K, V]) bool {
 }
 
 type Config struct {
+	WithSize       bool
 	WithExpiration bool
 	WithWeight     bool
 }
@@ -565,6 +678,9 @@ type Manager[K comparable, V any] struct {
 func NewManager[K comparable, V any](c Config) *Manager[K, V] {
 	var sb strings.Builder
 	sb.WriteString("b")
+	if c.WithSize {
+		sb.WriteString("s")
+	}
 	if c.WithExpiration {
 		sb.WriteString("e")
 	}

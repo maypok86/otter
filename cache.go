@@ -108,6 +108,7 @@ type Cache[K comparable, V any] struct {
 // newCache returns a new cache instance based on the settings from Config.
 func newCache[K comparable, V any](b *Builder[K, V]) *Cache[K, V] {
 	nodeManager := node.NewManager[K, V](node.Config{
+		WithSize:       b.maximumSize != nil,
 		WithExpiration: b.ttl != nil || b.withVariableTTL,
 		WithWeight:     b.weigher != nil,
 	})
