@@ -86,6 +86,7 @@ func Equals[K comparable, V any](a, b Node[K, V]) bool {
 }
 
 type Config struct {
+	WithSize       bool
 	WithExpiration bool
 	WithWeight     bool
 }
@@ -98,6 +99,9 @@ type Manager[K comparable, V any] struct {
 func NewManager[K comparable, V any](c Config) *Manager[K, V] {
 	var sb strings.Builder
 	sb.WriteString("b")
+	if c.WithSize {
+		sb.WriteString("s")
+	}
 	if c.WithExpiration {
 		sb.WriteString("e")
 	}
@@ -108,9 +112,9 @@ func NewManager[K comparable, V any](c Config) *Manager[K, V] {
 	m := &Manager[K, V]{}
 
 	switch nodeType {
-	case "bew":
-		m.create = NewBEW[K, V]
-		m.fromPointer = CastPointerToBEW[K, V]
+	case "bs":
+		m.create = NewBS[K, V]
+		m.fromPointer = CastPointerToBS[K, V]
 	case "bw":
 		m.create = NewBW[K, V]
 		m.fromPointer = CastPointerToBW[K, V]
@@ -120,6 +124,12 @@ func NewManager[K comparable, V any](c Config) *Manager[K, V] {
 	case "b":
 		m.create = NewB[K, V]
 		m.fromPointer = CastPointerToB[K, V]
+	case "bse":
+		m.create = NewBSE[K, V]
+		m.fromPointer = CastPointerToBSE[K, V]
+	case "bew":
+		m.create = NewBEW[K, V]
+		m.fromPointer = CastPointerToBEW[K, V]
 	default:
 		panic("not valid nodeType")
 	}
