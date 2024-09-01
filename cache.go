@@ -274,13 +274,6 @@ func (c *Cache[K, V]) afterGet(got node.Node[K, V]) {
 	}
 }
 
-// Set associates the value with the key in this cache.
-//
-// If it returns false, then the key-value item had too much weight and the Set was dropped.
-func (c *Cache[K, V]) Set(key K, value V) bool {
-	return c.set(key, value, c.defaultExpiration(), false)
-}
-
 func (c *Cache[K, V]) defaultExpiration() int64 {
 	if c.ttl == 0 {
 		return 0
@@ -289,53 +282,61 @@ func (c *Cache[K, V]) defaultExpiration() int64 {
 	return c.getExpiration(c.ttl)
 }
 
+// Set associates the value with the key in this cache.
+//
+// If the specified key is not already associated with a value, then it returns new value and true.
+//
+// If the specified key is already associated with a value, then it returns existing value and false.
+func (c *Cache[K, V]) Set(key K, value V) (V, bool) {
+	return c.set(key, value, c.defaultExpiration(), false)
+}
+
 // SetWithTTL associates the value with the key in this cache and sets the custom ttl for this key-value item.
 //
-// If it returns false, then the key-value item had too much weight and the SetWithTTL was dropped.
-func (c *Cache[K, V]) SetWithTTL(key K, value V, ttl time.Duration) bool {
+// If the specified key is not already associated with a value, then it returns new value and true.
+//
+// If the specified key is already associated with a value, then it returns existing value and false.
+func (c *Cache[K, V]) SetWithTTL(key K, value V, ttl time.Duration) (V, bool) {
 	return c.set(key, value, c.getExpiration(ttl), false)
 }
 
 // SetIfAbsent if the specified key is not already associated with a value associates it with the given value.
 //
-// If the specified key is not already associated with a value, then it returns false.
+// If the specified key is not already associated with a value, then it returns new value and true.
 //
-// Also, it returns false if the key-value item had too much weight and the SetIfAbsent was dropped.
-func (c *Cache[K, V]) SetIfAbsent(key K, value V) bool {
+// If the specified key is already associated with a value, then it returns existing value and false.
+func (c *Cache[K, V]) SetIfAbsent(key K, value V) (V, bool) {
 	return c.set(key, value, c.defaultExpiration(), true)
 }
 
 // SetIfAbsentWithTTL if the specified key is not already associated with a value associates it with the given value
 // and sets the custom ttl for this key-value item.
 //
-// If the specified key is not already associated with a value, then it returns false.
+// If the specified key is not already associated with a value, then it returns new value and true.
 //
-// Also, it returns false if the key-value item had too much weight and the SetIfAbsent was dropped.
-func (c *Cache[K, V]) SetIfAbsentWithTTL(key K, value V, ttl time.Duration) bool {
+// If the specified key is already associated with a value, then it returns existing value and false.
+func (c *Cache[K, V]) SetIfAbsentWithTTL(key K, value V, ttl time.Duration) (V, bool) {
 	return c.set(key, value, c.getExpiration(ttl), true)
 }
 
-func (c *Cache[K, V]) set(key K, value V, expiration int64, onlyIfAbsent bool) bool {
-	weight := c.weigher(key, value)
-	if uint64(weight) > c.policy.MaxAvailableWeight() {
-		c.stats.CollectRejectedSets(1)
-		return false
-	}
-
-	n := c.nodeManager.Create(key, value, expiration, weight)
+func (c *Cache[K, V]) set(key K, value V, expiration int64, onlyIfAbsent bool) (V, bool) {
+	n := c.nodeManager.Create(key, value, expiration, c.weigher(key, value))
 	if onlyIfAbsent {
 		res := c.hashmap.SetIfAbsent(n)
 		if res == nil {
 			c.afterWrite(n, nil)
-			return true
+			return value, true
 		}
-		return false
+		return res.Value(), false
 	}
 
 	evicted := c.hashmap.Set(n)
 	c.afterWrite(n, evicted)
 
-	return true
+	if evicted != nil {
+		return evicted.Value(), false
+	}
+	return value, true
 }
 
 func (c *Cache[K, V]) afterWrite(n, evicted node.Node[K, V]) {
@@ -357,8 +358,16 @@ func (c *Cache[K, V]) afterWrite(n, evicted node.Node[K, V]) {
 }
 
 // Delete deletes the association for this key from the cache.
-func (c *Cache[K, V]) Delete(key K) {
-	c.afterDelete(c.hashmap.Delete(key))
+//
+// Returns previous value if any. The deleted result reports whether the key was
+// present.
+func (c *Cache[K, V]) Delete(key K) (value V, deleted bool) {
+	d := c.hashmap.Delete(key)
+	c.afterDelete(d)
+	if d != nil {
+		return d.Value(), true
+	}
+	return zeroValue[V](), false
 }
 
 func (c *Cache[K, V]) deleteNode(n node.Node[K, V]) {
@@ -439,6 +448,15 @@ func (c *Cache[K, V]) evictNode(n node.Node[K, V]) {
 
 func (c *Cache[K, V]) addToPolicies(n node.Node[K, V]) {
 	if !n.IsAlive() {
+		return
+	}
+
+	if uint64(n.Weight()) > c.policy.MaxAvailableWeight() {
+		deleted := c.hashmap.DeleteNode(n)
+		if deleted != nil {
+			n.Die()
+		}
+		c.stats.CollectRejectedSets(1)
 		return
 	}
 
