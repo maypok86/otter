@@ -27,6 +27,10 @@ func New() *Clock {
 }
 
 func (c *Clock) Offset() int64 {
+	if c == nil {
+		// do not use the Clock unless initialized via New.
+		return 0
+	}
 	return time.Since(c.start).Nanoseconds()
 }
 
