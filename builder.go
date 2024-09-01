@@ -91,6 +91,9 @@ func (b *Builder[K, V]) InitialCapacity(initialCapacity int) *Builder[K, V] {
 // of this method requires a corresponding call to MaximumWeight prior to calling Build.
 // Weights are measured and recorded when entries are inserted into or updated in
 // the cache, and are thus effectively static during the lifetime of a cache entry.
+//
+// When the weight of an entry is zero it will not be considered for size-based eviction (though
+// it still may be evicted by other means).
 func (b *Builder[K, V]) Weigher(weigher func(key K, value V) uint32) *Builder[K, V] {
 	b.weigher = weigher
 	return b

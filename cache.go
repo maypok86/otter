@@ -61,6 +61,7 @@ func (dc DeletionCause) String() string {
 
 const (
 	minWriteBufferSize uint32 = 4
+	pinnedWeight       uint32 = 0
 )
 
 var (
@@ -436,6 +437,23 @@ func (c *Cache[K, V]) evictNode(n node.Node[K, V]) {
 	}
 }
 
+func (c *Cache[K, V]) addToPolicies(n node.Node[K, V]) {
+	if !n.IsAlive() {
+		return
+	}
+
+	c.expiryPolicy.Add(n)
+	if n.Weight() != pinnedWeight {
+		c.policy.Add(n, c.clock.Offset())
+	}
+}
+
+func (c *Cache[K, V]) deleteFromPolicies(n node.Node[K, V], cause DeletionCause) {
+	c.expiryPolicy.Delete(n)
+	c.policy.Delete(n)
+	c.notifyDeletion(n.Key(), n.Value(), cause)
+}
+
 func (c *Cache[K, V]) onWrite(t task[K, V]) {
 	if t.isClear() || t.isClose() {
 		c.writeBuffer.Clear()
@@ -453,27 +471,16 @@ func (c *Cache[K, V]) onWrite(t task[K, V]) {
 	n := t.node()
 	switch {
 	case t.isAdd():
-		if n.IsAlive() {
-			c.expiryPolicy.Add(n)
-			c.policy.Add(n, c.clock.Offset())
-		}
+		c.addToPolicies(n)
 	case t.isUpdate():
-		oldNode := t.oldNode()
-		c.expiryPolicy.Delete(oldNode)
-		c.policy.Delete(oldNode)
-		if n.IsAlive() {
-			c.expiryPolicy.Add(n)
-			c.policy.Add(n, c.clock.Offset())
-		}
-		c.notifyDeletion(oldNode.Key(), oldNode.Value(), Replaced)
+		c.deleteFromPolicies(t.oldNode(), Replaced)
+		c.addToPolicies(n)
 	case t.isDelete():
-		c.expiryPolicy.Delete(n)
-		c.policy.Delete(n)
-		c.notifyDeletion(n.Key(), n.Value(), Explicit)
+		c.deleteFromPolicies(n, Explicit)
 	case t.isExpired():
-		c.expiryPolicy.Delete(n)
-		c.policy.Delete(n)
-		c.notifyDeletion(n.Key(), n.Value(), Expired)
+		c.deleteFromPolicies(n, Expired)
+	default:
+		panic("invalid task type")
 	}
 }
 

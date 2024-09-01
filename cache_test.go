@@ -87,6 +87,72 @@ func TestCache_Unbounded(t *testing.T) {
 	if m[Replaced] != replaced {
 		t.Fatalf("cache was supposed to replace %d, but replaced %d entries", replaced, m[Replaced])
 	}
+	if hitRatio := statsCounter.Snapshot().HitRatio(); hitRatio != 0.5 {
+		t.Fatalf("not valid hit ratio. expected %.2f, but got %.2f", 0.5, hitRatio)
+	}
+}
+
+func TestCache_PinnedWeight(t *testing.T) {
+	size := 10
+	pinned := 4
+	m := make(map[DeletionCause]int)
+	mutex := sync.Mutex{}
+	c, err := NewBuilder[int, int]().
+		MaximumWeight(uint64(size)).
+		Weigher(func(key int, value int) uint32 {
+			if key == pinned {
+				return pinnedWeight
+			}
+			return 1
+		}).
+		WithTTL(3 * time.Second).
+		DeletionListener(func(key int, value int, cause DeletionCause) {
+			mutex.Lock()
+			m[cause]++
+			mutex.Unlock()
+		}).
+		Build()
+	if err != nil {
+		t.Fatalf("can not create cache: %v", err)
+	}
+
+	for i := 0; i < size; i++ {
+		c.Set(i, i)
+	}
+	for i := 0; i < size; i++ {
+		if !c.Has(i) {
+			t.Fatalf("the key must exist: %d", i)
+		}
+		c.Has(i)
+	}
+	for i := size; i < 2*size; i++ {
+		c.Set(i, i)
+	}
+	time.Sleep(time.Second)
+	for i := size; i < 2*size; i++ {
+		if !c.Has(i) {
+			t.Fatalf("the key must exist: %d", i)
+		}
+		c.Has(i)
+	}
+	if !c.Has(pinned) {
+		t.Fatalf("the key must exist: %d", pinned)
+	}
+
+	time.Sleep(3 * time.Second)
+
+	if c.Has(pinned) {
+		t.Fatalf("the key must not exist: %d", pinned)
+	}
+
+	mutex.Lock()
+	defer mutex.Unlock()
+	if len(m) != 2 || m[Size] != size-1 {
+		t.Fatalf("cache was supposed to evict %d, but evicted %d entries", size-1, m[Size])
+	}
+	if m[Expired] != size+1 {
+		t.Fatalf("cache was supposed to expire %d, but expired %d entries", size+1, m[Expired])
+	}
 }
 
 func TestCache_SetWithWeight(t *testing.T) {
