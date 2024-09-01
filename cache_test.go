@@ -156,12 +156,14 @@ func TestCache_PinnedWeight(t *testing.T) {
 }
 
 func TestCache_SetWithWeight(t *testing.T) {
+	statsCounter := stats.NewCounter()
 	size := uint64(10)
 	c, err := NewBuilder[uint32, int]().
 		MaximumWeight(size).
 		Weigher(func(key uint32, value int) uint32 {
 			return key
 		}).
+		CollectStats(statsCounter).
 		Build()
 	if err != nil {
 		t.Fatalf("can not create cache: %v", err)
@@ -170,19 +172,20 @@ func TestCache_SetWithWeight(t *testing.T) {
 	goodWeight := c.policy.MaxAvailableWeight()
 	badWeight := goodWeight + 1
 
-	added := c.Set(uint32(goodWeight), 1)
-	if !added {
-		t.Fatalf("Set was dropped, even though it shouldn't have been. Max available weight: %d, actual weight: %d",
-			c.policy.MaxAvailableWeight(),
-			c.weigher(uint32(goodWeight), 1),
-		)
-	}
-	added = c.Set(uint32(badWeight), 1)
-	if added {
+	c.Set(uint32(goodWeight), 1)
+	c.Set(uint32(badWeight), 1)
+	time.Sleep(time.Second)
+	if rejections := statsCounter.Snapshot().RejectedSets(); rejections != 1 {
 		t.Fatalf("Set wasn't dropped, though it should have been. Max available weight: %d, actual weight: %d",
 			c.policy.MaxAvailableWeight(),
 			c.weigher(uint32(badWeight), 1),
 		)
+	}
+	if !c.Has(uint32(goodWeight)) {
+		t.Fatalf("the key must exist: %d", goodWeight)
+	}
+	if c.Has(uint32(badWeight)) {
+		t.Fatalf("the key must not exist: %d", badWeight)
 	}
 }
 
@@ -360,7 +363,7 @@ func TestCache_SetIfAbsent(t *testing.T) {
 	}
 
 	for i := 0; i < size; i++ {
-		if !c.SetIfAbsent(i, i) {
+		if _, ok := c.SetIfAbsent(i, i); !ok {
 			t.Fatalf("set was dropped. key: %d", i)
 		}
 	}
@@ -372,7 +375,7 @@ func TestCache_SetIfAbsent(t *testing.T) {
 	}
 
 	for i := 0; i < size; i++ {
-		if c.SetIfAbsent(i, i) {
+		if _, ok := c.SetIfAbsent(i, i); ok {
 			t.Fatalf("set wasn't dropped. key: %d", i)
 		}
 	}
@@ -389,7 +392,7 @@ func TestCache_SetIfAbsent(t *testing.T) {
 	}
 
 	for i := 0; i < size; i++ {
-		if !cc.SetIfAbsentWithTTL(i, i, time.Hour) {
+		if _, ok := cc.SetIfAbsentWithTTL(i, i, time.Hour); !ok {
 			t.Fatalf("set was dropped. key: %d", i)
 		}
 	}
@@ -401,7 +404,7 @@ func TestCache_SetIfAbsent(t *testing.T) {
 	}
 
 	for i := 0; i < size; i++ {
-		if cc.SetIfAbsentWithTTL(i, i, time.Second) {
+		if _, ok := cc.SetIfAbsentWithTTL(i, i, time.Second); ok {
 			t.Fatalf("set wasn't dropped. key: %d", i)
 		}
 	}
