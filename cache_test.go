@@ -40,6 +40,55 @@ func getRandomSize(t *testing.T) int {
 	return r.Intn(maxSize-minSize) + minSize
 }
 
+func TestCache_Unbounded(t *testing.T) {
+	statsCounter := stats.NewCounter()
+	m := make(map[DeletionCause]int)
+	mutex := sync.Mutex{}
+	c, err := NewBuilder[int, int]().
+		DeletionListener(func(key int, value int, cause DeletionCause) {
+			mutex.Lock()
+			m[cause]++
+			mutex.Unlock()
+		}).
+		CollectStats(statsCounter).
+		Build()
+	if err != nil {
+		t.Fatalf("can not create cache: %v", err)
+	}
+
+	size := getRandomSize(t)
+	for i := 0; i < size; i++ {
+		c.Set(i, i)
+	}
+	for i := 0; i < size; i++ {
+		if !c.Has(i) {
+			t.Fatalf("the key must exist: %d", i)
+		}
+	}
+	for i := size; i < 2*size; i++ {
+		if c.Has(i) {
+			t.Fatalf("the key must not exist: %d", i)
+		}
+	}
+
+	replaced := size / 2
+	for i := 0; i < replaced; i++ {
+		c.Set(i, i)
+	}
+	for i := replaced; i < size; i++ {
+		c.Delete(i)
+	}
+
+	mutex.Lock()
+	defer mutex.Unlock()
+	if len(m) != 2 || m[Explicit] != size-replaced {
+		t.Fatalf("cache was supposed to delete %d, but deleted %d entries", size-replaced, m[Explicit])
+	}
+	if m[Replaced] != replaced {
+		t.Fatalf("cache was supposed to replace %d, but replaced %d entries", replaced, m[Replaced])
+	}
+}
+
 func TestCache_SetWithWeight(t *testing.T) {
 	size := uint64(10)
 	c, err := NewBuilder[uint32, int]().
@@ -252,7 +301,7 @@ func TestCache_SetIfAbsent(t *testing.T) {
 
 	for i := 0; i < size; i++ {
 		if !c.Has(i) {
-			t.Fatalf("key should exists: %d", i)
+			t.Fatalf("the key must exist: %d", i)
 		}
 	}
 
@@ -281,7 +330,7 @@ func TestCache_SetIfAbsent(t *testing.T) {
 
 	for i := 0; i < size; i++ {
 		if !cc.Has(i) {
-			t.Fatalf("key should exists: %d", i)
+			t.Fatalf("the key must exist: %d", i)
 		}
 	}
 
@@ -407,7 +456,7 @@ func TestCache_Delete(t *testing.T) {
 
 	for i := 0; i < size; i++ {
 		if !c.Has(i) {
-			t.Fatalf("key should exists: %d", i)
+			t.Fatalf("the key must exist: %d", i)
 		}
 	}
 
@@ -417,7 +466,7 @@ func TestCache_Delete(t *testing.T) {
 
 	for i := 0; i < size; i++ {
 		if c.Has(i) {
-			t.Fatalf("key should not exists: %d", i)
+			t.Fatalf("the key must not exist: %d", i)
 		}
 	}
 
@@ -638,7 +687,6 @@ func (h *optimalHeap) Pop() any {
 
 func Test_GetExpired(t *testing.T) {
 	c, err := NewBuilder[string, string]().
-		MaximumSize(1000000).
 		CollectStats(stats.NewCounter()).
 		DeletionListener(func(key string, value string, cause DeletionCause) {
 			fmt.Println(cause)

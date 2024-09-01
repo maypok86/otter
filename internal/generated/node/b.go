@@ -4,7 +4,6 @@
 package node
 
 import (
-	"sync/atomic"
 	"unsafe"
 )
 
@@ -14,7 +13,6 @@ import (
 type B[K comparable, V any] struct {
 	key   K
 	value V
-	state uint32
 }
 
 // NewB creates a new B.
@@ -22,7 +20,6 @@ func NewB[K comparable, V any](key K, value V, expiration int64, weight uint32) 
 	return &B[K, V]{
 		key:   key,
 		value: value,
-		state: aliveState,
 	}
 }
 
@@ -88,11 +85,11 @@ func (n *B[K, V]) Weight() uint32 {
 }
 
 func (n *B[K, V]) IsAlive() bool {
-	return atomic.LoadUint32(&n.state) == aliveState
+	return true
 }
 
 func (n *B[K, V]) Die() {
-	atomic.StoreUint32(&n.state, deadState)
+	panic("not implemented")
 }
 
 func (n *B[K, V]) Frequency() uint8 {

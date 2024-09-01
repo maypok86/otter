@@ -177,10 +177,16 @@ func (g *generator) isBounded() bool {
 	return g.features[size] || g.features[weight]
 }
 
+func (g *generator) withState() bool {
+	return g.isBounded() || g.features[expiration]
+}
+
 func (g *generator) printImports() {
 	g.p("import (")
 	g.in()
-	g.p("\"sync/atomic\"")
+	if g.withState() {
+		g.p("\"sync/atomic\"")
+	}
 	g.p("\"unsafe\"")
 	g.out()
 	g.p(")")
@@ -225,7 +231,9 @@ func (g *generator) printStruct() {
 		g.p("weight     uint32")
 	}
 
-	g.p("state      uint32")
+	if g.withState() {
+		g.p("state      uint32")
+	}
 	if g.isBounded() {
 		g.p("frequency  uint8")
 		g.p("queueType  uint8")
@@ -249,7 +257,9 @@ func (g *generator) printConstructors() {
 	if g.features[weight] {
 		g.p("weight:     weight,")
 	}
-	g.p("state:      aliveState,")
+	if g.withState() {
+		g.p("state:      aliveState,")
+	}
 	g.out()
 	g.p("}")
 	g.out()
@@ -434,14 +444,22 @@ func (g *generator) printFunctions() {
 
 	g.p("func (n *%s[K, V]) IsAlive() bool {", g.structName)
 	g.in()
-	g.p("return atomic.LoadUint32(&n.state) == aliveState")
+	if g.withState() {
+		g.p("return atomic.LoadUint32(&n.state) == aliveState")
+	} else {
+		g.p("return true")
+	}
 	g.out()
 	g.p("}")
 	g.p("")
 
 	g.p("func (n *%s[K, V]) Die() {", g.structName)
 	g.in()
-	g.p("atomic.StoreUint32(&n.state, deadState)")
+	if g.withState() {
+		g.p("atomic.StoreUint32(&n.state, deadState)")
+	} else {
+		g.p("panic(\"not implemented\")")
+	}
 	g.out()
 	g.p("}")
 	g.p("")

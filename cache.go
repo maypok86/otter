@@ -19,12 +19,13 @@ import (
 	"time"
 
 	"github.com/maypok86/otter/v2/internal/clock"
+	"github.com/maypok86/otter/v2/internal/eviction"
+	"github.com/maypok86/otter/v2/internal/eviction/s3fifo"
 	"github.com/maypok86/otter/v2/internal/expiry"
 	"github.com/maypok86/otter/v2/internal/generated/node"
 	"github.com/maypok86/otter/v2/internal/hashtable"
 	"github.com/maypok86/otter/v2/internal/lossy"
 	"github.com/maypok86/otter/v2/internal/queue"
-	"github.com/maypok86/otter/v2/internal/s3fifo"
 	"github.com/maypok86/otter/v2/internal/xmath"
 	"github.com/maypok86/otter/v2/internal/xruntime"
 )
@@ -75,6 +76,14 @@ func init() {
 	maxStripedBufferSize = 4 * roundedParallelism
 }
 
+type evictionPolicy[K comparable, V any] interface {
+	Read(nodes []node.Node[K, V])
+	Add(n node.Node[K, V], nowNanos int64)
+	Delete(n node.Node[K, V])
+	MaxAvailableWeight() uint64
+	Clear()
+}
+
 type expiryPolicy[K comparable, V any] interface {
 	Add(n node.Node[K, V])
 	Delete(n node.Node[K, V])
@@ -87,7 +96,7 @@ type expiryPolicy[K comparable, V any] interface {
 type Cache[K comparable, V any] struct {
 	nodeManager      *node.Manager[K, V]
 	hashmap          *hashtable.Map[K, V]
-	policy           *s3fifo.Policy[K, V]
+	policy           evictionPolicy[K, V]
 	expiryPolicy     expiryPolicy[K, V]
 	stats            statsCollector
 	logger           Logger
@@ -103,6 +112,8 @@ type Cache[K comparable, V any] struct {
 	mask             uint32
 	ttl              time.Duration
 	withExpiration   bool
+	withEviction     bool
+	withProcess      bool
 }
 
 // newCache returns a new cache instance based on the settings from Config.
@@ -113,9 +124,15 @@ func newCache[K comparable, V any](b *Builder[K, V]) *Cache[K, V] {
 		WithWeight:     b.weigher != nil,
 	})
 
-	stripedBuffer := make([]*lossy.Buffer[K, V], 0, maxStripedBufferSize)
-	for i := 0; i < maxStripedBufferSize; i++ {
-		stripedBuffer = append(stripedBuffer, lossy.New[K, V](nodeManager))
+	maximum := b.getMaximum()
+	withEviction := maximum != nil
+
+	var stripedBuffer []*lossy.Buffer[K, V]
+	if withEviction {
+		stripedBuffer = make([]*lossy.Buffer[K, V], 0, maxStripedBufferSize)
+		for i := 0; i < maxStripedBufferSize; i++ {
+			stripedBuffer = append(stripedBuffer, lossy.New[K, V](nodeManager))
+		}
 	}
 
 	var hashmap *hashtable.Map[K, V]
@@ -130,9 +147,7 @@ func newCache[K comparable, V any](b *Builder[K, V]) *Cache[K, V] {
 		hashmap:       hashmap,
 		stats:         newStatsCollector(b.statsCollector),
 		logger:        b.logger,
-		clock:         clock.New(),
 		stripedBuffer: stripedBuffer,
-		writeBuffer:   queue.NewGrowable[task[K, V]](minWriteBufferSize, maxWriteBufferSize),
 		doneClear:     make(chan struct{}),
 		doneClose:     make(chan struct{}, 1),
 		//nolint:gosec // there will never be an overflow
@@ -141,7 +156,11 @@ func newCache[K comparable, V any](b *Builder[K, V]) *Cache[K, V] {
 		deletionListener: b.deletionListener,
 	}
 
-	cache.policy = s3fifo.NewPolicy(*b.getMaximum(), cache.evictNode)
+	cache.withEviction = withEviction
+	cache.policy = eviction.NewDisabled[K, V]()
+	if cache.withEviction {
+		cache.policy = s3fifo.NewPolicy(*maximum, cache.evictNode)
+	}
 
 	switch {
 	case b.ttl != nil:
@@ -157,12 +176,20 @@ func newCache[K comparable, V any](b *Builder[K, V]) *Cache[K, V] {
 	}
 
 	cache.withExpiration = b.ttl != nil || b.withVariableTTL
+	cache.withProcess = cache.withEviction || cache.withExpiration
+
+	if cache.withProcess {
+		cache.writeBuffer = queue.NewGrowable[task[K, V]](minWriteBufferSize, maxWriteBufferSize)
+	}
 
 	if cache.withExpiration {
+		cache.clock = clock.New()
 		go cache.cleanup()
 	}
 
-	go cache.process()
+	if cache.withProcess {
+		go cache.process()
+	}
 
 	return cache
 }
@@ -200,6 +227,7 @@ func (c *Cache[K, V]) GetNode(key K) (node.Node[K, V], bool) {
 	}
 
 	if n.HasExpired(c.clock.Offset()) {
+		// withProcess = true
 		// avoid duplicate push
 		deleted := c.hashmap.DeleteNode(n)
 		if deleted != nil {
@@ -230,6 +258,10 @@ func (c *Cache[K, V]) GetNodeQuietly(key K) (node.Node[K, V], bool) {
 }
 
 func (c *Cache[K, V]) afterGet(got node.Node[K, V]) {
+	if !c.withEviction {
+		return
+	}
+
 	idx := c.getReadBufferIdx()
 	pb := c.stripedBuffer[idx].Add(got)
 	if pb != nil {
@@ -293,14 +325,26 @@ func (c *Cache[K, V]) set(key K, value V, expiration int64, onlyIfAbsent bool) b
 	if onlyIfAbsent {
 		res := c.hashmap.SetIfAbsent(n)
 		if res == nil {
-			// insert
-			c.writeBuffer.Push(newAddTask(n))
+			c.afterWrite(n, nil)
 			return true
 		}
 		return false
 	}
 
 	evicted := c.hashmap.Set(n)
+	c.afterWrite(n, evicted)
+
+	return true
+}
+
+func (c *Cache[K, V]) afterWrite(n, evicted node.Node[K, V]) {
+	if !c.withProcess {
+		if evicted != nil {
+			c.notifyDeletion(n.Key(), n.Value(), Replaced)
+		}
+		return
+	}
+
 	if evicted != nil {
 		// update
 		evicted.Die()
@@ -309,8 +353,6 @@ func (c *Cache[K, V]) set(key K, value V, expiration int64, onlyIfAbsent bool) b
 		// insert
 		c.writeBuffer.Push(newAddTask(n))
 	}
-
-	return true
 }
 
 // Delete deletes the association for this key from the cache.
@@ -323,10 +365,17 @@ func (c *Cache[K, V]) deleteNode(n node.Node[K, V]) {
 }
 
 func (c *Cache[K, V]) afterDelete(deleted node.Node[K, V]) {
-	if deleted != nil {
-		deleted.Die()
-		c.writeBuffer.Push(newDeleteTask(deleted))
+	if deleted == nil {
+		return
 	}
+
+	if !c.withProcess {
+		c.notifyDeletion(deleted.Key(), deleted.Value(), Explicit)
+		return
+	}
+
+	deleted.Die()
+	c.writeBuffer.Push(newDeleteTask(deleted))
 }
 
 // DeleteByFunc deletes the association for this key from the cache when the given function returns true.
@@ -464,8 +513,15 @@ func (c *Cache[K, V]) Clear() {
 
 func (c *Cache[K, V]) clear(t task[K, V]) {
 	c.hashmap.Clear()
-	for i := 0; i < len(c.stripedBuffer); i++ {
-		c.stripedBuffer[i].Clear()
+
+	if !c.withProcess {
+		return
+	}
+
+	if c.withEviction {
+		for i := 0; i < len(c.stripedBuffer); i++ {
+			c.stripedBuffer[i].Clear()
+		}
 	}
 
 	c.writeBuffer.Push(t)
