@@ -102,7 +102,7 @@ func TestBuilder_Build(t *testing.T) {
 		},
 		{
 			fn: func(b *Builder[string, string]) {
-				b.CollectStats(nil)
+				b.RecordStats(nil)
 			},
 			want: ptr("otter: stats collector should not be nil"),
 		},
@@ -121,7 +121,7 @@ func TestBuilder_Build(t *testing.T) {
 		{
 			fn: func(b *Builder[string, string]) {
 				b.MaximumWeight(10).
-					CollectStats(stats.NewCounter()).
+					RecordStats(stats.NewCounter()).
 					InitialCapacity(10).
 					Weigher(func(key string, value string) uint32 {
 						return 2

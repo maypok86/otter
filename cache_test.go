@@ -50,7 +50,7 @@ func TestCache_Unbounded(t *testing.T) {
 			m[cause]++
 			mutex.Unlock()
 		}).
-		CollectStats(statsCounter).
+		RecordStats(statsCounter).
 		Build()
 	if err != nil {
 		t.Fatalf("can not create cache: %v", err)
@@ -163,7 +163,7 @@ func TestCache_SetWithWeight(t *testing.T) {
 		Weigher(func(key uint32, value int) uint32 {
 			return key
 		}).
-		CollectStats(statsCounter).
+		RecordStats(statsCounter).
 		Build()
 	if err != nil {
 		t.Fatalf("can not create cache: %v", err)
@@ -175,7 +175,7 @@ func TestCache_SetWithWeight(t *testing.T) {
 	c.Set(uint32(goodWeight), 1)
 	c.Set(uint32(badWeight), 1)
 	time.Sleep(time.Second)
-	if rejections := statsCounter.Snapshot().RejectedSets(); rejections != 1 {
+	if rejections := statsCounter.Snapshot().Rejections(); rejections != 1 {
 		t.Fatalf("Set wasn't dropped, though it should have been. Max available weight: %d, actual weight: %d",
 			c.policy.MaxAvailableWeight(),
 			c.weigher(uint32(badWeight), 1),
@@ -291,7 +291,7 @@ func TestCache_Set(t *testing.T) {
 	c, err := NewBuilder[int, int]().
 		MaximumSize(size).
 		WithTTL(time.Minute).
-		CollectStats(statsCounter).
+		RecordStats(statsCounter).
 		DeletionListener(func(key int, value int, cause DeletionCause) {
 			mutex.Lock()
 			m[cause]++
@@ -356,7 +356,7 @@ func TestCache_SetIfAbsent(t *testing.T) {
 	c, err := NewBuilder[int, int]().
 		MaximumSize(size).
 		WithTTL(time.Hour).
-		CollectStats(statsCounter).
+		RecordStats(statsCounter).
 		Build()
 	if err != nil {
 		t.Fatalf("can not create cache: %v", err)
@@ -385,7 +385,7 @@ func TestCache_SetIfAbsent(t *testing.T) {
 	cc, err := NewBuilder[int, int]().
 		MaximumSize(size).
 		WithVariableTTL().
-		CollectStats(statsCounter).
+		RecordStats(statsCounter).
 		Build()
 	if err != nil {
 		t.Fatalf("can not create cache: %v", err)
@@ -463,7 +463,7 @@ func TestCache_SetWithTTL(t *testing.T) {
 	cc, err := NewBuilder[int, int]().
 		MaximumSize(size).
 		WithVariableTTL().
-		CollectStats(statsCounter).
+		RecordStats(statsCounter).
 		DeletionListener(func(key int, value int, cause DeletionCause) {
 			mutex.Lock()
 			m[cause]++
@@ -653,7 +653,7 @@ func TestCache_Ratio(t *testing.T) {
 	capacity := 100
 	c, err := NewBuilder[uint64, uint64]().
 		MaximumSize(capacity).
-		CollectStats(statsCounter).
+		RecordStats(statsCounter).
 		DeletionListener(func(key uint64, value uint64, cause DeletionCause) {
 			mutex.Lock()
 			m[cause]++
@@ -756,7 +756,7 @@ func (h *optimalHeap) Pop() any {
 
 func Test_GetExpired(t *testing.T) {
 	c, err := NewBuilder[string, string]().
-		CollectStats(stats.NewCounter()).
+		RecordStats(stats.NewCounter()).
 		DeletionListener(func(key string, value string, cause DeletionCause) {
 			fmt.Println(cause)
 			if cause != Expired {

@@ -20,94 +20,94 @@ import (
 	"github.com/maypok86/otter/v2/stats"
 )
 
-// StatsCollector accumulates statistics during the operation of a Cache.
+// StatsRecorder accumulates statistics during the operation of a Cache.
 //
-// If you also want to collect eviction statistics,
-// then your collector should implement an EvictionStatsCollector.
+// If you also want to record eviction statistics,
+// then your recorder should implement an EvictionStatsRecorder.
 //
-// If you also want to collect statistics on set rejections,
-// then your collector should implement an RejectedSetsStatsCollector.
+// If you also want to record statistics on rejections,
+// then your recorder should implement an RejectionStatsRecorder.
 //
-// If you also want to collect load statistics,
-// then your collector should implement an LoadingStatsCollector.
-type StatsCollector interface {
-	// CollectHits collects cache hits. This should be called when a cache request returns a cached value.
-	CollectHits(count int)
-	// CollectMisses collects cache misses. This should be called when a cache request returns a value that was not
+// If you also want to record load statistics,
+// then your recorder should implement an LoadStatsRecorder.
+type StatsRecorder interface {
+	// RecordHits records cache hits. This should be called when a cache request returns a cached value.
+	RecordHits(count int)
+	// RecordMisses records cache misses. This should be called when a cache request returns a value that was not
 	// found in the cache.
-	CollectMisses(count int)
+	RecordMisses(count int)
 }
 
-// EvictionStatsCollector is a collector that collects statistics on the eviction of entries from the cache.
-type EvictionStatsCollector interface {
-	// CollectEviction collects the eviction of an entry from the cache. This should only been called when an entry is
+// EvictionStatsRecorder is a recorder that records statistics on the eviction of entries from the cache.
+type EvictionStatsRecorder interface {
+	// RecordEviction records the eviction of an entry from the cache. This should only been called when an entry is
 	// evicted due to the cache's eviction strategy, and not as a result of manual deletions.
-	CollectEviction(weight uint32)
+	RecordEviction(weight uint32)
 }
 
-// RejectedSetsStatsCollector is a collector that collects statistics on the rejection of sets.
-type RejectedSetsStatsCollector interface {
-	// CollectRejectedSets collects rejected sets due to too much weight of entries in them.
-	CollectRejectedSets(count int)
+// RejectionStatsRecorder is a recorder that records statistics on the rejections.
+type RejectionStatsRecorder interface {
+	// RecordRejections records rejections of entries. Cache rejects entries only if they have too much weight.
+	RecordRejections(count int)
 }
 
-// LoadingStatsCollector is a collector that collects statistics on the loads of new entries.
-type LoadingStatsCollector interface {
-	// CollectLoadSuccess collects the successful load of a new entry. This method should be called when a cache request
+// LoadStatsRecorder is a recorder that records statistics on the loads of new entries.
+type LoadStatsRecorder interface {
+	// RecordLoadSuccess records the successful load of a new entry. This method should be called when a cache request
 	// causes an entry to be loaded and the loading completes successfully.
-	CollectLoadSuccess(loadTime time.Duration)
-	// CollectLoadFailure collects the failed load of a new entry. This method should be called when a cache request
+	RecordLoadSuccess(loadTime time.Duration)
+	// RecordLoadFailure records the failed load of a new entry. This method should be called when a cache request
 	// causes an entry to be loaded, but the loading function returns an error.
-	CollectLoadFailure(loadTime time.Duration)
+	RecordLoadFailure(loadTime time.Duration)
 }
 
-type noopStatsCollector struct{}
+type noopStatsRecorder struct{}
 
-func (np noopStatsCollector) CollectHits(count int)                     {}
-func (np noopStatsCollector) CollectMisses(count int)                   {}
-func (np noopStatsCollector) CollectEviction(weight uint32)             {}
-func (np noopStatsCollector) CollectRejectedSets(count int)             {}
-func (np noopStatsCollector) CollectLoadFailure(loadTime time.Duration) {}
-func (np noopStatsCollector) CollectLoadSuccess(loadTime time.Duration) {}
+func (np noopStatsRecorder) RecordHits(count int)                     {}
+func (np noopStatsRecorder) RecordMisses(count int)                   {}
+func (np noopStatsRecorder) RecordEviction(weight uint32)             {}
+func (np noopStatsRecorder) RecordRejections(count int)               {}
+func (np noopStatsRecorder) RecordLoadFailure(loadTime time.Duration) {}
+func (np noopStatsRecorder) RecordLoadSuccess(loadTime time.Duration) {}
 
-type statsCollector interface {
-	StatsCollector
-	EvictionStatsCollector
-	RejectedSetsStatsCollector
-	LoadingStatsCollector
+type statsRecorder interface {
+	StatsRecorder
+	EvictionStatsRecorder
+	RejectionStatsRecorder
+	LoadStatsRecorder
 }
 
-type statsCollectorComposition struct {
-	StatsCollector
-	EvictionStatsCollector
-	RejectedSetsStatsCollector
-	LoadingStatsCollector
+type statsRecorderHub struct {
+	StatsRecorder
+	EvictionStatsRecorder
+	RejectionStatsRecorder
+	LoadStatsRecorder
 }
 
-func newStatsCollector(collector StatsCollector) statsCollector {
+func newStatsRecorder(recorder StatsRecorder) statsRecorder {
 	// optimization
-	if noop, ok := collector.(noopStatsCollector); ok {
+	if noop, ok := recorder.(noopStatsRecorder); ok {
 		return noop
 	}
-	if c, ok := collector.(*stats.Counter); ok {
+	if c, ok := recorder.(*stats.Counter); ok {
 		return c
 	}
 
-	sc := &statsCollectorComposition{
-		StatsCollector:             collector,
-		EvictionStatsCollector:     noopStatsCollector{},
-		RejectedSetsStatsCollector: noopStatsCollector{},
-		LoadingStatsCollector:      noopStatsCollector{},
+	sc := &statsRecorderHub{
+		StatsRecorder:          recorder,
+		EvictionStatsRecorder:  noopStatsRecorder{},
+		RejectionStatsRecorder: noopStatsRecorder{},
+		LoadStatsRecorder:      noopStatsRecorder{},
 	}
 
-	if ec, ok := collector.(EvictionStatsCollector); ok {
-		sc.EvictionStatsCollector = ec
+	if ec, ok := recorder.(EvictionStatsRecorder); ok {
+		sc.EvictionStatsRecorder = ec
 	}
-	if rsc, ok := collector.(RejectedSetsStatsCollector); ok {
-		sc.RejectedSetsStatsCollector = rsc
+	if rsc, ok := recorder.(RejectionStatsRecorder); ok {
+		sc.RejectionStatsRecorder = rsc
 	}
-	if lc, ok := collector.(LoadingStatsCollector); ok {
-		sc.LoadingStatsCollector = lc
+	if lc, ok := recorder.(LoadStatsRecorder); ok {
+		sc.LoadStatsRecorder = lc
 	}
 
 	return sc

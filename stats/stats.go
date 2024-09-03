@@ -25,7 +25,7 @@ type Stats struct {
 	misses         uint64
 	evictions      uint64
 	evictionWeight uint64
-	rejectedSets   uint64
+	rejections     uint64
 	loadSuccesses  uint64
 	loadFailures   uint64
 	totalLoadTime  time.Duration
@@ -44,7 +44,7 @@ func (s Stats) Misses() uint64 {
 // Requests returns the number of times otter.Cache lookup methods were looking for a cached value.
 //
 // NOTE: the values of the metrics are undefined in case of overflow. If you require specific handling, we recommend
-// implementing your own otter.StatsCollector.
+// implementing your own otter.StatsRecorder.
 func (s Stats) Requests() uint64 {
 	return checkedAdd(s.hits, s.misses)
 }
@@ -71,9 +71,9 @@ func (s Stats) MissRatio() float64 {
 	return float64(s.misses) / float64(requests)
 }
 
-// RejectedSets returns the number of rejected sets.
-func (s Stats) RejectedSets() uint64 {
-	return s.rejectedSets
+// Rejections returns the number of rejections.
+func (s Stats) Rejections() uint64 {
+	return s.rejections
 }
 
 // Evictions returns the number of times an entry has been evicted. This count does not include manual
@@ -102,7 +102,7 @@ func (s Stats) LoadFailures() uint64 {
 // Loads returns the total number of times that otter.Cache lookup methods attempted to load new values.
 //
 // NOTE: the values of the metrics are undefined in case of overflow. If you require specific handling, we recommend
-// implementing your own otter.StatsCollector.
+// implementing your own otter.StatsRecorder.
 func (s Stats) Loads() uint64 {
 	return checkedAdd(s.loadSuccesses, s.loadFailures)
 }
