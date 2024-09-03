@@ -19,19 +19,19 @@ import (
 	"time"
 )
 
-type testStatsCollector struct{}
+type testStatsRecorder struct{}
 
-func (np testStatsCollector) CollectHits(count int)                     {}
-func (np testStatsCollector) CollectMisses(count int)                   {}
-func (np testStatsCollector) CollectEviction(weight uint32)             {}
-func (np testStatsCollector) CollectRejectedSets(count int)             {}
-func (np testStatsCollector) CollectLoadFailure(loadTime time.Duration) {}
-func (np testStatsCollector) CollectLoadSuccess(loadTime time.Duration) {}
+func (np testStatsRecorder) RecordHits(count int)                     {}
+func (np testStatsRecorder) RecordMisses(count int)                   {}
+func (np testStatsRecorder) RecordEviction(weight uint32)             {}
+func (np testStatsRecorder) RecordRejections(count int)               {}
+func (np testStatsRecorder) RecordLoadFailure(loadTime time.Duration) {}
+func (np testStatsRecorder) RecordLoadSuccess(loadTime time.Duration) {}
 
-func TestStatsCollector(t *testing.T) {
-	sc := newStatsCollector(testStatsCollector{})
+func TestStatsRecorder(t *testing.T) {
+	sc := newStatsRecorder(testStatsRecorder{})
 
-	if _, ok := sc.(*statsCollectorComposition); !ok {
-		t.Fatalf("not valid for stats counter. got: %T", sc)
+	if _, ok := sc.(*statsRecorderHub); !ok {
+		t.Fatalf("not valid stats recorder. got: %T", sc)
 	}
 }

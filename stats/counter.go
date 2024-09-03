@@ -21,7 +21,7 @@ import (
 	"github.com/maypok86/otter/v2/internal/xsync"
 )
 
-// Counter is a goroutine-safe otter.StatsCollector implementation for use by otter.Cache.
+// Counter is a goroutine-safe otter.StatsRecorder implementation for use by otter.Cache.
 type Counter struct {
 	hits           *xsync.Adder
 	misses         *xsync.Adder
@@ -47,11 +47,11 @@ func NewCounter() *Counter {
 	}
 }
 
-// Snapshot returns a snapshot of this collector's values. Note that this may be an inconsistent view, as it
+// Snapshot returns a snapshot of this recorder's values. Note that this may be an inconsistent view, as it
 // may be interleaved with update operations.
 //
 // NOTE: the values of the metrics are undefined in case of overflow. If you require specific handling, we recommend
-// implementing your own otter.StatsCollector.
+// implementing your own otter.StatsRecorder.
 func (c *Counter) Snapshot() Stats {
 	totalLoadTime := c.totalLoadTime.Value()
 	if totalLoadTime > uint64(math.MaxInt64) {
@@ -62,7 +62,7 @@ func (c *Counter) Snapshot() Stats {
 		misses:         c.misses.Value(),
 		evictions:      c.evictions.Value(),
 		evictionWeight: c.evictionWeight.Value(),
-		rejectedSets:   c.rejectedSets.Value(),
+		rejections:     c.rejectedSets.Value(),
 		loadSuccesses:  c.loadSuccesses.Value(),
 		loadFailures:   c.loadFailures.Value(),
 		//nolint:gosec // overflow is handled above
@@ -70,39 +70,39 @@ func (c *Counter) Snapshot() Stats {
 	}
 }
 
-// CollectHits collects cache hits. This should be called when a cache request returns a cached value.
-func (c *Counter) CollectHits(count int) {
+// RecordHits records cache hits. This should be called when a cache request returns a cached value.
+func (c *Counter) RecordHits(count int) {
 	c.hits.Add(uint64(count))
 }
 
-// CollectMisses collects cache misses. This should be called when a cache request returns a value that was not
+// RecordMisses records cache misses. This should be called when a cache request returns a value that was not
 // found in the cache.
-func (c *Counter) CollectMisses(count int) {
+func (c *Counter) RecordMisses(count int) {
 	c.misses.Add(uint64(count))
 }
 
-// CollectEviction collects the eviction of an entry from the cache. This should only been called when an entry is
+// RecordEviction records the eviction of an entry from the cache. This should only been called when an entry is
 // evicted due to the cache's eviction strategy, and not as a result of manual deletions.
-func (c *Counter) CollectEviction(weight uint32) {
+func (c *Counter) RecordEviction(weight uint32) {
 	c.evictions.Add(1)
 	c.evictionWeight.Add(uint64(weight))
 }
 
-// CollectRejectedSets collects rejected sets due to too much weight of entries in them.
-func (c *Counter) CollectRejectedSets(count int) {
+// RecordRejections records rejections of entries. Cache rejects entries only if they have too much weight.
+func (c *Counter) RecordRejections(count int) {
 	c.rejectedSets.Add(uint64(count))
 }
 
-// CollectLoadSuccess collects the successful load of a new entry. This method should be called when a cache request
+// RecordLoadSuccess records the successful load of a new entry. This method should be called when a cache request
 // causes an entry to be loaded and the loading completes successfully.
-func (c *Counter) CollectLoadSuccess(loadTime time.Duration) {
+func (c *Counter) RecordLoadSuccess(loadTime time.Duration) {
 	c.loadSuccesses.Add(1)
 	c.totalLoadTime.Add(uint64(loadTime))
 }
 
-// CollectLoadFailure collects the failed load of a new entry. This method should be called when a cache request
+// RecordLoadFailure records the failed load of a new entry. This method should be called when a cache request
 // causes an entry to be loaded, but the loading function returns an error.
-func (c *Counter) CollectLoadFailure(loadTime time.Duration) {
+func (c *Counter) RecordLoadFailure(loadTime time.Duration) {
 	c.loadFailures.Add(1)
 	c.totalLoadTime.Add(uint64(loadTime))
 }

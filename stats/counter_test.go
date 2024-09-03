@@ -23,19 +23,19 @@ import (
 func TestCounter_Basic(t *testing.T) {
 	t.Run("enabled", func(t *testing.T) {
 		c := NewCounter()
-		c.CollectHits(1)
-		c.CollectMisses(1)
-		c.CollectEviction(10)
-		c.CollectRejectedSets(20)
-		c.CollectLoadSuccess(1)
-		c.CollectLoadFailure(1)
+		c.RecordHits(1)
+		c.RecordMisses(1)
+		c.RecordEviction(10)
+		c.RecordRejections(20)
+		c.RecordLoadSuccess(1)
+		c.RecordLoadFailure(1)
 
 		expected := Stats{
 			hits:           1,
 			misses:         1,
 			evictions:      1,
 			evictionWeight: 10,
-			rejectedSets:   20,
+			rejections:     20,
 			loadSuccesses:  1,
 			loadFailures:   1,
 			totalLoadTime:  2,
@@ -69,12 +69,12 @@ func TestCounter_Concurrent(t *testing.T) {
 		go func() {
 			defer wg.Done()
 
-			c.CollectHits(1)
-			c.CollectMisses(1)
-			c.CollectEviction(10)
-			c.CollectRejectedSets(20)
-			c.CollectLoadSuccess(1)
-			c.CollectLoadFailure(1)
+			c.RecordHits(1)
+			c.RecordMisses(1)
+			c.RecordEviction(10)
+			c.RecordRejections(20)
+			c.RecordLoadSuccess(1)
+			c.RecordLoadFailure(1)
 		}()
 	}
 
@@ -85,7 +85,7 @@ func TestCounter_Concurrent(t *testing.T) {
 		misses:         50,
 		evictions:      50,
 		evictionWeight: 500,
-		rejectedSets:   1000,
+		rejections:     1000,
 		loadSuccesses:  50,
 		loadFailures:   50,
 		totalLoadTime:  100,

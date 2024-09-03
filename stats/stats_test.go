@@ -55,8 +55,8 @@ func testStats(
 	if s.MissRatio() != missRatio {
 		t.Fatalf("missRatio should be %.2f, but got %.2f", missRatio, s.MissRatio())
 	}
-	if s.RejectedSets() != rejectedSets {
-		t.Fatalf("rejectedSets should be %d, but got %d", rejectedSets, s.RejectedSets())
+	if s.Rejections() != rejectedSets {
+		t.Fatalf("rejections should be %d, but got %d", rejectedSets, s.Rejections())
 	}
 	if s.Evictions() != evictions {
 		t.Fatalf("evictions should be %d, but got %d", evictions, s.Evictions())
@@ -110,7 +110,7 @@ func TestStats(t *testing.T) {
 			misses:         13,
 			evictions:      27,
 			evictionWeight: 54,
-			rejectedSets:   1,
+			rejections:     1,
 			loadSuccesses:  17,
 			loadFailures:   19,
 			totalLoadTime:  23,
@@ -138,7 +138,7 @@ func TestStats(t *testing.T) {
 			misses:         math.MaxUint64,
 			evictions:      27,
 			evictionWeight: 54,
-			rejectedSets:   1,
+			rejections:     1,
 			loadSuccesses:  math.MaxUint64,
 			loadFailures:   math.MaxUint64,
 			totalLoadTime:  math.MaxInt64,

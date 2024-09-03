@@ -99,7 +99,7 @@ type Cache[K comparable, V any] struct {
 	hashmap          *hashtable.Map[K, V]
 	policy           evictionPolicy[K, V]
 	expiryPolicy     expiryPolicy[K, V]
-	stats            statsCollector
+	stats            statsRecorder
 	logger           Logger
 	clock            *clock.Clock
 	stripedBuffer    []*lossy.Buffer[K, V]
@@ -146,7 +146,7 @@ func newCache[K comparable, V any](b *Builder[K, V]) *Cache[K, V] {
 	cache := &Cache[K, V]{
 		nodeManager:   nodeManager,
 		hashmap:       hashmap,
-		stats:         newStatsCollector(b.statsCollector),
+		stats:         newStatsRecorder(b.statsRecorder),
 		logger:        b.logger,
 		stripedBuffer: stripedBuffer,
 		doneClear:     make(chan struct{}),
@@ -223,7 +223,7 @@ func (c *Cache[K, V]) Get(key K) (V, bool) {
 func (c *Cache[K, V]) GetNode(key K) (node.Node[K, V], bool) {
 	n, ok := c.hashmap.Get(key)
 	if !ok || !n.IsAlive() {
-		c.stats.CollectMisses(1)
+		c.stats.RecordMisses(1)
 		return nil, false
 	}
 
@@ -235,12 +235,12 @@ func (c *Cache[K, V]) GetNode(key K) (node.Node[K, V], bool) {
 			n.Die()
 			c.writeBuffer.Push(newExpiredTask(n))
 		}
-		c.stats.CollectMisses(1)
+		c.stats.RecordMisses(1)
 		return nil, false
 	}
 
 	c.afterGet(n)
-	c.stats.CollectHits(1)
+	c.stats.RecordHits(1)
 
 	return n, true
 }
@@ -417,7 +417,7 @@ func (c *Cache[K, V]) deleteExpiredNode(n node.Node[K, V]) {
 	if deleted != nil {
 		n.Die()
 		c.notifyDeletion(n.Key(), n.Value(), Expired)
-		c.stats.CollectEviction(n.Weight())
+		c.stats.RecordEviction(n.Weight())
 	}
 }
 
@@ -442,7 +442,7 @@ func (c *Cache[K, V]) evictNode(n node.Node[K, V]) {
 	if deleted != nil {
 		n.Die()
 		c.notifyDeletion(n.Key(), n.Value(), Size)
-		c.stats.CollectEviction(n.Weight())
+		c.stats.RecordEviction(n.Weight())
 	}
 }
 
@@ -456,7 +456,7 @@ func (c *Cache[K, V]) addToPolicies(n node.Node[K, V]) {
 		if deleted != nil {
 			n.Die()
 		}
-		c.stats.CollectRejectedSets(1)
+		c.stats.RecordRejections(1)
 		return
 	}
 

@@ -24,7 +24,7 @@ type Builder[K comparable, V any] struct {
 	maximumSize      *int
 	maximumWeight    *uint64
 	initialCapacity  *int
-	statsCollector   StatsCollector
+	statsRecorder    StatsRecorder
 	ttl              *time.Duration
 	withVariableTTL  bool
 	weigher          func(key K, value V) uint32
@@ -35,8 +35,8 @@ type Builder[K comparable, V any] struct {
 // NewBuilder creates a builder and sets the future cache capacity.
 func NewBuilder[K comparable, V any]() *Builder[K, V] {
 	return &Builder[K, V]{
-		statsCollector: noopStatsCollector{},
-		logger:         noopLogger{},
+		statsRecorder: noopStatsRecorder{},
+		logger:        noopLogger{},
 	}
 }
 
@@ -69,12 +69,12 @@ func (b *Builder[K, V]) MaximumWeight(maximumWeight uint64) *Builder[K, V] {
 	return b
 }
 
-// CollectStats enables the accumulation of statistics during the operation of the cache.
+// RecordStats enables the accumulation of statistics during the operation of the cache.
 //
-// NOTE: collecting statistics requires bookkeeping to be performed with each operation,
+// NOTE: recording statistics requires bookkeeping to be performed with each operation,
 // and thus imposes a performance penalty on cache operations.
-func (b *Builder[K, V]) CollectStats(statsCollector StatsCollector) *Builder[K, V] {
-	b.statsCollector = statsCollector
+func (b *Builder[K, V]) RecordStats(statsRecorder StatsRecorder) *Builder[K, V] {
+	b.statsRecorder = statsRecorder
 	return b
 }
 
@@ -175,7 +175,7 @@ func (b *Builder[K, V]) validate() error {
 	if b.initialCapacity != nil && *b.initialCapacity <= 0 {
 		return errors.New("otter: initial capacity should be positive")
 	}
-	if b.statsCollector == nil {
+	if b.statsRecorder == nil {
 		return errors.New("otter: stats collector should not be nil")
 	}
 	if b.logger == nil {
