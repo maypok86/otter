@@ -21,15 +21,15 @@ import (
 
 // Builder is a one-shot builder for creating a cache instance.
 type Builder[K comparable, V any] struct {
-	maximumSize      *int
-	maximumWeight    *uint64
-	initialCapacity  *int
-	statsRecorder    StatsRecorder
-	ttl              *time.Duration
-	withVariableTTL  bool
-	weigher          func(key K, value V) uint32
-	deletionListener func(key K, value V, cause DeletionCause)
-	logger           Logger
+	maximumSize     *int
+	maximumWeight   *uint64
+	initialCapacity *int
+	statsRecorder   StatsRecorder
+	ttl             *time.Duration
+	withVariableTTL bool
+	weigher         func(key K, value V) uint32
+	onDeletion      func(e DeletionEvent[K, V])
+	logger          Logger
 }
 
 // NewBuilder creates a builder and sets the future cache capacity.
@@ -99,11 +99,11 @@ func (b *Builder[K, V]) Weigher(weigher func(key K, value V) uint32) *Builder[K,
 	return b
 }
 
-// DeletionListener specifies a listener instance that caches should notify each time an entry is deleted for any
-// DeletionCause cause. The cache will invoke this listener in the background goroutine
+// OnDeletion specifies a handler that caches should notify each time an entry is deleted for any
+// DeletionCause. The cache will invoke this handler in the background goroutine
 // after the entry's deletion operation has completed.
-func (b *Builder[K, V]) DeletionListener(deletionListener func(key K, value V, cause DeletionCause)) *Builder[K, V] {
-	b.deletionListener = deletionListener
+func (b *Builder[K, V]) OnDeletion(onDeletion func(e DeletionEvent[K, V])) *Builder[K, V] {
+	b.onDeletion = onDeletion
 	return b
 }
 

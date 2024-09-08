@@ -45,9 +45,9 @@ func TestCache_Unbounded(t *testing.T) {
 	m := make(map[DeletionCause]int)
 	mutex := sync.Mutex{}
 	c, err := NewBuilder[int, int]().
-		DeletionListener(func(key int, value int, cause DeletionCause) {
+		OnDeletion(func(e DeletionEvent[int, int]) {
 			mutex.Lock()
-			m[cause]++
+			m[e.Cause]++
 			mutex.Unlock()
 		}).
 		RecordStats(statsCounter).
@@ -81,11 +81,11 @@ func TestCache_Unbounded(t *testing.T) {
 
 	mutex.Lock()
 	defer mutex.Unlock()
-	if len(m) != 2 || m[Explicit] != size-replaced {
-		t.Fatalf("cache was supposed to delete %d, but deleted %d entries", size-replaced, m[Explicit])
+	if len(m) != 2 || m[CauseInvalidation] != size-replaced {
+		t.Fatalf("cache was supposed to delete %d, but deleted %d entries", size-replaced, m[CauseInvalidation])
 	}
-	if m[Replaced] != replaced {
-		t.Fatalf("cache was supposed to replace %d, but replaced %d entries", replaced, m[Replaced])
+	if m[CauseReplacement] != replaced {
+		t.Fatalf("cache was supposed to replace %d, but replaced %d entries", replaced, m[CauseReplacement])
 	}
 	if hitRatio := statsCounter.Snapshot().HitRatio(); hitRatio != 0.5 {
 		t.Fatalf("not valid hit ratio. expected %.2f, but got %.2f", 0.5, hitRatio)
@@ -106,9 +106,9 @@ func TestCache_PinnedWeight(t *testing.T) {
 			return 1
 		}).
 		WithTTL(3 * time.Second).
-		DeletionListener(func(key int, value int, cause DeletionCause) {
+		OnDeletion(func(e DeletionEvent[int, int]) {
 			mutex.Lock()
-			m[cause]++
+			m[e.Cause]++
 			mutex.Unlock()
 		}).
 		Build()
@@ -147,11 +147,11 @@ func TestCache_PinnedWeight(t *testing.T) {
 
 	mutex.Lock()
 	defer mutex.Unlock()
-	if len(m) != 2 || m[Size] != size-1 {
-		t.Fatalf("cache was supposed to evict %d, but evicted %d entries", size-1, m[Size])
+	if len(m) != 2 || m[CauseOverflow] != size-1 {
+		t.Fatalf("cache was supposed to evict %d, but evicted %d entries", size-1, m[CauseOverflow])
 	}
-	if m[Expired] != size+1 {
-		t.Fatalf("cache was supposed to expire %d, but expired %d entries", size+1, m[Expired])
+	if m[CauseExpiration] != size+1 {
+		t.Fatalf("cache was supposed to expire %d, but expired %d entries", size+1, m[CauseExpiration])
 	}
 }
 
@@ -257,7 +257,7 @@ func TestCache_Close(t *testing.T) {
 	}
 }
 
-func TestCache_Clear(t *testing.T) {
+func TestCache_InvalidateAll(t *testing.T) {
 	size := 10
 	c, err := NewBuilder[int, int]().
 		MaximumSize(size).
@@ -274,7 +274,7 @@ func TestCache_Clear(t *testing.T) {
 		t.Fatalf("c.Size() = %d, want = %d", cacheSize, size)
 	}
 
-	c.Clear()
+	c.InvalidateAll()
 
 	time.Sleep(10 * time.Millisecond)
 
@@ -292,9 +292,9 @@ func TestCache_Set(t *testing.T) {
 		MaximumSize(size).
 		WithTTL(time.Minute).
 		RecordStats(statsCounter).
-		DeletionListener(func(key int, value int, cause DeletionCause) {
+		OnDeletion(func(e DeletionEvent[int, int]) {
 			mutex.Lock()
-			m[cause]++
+			m[e.Cause]++
 			mutex.Unlock()
 		}).
 		Build()
@@ -345,8 +345,8 @@ func TestCache_Set(t *testing.T) {
 
 	mutex.Lock()
 	defer mutex.Unlock()
-	if len(m) != 1 || m[Replaced] != size {
-		t.Fatalf("cache was supposed to replace %d, but replaced %d entries", size, m[Replaced])
+	if len(m) != 1 || m[CauseReplacement] != size {
+		t.Fatalf("cache was supposed to replace %d, but replaced %d entries", size, m[CauseReplacement])
 	}
 }
 
@@ -380,7 +380,7 @@ func TestCache_SetIfAbsent(t *testing.T) {
 		}
 	}
 
-	c.Clear()
+	c.InvalidateAll()
 
 	cc, err := NewBuilder[int, int]().
 		MaximumSize(size).
@@ -426,9 +426,9 @@ func TestCache_SetWithTTL(t *testing.T) {
 		InitialCapacity(size).
 		CollectStats(statsCounter).
 		WithTTL(time.Second).
-		DeletionListener(func(key int, value int, cause DeletionCause) {
+		OnDeletion(func(e DeletionEvent[int, int]) {
 			mutex.Lock()
-			m[cause]++
+			m[e.Cause]++
 			mutex.Unlock()
 		}).
 		Build()
@@ -454,7 +454,7 @@ func TestCache_SetWithTTL(t *testing.T) {
 	}
 
 	mutex.Lock()
-	if e := m[Expired]; len(m) != 1 || e != size {
+	if e := m[CauseExpiration]; len(m) != 1 || e != size {
 		mutex.Unlock()
 		t.Fatalf("cache was supposed to expire %d, but expired %d entries", size, e)
 	}
@@ -474,9 +474,9 @@ func TestCache_SetWithTTL(t *testing.T) {
 		MaximumSize(size).
 		WithVariableTTL().
 		RecordStats(statsCounter).
-		DeletionListener(func(key int, value int, cause DeletionCause) {
+		OnDeletion(func(e DeletionEvent[int, int]) {
 			mutex.Lock()
-			m[cause]++
+			m[e.Cause]++
 			mutex.Unlock()
 		}).
 		Build()
@@ -506,8 +506,8 @@ func TestCache_SetWithTTL(t *testing.T) {
 	}
 	mutex.Lock()
 	defer mutex.Unlock()
-	if len(m) != 1 || m[Expired] != size {
-		t.Fatalf("cache was supposed to expire %d, but expired %d entries", size, m[Expired])
+	if len(m) != 1 || m[CauseExpiration] != size {
+		t.Fatalf("cache was supposed to expire %d, but expired %d entries", size, m[CauseExpiration])
 	}
 	if statsCounter.Snapshot().Evictions() != uint64(m[Expired]) {
 		mutex.Unlock()
@@ -527,9 +527,9 @@ func TestCache_Delete(t *testing.T) {
 		MaximumSize(size).
 		InitialCapacity(size).
 		WithTTL(time.Hour).
-		DeletionListener(func(key int, value int, cause DeletionCause) {
+		OnDeletion(func(e DeletionEvent[int, int]) {
 			mutex.Lock()
-			m[cause]++
+			m[e.Cause]++
 			mutex.Unlock()
 		}).
 		Build()
@@ -561,8 +561,8 @@ func TestCache_Delete(t *testing.T) {
 
 	mutex.Lock()
 	defer mutex.Unlock()
-	if len(m) != 1 || m[Explicit] != size {
-		t.Fatalf("cache was supposed to delete %d, but deleted %d entries", size, m[Explicit])
+	if len(m) != 1 || m[CauseInvalidation] != size {
+		t.Fatalf("cache was supposed to delete %d, but deleted %d entries", size, m[CauseInvalidation])
 	}
 }
 
@@ -574,9 +574,9 @@ func TestCache_DeleteByFunc(t *testing.T) {
 		MaximumSize(size).
 		InitialCapacity(size).
 		WithTTL(time.Hour).
-		DeletionListener(func(key int, value int, cause DeletionCause) {
+		OnDeletion(func(e DeletionEvent[int, int]) {
 			mutex.Lock()
-			m[cause]++
+			m[e.Cause]++
 			mutex.Unlock()
 		}).
 		Build()
@@ -588,7 +588,7 @@ func TestCache_DeleteByFunc(t *testing.T) {
 		c.Set(i, i)
 	}
 
-	c.DeleteByFunc(func(key int, value int) bool {
+	c.InvalidateByFunc(func(key int, value int) bool {
 		return key%2 == 1
 	})
 
@@ -604,8 +604,8 @@ func TestCache_DeleteByFunc(t *testing.T) {
 	expected := size / 2
 	mutex.Lock()
 	defer mutex.Unlock()
-	if len(m) != 1 || m[Explicit] != expected {
-		t.Fatalf("cache was supposed to delete %d, but deleted %d entries", expected, m[Explicit])
+	if len(m) != 1 || m[CauseInvalidation] != expected {
+		t.Fatalf("cache was supposed to delete %d, but deleted %d entries", expected, m[CauseInvalidation])
 	}
 }
 
@@ -672,9 +672,9 @@ func TestCache_Ratio(t *testing.T) {
 	c, err := NewBuilder[uint64, uint64]().
 		MaximumSize(capacity).
 		RecordStats(statsCounter).
-		DeletionListener(func(key uint64, value uint64, cause DeletionCause) {
+		OnDeletion(func(e DeletionEvent[uint64, uint64]) {
 			mutex.Lock()
-			m[cause]++
+			m[e.Cause]++
 			mutex.Unlock()
 		}).
 		Build()
@@ -699,9 +699,9 @@ func TestCache_Ratio(t *testing.T) {
 
 	mutex.Lock()
 	defer mutex.Unlock()
-	t.Logf("evicted: %d", m[Size])
-	if len(m) != 1 || m[Size] <= 0 || m[Size] > 5000 {
-		t.Fatalf("cache was supposed to evict positive number of entries, but evicted %d entries", m[Size])
+	t.Logf("evicted: %d", m[CauseOverflow])
+	if len(m) != 1 || m[CauseOverflow] <= 0 || m[CauseOverflow] > 5000 {
+		t.Fatalf("cache was supposed to evict positive number of entries, but evicted %d entries", m[CauseOverflow])
 	}
 }
 
@@ -775,10 +775,10 @@ func (h *optimalHeap) Pop() any {
 func Test_GetExpired(t *testing.T) {
 	c, err := NewBuilder[string, string]().
 		RecordStats(stats.NewCounter()).
-		DeletionListener(func(key string, value string, cause DeletionCause) {
-			fmt.Println(cause)
-			if cause != Expired {
-				t.Fatalf("err not expired: %v", cause)
+		OnDeletion(func(e DeletionEvent[string, string]) {
+			fmt.Println(e.Cause)
+			if e.Cause != CauseExpiration {
+				t.Fatalf("err not expired: %v", e.Cause)
 			}
 		}).
 		WithVariableTTL().
