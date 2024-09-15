@@ -694,6 +694,12 @@ func TestCache_Ratio(t *testing.T) {
 	t.Logf("actual size: %d, capacity: %d", c.Size(), capacity)
 	t.Logf("actual: %.2f, optimal: %.2f", statsCounter.Snapshot().HitRatio(), o.Ratio())
 
+	time.Sleep(2 * time.Second)
+
+	if size := c.Size(); size != capacity {
+		t.Fatalf("not valid cache size. expected %d, but got %d", capacity, size)
+	}
+
 	mutex.Lock()
 	defer mutex.Unlock()
 	t.Logf("evicted: %d", m[CauseOverflow])
