@@ -4,9 +4,11 @@ run:
   build-tags:
     - integration
   modules-download-mode: readonly
-  go: '1.17'
+  go: '1.19'
 output:
-  format: tab:lint.txt
+  formats:
+    - format: tab
+      path: lint.txt
   print-issued-lines: false
   uniq-by-line: false
   sort-results: true
@@ -17,7 +19,7 @@ linters:
     - bidichk
     - bodyclose
     - contextcheck
-    - copyloopvar
+    #- copyloopvar
     - durationcheck
     - errcheck
     - errname

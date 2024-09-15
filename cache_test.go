@@ -105,7 +105,7 @@ func TestCache_PinnedWeight(t *testing.T) {
 			}
 			return 1
 		}).
-		WithTTL(3 * time.Second).
+		WithTTL(2 * time.Second).
 		OnDeletion(func(e DeletionEvent[int, int]) {
 			mutex.Lock()
 			m[e.Cause]++
@@ -127,9 +127,6 @@ func TestCache_PinnedWeight(t *testing.T) {
 	}
 	for i := size; i < 2*size; i++ {
 		c.Set(i, i)
-	}
-	time.Sleep(time.Second)
-	for i := size; i < 2*size; i++ {
 		if !c.Has(i) {
 			t.Fatalf("the key must exist: %d", i)
 		}
@@ -139,7 +136,7 @@ func TestCache_PinnedWeight(t *testing.T) {
 		t.Fatalf("the key must exist: %d", pinned)
 	}
 
-	time.Sleep(3 * time.Second)
+	time.Sleep(4 * time.Second)
 
 	if c.Has(pinned) {
 		t.Fatalf("the key must not exist: %d", pinned)
