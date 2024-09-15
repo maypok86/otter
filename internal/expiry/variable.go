@@ -82,6 +82,7 @@ func (v *Variable[K, V]) findBucket(expiration uint64) node.Node[K, V] {
 
 // Add schedules a timer event for the node.
 func (v *Variable[K, V]) Add(n node.Node[K, V]) {
+	//nolint:gosec // there is no overflow
 	root := v.findBucket(uint64(n.Expiration()))
 	link(root, n)
 }
@@ -94,6 +95,7 @@ func (v *Variable[K, V]) Delete(n node.Node[K, V]) {
 }
 
 func (v *Variable[K, V]) DeleteExpired(nowNanos int64) {
+	//nolint:gosec // there is no overflow
 	currentTime := uint64(nowNanos)
 	prevTime := v.time
 	v.time = currentTime
@@ -130,6 +132,7 @@ func (v *Variable[K, V]) deleteExpiredFromBucket(index int, prevTicks, delta uin
 			n.SetPrevExp(nil)
 			n.SetNextExp(nil)
 
+			//nolint:gosec // there is no overflow
 			if uint64(n.Expiration()) <= v.time {
 				v.deleteNode(n)
 			} else {

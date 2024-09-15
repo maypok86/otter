@@ -12,7 +12,7 @@ func NewDisabled[K comparable, V any]() Disabled[K, V] {
 	return Disabled[K, V]{}
 }
 
-func (d Disabled[K, V]) Read(nodes []node.Node[K, V]) {
+func (d Disabled[K, V]) Read(nodes node.Node[K, V]) {
 	panic("not implemented")
 }
 

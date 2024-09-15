@@ -133,6 +133,7 @@ func (b *Builder[K, V]) Logger(logger Logger) *Builder[K, V] {
 
 func (b *Builder[K, V]) getMaximum() *uint64 {
 	if b.maximumSize != nil {
+		//nolint:gosec // there is no overflow
 		ms := uint64(*b.maximumSize)
 		return &ms
 	}
