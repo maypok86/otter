@@ -130,7 +130,6 @@ func (s Stats) AverageLoadPenalty() time.Duration {
 	if loads > uint64(math.MaxInt64) {
 		return s.totalLoadTime / time.Duration(math.MaxInt64)
 	}
-	//nolint:gosec // overflow is handled above
 	return s.totalLoadTime / time.Duration(loads)
 }
 

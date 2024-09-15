@@ -72,12 +72,14 @@ func (c *Counter) Snapshot() Stats {
 
 // RecordHits records cache hits. This should be called when a cache request returns a cached value.
 func (c *Counter) RecordHits(count int) {
+	//nolint:gosec // there is no overflow
 	c.hits.Add(uint64(count))
 }
 
 // RecordMisses records cache misses. This should be called when a cache request returns a value that was not
 // found in the cache.
 func (c *Counter) RecordMisses(count int) {
+	//nolint:gosec // there is no overflow
 	c.misses.Add(uint64(count))
 }
 
@@ -90,6 +92,7 @@ func (c *Counter) RecordEviction(weight uint32) {
 
 // RecordRejections records rejections of entries. Cache rejects entries only if they have too much weight.
 func (c *Counter) RecordRejections(count int) {
+	//nolint:gosec // there is no overflow
 	c.rejectedSets.Add(uint64(count))
 }
 
@@ -97,6 +100,7 @@ func (c *Counter) RecordRejections(count int) {
 // causes an entry to be loaded and the loading completes successfully.
 func (c *Counter) RecordLoadSuccess(loadTime time.Duration) {
 	c.loadSuccesses.Add(1)
+	//nolint:gosec // there is no overflow
 	c.totalLoadTime.Add(uint64(loadTime))
 }
 
@@ -104,5 +108,6 @@ func (c *Counter) RecordLoadSuccess(loadTime time.Duration) {
 // causes an entry to be loaded, but the loading function returns an error.
 func (c *Counter) RecordLoadFailure(loadTime time.Duration) {
 	c.loadFailures.Add(1)
+	//nolint:gosec // there is no overflow
 	c.totalLoadTime.Add(uint64(loadTime))
 }
