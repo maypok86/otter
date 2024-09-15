@@ -45,14 +45,6 @@ you must be able to justify that.
 #### Stylistic guide (mandatory)
 
 - [ ] My code complies with the [styles guide](https://github.com/uber-go/guide/blob/master/style.md).
-- [ ] My commit history is clean (only contains changes relating to my
-  issue/pull request and no reverted-my-earlier-commit changes) and commit
-  messages start with identifiers of related issues in square brackets.
-
-  **Example:** `[#42] Short commit description`
-
-  If necessary both of these can be achieved even after the commits have been
-  made/pushed using [rebase and squash](https://git-scm.com/docs/git-rebase).
 
 #### Before merging (mandatory)
 - [ ] Check __target__  branch of PR is set correctly
