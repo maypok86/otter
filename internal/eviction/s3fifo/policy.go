@@ -48,10 +48,8 @@ func NewPolicy[K comparable, V any](maxWeight uint64, evictNode func(node.Node[K
 }
 
 // Read updates the eviction policy based on node accesses.
-func (p *Policy[K, V]) Read(nodes []node.Node[K, V]) {
-	for _, n := range nodes {
-		n.IncrementFrequency()
-	}
+func (p *Policy[K, V]) Read(n node.Node[K, V]) {
+	n.IncrementFrequency()
 }
 
 // Add adds node to the eviction policy.

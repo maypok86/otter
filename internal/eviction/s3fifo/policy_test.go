@@ -26,6 +26,12 @@ func newNode(k int) node.Node[int, int] {
 	return n
 }
 
+func read[K comparable, V any](p *Policy[K, V], nodes []node.Node[K, V]) {
+	for _, n := range nodes {
+		p.Read(n)
+	}
+}
+
 func TestPolicy_ReadAndWrite(t *testing.T) {
 	n := newNode(2)
 	p := NewPolicy[int, int](10, func(n node.Node[int, int]) {
@@ -58,9 +64,9 @@ func TestPolicy_OneHitWonders(t *testing.T) {
 		p.Add(n, 1)
 	}
 
-	p.Read(oneHitWonders)
+	read(p, oneHitWonders)
 	for i := 0; i < 3; i++ {
-		p.Read(popular)
+		read(p, popular)
 	}
 
 	newNodes := make([]node.Node[int, int], 0, 11)
@@ -117,7 +123,8 @@ func TestPolicy_Update(t *testing.T) {
 	p.Delete(n)
 	p.Add(n1, 1)
 
-	p.Read([]node.Node[int, int]{n1, n1})
+	p.Read(n1)
+	p.Read(n1)
 
 	n2 := m.Create(2, 1, 0, 92)
 	collect = true

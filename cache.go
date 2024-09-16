@@ -49,7 +49,7 @@ func init() {
 }
 
 type evictionPolicy[K comparable, V any] interface {
-	Read(nodes []node.Node[K, V])
+	Read(n node.Node[K, V])
 	Add(n node.Node[K, V], nowNanos int64)
 	Delete(n node.Node[K, V])
 	MaxAvailableWeight() uint64
@@ -73,7 +73,7 @@ type Cache[K comparable, V any] struct {
 	stats          statsRecorder
 	logger         Logger
 	clock          *clock.Clock
-	stripedBuffer  []*lossy.Buffer[K, V]
+	stripedBuffer  *lossy.Striped[K, V]
 	writeBuffer    *queue.Growable[task[K, V]]
 	evictionMutex  sync.Mutex
 	closeOnce      sync.Once
@@ -81,7 +81,6 @@ type Cache[K comparable, V any] struct {
 	doneClose      chan struct{}
 	weigher        func(key K, value V) uint32
 	onDeletion     func(e DeletionEvent[K, V])
-	mask           uint32
 	ttl            time.Duration
 	withExpiration bool
 	withEviction   bool
@@ -99,12 +98,9 @@ func newCache[K comparable, V any](b *Builder[K, V]) *Cache[K, V] {
 	maximum := b.getMaximum()
 	withEviction := maximum != nil
 
-	var stripedBuffer []*lossy.Buffer[K, V]
+	var stripedBuffer *lossy.Striped[K, V]
 	if withEviction {
-		stripedBuffer = make([]*lossy.Buffer[K, V], 0, maxStripedBufferSize)
-		for i := 0; i < maxStripedBufferSize; i++ {
-			stripedBuffer = append(stripedBuffer, lossy.New[K, V](nodeManager))
-		}
+		stripedBuffer = lossy.NewStriped(maxStripedBufferSize, nodeManager)
 	}
 
 	var hashmap *hashtable.Map[K, V]
@@ -122,10 +118,8 @@ func newCache[K comparable, V any](b *Builder[K, V]) *Cache[K, V] {
 		stripedBuffer: stripedBuffer,
 		doneClear:     make(chan struct{}),
 		doneClose:     make(chan struct{}, 1),
-		//nolint:gosec // there will never be an overflow
-		mask:       uint32(maxStripedBufferSize - 1),
-		weigher:    b.getWeigher(),
-		onDeletion: b.onDeletion,
+		weigher:       b.getWeigher(),
+		onDeletion:    b.onDeletion,
 	}
 
 	cache.withEviction = withEviction
@@ -164,10 +158,6 @@ func newCache[K comparable, V any](b *Builder[K, V]) *Cache[K, V] {
 	}
 
 	return cache
-}
-
-func (c *Cache[K, V]) getReadBufferIdx() int {
-	return int(xruntime.Fastrand() & c.mask)
 }
 
 func (c *Cache[K, V]) getExpiration(duration time.Duration) int64 {
@@ -234,14 +224,10 @@ func (c *Cache[K, V]) afterGet(got node.Node[K, V]) {
 		return
 	}
 
-	idx := c.getReadBufferIdx()
-	pb := c.stripedBuffer[idx].Add(got)
-	if pb != nil {
-		c.evictionMutex.Lock()
-		c.policy.Read(pb.Returned)
+	result := c.stripedBuffer.Add(got)
+	if result == lossy.Full && c.evictionMutex.TryLock() {
+		c.stripedBuffer.DrainTo(c.policy.Read)
 		c.evictionMutex.Unlock()
-
-		c.stripedBuffer[idx].Free()
 	}
 }
 
@@ -521,9 +507,7 @@ func (c *Cache[K, V]) clear(t task[K, V]) {
 	}
 
 	if c.withEviction {
-		for i := 0; i < len(c.stripedBuffer); i++ {
-			c.stripedBuffer[i].Clear()
-		}
+		c.stripedBuffer.Clear()
 	}
 
 	c.writeBuffer.Push(t)
