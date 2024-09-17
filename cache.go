@@ -23,7 +23,7 @@ import (
 	"github.com/maypok86/otter/v2/internal/eviction/s3fifo"
 	"github.com/maypok86/otter/v2/internal/expiry"
 	"github.com/maypok86/otter/v2/internal/generated/node"
-	"github.com/maypok86/otter/v2/internal/hashtable"
+	"github.com/maypok86/otter/v2/internal/hashmap"
 	"github.com/maypok86/otter/v2/internal/lossy"
 	"github.com/maypok86/otter/v2/internal/queue"
 	"github.com/maypok86/otter/v2/internal/xmath"
@@ -67,7 +67,7 @@ type expiryPolicy[K comparable, V any] interface {
 // to determine which entries to evict when the capacity is exceeded.
 type Cache[K comparable, V any] struct {
 	nodeManager    *node.Manager[K, V]
-	hashmap        *hashtable.Map[K, V]
+	hashmap        *hashmap.Map[K, V]
 	policy         evictionPolicy[K, V]
 	expiryPolicy   expiryPolicy[K, V]
 	stats          statsRecorder
@@ -103,16 +103,16 @@ func newCache[K comparable, V any](b *Builder[K, V]) *Cache[K, V] {
 		stripedBuffer = lossy.NewStriped(maxStripedBufferSize, nodeManager)
 	}
 
-	var hashmap *hashtable.Map[K, V]
+	var hm *hashmap.Map[K, V]
 	if b.initialCapacity == nil {
-		hashmap = hashtable.New[K, V](nodeManager)
+		hm = hashmap.New[K, V](nodeManager)
 	} else {
-		hashmap = hashtable.NewWithSize[K, V](nodeManager, *b.initialCapacity)
+		hm = hashmap.NewWithSize[K, V](nodeManager, *b.initialCapacity)
 	}
 
 	cache := &Cache[K, V]{
 		nodeManager:   nodeManager,
-		hashmap:       hashmap,
+		hashmap:       hm,
 		stats:         newStatsRecorder(b.statsRecorder),
 		logger:        b.logger,
 		stripedBuffer: stripedBuffer,
@@ -191,7 +191,7 @@ func (c *Cache[K, V]) GetNode(key K) (node.Node[K, V], bool) {
 	if n.HasExpired(c.clock.Offset()) {
 		// withProcess = true
 		// avoid duplicate push
-		deleted := c.hashmap.DeleteNode(n)
+		deleted := c.deleteNodeFromMap(n)
 		if deleted != nil {
 			n.Die()
 			c.writeBuffer.Push(newExpiredTask(n))
@@ -278,36 +278,44 @@ func (c *Cache[K, V]) SetIfAbsentWithTTL(key K, value V, ttl time.Duration) (V, 
 
 func (c *Cache[K, V]) set(key K, value V, expiration int64, onlyIfAbsent bool) (V, bool) {
 	n := c.nodeManager.Create(key, value, expiration, c.weigher(key, value))
+
+	var old node.Node[K, V]
+	c.hashmap.Compute(key, func(current node.Node[K, V]) node.Node[K, V] {
+		old = current
+		if onlyIfAbsent && current != nil {
+			// no op
+			return current
+		}
+		// set
+		return n
+	})
 	if onlyIfAbsent {
-		res := c.hashmap.SetIfAbsent(n)
-		if res == nil {
+		if old == nil {
 			c.afterWrite(n, nil)
 			return value, true
 		}
-		return res.Value(), false
+		return old.Value(), false
 	}
 
-	evicted := c.hashmap.Set(n)
-	c.afterWrite(n, evicted)
-
-	if evicted != nil {
-		return evicted.Value(), false
+	c.afterWrite(n, old)
+	if old != nil {
+		return old.Value(), false
 	}
 	return value, true
 }
 
-func (c *Cache[K, V]) afterWrite(n, evicted node.Node[K, V]) {
+func (c *Cache[K, V]) afterWrite(n, old node.Node[K, V]) {
 	if !c.withProcess {
-		if evicted != nil {
+		if old != nil {
 			c.notifyDeletion(n.Key(), n.Value(), CauseReplacement)
 		}
 		return
 	}
 
-	if evicted != nil {
+	if old != nil {
 		// update
-		evicted.Die()
-		c.writeBuffer.Push(newUpdateTask(n, evicted))
+		old.Die()
+		c.writeBuffer.Push(newUpdateTask(n, old))
 	} else {
 		// insert
 		c.writeBuffer.Push(newAddTask(n))
@@ -319,7 +327,14 @@ func (c *Cache[K, V]) afterWrite(n, evicted node.Node[K, V]) {
 // Returns previous value if any. The deleted result reports whether the key was
 // present.
 func (c *Cache[K, V]) Delete(key K) (value V, deleted bool) {
-	d := c.hashmap.Delete(key)
+	var d node.Node[K, V]
+	c.hashmap.Compute(key, func(n node.Node[K, V]) node.Node[K, V] {
+		if n == nil {
+			return nil
+		}
+		d = n
+		return nil
+	})
 	c.afterDelete(d)
 	if d != nil {
 		return d.Value(), true
@@ -327,8 +342,23 @@ func (c *Cache[K, V]) Delete(key K) (value V, deleted bool) {
 	return zeroValue[V](), false
 }
 
+func (c *Cache[K, V]) deleteNodeFromMap(n node.Node[K, V]) node.Node[K, V] {
+	var deleted node.Node[K, V]
+	c.hashmap.Compute(n.Key(), func(current node.Node[K, V]) node.Node[K, V] {
+		if current == nil {
+			return nil
+		}
+		if n.AsPointer() == current.AsPointer() {
+			deleted = current
+			return nil
+		}
+		return current
+	})
+	return deleted
+}
+
 func (c *Cache[K, V]) deleteNode(n node.Node[K, V]) {
-	c.afterDelete(c.hashmap.DeleteNode(n))
+	c.afterDelete(c.deleteNodeFromMap(n))
 }
 
 func (c *Cache[K, V]) afterDelete(deleted node.Node[K, V]) {
@@ -375,7 +405,7 @@ func (c *Cache[K, V]) notifyDeletion(key K, value V, cause DeletionCause) {
 
 func (c *Cache[K, V]) deleteExpiredNode(n node.Node[K, V]) {
 	c.policy.Delete(n)
-	deleted := c.hashmap.DeleteNode(n)
+	deleted := c.deleteNodeFromMap(n)
 	if deleted != nil {
 		n.Die()
 		c.notifyDeletion(n.Key(), n.Value(), CauseExpiration)
@@ -400,7 +430,7 @@ func (c *Cache[K, V]) cleanup() {
 
 func (c *Cache[K, V]) evictNode(n node.Node[K, V]) {
 	c.expiryPolicy.Delete(n)
-	deleted := c.hashmap.DeleteNode(n)
+	deleted := c.deleteNodeFromMap(n)
 	if deleted != nil {
 		n.Die()
 		c.notifyDeletion(n.Key(), n.Value(), CauseOverflow)
@@ -414,7 +444,7 @@ func (c *Cache[K, V]) addToPolicies(n node.Node[K, V]) {
 	}
 
 	if uint64(n.Weight()) > c.policy.MaxAvailableWeight() {
-		deleted := c.hashmap.DeleteNode(n)
+		deleted := c.deleteNodeFromMap(n)
 		if deleted != nil {
 			n.Die()
 		}
