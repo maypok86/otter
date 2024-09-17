@@ -52,7 +52,6 @@ linters:
     - tagliatelle
     - tenv
     - testableexamples
-    - thelper
     - tparallel
     - unconvert
     - unparam
