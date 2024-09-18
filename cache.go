@@ -322,16 +322,13 @@ func (c *Cache[K, V]) afterWrite(n, old node.Node[K, V]) {
 	}
 }
 
-// Delete deletes the association for this key from the cache.
+// Invalidate discards any cached value for the key.
 //
-// Returns previous value if any. The deleted result reports whether the key was
+// Returns previous value if any. The invalidated result reports whether the key was
 // present.
-func (c *Cache[K, V]) Delete(key K) (value V, deleted bool) {
+func (c *Cache[K, V]) Invalidate(key K) (value V, invalidated bool) {
 	var d node.Node[K, V]
 	c.hashmap.Compute(key, func(n node.Node[K, V]) node.Node[K, V] {
-		if n == nil {
-			return nil
-		}
 		d = n
 		return nil
 	})

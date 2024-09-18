@@ -76,7 +76,7 @@ func TestCache_Unbounded(t *testing.T) {
 		c.Set(i, i)
 	}
 	for i := replaced; i < size; i++ {
-		c.Delete(i)
+		c.Invalidate(i)
 	}
 
 	mutex.Lock()
@@ -518,7 +518,7 @@ func TestCache_SetWithTTL(t *testing.T) {
 	}
 }
 
-func TestCache_Delete(t *testing.T) {
+func TestCache_Invalidate(t *testing.T) {
 	size := getRandomSize(t)
 	var mutex sync.Mutex
 	m := make(map[DeletionCause]int)
@@ -547,7 +547,7 @@ func TestCache_Delete(t *testing.T) {
 	}
 
 	for i := 0; i < size; i++ {
-		c.Delete(i)
+		c.Invalidate(i)
 	}
 
 	for i := 0; i < size; i++ {
@@ -565,7 +565,7 @@ func TestCache_Delete(t *testing.T) {
 	}
 }
 
-func TestCache_DeleteByFunc(t *testing.T) {
+func TestCache_InvalidateByFunc(t *testing.T) {
 	size := getRandomSize(t)
 	var mutex sync.Mutex
 	m := make(map[DeletionCause]int)
