@@ -183,25 +183,12 @@ func (c *Cache[K, V]) Get(key K) (V, bool) {
 // GetNode returns the node associated with the key in this cache.
 func (c *Cache[K, V]) GetNode(key K) (node.Node[K, V], bool) {
 	n, ok := c.hashmap.Get(key)
-	if !ok || !n.IsAlive() {
+	if !ok || !n.IsAlive() || n.HasExpired(c.clock.Offset()) {
 		c.stats.RecordMisses(1)
 		return nil, false
 	}
 
-	if n.HasExpired(c.clock.Offset()) {
-		// withProcess = true
-		// avoid duplicate push
-		deleted := c.deleteNodeFromMap(n)
-		if deleted != nil {
-			n.Die()
-			c.writeBuffer.Push(newExpiredTask(n))
-		}
-		c.stats.RecordMisses(1)
-		return nil, false
-	}
-
-	c.afterGet(n)
-	c.stats.RecordHits(1)
+	c.afterHit(n)
 
 	return n, true
 }
@@ -219,11 +206,12 @@ func (c *Cache[K, V]) GetNodeQuietly(key K) (node.Node[K, V], bool) {
 	return n, true
 }
 
-func (c *Cache[K, V]) afterGet(got node.Node[K, V]) {
+func (c *Cache[K, V]) afterHit(got node.Node[K, V]) {
 	if !c.withEviction {
 		return
 	}
 
+	c.stats.RecordHits(1)
 	result := c.stripedBuffer.Add(got)
 	if result == lossy.Full && c.evictionMutex.TryLock() {
 		c.stripedBuffer.DrainTo(c.policy.Read)
@@ -484,8 +472,6 @@ func (c *Cache[K, V]) onWrite(t task[K, V]) {
 		c.addToPolicies(n)
 	case t.isDelete():
 		c.deleteFromPolicies(n, CauseInvalidation)
-	case t.isExpired():
-		c.deleteFromPolicies(n, CauseExpiration)
 	default:
 		panic("invalid task type")
 	}

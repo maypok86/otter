@@ -778,23 +778,34 @@ func (h *optimalHeap) Pop() any {
 }
 
 func Test_GetExpired(t *testing.T) {
+	done := make(chan struct{})
+
 	c, err := NewBuilder[string, string]().
 		RecordStats(stats.NewCounter()).
 		OnDeletion(func(e DeletionEvent[string, string]) {
-			fmt.Println(e.Cause)
+			defer func() {
+				done <- struct{}{}
+			}()
+
 			if e.Cause != CauseExpiration {
 				t.Fatalf("err not expired: %v", e.Cause)
 			}
 		}).
-		WithVariableTTL().
+		WithTTL(3 * time.Second).
 		Build()
 	if err != nil {
 		t.Fatal(err)
 	}
-	c.SetWithTTL("test1", "123456", time.Duration(12)*time.Second)
+
+	c.Set("test1", "123456")
 	for i := 0; i < 5; i++ {
 		c.Get("test1")
-		time.Sleep(3 * time.Second)
+		time.Sleep(1 * time.Second)
 	}
-	time.Sleep(1 * time.Second)
+
+	select {
+	case <-time.After(2 * time.Second):
+		t.Fatal("the entry wasn't expired")
+	case <-done:
+	}
 }
