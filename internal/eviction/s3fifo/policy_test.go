@@ -34,7 +34,7 @@ func read[K comparable, V any](p *Policy[K, V], nodes []node.Node[K, V]) {
 
 func TestPolicy_ReadAndWrite(t *testing.T) {
 	n := newNode(2)
-	p := NewPolicy[int, int](10, func(n node.Node[int, int]) {
+	p := NewPolicy[int, int](10, func(n node.Node[int, int], nowNanos int64) {
 	})
 	p.Add(n, 1)
 	if !n.IsSmall() {
@@ -43,7 +43,7 @@ func TestPolicy_ReadAndWrite(t *testing.T) {
 }
 
 func TestPolicy_OneHitWonders(t *testing.T) {
-	p := NewPolicy[int, int](10, func(n node.Node[int, int]) {
+	p := NewPolicy[int, int](10, func(n node.Node[int, int], nowNanos int64) {
 	})
 
 	oneHitWonders := make([]node.Node[int, int], 0, 2)
@@ -108,7 +108,7 @@ func TestPolicy_OneHitWonders(t *testing.T) {
 func TestPolicy_Update(t *testing.T) {
 	collect := false
 	var deleted []node.Node[int, int]
-	p := NewPolicy[int, int](100, func(n node.Node[int, int]) {
+	p := NewPolicy[int, int](100, func(n node.Node[int, int], nowNanos int64) {
 		if collect {
 			deleted = deleted[:0]
 			deleted = append(deleted, n)

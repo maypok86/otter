@@ -33,12 +33,12 @@ func TestTask(t *testing.T) {
 		t.Fatalf("not valid add task %+v", addTask)
 	}
 
-	deleteTask := newDeleteTask(n)
+	deleteTask := newDeleteTask(n, CauseInvalidation)
 	if deleteTask.node() != n || !deleteTask.isDelete() {
 		t.Fatalf("not valid delete task %+v", deleteTask)
 	}
 
-	updateTask := newUpdateTask(n, oldNode)
+	updateTask := newUpdateTask(n, oldNode, CauseExpiration)
 	if updateTask.node() != n || !updateTask.isUpdate() || updateTask.oldNode() != oldNode {
 		t.Fatalf("not valid update task %+v", updateTask)
 	}

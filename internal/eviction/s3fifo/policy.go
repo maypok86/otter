@@ -29,12 +29,12 @@ type Policy[K comparable, V any] struct {
 }
 
 // NewPolicy creates a new Policy.
-func NewPolicy[K comparable, V any](maxWeight uint64, evictNode func(node.Node[K, V])) *Policy[K, V] {
+func NewPolicy[K comparable, V any](maxWeight uint64, evictNode func(n node.Node[K, V], nowNanos int64)) *Policy[K, V] {
 	smallMaxWeight := maxWeight / 10
 	mainMaxWeight := maxWeight - smallMaxWeight
 
 	main := newMain[K, V](mainMaxWeight, evictNode)
-	ghost := newGhost(main, evictNode)
+	ghost := newGhost(main)
 	small := newSmall(smallMaxWeight, main, ghost, evictNode)
 	ghost.small = small
 

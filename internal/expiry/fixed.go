@@ -18,13 +18,13 @@ import "github.com/maypok86/otter/v2/internal/generated/node"
 
 type Fixed[K comparable, V any] struct {
 	q          *queue[K, V]
-	deleteNode func(node.Node[K, V])
+	expireNode func(n node.Node[K, V], nowNanos int64)
 }
 
-func NewFixed[K comparable, V any](deleteNode func(node.Node[K, V])) *Fixed[K, V] {
+func NewFixed[K comparable, V any](expireNode func(n node.Node[K, V], nowNanos int64)) *Fixed[K, V] {
 	return &Fixed[K, V]{
 		q:          newQueue[K, V](),
-		deleteNode: deleteNode,
+		expireNode: expireNode,
 	}
 }
 
@@ -38,7 +38,7 @@ func (f *Fixed[K, V]) Delete(n node.Node[K, V]) {
 
 func (f *Fixed[K, V]) DeleteExpired(nowNanos int64) {
 	for !f.q.isEmpty() && f.q.head.HasExpired(nowNanos) {
-		f.deleteNode(f.q.pop())
+		f.expireNode(f.q.pop(), nowNanos)
 	}
 }
 

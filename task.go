@@ -33,9 +33,10 @@ const (
 // task is a set of information to update the cache:
 // node, reason for write, difference after node weight change, etc.
 type task[K comparable, V any] struct {
-	n           node.Node[K, V]
-	old         node.Node[K, V]
-	writeReason reason
+	n             node.Node[K, V]
+	old           node.Node[K, V]
+	writeReason   reason
+	deletionCause DeletionCause
 }
 
 // newAddTask creates a task to add a node to policies.
@@ -47,19 +48,21 @@ func newAddTask[K comparable, V any](n node.Node[K, V]) task[K, V] {
 }
 
 // newDeleteTask creates a task to delete a node from policies.
-func newDeleteTask[K comparable, V any](n node.Node[K, V]) task[K, V] {
+func newDeleteTask[K comparable, V any](n node.Node[K, V], cause DeletionCause) task[K, V] {
 	return task[K, V]{
-		n:           n,
-		writeReason: deleteReason,
+		n:             n,
+		writeReason:   deleteReason,
+		deletionCause: cause,
 	}
 }
 
 // newUpdateTask creates a task to update the node in the policies.
-func newUpdateTask[K comparable, V any](n, oldNode node.Node[K, V]) task[K, V] {
+func newUpdateTask[K comparable, V any](n, oldNode node.Node[K, V], cause DeletionCause) task[K, V] {
 	return task[K, V]{
-		n:           n,
-		old:         oldNode,
-		writeReason: updateReason,
+		n:             n,
+		old:           oldNode,
+		writeReason:   updateReason,
+		deletionCause: cause,
 	}
 }
 

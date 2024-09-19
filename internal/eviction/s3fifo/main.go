@@ -24,10 +24,10 @@ type main[K comparable, V any] struct {
 	q         *queue[K, V]
 	weight    uint64
 	maxWeight uint64
-	evictNode func(node.Node[K, V])
+	evictNode func(n node.Node[K, V], nowNanos int64)
 }
 
-func newMain[K comparable, V any](maxWeight uint64, evictNode func(node.Node[K, V])) *main[K, V] {
+func newMain[K comparable, V any](maxWeight uint64, evictNode func(n node.Node[K, V], nowNanos int64)) *main[K, V] {
 	return &main[K, V]{
 		q:         newQueue[K, V](),
 		maxWeight: maxWeight,
@@ -49,7 +49,7 @@ func (m *main[K, V]) evict(nowNanos int64) {
 		if !n.IsAlive() || n.HasExpired(nowNanos) || n.Frequency() == 0 {
 			n.Unmark()
 			m.weight -= uint64(n.Weight())
-			m.evictNode(n)
+			m.evictNode(n, nowNanos)
 			return
 		}
 
@@ -58,7 +58,7 @@ func (m *main[K, V]) evict(nowNanos int64) {
 		if reinsertions >= maxReinsertions {
 			n.Unmark()
 			m.weight -= uint64(n.Weight())
-			m.evictNode(n)
+			m.evictNode(n, nowNanos)
 			return
 		}
 

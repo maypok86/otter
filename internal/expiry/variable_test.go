@@ -60,7 +60,7 @@ func TestVariable_Add(t *testing.T) {
 		nm.Create("k2", "", getTestExp(69), 1),
 		nm.Create("k3", "", getTestExp(4399), 1),
 	}
-	v := NewVariable[string, string](nm, func(n node.Node[string, string]) {
+	v := NewVariable[string, string](nm, func(n node.Node[string, string], nowNanos int64) {
 	})
 
 	for _, n := range nodes {
@@ -115,7 +115,7 @@ func TestVariable_DeleteExpired(t *testing.T) {
 		nm.Create("k7", "", getTestExp(1420000), 1),
 	}
 	var expired []node.Node[string, string]
-	v := NewVariable[string, string](nm, func(n node.Node[string, string]) {
+	v := NewVariable[string, string](nm, func(n node.Node[string, string], nowNanos int64) {
 		expired = append(expired, n)
 	})
 

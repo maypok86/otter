@@ -24,14 +24,14 @@ type small[K comparable, V any] struct {
 	ghost     *ghost[K, V]
 	weight    uint64
 	maxWeight uint64
-	evictNode func(node.Node[K, V])
+	evictNode func(n node.Node[K, V], nowNanos int64)
 }
 
 func newSmall[K comparable, V any](
 	maxWeight uint64,
 	main *main[K, V],
 	ghost *ghost[K, V],
-	evictNode func(node.Node[K, V]),
+	evictNode func(n node.Node[K, V], nowNanos int64),
 ) *small[K, V] {
 	return &small[K, V]{
 		q:         newQueue[K, V](),
@@ -57,7 +57,7 @@ func (s *small[K, V]) evict(nowNanos int64) {
 	s.weight -= uint64(n.Weight())
 	n.Unmark()
 	if !n.IsAlive() || n.HasExpired(nowNanos) {
-		s.evictNode(n)
+		s.evictNode(n, nowNanos)
 		return
 	}
 
@@ -70,6 +70,7 @@ func (s *small[K, V]) evict(nowNanos int64) {
 		return
 	}
 
+	s.evictNode(n, nowNanos)
 	s.ghost.insert(n)
 }
 

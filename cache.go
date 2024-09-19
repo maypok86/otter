@@ -125,14 +125,14 @@ func newCache[K comparable, V any](b *Builder[K, V]) *Cache[K, V] {
 	cache.withEviction = withEviction
 	cache.policy = eviction.NewDisabled[K, V]()
 	if cache.withEviction {
-		cache.policy = s3fifo.NewPolicy(*maximum, cache.evictNode)
+		cache.policy = s3fifo.NewPolicy(*maximum, cache.evictOrExpireNode)
 	}
 
 	switch {
 	case b.ttl != nil:
-		cache.expiryPolicy = expiry.NewFixed[K, V](cache.deleteExpiredNode)
+		cache.expiryPolicy = expiry.NewFixed[K, V](cache.evictOrExpireNode)
 	case b.withVariableTTL:
-		cache.expiryPolicy = expiry.NewVariable[K, V](nodeManager, cache.deleteExpiredNode)
+		cache.expiryPolicy = expiry.NewVariable[K, V](nodeManager, cache.evictOrExpireNode)
 	default:
 		cache.expiryPolicy = expiry.NewDisabled[K, V]()
 	}
@@ -207,11 +207,12 @@ func (c *Cache[K, V]) GetNodeQuietly(key K) (node.Node[K, V], bool) {
 }
 
 func (c *Cache[K, V]) afterHit(got node.Node[K, V]) {
+	c.stats.RecordHits(1)
+
 	if !c.withEviction {
 		return
 	}
 
-	c.stats.RecordHits(1)
 	result := c.stripedBuffer.Add(got)
 	if result == lossy.Full && c.evictionMutex.TryLock() {
 		c.stripedBuffer.DrainTo(c.policy.Read)
@@ -300,14 +301,20 @@ func (c *Cache[K, V]) afterWrite(n, old node.Node[K, V]) {
 		return
 	}
 
-	if old != nil {
-		// update
-		old.Die()
-		c.writeBuffer.Push(newUpdateTask(n, old))
-	} else {
+	if old == nil {
 		// insert
 		c.writeBuffer.Push(newAddTask(n))
+		return
 	}
+
+	// update
+	old.Die()
+	cause := CauseReplacement
+	if old.HasExpired(c.clock.Offset()) {
+		cause = CauseExpiration
+	}
+
+	c.writeBuffer.Push(newUpdateTask(n, old, cause))
 }
 
 // Invalidate discards any cached value for the key.
@@ -356,8 +363,14 @@ func (c *Cache[K, V]) afterDelete(deleted node.Node[K, V]) {
 		return
 	}
 
+	// delete
 	deleted.Die()
-	c.writeBuffer.Push(newDeleteTask(deleted))
+	cause := CauseInvalidation
+	if deleted.HasExpired(c.clock.Offset()) {
+		cause = CauseExpiration
+	}
+
+	c.writeBuffer.Push(newDeleteTask(deleted, cause))
 }
 
 // InvalidateByFunc deletes the association for this key from the cache when the given function returns true.
@@ -388,16 +401,6 @@ func (c *Cache[K, V]) notifyDeletion(key K, value V, cause DeletionCause) {
 	})
 }
 
-func (c *Cache[K, V]) deleteExpiredNode(n node.Node[K, V]) {
-	c.policy.Delete(n)
-	deleted := c.deleteNodeFromMap(n)
-	if deleted != nil {
-		n.Die()
-		c.notifyDeletion(n.Key(), n.Value(), CauseExpiration)
-		c.stats.RecordEviction(n.Weight())
-	}
-}
-
 func (c *Cache[K, V]) cleanup() {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
@@ -413,12 +416,19 @@ func (c *Cache[K, V]) cleanup() {
 	}
 }
 
-func (c *Cache[K, V]) evictNode(n node.Node[K, V]) {
+func (c *Cache[K, V]) evictOrExpireNode(n node.Node[K, V], nowNanos int64) {
+	c.policy.Delete(n)
 	c.expiryPolicy.Delete(n)
 	deleted := c.deleteNodeFromMap(n)
 	if deleted != nil {
 		n.Die()
-		c.notifyDeletion(n.Key(), n.Value(), CauseOverflow)
+
+		cause := CauseOverflow
+		if n.HasExpired(nowNanos) {
+			cause = CauseExpiration
+		}
+
+		c.notifyDeletion(n.Key(), n.Value(), cause)
 		c.stats.RecordEviction(n.Weight())
 	}
 }
@@ -468,10 +478,10 @@ func (c *Cache[K, V]) onWrite(t task[K, V]) {
 	case t.isAdd():
 		c.addToPolicies(n)
 	case t.isUpdate():
-		c.deleteFromPolicies(t.oldNode(), CauseReplacement)
+		c.deleteFromPolicies(t.oldNode(), t.deletionCause)
 		c.addToPolicies(n)
 	case t.isDelete():
-		c.deleteFromPolicies(n, CauseInvalidation)
+		c.deleteFromPolicies(n, t.deletionCause)
 	default:
 		panic("invalid task type")
 	}
