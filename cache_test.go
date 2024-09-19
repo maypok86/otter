@@ -287,13 +287,19 @@ func TestCache_Set(t *testing.T) {
 	var mutex sync.Mutex
 	m := make(map[DeletionCause]int)
 	statsCounter := stats.NewCounter()
+	done := make(chan struct{})
+	count := 0
 	c, err := NewBuilder[int, int]().
 		MaximumSize(size).
 		WithTTL(time.Minute).
 		RecordStats(statsCounter).
 		OnDeletion(func(e DeletionEvent[int, int]) {
 			mutex.Lock()
+			count++
 			m[e.Cause]++
+			if count == size {
+				done <- struct{}{}
+			}
 			mutex.Unlock()
 		}).
 		Build()
@@ -342,6 +348,7 @@ func TestCache_Set(t *testing.T) {
 		t.Fatalf("cache hit ratio should be 1.0, but got %v", ratio)
 	}
 
+	<-done
 	mutex.Lock()
 	defer mutex.Unlock()
 	if len(m) != 1 || m[CauseReplacement] != size {
