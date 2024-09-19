@@ -15,11 +15,12 @@
 package s3fifo
 
 import (
+	"github.com/maypok86/otter/v2/internal/deque"
 	"github.com/maypok86/otter/v2/internal/generated/node"
 )
 
 type small[K comparable, V any] struct {
-	q         *queue[K, V]
+	d         *deque.Linked[K, V]
 	main      *main[K, V]
 	ghost     *ghost[K, V]
 	weight    uint64
@@ -34,7 +35,7 @@ func newSmall[K comparable, V any](
 	evictNode func(n node.Node[K, V], nowNanos int64),
 ) *small[K, V] {
 	return &small[K, V]{
-		q:         newQueue[K, V](),
+		d:         deque.NewLinked[K, V](isExp),
 		main:      main,
 		ghost:     ghost,
 		maxWeight: maxWeight,
@@ -43,7 +44,7 @@ func newSmall[K comparable, V any](
 }
 
 func (s *small[K, V]) insert(n node.Node[K, V]) {
-	s.q.push(n)
+	s.d.PushBack(n)
 	n.MarkSmall()
 	s.weight += uint64(n.Weight())
 }
@@ -53,7 +54,7 @@ func (s *small[K, V]) evict(nowNanos int64) {
 		return
 	}
 
-	n := s.q.pop()
+	n := s.d.PopFront()
 	s.weight -= uint64(n.Weight())
 	n.Unmark()
 	if !n.IsAlive() || n.HasExpired(nowNanos) {
@@ -77,14 +78,14 @@ func (s *small[K, V]) evict(nowNanos int64) {
 func (s *small[K, V]) delete(n node.Node[K, V]) {
 	s.weight -= uint64(n.Weight())
 	n.Unmark()
-	s.q.delete(n)
+	s.d.Delete(n)
 }
 
-func (s *small[K, V]) length() int {
-	return s.q.length()
+func (s *small[K, V]) len() int {
+	return s.d.Len()
 }
 
 func (s *small[K, V]) clear() {
-	s.q.clear()
+	s.d.Clear()
 	s.weight = 0
 }

@@ -15,13 +15,14 @@
 package s3fifo
 
 import (
+	"github.com/maypok86/otter/v2/internal/deque"
 	"github.com/maypok86/otter/v2/internal/generated/node"
 )
 
 const maxReinsertions = 20
 
 type main[K comparable, V any] struct {
-	q         *queue[K, V]
+	d         *deque.Linked[K, V]
 	weight    uint64
 	maxWeight uint64
 	evictNode func(n node.Node[K, V], nowNanos int64)
@@ -29,14 +30,14 @@ type main[K comparable, V any] struct {
 
 func newMain[K comparable, V any](maxWeight uint64, evictNode func(n node.Node[K, V], nowNanos int64)) *main[K, V] {
 	return &main[K, V]{
-		q:         newQueue[K, V](),
+		d:         deque.NewLinked[K, V](isExp),
 		maxWeight: maxWeight,
 		evictNode: evictNode,
 	}
 }
 
 func (m *main[K, V]) insert(n node.Node[K, V]) {
-	m.q.push(n)
+	m.d.PushBack(n)
 	n.MarkMain()
 	m.weight += uint64(n.Weight())
 }
@@ -44,7 +45,7 @@ func (m *main[K, V]) insert(n node.Node[K, V]) {
 func (m *main[K, V]) evict(nowNanos int64) {
 	reinsertions := 0
 	for m.weight > 0 {
-		n := m.q.pop()
+		n := m.d.PopFront()
 
 		if !n.IsAlive() || n.HasExpired(nowNanos) || n.Frequency() == 0 {
 			n.Unmark()
@@ -62,7 +63,7 @@ func (m *main[K, V]) evict(nowNanos int64) {
 			return
 		}
 
-		m.q.push(n)
+		m.d.PushBack(n)
 		n.DecrementFrequency()
 	}
 }
@@ -70,15 +71,15 @@ func (m *main[K, V]) evict(nowNanos int64) {
 func (m *main[K, V]) delete(n node.Node[K, V]) {
 	m.weight -= uint64(n.Weight())
 	n.Unmark()
-	m.q.delete(n)
+	m.d.Delete(n)
 }
 
-func (m *main[K, V]) length() int {
-	return m.q.length()
+func (m *main[K, V]) len() int {
+	return m.d.Len()
 }
 
 func (m *main[K, V]) clear() {
-	m.q.clear()
+	m.d.Clear()
 	m.weight = 0
 }
 

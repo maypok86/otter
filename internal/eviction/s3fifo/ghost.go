@@ -51,7 +51,7 @@ func (g *ghost[K, V]) insert(n node.Node[K, V]) {
 		return
 	}
 
-	maxLength := g.small.length() + g.main.length()
+	maxLength := g.small.len() + g.main.len()
 	if maxLength == 0 {
 		return
 	}

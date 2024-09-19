@@ -19,13 +19,13 @@ import (
 	"time"
 
 	"github.com/maypok86/otter/v2/internal/clock"
+	"github.com/maypok86/otter/v2/internal/deque/queue"
 	"github.com/maypok86/otter/v2/internal/eviction"
 	"github.com/maypok86/otter/v2/internal/eviction/s3fifo"
 	"github.com/maypok86/otter/v2/internal/expiry"
 	"github.com/maypok86/otter/v2/internal/generated/node"
 	"github.com/maypok86/otter/v2/internal/hashmap"
 	"github.com/maypok86/otter/v2/internal/lossy"
-	"github.com/maypok86/otter/v2/internal/queue"
 	"github.com/maypok86/otter/v2/internal/xmath"
 	"github.com/maypok86/otter/v2/internal/xruntime"
 )

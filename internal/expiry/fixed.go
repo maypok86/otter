@@ -14,34 +14,39 @@
 
 package expiry
 
-import "github.com/maypok86/otter/v2/internal/generated/node"
+import (
+	"github.com/maypok86/otter/v2/internal/deque"
+	"github.com/maypok86/otter/v2/internal/generated/node"
+)
+
+const isExp = true
 
 type Fixed[K comparable, V any] struct {
-	q          *queue[K, V]
+	d          *deque.Linked[K, V]
 	expireNode func(n node.Node[K, V], nowNanos int64)
 }
 
 func NewFixed[K comparable, V any](expireNode func(n node.Node[K, V], nowNanos int64)) *Fixed[K, V] {
 	return &Fixed[K, V]{
-		q:          newQueue[K, V](),
+		d:          deque.NewLinked[K, V](isExp),
 		expireNode: expireNode,
 	}
 }
 
 func (f *Fixed[K, V]) Add(n node.Node[K, V]) {
-	f.q.push(n)
+	f.d.PushBack(n)
 }
 
 func (f *Fixed[K, V]) Delete(n node.Node[K, V]) {
-	f.q.delete(n)
+	f.d.Delete(n)
 }
 
 func (f *Fixed[K, V]) DeleteExpired(nowNanos int64) {
-	for !f.q.isEmpty() && f.q.head.HasExpired(nowNanos) {
-		f.expireNode(f.q.pop(), nowNanos)
+	for !f.d.IsEmpty() && f.d.Head().HasExpired(nowNanos) {
+		f.expireNode(f.d.PopFront(), nowNanos)
 	}
 }
 
 func (f *Fixed[K, V]) Clear() {
-	f.q.clear()
+	f.d.Clear()
 }

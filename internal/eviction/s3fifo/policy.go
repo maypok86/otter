@@ -18,6 +18,8 @@ import (
 	"github.com/maypok86/otter/v2/internal/generated/node"
 )
 
+const isExp = false
+
 // Policy is an eviction policy based on S3-FIFO eviction algorithm
 // from the following paper: https://dl.acm.org/doi/10.1145/3600006.3613147.
 type Policy[K comparable, V any] struct {
