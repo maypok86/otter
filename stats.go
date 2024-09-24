@@ -25,9 +25,6 @@ import (
 // If you also want to record eviction statistics,
 // then your recorder should implement an EvictionStatsRecorder.
 //
-// If you also want to record statistics on rejections,
-// then your recorder should implement an RejectionStatsRecorder.
-//
 // If you also want to record load statistics,
 // then your recorder should implement an LoadStatsRecorder.
 type StatsRecorder interface {
@@ -45,12 +42,6 @@ type EvictionStatsRecorder interface {
 	RecordEviction(weight uint32)
 }
 
-// RejectionStatsRecorder is a recorder that records statistics on the rejections.
-type RejectionStatsRecorder interface {
-	// RecordRejections records rejections of entries. Cache rejects entries only if they have too much weight.
-	RecordRejections(count int)
-}
-
 // LoadStatsRecorder is a recorder that records statistics on the loads of new entries.
 type LoadStatsRecorder interface {
 	// RecordLoadSuccess records the successful load of a new entry. This method should be called when a cache request
@@ -66,21 +57,18 @@ type noopStatsRecorder struct{}
 func (np noopStatsRecorder) RecordHits(count int)                     {}
 func (np noopStatsRecorder) RecordMisses(count int)                   {}
 func (np noopStatsRecorder) RecordEviction(weight uint32)             {}
-func (np noopStatsRecorder) RecordRejections(count int)               {}
 func (np noopStatsRecorder) RecordLoadFailure(loadTime time.Duration) {}
 func (np noopStatsRecorder) RecordLoadSuccess(loadTime time.Duration) {}
 
 type statsRecorder interface {
 	StatsRecorder
 	EvictionStatsRecorder
-	RejectionStatsRecorder
 	LoadStatsRecorder
 }
 
 type statsRecorderHub struct {
 	StatsRecorder
 	EvictionStatsRecorder
-	RejectionStatsRecorder
 	LoadStatsRecorder
 }
 
@@ -94,17 +82,13 @@ func newStatsRecorder(recorder StatsRecorder) statsRecorder {
 	}
 
 	sc := &statsRecorderHub{
-		StatsRecorder:          recorder,
-		EvictionStatsRecorder:  noopStatsRecorder{},
-		RejectionStatsRecorder: noopStatsRecorder{},
-		LoadStatsRecorder:      noopStatsRecorder{},
+		StatsRecorder:         recorder,
+		EvictionStatsRecorder: noopStatsRecorder{},
+		LoadStatsRecorder:     noopStatsRecorder{},
 	}
 
 	if ec, ok := recorder.(EvictionStatsRecorder); ok {
 		sc.EvictionStatsRecorder = ec
-	}
-	if rsc, ok := recorder.(RejectionStatsRecorder); ok {
-		sc.RejectionStatsRecorder = rsc
 	}
 	if lc, ok := recorder.(LoadStatsRecorder); ok {
 		sc.LoadStatsRecorder = lc

@@ -25,7 +25,6 @@ type Stats struct {
 	misses         uint64
 	evictions      uint64
 	evictionWeight uint64
-	rejections     uint64
 	loadSuccesses  uint64
 	loadFailures   uint64
 	totalLoadTime  time.Duration
@@ -69,11 +68,6 @@ func (s Stats) MissRatio() float64 {
 		return 0.0
 	}
 	return float64(s.misses) / float64(requests)
-}
-
-// Rejections returns the number of rejections.
-func (s Stats) Rejections() uint64 {
-	return s.rejections
 }
 
 // Evictions returns the number of times an entry has been evicted. This count does not include manual

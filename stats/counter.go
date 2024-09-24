@@ -27,7 +27,6 @@ type Counter struct {
 	misses         *xsync.Adder
 	evictions      *xsync.Adder
 	evictionWeight *xsync.Adder
-	rejections     *xsync.Adder
 	loadSuccesses  *xsync.Adder
 	loadFailures   *xsync.Adder
 	totalLoadTime  *xsync.Adder
@@ -40,7 +39,6 @@ func NewCounter() *Counter {
 		misses:         xsync.NewAdder(),
 		evictions:      xsync.NewAdder(),
 		evictionWeight: xsync.NewAdder(),
-		rejections:     xsync.NewAdder(),
 		loadSuccesses:  xsync.NewAdder(),
 		loadFailures:   xsync.NewAdder(),
 		totalLoadTime:  xsync.NewAdder(),
@@ -62,7 +60,6 @@ func (c *Counter) Snapshot() Stats {
 		misses:         c.misses.Value(),
 		evictions:      c.evictions.Value(),
 		evictionWeight: c.evictionWeight.Value(),
-		rejections:     c.rejections.Value(),
 		loadSuccesses:  c.loadSuccesses.Value(),
 		loadFailures:   c.loadFailures.Value(),
 		//nolint:gosec // overflow is handled above
@@ -88,12 +85,6 @@ func (c *Counter) RecordMisses(count int) {
 func (c *Counter) RecordEviction(weight uint32) {
 	c.evictions.Add(1)
 	c.evictionWeight.Add(uint64(weight))
-}
-
-// RecordRejections records rejections of entries. Cache rejects entries only if they have too much weight.
-func (c *Counter) RecordRejections(count int) {
-	//nolint:gosec // there is no overflow
-	c.rejections.Add(uint64(count))
 }
 
 // RecordLoadSuccess records the successful load of a new entry. This method should be called when a cache request

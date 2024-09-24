@@ -26,7 +26,6 @@ func TestCounter_Basic(t *testing.T) {
 		c.RecordHits(1)
 		c.RecordMisses(1)
 		c.RecordEviction(10)
-		c.RecordRejections(20)
 		c.RecordLoadSuccess(1)
 		c.RecordLoadFailure(1)
 
@@ -35,7 +34,6 @@ func TestCounter_Basic(t *testing.T) {
 			misses:         1,
 			evictions:      1,
 			evictionWeight: 10,
-			rejections:     20,
 			loadSuccesses:  1,
 			loadFailures:   1,
 			totalLoadTime:  2,
@@ -72,7 +70,6 @@ func TestCounter_Concurrent(t *testing.T) {
 			c.RecordHits(1)
 			c.RecordMisses(1)
 			c.RecordEviction(10)
-			c.RecordRejections(20)
 			c.RecordLoadSuccess(1)
 			c.RecordLoadFailure(1)
 		}()
@@ -85,7 +82,6 @@ func TestCounter_Concurrent(t *testing.T) {
 		misses:         50,
 		evictions:      50,
 		evictionWeight: 500,
-		rejections:     1000,
 		loadSuccesses:  50,
 		loadFailures:   50,
 		totalLoadTime:  100,
