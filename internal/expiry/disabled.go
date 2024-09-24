@@ -28,7 +28,7 @@ func (d *Disabled[K, V]) Add(n node.Node[K, V]) {
 func (d *Disabled[K, V]) Delete(n node.Node[K, V]) {
 }
 
-func (d *Disabled[K, V]) DeleteExpired(nowNanos int64) {
+func (d *Disabled[K, V]) DeleteExpired(nowNanos int64, expireNode func(n node.Node[K, V], nowNanos int64)) {
 }
 
 func (d *Disabled[K, V]) Clear() {

@@ -34,17 +34,19 @@ func read[K comparable, V any](p *Policy[K, V], nodes []node.Node[K, V]) {
 
 func TestPolicy_ReadAndWrite(t *testing.T) {
 	n := newNode(2)
-	p := NewPolicy[int, int](10, func(n node.Node[int, int], nowNanos int64) {
-	})
-	p.Add(n, 1)
+	evictNode := func(n node.Node[int, int], nowNanos int64) {
+	}
+	p := NewPolicy[int, int](10)
+	p.Add(n, 1, evictNode)
 	if !n.IsSmall() {
 		t.Fatalf("not valid node state: %+v", n)
 	}
 }
 
 func TestPolicy_OneHitWonders(t *testing.T) {
-	p := NewPolicy[int, int](10, func(n node.Node[int, int], nowNanos int64) {
-	})
+	evictNode := func(n node.Node[int, int], nowNanos int64) {
+	}
+	p := NewPolicy[int, int](10)
 
 	oneHitWonders := make([]node.Node[int, int], 0, 2)
 	for i := 0; i < cap(oneHitWonders); i++ {
@@ -57,11 +59,11 @@ func TestPolicy_OneHitWonders(t *testing.T) {
 	}
 
 	for _, n := range oneHitWonders {
-		p.Add(n, 1)
+		p.Add(n, 1, evictNode)
 	}
 
 	for _, n := range popular {
-		p.Add(n, 1)
+		p.Add(n, 1, evictNode)
 	}
 
 	read(p, oneHitWonders)
@@ -75,7 +77,7 @@ func TestPolicy_OneHitWonders(t *testing.T) {
 	}
 
 	for _, n := range newNodes {
-		p.Add(n, 1)
+		p.Add(n, 1, evictNode)
 	}
 
 	for _, n := range oneHitWonders {
@@ -108,39 +110,41 @@ func TestPolicy_OneHitWonders(t *testing.T) {
 func TestPolicy_Update(t *testing.T) {
 	collect := false
 	var deleted []node.Node[int, int]
-	p := NewPolicy[int, int](100, func(n node.Node[int, int], nowNanos int64) {
+	evictNode := func(n node.Node[int, int], nowNanos int64) {
 		if collect {
 			deleted = deleted[:0]
 			deleted = append(deleted, n)
 		}
-	})
+	}
+	p := NewPolicy[int, int](100)
 
 	n := newNode(1)
 	m := node.NewManager[int, int](node.Config{WithWeight: true})
-	n1 := m.Create(1, 1, 0, n.Weight()+8)
+	n1 := m.Create(1, 1, 0, n.Weight()+11)
 
-	p.Add(n, 1)
+	p.Add(n, 1, evictNode)
 	p.Delete(n)
-	p.Add(n1, 1)
+	p.Add(n1, 1, evictNode)
 
-	p.Read(n1)
-	p.Read(n1)
+	n2 := m.Create(2, 1, 0, 89)
+	p.Read(n2)
+	p.Read(n2)
 
-	n2 := m.Create(2, 1, 0, 92)
 	collect = true
-	p.Add(n2, 1)
+	p.Add(n2, 1, evictNode)
+	p.Add(newNode(3), 1, evictNode)
 
-	if !n1.IsMain() {
-		t.Fatalf("updated node should be in main queue: %+v", n1)
+	if !n2.IsMain() {
+		t.Fatalf("inserted node should be in main queue: %+v", n1)
 	}
 
-	if n2.IsSmall() || n2.IsMain() || len(deleted) != 1 || deleted[0] != n2 {
-		t.Fatalf("inserted node should be evicted: %+v", n2)
+	if n1.IsSmall() || n1.IsMain() || len(deleted) != 1 || deleted[0] != n1 {
+		t.Fatalf("updated node should be evicted: %+v", n1)
 	}
 
 	n3 := m.Create(1, 1, 0, 109)
 	p.Delete(n1)
-	p.Add(n3, 1)
+	p.Add(n3, 1, evictNode)
 	if n3.IsSmall() || n3.IsMain() || len(deleted) != 1 || deleted[0] != n3 {
 		t.Fatalf("updated node should be evicted: %+v", n3)
 	}

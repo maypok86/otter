@@ -166,20 +166,19 @@ func TestCache_SetWithWeight(t *testing.T) {
 		t.Fatalf("can not create cache: %v", err)
 	}
 
-	goodWeight := c.policy.MaxAvailableWeight()
-	badWeight := goodWeight + 1
+	goodWeight1 := 1
+	goodWeight2 := 2
+	badWeight := 8
 
-	c.Set(uint32(goodWeight), 1)
+	c.Set(uint32(goodWeight1), 1)
+	c.Set(uint32(goodWeight2), 1)
 	c.Set(uint32(badWeight), 1)
 	time.Sleep(time.Second)
-	if rejections := statsCounter.Snapshot().Rejections(); rejections != 1 {
-		t.Fatalf("Set wasn't dropped, though it should have been. Max available weight: %d, actual weight: %d",
-			c.policy.MaxAvailableWeight(),
-			c.weigher(uint32(badWeight), 1),
-		)
+	if !c.Has(uint32(goodWeight1)) {
+		t.Fatalf("the key must exist: %d", goodWeight1)
 	}
-	if !c.Has(uint32(goodWeight)) {
-		t.Fatalf("the key must exist: %d", goodWeight)
+	if !c.Has(uint32(goodWeight2)) {
+		t.Fatalf("the key must exist: %d", goodWeight2)
 	}
 	if c.Has(uint32(badWeight)) {
 		t.Fatalf("the key must not exist: %d", badWeight)

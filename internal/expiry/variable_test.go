@@ -60,8 +60,7 @@ func TestVariable_Add(t *testing.T) {
 		nm.Create("k2", "", getTestExp(69), 1),
 		nm.Create("k3", "", getTestExp(4399), 1),
 	}
-	v := NewVariable[string, string](nm, func(n node.Node[string, string], nowNanos int64) {
-	})
+	v := NewVariable(nm)
 
 	for _, n := range nodes {
 		v.Add(n)
@@ -115,32 +114,33 @@ func TestVariable_DeleteExpired(t *testing.T) {
 		nm.Create("k7", "", getTestExp(1420000), 1),
 	}
 	var expired []node.Node[string, string]
-	v := NewVariable[string, string](nm, func(n node.Node[string, string], nowNanos int64) {
+	expireNode := func(n node.Node[string, string], nowNanos int64) {
 		expired = append(expired, n)
-	})
+	}
+	v := NewVariable(nm)
 
 	for _, n := range nodes {
 		v.Add(n)
 	}
 
 	var keys []string
-	v.DeleteExpired(getTestExp(64))
+	v.DeleteExpired(getTestExp(64), expireNode)
 	keys = append(keys, "k1", "k2", "k3")
 	match(t, expired, keys)
 
-	v.DeleteExpired(getTestExp(200))
+	v.DeleteExpired(getTestExp(200), expireNode)
 	keys = append(keys, "k4")
 	match(t, expired, keys)
 
-	v.DeleteExpired(getTestExp(12000))
+	v.DeleteExpired(getTestExp(12000), expireNode)
 	keys = append(keys, "k5")
 	match(t, expired, keys)
 
-	v.DeleteExpired(getTestExp(350000))
+	v.DeleteExpired(getTestExp(350000), expireNode)
 	keys = append(keys, "k6")
 	match(t, expired, keys)
 
-	v.DeleteExpired(getTestExp(1520000))
+	v.DeleteExpired(getTestExp(1520000), expireNode)
 	keys = append(keys, "k7")
 	match(t, expired, keys)
 }

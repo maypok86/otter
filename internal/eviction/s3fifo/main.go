@@ -25,45 +25,46 @@ type main[K comparable, V any] struct {
 	d         *deque.Linked[K, V]
 	weight    uint64
 	maxWeight uint64
-	evictNode func(n node.Node[K, V], nowNanos int64)
 }
 
-func newMain[K comparable, V any](maxWeight uint64, evictNode func(n node.Node[K, V], nowNanos int64)) *main[K, V] {
+func newMain[K comparable, V any](maxWeight uint64) *main[K, V] {
 	return &main[K, V]{
 		d:         deque.NewLinked[K, V](isExp),
 		maxWeight: maxWeight,
-		evictNode: evictNode,
 	}
 }
 
 func (m *main[K, V]) insert(n node.Node[K, V]) {
-	m.d.PushBack(n)
+	nodeWeight := uint64(n.Weight())
+	if nodeWeight > m.maxWeight {
+		m.d.PushFront(n)
+	} else {
+		m.d.PushBack(n)
+	}
 	n.MarkMain()
 	m.weight += uint64(n.Weight())
 }
 
-func (m *main[K, V]) evict(nowNanos int64) {
+func (m *main[K, V]) evict(nowNanos int64, evictNode func(n node.Node[K, V], nowNanos int64)) {
 	reinsertions := 0
 	for m.weight > 0 {
 		n := m.d.PopFront()
+		n.Unmark()
+		m.weight -= uint64(n.Weight())
 
 		if !n.IsAlive() || n.HasExpired(nowNanos) || n.Frequency() == 0 {
-			n.Unmark()
-			m.weight -= uint64(n.Weight())
-			m.evictNode(n, nowNanos)
+			evictNode(n, nowNanos)
 			return
 		}
 
 		// to avoid the worst case O(n), we remove the 20th reinserted consecutive element.
 		reinsertions++
 		if reinsertions >= maxReinsertions {
-			n.Unmark()
-			m.weight -= uint64(n.Weight())
-			m.evictNode(n, nowNanos)
+			evictNode(n, nowNanos)
 			return
 		}
 
-		m.d.PushBack(n)
+		m.insert(n)
 		n.DecrementFrequency()
 	}
 }

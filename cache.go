@@ -50,16 +50,15 @@ func init() {
 
 type evictionPolicy[K comparable, V any] interface {
 	Read(n node.Node[K, V])
-	Add(n node.Node[K, V], nowNanos int64)
+	Add(n node.Node[K, V], nowNanos int64, evictNode func(n node.Node[K, V], nowNanos int64))
 	Delete(n node.Node[K, V])
-	MaxAvailableWeight() uint64
 	Clear()
 }
 
 type expiryPolicy[K comparable, V any] interface {
 	Add(n node.Node[K, V])
 	Delete(n node.Node[K, V])
-	DeleteExpired(nowNanos int64)
+	DeleteExpired(nowNanos int64, expireNode func(n node.Node[K, V], nowNanos int64))
 	Clear()
 }
 
@@ -125,14 +124,14 @@ func newCache[K comparable, V any](b *Builder[K, V]) *Cache[K, V] {
 	cache.withEviction = withEviction
 	cache.policy = eviction.NewDisabled[K, V]()
 	if cache.withEviction {
-		cache.policy = s3fifo.NewPolicy(*maximum, cache.evictOrExpireNode)
+		cache.policy = s3fifo.NewPolicy[K, V](*maximum)
 	}
 
 	switch {
 	case b.ttl != nil:
-		cache.expiryPolicy = expiry.NewFixed[K, V](cache.evictOrExpireNode)
+		cache.expiryPolicy = expiry.NewFixed[K, V]()
 	case b.withVariableTTL:
-		cache.expiryPolicy = expiry.NewVariable[K, V](nodeManager, cache.evictOrExpireNode)
+		cache.expiryPolicy = expiry.NewVariable[K, V](nodeManager)
 	default:
 		cache.expiryPolicy = expiry.NewDisabled[K, V]()
 	}
@@ -410,7 +409,7 @@ func (c *Cache[K, V]) cleanup() {
 			return
 		case <-ticker.C:
 			c.evictionMutex.Lock()
-			c.expiryPolicy.DeleteExpired(c.clock.Offset())
+			c.expiryPolicy.DeleteExpired(c.clock.Offset(), c.evictOrExpireNode)
 			c.evictionMutex.Unlock()
 		}
 	}
@@ -438,18 +437,9 @@ func (c *Cache[K, V]) addToPolicies(n node.Node[K, V]) {
 		return
 	}
 
-	if uint64(n.Weight()) > c.policy.MaxAvailableWeight() {
-		deleted := c.deleteNodeFromMap(n)
-		if deleted != nil {
-			n.Die()
-		}
-		c.stats.RecordRejections(1)
-		return
-	}
-
 	c.expiryPolicy.Add(n)
 	if n.Weight() != pinnedWeight {
-		c.policy.Add(n, c.clock.Offset())
+		c.policy.Add(n, c.clock.Offset(), c.evictOrExpireNode)
 	}
 }
 

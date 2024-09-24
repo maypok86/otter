@@ -42,15 +42,11 @@ var (
 )
 
 type Variable[K comparable, V any] struct {
-	wheel      [][]node.Node[K, V]
-	time       uint64
-	expireNode func(n node.Node[K, V], nowNanos int64)
+	wheel [][]node.Node[K, V]
+	time  uint64
 }
 
-func NewVariable[K comparable, V any](
-	nodeManager *node.Manager[K, V],
-	expireNode func(n node.Node[K, V], nowNanos int64),
-) *Variable[K, V] {
+func NewVariable[K comparable, V any](nodeManager *node.Manager[K, V]) *Variable[K, V] {
 	wheel := make([][]node.Node[K, V], len(buckets))
 	for i := 0; i < len(wheel); i++ {
 		wheel[i] = make([]node.Node[K, V], buckets[i])
@@ -64,8 +60,7 @@ func NewVariable[K comparable, V any](
 		}
 	}
 	return &Variable[K, V]{
-		wheel:      wheel,
-		expireNode: expireNode,
+		wheel: wheel,
 	}
 }
 
@@ -97,7 +92,7 @@ func (v *Variable[K, V]) Delete(n node.Node[K, V]) {
 	n.SetPrevExp(nil)
 }
 
-func (v *Variable[K, V]) DeleteExpired(nowNanos int64) {
+func (v *Variable[K, V]) DeleteExpired(nowNanos int64, expireNode func(n node.Node[K, V], nowNanos int64)) {
 	//nolint:gosec // there is no overflow
 	currentTime := uint64(nowNanos)
 	prevTime := v.time
@@ -111,11 +106,15 @@ func (v *Variable[K, V]) DeleteExpired(nowNanos int64) {
 			break
 		}
 
-		v.deleteExpiredFromBucket(i, previousTicks, delta)
+		v.deleteExpiredFromBucket(i, previousTicks, delta, expireNode)
 	}
 }
 
-func (v *Variable[K, V]) deleteExpiredFromBucket(index int, prevTicks, delta uint64) {
+func (v *Variable[K, V]) deleteExpiredFromBucket(
+	index int,
+	prevTicks, delta uint64,
+	expireNode func(n node.Node[K, V], nowNanos int64),
+) {
 	mask := buckets[index] - 1
 	steps := buckets[index]
 	if delta < steps {
@@ -137,7 +136,7 @@ func (v *Variable[K, V]) deleteExpiredFromBucket(index int, prevTicks, delta uin
 
 			//nolint:gosec // there is no overflow
 			if uint64(n.Expiration()) <= v.time {
-				v.expireNode(n, int64(v.time))
+				expireNode(n, int64(v.time))
 			} else {
 				v.Add(n)
 			}

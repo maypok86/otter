@@ -22,14 +22,12 @@ import (
 const isExp = true
 
 type Fixed[K comparable, V any] struct {
-	d          *deque.Linked[K, V]
-	expireNode func(n node.Node[K, V], nowNanos int64)
+	d *deque.Linked[K, V]
 }
 
-func NewFixed[K comparable, V any](expireNode func(n node.Node[K, V], nowNanos int64)) *Fixed[K, V] {
+func NewFixed[K comparable, V any]() *Fixed[K, V] {
 	return &Fixed[K, V]{
-		d:          deque.NewLinked[K, V](isExp),
-		expireNode: expireNode,
+		d: deque.NewLinked[K, V](isExp),
 	}
 }
 
@@ -41,9 +39,9 @@ func (f *Fixed[K, V]) Delete(n node.Node[K, V]) {
 	f.d.Delete(n)
 }
 
-func (f *Fixed[K, V]) DeleteExpired(nowNanos int64) {
+func (f *Fixed[K, V]) DeleteExpired(nowNanos int64, expireNode func(n node.Node[K, V], nowNanos int64)) {
 	for !f.d.IsEmpty() && f.d.Head().HasExpired(nowNanos) {
-		f.expireNode(f.d.PopFront(), nowNanos)
+		expireNode(f.d.PopFront(), nowNanos)
 	}
 }
 

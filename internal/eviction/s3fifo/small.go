@@ -25,31 +25,33 @@ type small[K comparable, V any] struct {
 	ghost     *ghost[K, V]
 	weight    uint64
 	maxWeight uint64
-	evictNode func(n node.Node[K, V], nowNanos int64)
 }
 
 func newSmall[K comparable, V any](
 	maxWeight uint64,
 	main *main[K, V],
 	ghost *ghost[K, V],
-	evictNode func(n node.Node[K, V], nowNanos int64),
 ) *small[K, V] {
 	return &small[K, V]{
 		d:         deque.NewLinked[K, V](isExp),
 		main:      main,
 		ghost:     ghost,
 		maxWeight: maxWeight,
-		evictNode: evictNode,
 	}
 }
 
 func (s *small[K, V]) insert(n node.Node[K, V]) {
-	s.d.PushBack(n)
+	nodeWeight := uint64(n.Weight())
+	if nodeWeight > s.maxWeight {
+		s.d.PushFront(n)
+	} else {
+		s.d.PushBack(n)
+	}
 	n.MarkSmall()
-	s.weight += uint64(n.Weight())
+	s.weight += nodeWeight
 }
 
-func (s *small[K, V]) evict(nowNanos int64) {
+func (s *small[K, V]) evict(nowNanos int64, evictNode func(n node.Node[K, V], nowNanos int64)) {
 	if s.weight == 0 {
 		return
 	}
@@ -58,20 +60,20 @@ func (s *small[K, V]) evict(nowNanos int64) {
 	s.weight -= uint64(n.Weight())
 	n.Unmark()
 	if !n.IsAlive() || n.HasExpired(nowNanos) {
-		s.evictNode(n, nowNanos)
+		evictNode(n, nowNanos)
 		return
 	}
 
 	if n.Frequency() > 1 {
 		s.main.insert(n)
 		for s.main.isFull() {
-			s.main.evict(nowNanos)
+			s.main.evict(nowNanos, evictNode)
 		}
 		n.ResetFrequency()
 		return
 	}
 
-	s.evictNode(n, nowNanos)
+	evictNode(n, nowNanos)
 	s.ghost.insert(n)
 }
 

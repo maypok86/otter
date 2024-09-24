@@ -23,29 +23,27 @@ const isExp = false
 // Policy is an eviction policy based on S3-FIFO eviction algorithm
 // from the following paper: https://dl.acm.org/doi/10.1145/3600006.3613147.
 type Policy[K comparable, V any] struct {
-	small                  *small[K, V]
-	main                   *main[K, V]
-	ghost                  *ghost[K, V]
-	maxWeight              uint64
-	maxAvailableNodeWeight uint64
+	small     *small[K, V]
+	main      *main[K, V]
+	ghost     *ghost[K, V]
+	maxWeight uint64
 }
 
 // NewPolicy creates a new Policy.
-func NewPolicy[K comparable, V any](maxWeight uint64, evictNode func(n node.Node[K, V], nowNanos int64)) *Policy[K, V] {
+func NewPolicy[K comparable, V any](maxWeight uint64) *Policy[K, V] {
 	smallMaxWeight := maxWeight / 10
 	mainMaxWeight := maxWeight - smallMaxWeight
 
-	main := newMain[K, V](mainMaxWeight, evictNode)
+	main := newMain[K, V](mainMaxWeight)
 	ghost := newGhost(main)
-	small := newSmall(smallMaxWeight, main, ghost, evictNode)
+	small := newSmall(smallMaxWeight, main, ghost)
 	ghost.small = small
 
 	return &Policy[K, V]{
-		small:                  small,
-		main:                   main,
-		ghost:                  ghost,
-		maxWeight:              maxWeight,
-		maxAvailableNodeWeight: smallMaxWeight,
+		small:     small,
+		main:      main,
+		ghost:     ghost,
+		maxWeight: maxWeight,
 	}
 }
 
@@ -55,7 +53,12 @@ func (p *Policy[K, V]) Read(n node.Node[K, V]) {
 }
 
 // Add adds node to the eviction policy.
-func (p *Policy[K, V]) Add(n node.Node[K, V], nowNanos int64) {
+func (p *Policy[K, V]) Add(n node.Node[K, V], nowNanos int64, evictNode func(n node.Node[K, V], nowNanos int64)) {
+	if uint64(n.Weight()) > p.maxWeight {
+		evictNode(n, nowNanos)
+		return
+	}
+
 	if p.ghost.isGhost(n) {
 		p.main.insert(n)
 		n.ResetFrequency()
@@ -64,17 +67,17 @@ func (p *Policy[K, V]) Add(n node.Node[K, V], nowNanos int64) {
 	}
 
 	for p.isFull() {
-		p.evict(nowNanos)
+		p.evict(nowNanos, evictNode)
 	}
 }
 
-func (p *Policy[K, V]) evict(nowNanos int64) {
+func (p *Policy[K, V]) evict(nowNanos int64, evictNode func(n node.Node[K, V], nowNanos int64)) {
 	if p.small.weight >= p.maxWeight/10 {
-		p.small.evict(nowNanos)
+		p.small.evict(nowNanos, evictNode)
 		return
 	}
 
-	p.main.evict(nowNanos)
+	p.main.evict(nowNanos, evictNode)
 }
 
 func (p *Policy[K, V]) isFull() bool {
@@ -91,11 +94,6 @@ func (p *Policy[K, V]) Delete(n node.Node[K, V]) {
 	if n.IsMain() {
 		p.main.delete(n)
 	}
-}
-
-// MaxAvailableWeight returns the maximum available weight of the node.
-func (p *Policy[K, V]) MaxAvailableWeight() uint64 {
-	return p.maxAvailableNodeWeight
 }
 
 // Clear clears the eviction policy and returns it to the default state.
