@@ -101,7 +101,7 @@ func TestCache_PinnedWeight(t *testing.T) {
 		MaximumWeight(uint64(size)).
 		Weigher(func(key int, value int) uint32 {
 			if key == pinned {
-				return pinnedWeight
+				return 0
 			}
 			return 1
 		}).

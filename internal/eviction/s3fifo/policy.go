@@ -18,7 +18,10 @@ import (
 	"github.com/maypok86/otter/v2/internal/generated/node"
 )
 
-const isExp = false
+const (
+	isExp        = false
+	pinnedWeight = 0
+)
 
 // Policy is an eviction policy based on S3-FIFO eviction algorithm
 // from the following paper: https://dl.acm.org/doi/10.1145/3600006.3613147.
@@ -54,6 +57,10 @@ func (p *Policy[K, V]) Read(n node.Node[K, V]) {
 
 // Add adds node to the eviction policy.
 func (p *Policy[K, V]) Add(n node.Node[K, V], nowNanos int64, evictNode func(n node.Node[K, V], nowNanos int64)) {
+	if n.Weight() == pinnedWeight {
+		return
+	}
+
 	if uint64(n.Weight()) > p.maxWeight {
 		evictNode(n, nowNanos)
 		return

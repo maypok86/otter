@@ -32,7 +32,6 @@ import (
 
 const (
 	minWriteBufferSize uint32 = 4
-	pinnedWeight       uint32 = 0
 )
 
 var (
@@ -438,9 +437,7 @@ func (c *Cache[K, V]) addToPolicies(n node.Node[K, V]) {
 	}
 
 	c.expiryPolicy.Add(n)
-	if n.Weight() != pinnedWeight {
-		c.policy.Add(n, c.clock.Offset(), c.evictOrExpireNode)
-	}
+	c.policy.Add(n, c.clock.Offset(), c.evictOrExpireNode)
 }
 
 func (c *Cache[K, V]) deleteFromPolicies(n node.Node[K, V], cause DeletionCause) {
