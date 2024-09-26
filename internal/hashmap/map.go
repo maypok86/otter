@@ -182,8 +182,7 @@ func newMapTable[K comparable, V any](minTableLen int, prevHasher maphash.Hasher
 
 // Get returns the node stored in the map for a key, or nil
 // if no value is present.
-// The ok result indicates whether value was found in the map.
-func (m *Map[K, V]) Get(key K) (got node.Node[K, V], ok bool) {
+func (m *Map[K, V]) Get(key K) node.Node[K, V] {
 	table := (*mapTable[K, V])(atomic.LoadPointer(&m.table))
 	hash := table.hasher.Hash(key)
 	h1 := h1(hash)
@@ -200,14 +199,14 @@ func (m *Map[K, V]) Get(key K) (got node.Node[K, V], ok bool) {
 			if nptr != nil {
 				n := m.nodeManager.FromPointer(nptr)
 				if n.Key() == key {
-					return n, true
+					return n
 				}
 			}
 			markedw &= markedw - 1
 		}
 		bptr := atomic.LoadPointer(&b.next)
 		if bptr == nil {
-			return nil, false
+			return nil
 		}
 		b = (*bucketPadded)(bptr)
 	}

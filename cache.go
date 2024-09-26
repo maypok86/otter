@@ -170,8 +170,8 @@ func (c *Cache[K, V]) Has(key K) bool {
 
 // Get returns the value associated with the key in this cache.
 func (c *Cache[K, V]) Get(key K) (V, bool) {
-	n, ok := c.GetNode(key)
-	if !ok {
+	n := c.GetNode(key)
+	if n == nil {
 		return zeroValue[V](), false
 	}
 
@@ -179,29 +179,29 @@ func (c *Cache[K, V]) Get(key K) (V, bool) {
 }
 
 // GetNode returns the node associated with the key in this cache.
-func (c *Cache[K, V]) GetNode(key K) (node.Node[K, V], bool) {
-	n, ok := c.hashmap.Get(key)
-	if !ok || !n.IsAlive() || n.HasExpired(c.clock.Offset()) {
+func (c *Cache[K, V]) GetNode(key K) node.Node[K, V] {
+	n := c.hashmap.Get(key)
+	if n == nil || !n.IsAlive() || n.HasExpired(c.clock.Offset()) {
 		c.stats.RecordMisses(1)
-		return nil, false
+		return nil
 	}
 
 	c.afterHit(n)
 
-	return n, true
+	return n
 }
 
 // GetNodeQuietly returns the node associated with the key in this cache.
 //
 // Unlike GetNode, this function does not produce any side effects
 // such as updating statistics or the eviction policy.
-func (c *Cache[K, V]) GetNodeQuietly(key K) (node.Node[K, V], bool) {
-	n, ok := c.hashmap.Get(key)
-	if !ok || !n.IsAlive() || n.HasExpired(c.clock.Offset()) {
-		return nil, false
+func (c *Cache[K, V]) GetNodeQuietly(key K) node.Node[K, V] {
+	n := c.hashmap.Get(key)
+	if n == nil || !n.IsAlive() || n.HasExpired(c.clock.Offset()) {
+		return nil
 	}
 
-	return n, true
+	return n
 }
 
 func (c *Cache[K, V]) afterHit(got node.Node[K, V]) {

@@ -52,8 +52,8 @@ func TestMap_BucketStructSize(t *testing.T) {
 func TestMap_MissingNode(t *testing.T) {
 	nm := testNodeManager[string, string]()
 	m := New(nm)
-	n, ok := m.Get("foo")
-	if ok {
+	n := m.Get("foo")
+	if n != nil {
 		t.Fatalf("node was not expected: %v", n)
 	}
 	var oldNode node.Node[string, string]
@@ -76,8 +76,8 @@ func TestMapOf_EmptyStringKey(t *testing.T) {
 	m.Compute("", func(n node.Node[string, string]) node.Node[string, string] {
 		return nm.Create("", "foobar", 0, 1)
 	})
-	n, ok := m.Get("")
-	if !ok {
+	n := m.Get("")
+	if n == nil {
 		t.Fatal("node was expected")
 	}
 	if n.Value() != "foobar" {
@@ -91,8 +91,8 @@ func TestMapSet_NilValue(t *testing.T) {
 	m.Compute("foo", func(n node.Node[string, *struct{}]) node.Node[string, *struct{}] {
 		return nm.Create("foo", nil, 0, 1)
 	})
-	n, ok := m.Get("foo")
-	if !ok {
+	n := m.Get("foo")
+	if n == nil {
 		t.Fatal("nil node was expected")
 	}
 	if n.Value() != nil {
@@ -184,7 +184,7 @@ func TestMapRange_NestedDelete(t *testing.T) {
 		return true
 	})
 	for i := 0; i < numNodes; i++ {
-		if _, ok := m.Get(strconv.Itoa(i)); ok {
+		if n := m.Get(strconv.Itoa(i)); n != nil {
 			t.Fatalf("node found for %d", i)
 		}
 	}
@@ -201,8 +201,8 @@ func TestMapStringSet(t *testing.T) {
 		})
 	}
 	for i := 0; i < numNodes; i++ {
-		n, ok := m.Get(strconv.Itoa(i))
-		if !ok {
+		n := m.Get(strconv.Itoa(i))
+		if n == nil {
 			t.Fatalf("node not found for %d", i)
 		}
 		if n.Value() != i {
@@ -221,8 +221,8 @@ func TestMapIntSet(t *testing.T) {
 		})
 	}
 	for i := 0; i < numNodes; i++ {
-		n, ok := m.Get(i)
-		if !ok {
+		n := m.Get(i)
+		if n == nil {
 			t.Fatalf("node not found for %d", i)
 		}
 		if n.Value() != i {
@@ -242,8 +242,8 @@ func TestMapSet_StructKeys_IntValues(t *testing.T) {
 		})
 	}
 	for i := 0; i < numNodes; i++ {
-		n, ok := m.Get(point{int32(i), -int32(i)})
-		if !ok {
+		n := m.Get(point{int32(i), -int32(i)})
+		if n == nil {
 			t.Fatalf("node not found for %d", i)
 		}
 		if n.Value() != i {
@@ -264,8 +264,8 @@ func TestMapSet_StructKeys_StructValues(t *testing.T) {
 		})
 	}
 	for i := 0; i < numNodes; i++ {
-		n, ok := m.Get(point{int32(i), -int32(i)})
-		if !ok {
+		n := m.Get(point{int32(i), -int32(i)})
+		if n == nil {
 			t.Fatalf("node not found for %d", i)
 		}
 		v := n.Value()
@@ -301,8 +301,8 @@ func TestMapSet_WithCollisions(t *testing.T) {
 		})
 	}
 	for i := 0; i < numNodes; i++ {
-		n, ok := m.Get(i)
-		if !ok {
+		n := m.Get(i)
+		if n == nil {
 			t.Fatalf("node not found for %d", i)
 		}
 		if n.Value() != i {
@@ -396,7 +396,7 @@ func TestMapStringSetThenDelete(t *testing.T) {
 		m.Compute(strconv.Itoa(i), func(n node.Node[string, int]) node.Node[string, int] {
 			return nil
 		})
-		if _, ok := m.Get(strconv.Itoa(i)); ok {
+		if n := m.Get(strconv.Itoa(i)); n != nil {
 			t.Fatalf("node was not expected for %d", i)
 		}
 	}
@@ -415,7 +415,7 @@ func TestMapIntSetThenDelete(t *testing.T) {
 		m.Compute(int32(i), func(n node.Node[int32, int32]) node.Node[int32, int32] {
 			return nil
 		})
-		if _, ok := m.Get(int32(i)); ok {
+		if n := m.Get(int32(i)); n != nil {
 			t.Fatalf("node was not expected for %d", i)
 		}
 	}
@@ -436,7 +436,7 @@ func TestMapStructSetThenDelete(t *testing.T) {
 		m.Compute(key, func(n node.Node[point, string]) node.Node[point, string] {
 			return nil
 		})
-		if _, ok := m.Get(key); ok {
+		if n := m.Get(key); n != nil {
 			t.Fatalf("node was not expected for %d", i)
 		}
 	}
@@ -587,8 +587,8 @@ func TestMapParallelResize(t *testing.T) {
 	<-cdone
 	// Verify map contents.
 	for i := 0; i < numNodes; i++ {
-		n, ok := m.Get(strconv.Itoa(i))
-		if !ok {
+		n := m.Get(strconv.Itoa(i))
+		if n == nil {
 			// The entry may be deleted and that's ok.
 			continue
 		}
@@ -656,8 +656,8 @@ func parallelSeqTypedSetter(t *testing.T, m *Map[string, int], storeEach, numIte
 					return m.nodeManager.Create(key, j, 0, 1)
 				})
 				// Due to atomic snapshots we must see a "<j>"/j pair.
-				n, ok := m.Get(key)
-				if !ok {
+				n := m.Get(key)
+				if n == nil {
 					t.Errorf("node was not found for %d", j)
 					break
 				}
@@ -687,8 +687,8 @@ func TestMapParallelSetter(t *testing.T) {
 	}
 	// Verify map contents.
 	for i := 0; i < numNodes; i++ {
-		n, ok := m.Get(strconv.Itoa(i))
-		if !ok {
+		n := m.Get(strconv.Itoa(i))
+		if n == nil {
 			t.Fatalf("node not found for %d", i)
 		}
 		if n.Value() != i {
@@ -740,7 +740,7 @@ func parallelTypedGetter(t *testing.T, m *Map[string, int], numIters, numNodes i
 	for i := 0; i < numIters; i++ {
 		for j := 0; j < numNodes; j++ {
 			// Due to atomic snapshots we must either see no entry, or a "<j>"/j pair.
-			if n, ok := m.Get(strconv.Itoa(j)); ok {
+			if n := m.Get(strconv.Itoa(j)); n != nil {
 				if n.Value() != j {
 					t.Errorf("value was not expected for %d: %d", j, n.Value())
 				}
@@ -814,8 +814,8 @@ func TestMapParallelComputes(t *testing.T) {
 	}
 	// Verify map contents.
 	for i := 0; i < numWorkers; i++ {
-		n, ok := m.Get(uint64(i))
-		if !ok {
+		n := m.Get(uint64(i))
+		if n == nil {
 			t.Fatalf("node not found for %d", i)
 		}
 		if n.Value() != numWorkers*numIters {
@@ -935,7 +935,7 @@ func parallelTypedUpdater(t *testing.T, m *Map[uint64, *point], idx int, stopFla
 			t.Errorf("value was present for %d: %v", idx, n.Value())
 		}
 		time.Sleep(time.Duration(sleepUs) * time.Microsecond)
-		if _, ok := m.Get(uint64(idx)); !ok {
+		if n := m.Get(uint64(idx)); n == nil {
 			t.Errorf("node was not found for %d", idx)
 		}
 		m.Compute(uint64(idx), func(n node.Node[uint64, *point]) node.Node[uint64, *point] {

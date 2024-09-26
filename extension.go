@@ -55,8 +55,8 @@ func (e Extension[K, V]) createEntry(n node.Node[K, V]) Entry[K, V] {
 // Unlike Get in the cache, this function does not produce any side effects
 // such as updating statistics or the eviction policy.
 func (e Extension[K, V]) GetQuietly(key K) (V, bool) {
-	n, ok := e.cache.GetNodeQuietly(key)
-	if !ok {
+	n := e.cache.GetNodeQuietly(key)
+	if n == nil {
 		return zeroValue[V](), false
 	}
 
@@ -65,8 +65,8 @@ func (e Extension[K, V]) GetQuietly(key K) (V, bool) {
 
 // GetEntry returns the cache entry associated with the key in this cache.
 func (e Extension[K, V]) GetEntry(key K) (Entry[K, V], bool) {
-	n, ok := e.cache.GetNode(key)
-	if !ok {
+	n := e.cache.GetNode(key)
+	if n == nil {
 		return Entry[K, V]{}, false
 	}
 
@@ -78,8 +78,8 @@ func (e Extension[K, V]) GetEntry(key K) (Entry[K, V], bool) {
 // Unlike GetEntry, this function does not produce any side effects
 // such as updating statistics or the eviction policy.
 func (e Extension[K, V]) GetEntryQuietly(key K) (Entry[K, V], bool) {
-	n, ok := e.cache.GetNodeQuietly(key)
-	if !ok {
+	n := e.cache.GetNodeQuietly(key)
+	if n == nil {
 		return Entry[K, V]{}, false
 	}
 
