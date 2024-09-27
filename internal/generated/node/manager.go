@@ -112,6 +112,9 @@ func NewManager[K comparable, V any](c Config) *Manager[K, V] {
 	m := &Manager[K, V]{}
 
 	switch nodeType {
+	case "be":
+		m.create = NewBE[K, V]
+		m.fromPointer = CastPointerToBE[K, V]
 	case "b":
 		m.create = NewB[K, V]
 		m.fromPointer = CastPointerToB[K, V]
@@ -127,9 +130,6 @@ func NewManager[K comparable, V any](c Config) *Manager[K, V] {
 	case "bw":
 		m.create = NewBW[K, V]
 		m.fromPointer = CastPointerToBW[K, V]
-	case "be":
-		m.create = NewBE[K, V]
-		m.fromPointer = CastPointerToBE[K, V]
 	default:
 		panic("not valid nodeType")
 	}
@@ -142,6 +142,10 @@ func (m *Manager[K, V]) Create(key K, value V, expiration int64, weight uint32) 
 
 func (m *Manager[K, V]) FromPointer(ptr unsafe.Pointer) Node[K, V] {
 	return m.fromPointer(ptr)
+}
+
+func (m *Manager[K, V]) IsNil(n Node[K, V]) bool {
+	return n == nil || n.AsPointer() == nil
 }
 
 func minUint8(a, b uint8) uint8 {

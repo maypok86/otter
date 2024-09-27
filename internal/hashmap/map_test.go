@@ -33,7 +33,15 @@ import (
 	"github.com/maypok86/otter/v2/internal/xruntime"
 )
 
-func testNodeManager[K comparable, V any]() *node.Manager[K, V] {
+func newTestNode[K comparable, V any](nm mapNodeManager[K, V, node.Node[K, V]], key K, value V) node.Node[K, V] {
+	m, ok := nm.(*node.Manager[K, V])
+	if !ok {
+		panic("not valid node manager")
+	}
+	return m.Create(key, value, 0, 1)
+}
+
+func testNodeManager[K comparable, V any]() mapNodeManager[K, V, node.Node[K, V]] {
 	return node.NewManager[K, V](node.Config{})
 }
 
@@ -74,7 +82,7 @@ func TestMapOf_EmptyStringKey(t *testing.T) {
 	nm := testNodeManager[string, string]()
 	m := New(nm)
 	m.Compute("", func(n node.Node[string, string]) node.Node[string, string] {
-		return nm.Create("", "foobar", 0, 1)
+		return newTestNode(nm, "", "foobar")
 	})
 	n := m.Get("")
 	if n == nil {
@@ -89,7 +97,7 @@ func TestMapSet_NilValue(t *testing.T) {
 	nm := testNodeManager[string, *struct{}]()
 	m := New(nm)
 	m.Compute("foo", func(n node.Node[string, *struct{}]) node.Node[string, *struct{}] {
-		return nm.Create("foo", nil, 0, 1)
+		return newTestNode(nm, "foo", nil)
 	})
 	n := m.Get("foo")
 	if n == nil {
@@ -107,7 +115,7 @@ func TestMapSet_NonNilValue(t *testing.T) {
 	newv := &foo{}
 	newv2 := &foo{}
 	got := m.Compute("foo", func(n node.Node[string, *foo]) node.Node[string, *foo] {
-		return nm.Create("foo", newv2, 0, 1)
+		return newTestNode(nm, "foo", newv2)
 	})
 	if got == nil {
 		t.Fatal("node was expected")
@@ -124,7 +132,7 @@ func TestMapRange(t *testing.T) {
 	for i := 0; i < numNodes; i++ {
 		key := strconv.Itoa(i)
 		m.Compute(key, func(n node.Node[string, int]) node.Node[string, int] {
-			return nm.Create(key, i, 0, 1)
+			return newTestNode(nm, key, i)
 		})
 	}
 	iters := 0
@@ -154,7 +162,7 @@ func TestMapRange_FalseReturned(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		key := strconv.Itoa(i)
 		m.Compute(key, func(n node.Node[string, int]) node.Node[string, int] {
-			return nm.Create(key, i, 0, 1)
+			return newTestNode(nm, key, i)
 		})
 	}
 	iters := 0
@@ -174,7 +182,7 @@ func TestMapRange_NestedDelete(t *testing.T) {
 	for i := 0; i < numNodes; i++ {
 		key := strconv.Itoa(i)
 		m.Compute(key, func(n node.Node[string, int]) node.Node[string, int] {
-			return nm.Create(key, i, 0, 1)
+			return newTestNode(nm, key, i)
 		})
 	}
 	m.Range(func(n1 node.Node[string, int]) bool {
@@ -197,7 +205,7 @@ func TestMapStringSet(t *testing.T) {
 	for i := 0; i < numNodes; i++ {
 		key := strconv.Itoa(i)
 		m.Compute(key, func(n node.Node[string, int]) node.Node[string, int] {
-			return nm.Create(key, i, 0, 1)
+			return newTestNode(nm, key, i)
 		})
 	}
 	for i := 0; i < numNodes; i++ {
@@ -217,7 +225,7 @@ func TestMapIntSet(t *testing.T) {
 	m := New(nm)
 	for i := 0; i < numNodes; i++ {
 		m.Compute(i, func(n node.Node[int, int]) node.Node[int, int] {
-			return nm.Create(i, i, 0, 1)
+			return newTestNode(nm, i, i)
 		})
 	}
 	for i := 0; i < numNodes; i++ {
@@ -238,7 +246,7 @@ func TestMapSet_StructKeys_IntValues(t *testing.T) {
 	for i := 0; i < numNodes; i++ {
 		key := point{int32(i), -int32(i)}
 		m.Compute(key, func(n node.Node[point, int]) node.Node[point, int] {
-			return nm.Create(key, i, 0, 1)
+			return newTestNode(nm, key, i)
 		})
 	}
 	for i := 0; i < numNodes; i++ {
@@ -260,7 +268,7 @@ func TestMapSet_StructKeys_StructValues(t *testing.T) {
 		key := point{int32(i), -int32(i)}
 		value := point{-int32(i), int32(i)}
 		m.Compute(key, func(n node.Node[point, point]) node.Node[point, point] {
-			return nm.Create(key, value, 0, 1)
+			return newTestNode(nm, key, value)
 		})
 	}
 	for i := 0; i < numNodes; i++ {
@@ -288,7 +296,7 @@ func TestMapSet_WithCollisions(t *testing.T) {
 	const numNodes = 1000
 	nm := testNodeManager[int, int]()
 	m := NewWithSize(nm, numNodes)
-	table := (*mapTable[int, int])(atomic.LoadPointer(&m.table))
+	table := (*mapTable[int])(atomic.LoadPointer(&m.table))
 	hasher := (*hasher)((unsafe.Pointer)(&table.hasher))
 	hasher.hash = func(ptr unsafe.Pointer, seed uintptr) uintptr {
 		// We intentionally use an awful hash function here to make sure
@@ -297,7 +305,7 @@ func TestMapSet_WithCollisions(t *testing.T) {
 	}
 	for i := 0; i < numNodes; i++ {
 		m.Compute(i, func(n node.Node[int, int]) node.Node[int, int] {
-			return nm.Create(i, i, 0, 1)
+			return newTestNode(nm, i, i)
 		})
 	}
 	for i := 0; i < numNodes; i++ {
@@ -319,7 +327,7 @@ func TestMapCompute_FunctionCalledOnce(t *testing.T) {
 		m.Compute(i, func(n node.Node[int, int]) node.Node[int, int] {
 			var v int
 			v, i = i, i+1
-			return nm.Create(key, v, 0, 1)
+			return newTestNode(nm, key, v)
 		})
 	}
 	m.Range(func(n node.Node[int, int]) bool {
@@ -338,7 +346,7 @@ func TestMapCompute(t *testing.T) {
 		if n != nil {
 			t.Fatalf("n should be nil when computing a new node: %v", n)
 		}
-		return nm.Create("foobar", 42, 0, 1)
+		return newTestNode(nm, "foobar", 42)
 	})
 	if n == nil {
 		t.Fatal("n should be non nil when computing a new value")
@@ -351,7 +359,7 @@ func TestMapCompute(t *testing.T) {
 		if n.Value() != 42 {
 			t.Fatalf("n.Value() should be 42 when updating the value: %d", n.Value())
 		}
-		return nm.Create("foobar", n.Value()+42, 0, 1)
+		return newTestNode(nm, "foobar", n.Value()+42)
 	})
 	if n == nil {
 		t.Fatal("n should be non nil when computing a new value")
@@ -389,7 +397,7 @@ func TestMapStringSetThenDelete(t *testing.T) {
 	for i := 0; i < numNodes; i++ {
 		key := strconv.Itoa(i)
 		m.Compute(key, func(n node.Node[string, int]) node.Node[string, int] {
-			return nm.Create(key, i, 0, 1)
+			return newTestNode(nm, key, i)
 		})
 	}
 	for i := 0; i < numNodes; i++ {
@@ -408,7 +416,7 @@ func TestMapIntSetThenDelete(t *testing.T) {
 	m := New(nm)
 	for i := 0; i < numNodes; i++ {
 		m.Compute(int32(i), func(n node.Node[int32, int32]) node.Node[int32, int32] {
-			return nm.Create(int32(i), int32(i), 0, 1)
+			return newTestNode(nm, int32(i), int32(i))
 		})
 	}
 	for i := 0; i < numNodes; i++ {
@@ -428,7 +436,7 @@ func TestMapStructSetThenDelete(t *testing.T) {
 	for i := 0; i < numNodes; i++ {
 		key := point{int32(i), 42}
 		m.Compute(key, func(n node.Node[point, string]) node.Node[point, string] {
-			return nm.Create(key, strconv.Itoa(i), 0, 1)
+			return newTestNode(nm, key, strconv.Itoa(i))
 		})
 	}
 	for i := 0; i < numNodes; i++ {
@@ -448,7 +456,7 @@ func TestMapSetThenParallelDelete_DoesNotShrinkBelowMinTableLen(t *testing.T) {
 	m := New(nm)
 	for i := 0; i < numNodes; i++ {
 		m.Compute(i, func(n node.Node[int, int]) node.Node[int, int] {
-			return nm.Create(i, i, 0, 1)
+			return newTestNode(nm, i, i)
 		})
 	}
 
@@ -474,13 +482,13 @@ func TestMapSetThenParallelDelete_DoesNotShrinkBelowMinTableLen(t *testing.T) {
 	<-cdone
 	<-cdone
 
-	table := (*mapTable[int, int])(atomic.LoadPointer(&m.table))
+	table := (*mapTable[int])(atomic.LoadPointer(&m.table))
 	if len(table.buckets) != defaultMinMapTableLen {
 		t.Fatalf("table length was different from the minimum: %d", len(table.buckets))
 	}
 }
 
-func sizeBasedOnTypedRange(m *Map[string, int]) int {
+func sizeBasedOnTypedRange(m *Map[string, int, node.Node[string, int]]) int {
 	size := 0
 	m.Range(func(n node.Node[string, int]) bool {
 		size++
@@ -501,7 +509,7 @@ func TestMapSize(t *testing.T) {
 	for i := 0; i < numNodes; i++ {
 		key := strconv.Itoa(i)
 		m.Compute(key, func(n node.Node[string, int]) node.Node[string, int] {
-			return nm.Create(key, i, 0, 1)
+			return newTestNode(nm, key, i)
 		})
 		expectedSize++
 		size := m.Size()
@@ -536,7 +544,7 @@ func TestMapClear(t *testing.T) {
 	for i := 0; i < numNodes; i++ {
 		key := strconv.Itoa(i)
 		m.Compute(key, func(n node.Node[string, int]) node.Node[string, int] {
-			return nm.Create(key, i, 0, 1)
+			return newTestNode(nm, key, i)
 		})
 	}
 	size := m.Size()
@@ -554,7 +562,7 @@ func TestMapClear(t *testing.T) {
 	}
 }
 
-func parallelRandTypedResizer(m *Map[string, int], numIters, numNodes int, cdone chan bool) {
+func parallelRandTypedResizer(m *Map[string, int, node.Node[string, int]], numIters, numNodes int, cdone chan bool) {
 	r := rand.New(rand.NewSource(time.Now().UnixNano()))
 	for i := 0; i < numIters; i++ {
 		coin := r.Int63n(2)
@@ -562,7 +570,7 @@ func parallelRandTypedResizer(m *Map[string, int], numIters, numNodes int, cdone
 			key := strconv.Itoa(j)
 			if coin == 1 {
 				m.Compute(key, func(n node.Node[string, int]) node.Node[string, int] {
-					return m.nodeManager.Create(key, j, 0, 1)
+					return newTestNode(m.nodeManager, key, j)
 				})
 			} else {
 				m.Compute(key, func(n node.Node[string, int]) node.Node[string, int] {
@@ -606,7 +614,7 @@ func TestMapParallelResize(t *testing.T) {
 	}
 }
 
-func parallelRandTypedClearer(m *Map[string, int], numIters, numNodes int, cdone chan bool) {
+func parallelRandTypedClearer(m *Map[string, int, node.Node[string, int]], numIters, numNodes int, cdone chan bool) {
 	r := rand.New(rand.NewSource(time.Now().UnixNano()))
 	for i := 0; i < numIters; i++ {
 		coin := r.Int63n(2)
@@ -614,7 +622,7 @@ func parallelRandTypedClearer(m *Map[string, int], numIters, numNodes int, cdone
 			key := strconv.Itoa(j)
 			if coin == 1 {
 				m.Compute(key, func(n node.Node[string, int]) node.Node[string, int] {
-					return m.nodeManager.Create(key, j, 0, 1)
+					return newTestNode(m.nodeManager, key, j)
 				})
 			} else {
 				m.Clear()
@@ -646,14 +654,19 @@ func TestMapParallelClear(t *testing.T) {
 	}
 }
 
-func parallelSeqTypedSetter(t *testing.T, m *Map[string, int], storeEach, numIters, numNodes int, cdone chan bool) {
+func parallelSeqTypedSetter(
+	t *testing.T,
+	m *Map[string, int, node.Node[string, int]],
+	storeEach, numIters, numNodes int,
+	cdone chan bool,
+) {
 	for i := 0; i < numIters; i++ {
 		for j := 0; j < numNodes; j++ {
 			//nolint:gocritic // nesting is normal here
 			if storeEach == 0 || j%storeEach == 0 {
 				key := strconv.Itoa(j)
 				m.Compute(key, func(n node.Node[string, int]) node.Node[string, int] {
-					return m.nodeManager.Create(key, j, 0, 1)
+					return newTestNode(m.nodeManager, key, j)
 				})
 				// Due to atomic snapshots we must see a "<j>"/j pair.
 				n := m.Get(key)
@@ -697,7 +710,12 @@ func TestMapParallelSetter(t *testing.T) {
 	}
 }
 
-func parallelRandTypedSetter(t *testing.T, m *Map[string, int], numIters, numNodes int, cdone chan bool) {
+func parallelRandTypedSetter(
+	t *testing.T,
+	m *Map[string, int, node.Node[string, int]],
+	numIters, numNodes int,
+	cdone chan bool,
+) {
 	r := rand.New(rand.NewSource(time.Now().UnixNano()))
 	for i := 0; i < numIters; i++ {
 		j := r.Intn(numNodes)
@@ -706,7 +724,7 @@ func parallelRandTypedSetter(t *testing.T, m *Map[string, int], numIters, numNod
 			if n != nil {
 				return n
 			}
-			return m.nodeManager.Create(key, j, 0, 1)
+			return newTestNode(m.nodeManager, key, j)
 		})
 		if newNode != nil {
 			if newNode.Value() != j {
@@ -717,7 +735,12 @@ func parallelRandTypedSetter(t *testing.T, m *Map[string, int], numIters, numNod
 	cdone <- true
 }
 
-func parallelRandTypedDeleter(t *testing.T, m *Map[string, int], numIters, numNodes int, cdone chan bool) {
+func parallelRandTypedDeleter(
+	t *testing.T,
+	m *Map[string, int, node.Node[string, int]],
+	numIters, numNodes int,
+	cdone chan bool,
+) {
 	r := rand.New(rand.NewSource(time.Now().UnixNano()))
 	for i := 0; i < numIters; i++ {
 		j := r.Intn(numNodes)
@@ -736,7 +759,12 @@ func parallelRandTypedDeleter(t *testing.T, m *Map[string, int], numIters, numNo
 	cdone <- true
 }
 
-func parallelTypedGetter(t *testing.T, m *Map[string, int], numIters, numNodes int, cdone chan bool) {
+func parallelTypedGetter(
+	t *testing.T,
+	m *Map[string, int, node.Node[string, int]],
+	numIters, numNodes int,
+	cdone chan bool,
+) {
 	for i := 0; i < numIters; i++ {
 		for j := 0; j < numNodes; j++ {
 			// Due to atomic snapshots we must either see no entry, or a "<j>"/j pair.
@@ -784,7 +812,7 @@ func TestMapParallelSetsAndDeletes(t *testing.T) {
 	}
 }
 
-func parallelTypedComputer(m *Map[uint64, uint64], numIters, numNodes int, cdone chan bool) {
+func parallelTypedComputer(m *Map[uint64, uint64, node.Node[uint64, uint64]], numIters, numNodes int, cdone chan bool) {
 	for i := 0; i < numIters; i++ {
 		for j := 0; j < numNodes; j++ {
 			m.Compute(uint64(j), func(oldNode node.Node[uint64, uint64]) node.Node[uint64, uint64] {
@@ -792,7 +820,7 @@ func parallelTypedComputer(m *Map[uint64, uint64], numIters, numNodes int, cdone
 				if oldNode != nil {
 					v = oldNode.Value() + 1
 				}
-				return m.nodeManager.Create(uint64(j), v, 0, 1)
+				return newTestNode(m.nodeManager, uint64(j), v)
 			})
 		}
 	}
@@ -824,11 +852,11 @@ func TestMapParallelComputes(t *testing.T) {
 	}
 }
 
-func parallelTypedRangeSetter(m *Map[int, int], numNodes int, stopFlag *int64, cdone chan bool) {
+func parallelTypedRangeSetter(m *Map[int, int, node.Node[int, int]], numNodes int, stopFlag *int64, cdone chan bool) {
 	for {
 		for i := 0; i < numNodes; i++ {
 			m.Compute(i, func(n node.Node[int, int]) node.Node[int, int] {
-				return m.nodeManager.Create(i, i, 0, 1)
+				return newTestNode(m.nodeManager, i, i)
 			})
 		}
 		if atomic.LoadInt64(stopFlag) != 0 {
@@ -838,7 +866,7 @@ func parallelTypedRangeSetter(m *Map[int, int], numNodes int, stopFlag *int64, c
 	cdone <- true
 }
 
-func parallelTypedRangeDeleter(m *Map[int, int], numSetter int, stopFlag *int64, cdone chan bool) {
+func parallelTypedRangeDeleter(m *Map[int, int, node.Node[int, int]], numSetter int, stopFlag *int64, cdone chan bool) {
 	for {
 		for i := 0; i < numSetter; i++ {
 			m.Compute(i, func(n node.Node[int, int]) node.Node[int, int] {
@@ -858,7 +886,7 @@ func TestMapParallelRange(t *testing.T) {
 	m := NewWithSize(nm, numNodes)
 	for i := 0; i < numNodes; i++ {
 		m.Compute(i, func(n node.Node[int, int]) node.Node[int, int] {
-			return nm.Create(i, i, 0, 1)
+			return newTestNode(nm, i, i)
 		})
 	}
 	// Start goroutines that would be storing and deleting items in parallel.
@@ -892,7 +920,7 @@ func TestMapParallelRange(t *testing.T) {
 
 func parallelTypedShrinker(
 	t *testing.T,
-	m *Map[uint64, *point],
+	m *Map[uint64, *point, node.Node[uint64, *point]],
 	numIters, numNodes int,
 	stopFlag *int64, cdone chan bool,
 ) {
@@ -904,7 +932,7 @@ func parallelTypedShrinker(
 					wasPresent = true
 					return n
 				}
-				return m.nodeManager.Create(uint64(j), &point{int32(j), int32(j)}, 0, 1)
+				return newTestNode(m.nodeManager, uint64(j), &point{int32(j), int32(j)})
 			})
 			if wasPresent {
 				t.Errorf("node was present for %d: %v", j, n.Value())
@@ -920,7 +948,12 @@ func parallelTypedShrinker(
 	cdone <- true
 }
 
-func parallelTypedUpdater(t *testing.T, m *Map[uint64, *point], idx int, stopFlag *int64, cdone chan bool) {
+func parallelTypedUpdater(
+	t *testing.T,
+	m *Map[uint64, *point, node.Node[uint64, *point]],
+	idx int, stopFlag *int64,
+	cdone chan bool,
+) {
 	for atomic.LoadInt64(stopFlag) != 1 {
 		sleepUs := int(xruntime.Fastrand() % 10)
 		wasPresent := false
@@ -929,7 +962,7 @@ func parallelTypedUpdater(t *testing.T, m *Map[uint64, *point], idx int, stopFla
 				wasPresent = true
 				return n
 			}
-			return m.nodeManager.Create(uint64(idx), &point{int32(idx), int32(idx)}, 0, 1)
+			return newTestNode(m.nodeManager, uint64(idx), &point{int32(idx), int32(idx)})
 		})
 		if wasPresent {
 			t.Errorf("value was present for %d: %v", idx, n.Value())

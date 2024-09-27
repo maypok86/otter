@@ -65,7 +65,7 @@ type expiryPolicy[K comparable, V any] interface {
 // to determine which entries to evict when the capacity is exceeded.
 type Cache[K comparable, V any] struct {
 	nodeManager    *node.Manager[K, V]
-	hashmap        *hashmap.Map[K, V]
+	hashmap        *hashmap.Map[K, V, node.Node[K, V]]
 	policy         evictionPolicy[K, V]
 	expiryPolicy   expiryPolicy[K, V]
 	stats          statsRecorder
@@ -101,11 +101,11 @@ func newCache[K comparable, V any](b *Builder[K, V]) *Cache[K, V] {
 		stripedBuffer = lossy.NewStriped(maxStripedBufferSize, nodeManager)
 	}
 
-	var hm *hashmap.Map[K, V]
+	var hm *hashmap.Map[K, V, node.Node[K, V]]
 	if b.initialCapacity == nil {
-		hm = hashmap.New[K, V](nodeManager)
+		hm = hashmap.New[K, V, node.Node[K, V]](nodeManager)
 	} else {
-		hm = hashmap.NewWithSize[K, V](nodeManager, *b.initialCapacity)
+		hm = hashmap.NewWithSize[K, V, node.Node[K, V]](nodeManager, *b.initialCapacity)
 	}
 
 	cache := &Cache[K, V]{

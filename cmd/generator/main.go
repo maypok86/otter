@@ -720,6 +720,10 @@ func (m *Manager[K, V]) FromPointer(ptr unsafe.Pointer) Node[K, V] {
 	return m.fromPointer(ptr)
 }
 
+func (m *Manager[K, V]) IsNil(n Node[K, V]) bool {
+	return n == nil || n.AsPointer() == nil
+}
+
 func minUint8(a, b uint8) uint8 {
 	if a < b {
 		return a
