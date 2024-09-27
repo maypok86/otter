@@ -1,5 +1,5 @@
-// Copyright (c) 2023 Alexey Mayshev. All rights reserved.
-// Copyright (c) 2021 Andrey Pechkurov
+// Copyright (c) 2023 Alexey Mayshev and contributors. All rights reserved.
+// Copyright (c) 2021 Andrey Pechkurov. All rights reserved.
 //
 // Copyright notice. This code is a fork of xsync.Adder from this file with some changes:
 // https://github.com/puzpuzpuz/xsync/blob/main/counter.go

@@ -1,5 +1,5 @@
-// Copyright (c) 2024 Alexey Mayshev. All rights reserved.
-// Copyright 2009 The Go Authors. All rights reserved.
+// Copyright (c) 2024 Alexey Mayshev and contributors. All rights reserved.
+// Copyright (c) 2009 The Go Authors. All rights reserved.
 //
 // Copyright notice. Initial version of the following tests was based on
 // the following file from the Go Programming Language core repo:
