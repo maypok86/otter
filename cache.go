@@ -15,6 +15,7 @@
 package otter
 
 import (
+	"context"
 	"sync"
 	"time"
 
@@ -73,6 +74,7 @@ type Cache[K comparable, V any] struct {
 	clock          *clock.Clock
 	stripedBuffer  *lossy.Striped[K, V]
 	writeBuffer    *queue.Growable[task[K, V]]
+	singleflight   *group[K, V]
 	evictionMutex  sync.Mutex
 	closeOnce      sync.Once
 	doneClear      chan struct{}
@@ -114,6 +116,7 @@ func newCache[K comparable, V any](b *Builder[K, V]) *Cache[K, V] {
 		stats:         newStatsRecorder(b.statsRecorder),
 		logger:        b.logger,
 		stripedBuffer: stripedBuffer,
+		singleflight:  &group[K, V]{},
 		doneClear:     make(chan struct{}),
 		doneClose:     make(chan struct{}, 1),
 		weigher:       b.getWeigher(),
@@ -274,6 +277,7 @@ func (c *Cache[K, V]) set(key K, value V, expiration int64, onlyIfAbsent bool) (
 			return current
 		}
 		// set
+		c.singleflight.delete(key)
 		return n
 	})
 	if onlyIfAbsent {
@@ -315,6 +319,46 @@ func (c *Cache[K, V]) afterWrite(n, old node.Node[K, V]) {
 	c.writeBuffer.Push(newUpdateTask(n, old, cause))
 }
 
+func (c *Cache[K, V]) Load(ctx context.Context, loader Loader[K, V], key K) (V, error) {
+	if value, ok := c.Get(key); ok {
+		return value, nil
+	}
+
+	c.singleflight.lazyInit()
+
+	// node.Node compute?
+	cl, shouldDo := c.singleflight.startCall(ctx, key)
+	if shouldDo {
+		c.singleflight.doCall(cl, loader, c.afterDeleteCall)
+	}
+	cl.wait()
+
+	if err := cl.err; err != nil {
+		return zeroValue[V](), err
+	}
+
+	return cl.value, nil
+}
+
+func (c *Cache[K, V]) afterDeleteCall(cl *call[K, V]) {
+	var (
+		inserted bool
+		old      node.Node[K, V]
+	)
+	newNode := c.hashmap.Compute(cl.key, func(oldNode node.Node[K, V]) node.Node[K, V] {
+		old = oldNode
+		deleted := c.singleflight.deleteCall(cl)
+		if !deleted || cl.err != nil {
+			return oldNode
+		}
+		inserted = true
+		return c.nodeManager.Create(cl.key, cl.value, c.defaultExpiration(), c.weigher(cl.key, cl.value))
+	})
+	if inserted {
+		c.afterWrite(newNode, old)
+	}
+}
+
 // Invalidate discards any cached value for the key.
 //
 // Returns previous value if any. The invalidated result reports whether the key was
@@ -322,7 +366,10 @@ func (c *Cache[K, V]) afterWrite(n, old node.Node[K, V]) {
 func (c *Cache[K, V]) Invalidate(key K) (value V, invalidated bool) {
 	var d node.Node[K, V]
 	c.hashmap.Compute(key, func(n node.Node[K, V]) node.Node[K, V] {
-		d = n
+		if n != nil {
+			c.singleflight.delete(key)
+			d = n
+		}
 		return nil
 	})
 	c.afterDelete(d)
@@ -339,6 +386,7 @@ func (c *Cache[K, V]) deleteNodeFromMap(n node.Node[K, V]) node.Node[K, V] {
 			return nil
 		}
 		if n.AsPointer() == current.AsPointer() {
+			c.singleflight.delete(n.Key())
 			deleted = current
 			return nil
 		}
