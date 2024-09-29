@@ -165,6 +165,7 @@ func TestCache_SetWithTTL(t *testing.T) {
 	var mutex sync.Mutex
 	m := make(map[DeletionCause]int)
 	c, err := MustBuilder[int, int](size).
+		CollectStats().
 		InitialCapacity(size).
 		WithTTL(time.Second).
 		DeletionListener(func(key int, value int, cause DeletionCause) {
@@ -198,6 +199,14 @@ func TestCache_SetWithTTL(t *testing.T) {
 	if e := m[Expired]; len(m) != 1 || e != size {
 		mutex.Unlock()
 		t.Fatalf("cache was supposed to expire %d, but expired %d entries", size, e)
+	}
+	if c.Stats().EvictedCount() != int64(m[Expired]) {
+		mutex.Unlock()
+		t.Fatalf(
+			"Eviction statistics are not collected for expiration. EvictedCount: %d, expired entries: %d",
+			c.Stats().EvictedCount(),
+			m[Expired],
+		)
 	}
 	mutex.Unlock()
 
@@ -239,6 +248,14 @@ func TestCache_SetWithTTL(t *testing.T) {
 	defer mutex.Unlock()
 	if len(m) != 1 || m[Expired] != size {
 		t.Fatalf("cache was supposed to expire %d, but expired %d entries", size, m[Expired])
+	}
+	if c.Stats().EvictedCount() != int64(m[Expired]) {
+		mutex.Unlock()
+		t.Fatalf(
+			"Eviction statistics are not collected for expiration. EvictedCount: %d, expired entries: %d",
+			c.Stats().EvictedCount(),
+			m[Expired],
+		)
 	}
 }
 
