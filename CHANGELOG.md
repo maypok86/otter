@@ -1,3 +1,9 @@
+## 1.2.3 - 2024-09-30
+
+### 🐞 Bug Fixes
+
+- Added collection of eviction statistics for expired entries. ([#108](https://github.com/maypok86/otter/issues/108))
+
 ## 1.2.2 - 2024-08-14
 
 ### ✨️Features
