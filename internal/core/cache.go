@@ -381,6 +381,8 @@ func (c *Cache[K, V]) deleteExpiredNode(n node.Node[K, V]) {
 	if deleted != nil {
 		n.Die()
 		c.notifyDeletion(n.Key(), n.Value(), Expired)
+		c.stats.IncEvictedCount()
+		c.stats.AddEvictedCost(n.Cost())
 	}
 }
 
