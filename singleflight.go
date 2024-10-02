@@ -73,7 +73,7 @@ type group[K comparable, V any] struct {
 	isInitialized atomic.Bool
 }
 
-func (g *group[K, V]) lazyInit() {
+func (g *group[K, V]) init() {
 	if !g.isInitialized.Load() {
 		g.initMutex.Lock()
 		if !g.isInitialized.Load() {

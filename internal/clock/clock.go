@@ -14,21 +14,31 @@
 
 package clock
 
-import "time"
+import (
+	"sync"
+	"sync/atomic"
+	"time"
+)
 
 type Clock struct {
-	start time.Time
+	start         time.Time
+	initMutex     sync.Mutex
+	isInitialized atomic.Bool
 }
 
-func New() *Clock {
-	return &Clock{
-		start: time.Now(),
+func (c *Clock) Init() {
+	if !c.isInitialized.Load() {
+		c.initMutex.Lock()
+		if !c.isInitialized.Load() {
+			c.start = time.Now()
+			c.isInitialized.Store(true)
+		}
+		c.initMutex.Unlock()
 	}
 }
 
 func (c *Clock) Offset() int64 {
-	if c == nil {
-		// do not use the Clock unless initialized via New.
+	if !c.isInitialized.Load() {
 		return 0
 	}
 	return time.Since(c.start).Nanoseconds()

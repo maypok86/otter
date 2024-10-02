@@ -16,6 +16,7 @@ package otter
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
@@ -85,6 +86,7 @@ type Cache[K comparable, V any] struct {
 	withExpiration bool
 	withEviction   bool
 	withProcess    bool
+	withStats      bool
 }
 
 // newCache returns a new cache instance based on the settings from Config.
@@ -121,6 +123,11 @@ func newCache[K comparable, V any](b *Builder[K, V]) *Cache[K, V] {
 		doneClose:     make(chan struct{}, 1),
 		weigher:       b.getWeigher(),
 		onDeletion:    b.onDeletion,
+		clock:         &clock.Clock{},
+	}
+
+	if _, ok := b.statsRecorder.(noopStatsRecorder); ok {
+		cache.withStats = true
 	}
 
 	cache.withEviction = withEviction
@@ -150,7 +157,7 @@ func newCache[K comparable, V any](b *Builder[K, V]) *Cache[K, V] {
 	}
 
 	if cache.withExpiration {
-		cache.clock = clock.New()
+		cache.clock.Init()
 		go cache.cleanup()
 	}
 
@@ -343,17 +350,32 @@ func (c *Cache[K, V]) Get(ctx context.Context, key K, loader Loader[K, V]) (V, e
 		return value, nil
 	}
 
-	c.singleflight.lazyInit()
+	c.singleflight.init()
+	if c.withStats {
+		c.clock.Init()
+	}
+
+	startTime := int64(0)
 
 	// node.Node compute?
 	cl, shouldDo := c.singleflight.startCall(ctx, key)
 	if shouldDo {
+		startTime = c.clock.Offset()
 		c.singleflight.doCall(cl, loader, c.afterDeleteCall)
 	}
 	cl.wait()
 
-	if err := cl.err; err != nil {
-		return zeroValue[V](), err
+	if c.withStats && shouldDo {
+		loadTime := time.Duration(c.clock.Offset() - startTime)
+		if cl.err == nil || errors.Is(cl.err, ErrNotFound) {
+			c.stats.RecordLoadSuccess(loadTime)
+		} else {
+			c.stats.RecordLoadFailure(loadTime)
+		}
+	}
+
+	if cl.err != nil {
+		return zeroValue[V](), cl.err
 	}
 
 	return cl.value, nil
