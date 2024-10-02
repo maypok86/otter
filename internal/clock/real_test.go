@@ -15,35 +15,23 @@
 package clock
 
 import (
-	"sync"
-	"sync/atomic"
+	"testing"
 	"time"
 )
 
-type Clock struct {
-	start         time.Time
-	initMutex     sync.Mutex
-	isInitialized atomic.Bool
-}
+func TestNow(t *testing.T) {
+	c := &Real{}
+	c.Init()
 
-func (c *Clock) Init() {
-	if !c.isInitialized.Load() {
-		c.initMutex.Lock()
-		if !c.isInitialized.Load() {
-			c.start = time.Now()
-			c.isInitialized.Store(true)
-		}
-		c.initMutex.Unlock()
+	got := c.Offset() / 1e9
+	if got != 0 {
+		t.Fatalf("unexpected time since program start; got %d; want %d", got, 0)
 	}
-}
 
-func (c *Clock) Offset() int64 {
-	if !c.isInitialized.Load() {
-		return 0
+	time.Sleep(3 * time.Second)
+
+	got = c.Offset() / 1e9
+	if got != 3 {
+		t.Fatalf("unexpected time since program start; got %d; want %d", got, 3)
 	}
-	return time.Since(c.start).Nanoseconds()
-}
-
-func (c *Clock) Time(offset int64) time.Time {
-	return c.start.Add(time.Duration(offset))
 }

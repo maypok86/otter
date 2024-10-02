@@ -46,11 +46,12 @@ func BenchmarkNanotime(b *testing.B) {
 	})
 }
 
-func BenchmarkClock(b *testing.B) {
+func BenchmarkReal(b *testing.B) {
 	b.ReportAllocs()
 	b.RunParallel(func(pb *testing.PB) {
 		var ts int64
-		c := New()
+		c := &Real{}
+		c.Init()
 		for pb.Next() {
 			ts += c.Offset()
 		}

@@ -63,6 +63,12 @@ type expiryPolicy[K comparable, V any] interface {
 	Clear()
 }
 
+type timeSource interface {
+	Init()
+	Offset() int64
+	Time(offset int64) time.Time
+}
+
 // Cache is a structure performs a best-effort bounding of a hash table using eviction algorithm
 // to determine which entries to evict when the capacity is exceeded.
 type Cache[K comparable, V any] struct {
@@ -72,7 +78,7 @@ type Cache[K comparable, V any] struct {
 	expiryPolicy   expiryPolicy[K, V]
 	stats          statsRecorder
 	logger         Logger
-	clock          *clock.Clock
+	clock          timeSource
 	stripedBuffer  *lossy.Striped[K, V]
 	writeBuffer    *queue.Growable[task[K, V]]
 	singleflight   *group[K, V]
@@ -123,7 +129,7 @@ func newCache[K comparable, V any](b *Builder[K, V]) *Cache[K, V] {
 		doneClose:     make(chan struct{}, 1),
 		weigher:       b.getWeigher(),
 		onDeletion:    b.onDeletion,
-		clock:         &clock.Clock{},
+		clock:         &clock.Real{},
 	}
 
 	if _, ok := b.statsRecorder.(noopStatsRecorder); ok {
