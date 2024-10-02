@@ -21,6 +21,9 @@ type Loader[K comparable, V any] interface {
 	// Load computes or retrieves the value corresponding to key.
 	//
 	// WARNING: loading must not attempt to update any mappings of this cache directly.
+	//
+	// NOTE: The Loader implementation should always return ErrNotFound
+	// if the entry was not found in the data source.
 	Load(ctx context.Context, key K) (V, error)
 }
 

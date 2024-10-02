@@ -52,7 +52,7 @@ func (e Extension[K, V]) createEntry(n node.Node[K, V]) Entry[K, V] {
 
 // GetQuietly returns the value associated with the key in this cache.
 //
-// Unlike Get in the cache, this function does not produce any side effects
+// Unlike GetIfPresent in the cache, this function does not produce any side effects
 // such as updating statistics or the eviction policy.
 func (e Extension[K, V]) GetQuietly(key K) (V, bool) {
 	n := e.cache.GetNodeQuietly(key)

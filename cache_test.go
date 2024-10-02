@@ -325,7 +325,7 @@ func TestCache_Set(t *testing.T) {
 			r := rand.New(rand.NewSource(time.Now().UnixNano()))
 			for a := 0; a < 10000; a++ {
 				k := r.Int() % size
-				val, ok := c.Get(k)
+				val, ok := c.GetIfPresent(k)
 				if !ok {
 					err = fmt.Errorf("expected %d but got nil", k)
 					break
@@ -805,7 +805,7 @@ func Test_GetExpired(t *testing.T) {
 
 	c.Set("test1", "123456")
 	for i := 0; i < 5; i++ {
-		c.Get("test1")
+		c.GetIfPresent("test1")
 		time.Sleep(1 * time.Second)
 	}
 

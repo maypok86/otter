@@ -12,54 +12,14 @@
 package otter
 
 import (
-	"bytes"
 	"context"
 	"errors"
-	"fmt"
-	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"unsafe"
 
 	"github.com/maypok86/otter/v2/internal/hashmap"
 )
-
-// errGoexit indicates the runtime.Goexit was called in
-// the user given function.
-var errGoexit = errors.New("runtime.Goexit was called")
-
-// A panicError is an arbitrary value recovered from a panic
-// with the stack trace during the execution of given function.
-type panicError struct {
-	value any
-	stack []byte
-}
-
-// Error implements error interface.
-func (p *panicError) Error() string {
-	return fmt.Sprintf("%v\n\n%s", p.value, p.stack)
-}
-
-func (p *panicError) Unwrap() error {
-	err, ok := p.value.(error)
-	if !ok {
-		return nil
-	}
-
-	return err
-}
-
-func newPanicError(v any) error {
-	stack := debug.Stack()
-
-	// The first line of the stack trace is of the form "goroutine N [status]:"
-	// but by the time the panic reaches Do the goroutine may no longer exist
-	// and its status will have changed. Trim out the misleading line.
-	if line := bytes.IndexByte(stack, '\n'); line >= 0 {
-		stack = stack[line+1:]
-	}
-	return &panicError{value: v, stack: stack}
-}
 
 type call[K comparable, V any] struct {
 	key    K
@@ -160,11 +120,8 @@ func (g *group[K, V]) doCall(c *call[K, V], loader Loader[K, V], afterFinish fun
 
 		var e *panicError
 		if errors.As(c.err, &e) {
-			// In order to prevent the waiting channels from being blocked forever,
-			// needs to ensure that this panic cannot be recovered.
 			panic(e)
 		}
-		// Normal return
 	}()
 
 	func() {

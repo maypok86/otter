@@ -167,12 +167,12 @@ func (c *Cache[K, V]) getExpiration(duration time.Duration) int64 {
 
 // Has checks if there is an item with the given key in the cache.
 func (c *Cache[K, V]) Has(key K) bool {
-	_, ok := c.Get(key)
+	_, ok := c.GetIfPresent(key)
 	return ok
 }
 
-// Get returns the value associated with the key in this cache.
-func (c *Cache[K, V]) Get(key K) (V, bool) {
+// GetIfPresent returns the value associated with the key in this cache.
+func (c *Cache[K, V]) GetIfPresent(key K) (V, bool) {
 	n := c.GetNode(key)
 	if n == nil {
 		return zeroValue[V](), false
@@ -319,8 +319,27 @@ func (c *Cache[K, V]) afterWrite(n, old node.Node[K, V]) {
 	c.writeBuffer.Push(newUpdateTask(n, old, cause))
 }
 
-func (c *Cache[K, V]) Load(ctx context.Context, loader Loader[K, V], key K) (V, error) {
-	if value, ok := c.Get(key); ok {
+// Get returns the value associated with key in this cache, obtaining that value from loader if necessary.
+// The method improves upon the conventional "if cached, return; otherwise create, cache and return" pattern.
+//
+// Get can return an ErrNotFound error if the Loader returns it.
+// This means that the entry was not found in the data source.
+//
+// If another call to Get is currently loading the value for key,
+// simply waits for that goroutine to finish and returns its loaded value. Note that
+// multiple goroutines can concurrently load values for distinct keys.
+//
+// No observable state associated with this cache is modified until loading completes.
+//
+// WARNING: Loader.Load must not attempt to update any mappings of this cache directly.
+//
+// WARNING: For any given key, every loader used with it should compute the same value.
+// Otherwise, a call that passes one loader may return the result of another call
+// with a differently behaving loader. For example, a call that requests a short timeout
+// for an RPC may wait for a similar call that requests a long timeout, or a call by an
+// unprivileged user may return a resource accessible only to a privileged user making a similar call.
+func (c *Cache[K, V]) Get(ctx context.Context, key K, loader Loader[K, V]) (V, error) {
+	if value, ok := c.GetIfPresent(key); ok {
 		return value, nil
 	}
 
