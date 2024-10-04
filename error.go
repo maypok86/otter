@@ -2,7 +2,6 @@ package otter
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
 	"runtime/debug"
 )
@@ -21,10 +20,6 @@ const (
 type strError string
 
 func (err strError) Error() string { return string(err) }
-
-// errGoexit indicates the runtime.Goexit was called in
-// the user given function.
-var errGoexit = errors.New("otter: runtime.Goexit was called")
 
 // A panicError is an arbitrary value recovered from a panic
 // with the stack trace during the execution of given function.

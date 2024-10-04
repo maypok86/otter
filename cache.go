@@ -132,7 +132,7 @@ func newCache[K comparable, V any](b *Builder[K, V]) *Cache[K, V] {
 		clock:         &clock.Real{},
 	}
 
-	if _, ok := b.statsRecorder.(noopStatsRecorder); ok {
+	if _, ok := b.statsRecorder.(noopStatsRecorder); !ok {
 		cache.withStats = true
 	}
 
@@ -371,12 +371,19 @@ func (c *Cache[K, V]) Get(ctx context.Context, key K, loader Loader[K, V]) (V, e
 	}
 	cl.wait()
 
-	if c.withStats && shouldDo {
-		loadTime := time.Duration(c.clock.Offset() - startTime)
-		if cl.err == nil || errors.Is(cl.err, ErrNotFound) {
-			c.stats.RecordLoadSuccess(loadTime)
-		} else {
-			c.stats.RecordLoadFailure(loadTime)
+	if shouldDo {
+		if c.withStats {
+			loadTime := time.Duration(c.clock.Offset() - startTime)
+			if cl.err == nil || errors.Is(cl.err, ErrNotFound) {
+				c.stats.RecordLoadSuccess(loadTime)
+			} else {
+				c.stats.RecordLoadFailure(loadTime)
+			}
+		}
+
+		var pe *panicError
+		if errors.As(cl.err, &pe) {
+			panic(pe)
 		}
 	}
 

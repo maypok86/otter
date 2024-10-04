@@ -13,7 +13,6 @@ package otter
 
 import (
 	"context"
-	"errors"
 	"sync"
 	"sync/atomic"
 	"unsafe"
@@ -105,48 +104,15 @@ func (g *group[K, V]) startCall(ctx context.Context, key K) (c *call[K, V], shou
 }
 
 func (g *group[K, V]) doCall(c *call[K, V], loader Loader[K, V], afterFinish func(c *call[K, V])) {
-	normalReturn := false
-	recovered := false
-
-	// use double-defer to distinguish panic from runtime.Goexit,
-	// more details see https://golang.org/cl/134395
 	defer func() {
-		// the given function invoked runtime.Goexit
-		if !normalReturn && !recovered {
-			c.err = errGoexit
+		if r := recover(); r != nil {
+			c.err = newPanicError(r)
 		}
 
 		afterFinish(c)
-
-		var e *panicError
-		if errors.As(c.err, &e) {
-			panic(e)
-		}
 	}()
 
-	func() {
-		defer func() {
-			if !normalReturn {
-				// Ideally, we would wait to take a stack trace until we've determined
-				// whether this is a panic or a runtime.Goexit.
-				//
-				// Unfortunately, the only way we can distinguish the two is to see
-				// whether the recover stopped the goroutine from terminating, and by
-				// the time we know that, the part of the stack trace relevant to the
-				// panic has been discarded.
-				if r := recover(); r != nil {
-					c.err = newPanicError(r)
-				}
-			}
-		}()
-
-		c.value, c.err = loader.Load(c.ctx, c.key)
-		normalReturn = true
-	}()
-
-	if !normalReturn {
-		recovered = true
-	}
+	c.value, c.err = loader.Load(c.ctx, c.key)
 }
 
 func (g *group[K, V]) deleteCall(c *call[K, V]) (deleted bool) {

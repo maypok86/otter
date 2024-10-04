@@ -66,6 +66,9 @@ issues:
     - path: _test\.go
       linters:
         - gosec
+        - errname
+        - errcheck
+        - errorlint
 linters-settings:
   gci:
     sections:
