@@ -152,6 +152,7 @@ func (g *generator) printStructComment() {
 	i := 2
 	for _, f := range declaredFeatures {
 		if g.features[f] {
+			//nolint:staticcheck // used only for unicode
 			featureTitle := strings.Title(strings.ToLower(f.name))
 			g.p("//")
 			g.p("// %d. %s", i, featureTitle)

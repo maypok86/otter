@@ -471,7 +471,11 @@ func (o *optimal) Ratio() float64 {
 		}
 		if uint64(data.Len()) >= o.capacity {
 			victim := heap.Pop(data)
-			delete(look, victim.(*optimalItem).key)
+			oi, ok := victim.(*optimalItem)
+			if !ok {
+				panic("can't cast victim")
+			}
+			delete(look, oi.key)
 		}
 		misses++
 		look[key] = struct{}{}
@@ -495,7 +499,11 @@ func (h optimalHeap) Less(i, j int) bool { return h[i].hits < h[j].hits }
 func (h optimalHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
 
 func (h *optimalHeap) Push(x any) {
-	*h = append(*h, x.(*optimalItem))
+	oi, ok := x.(*optimalItem)
+	if !ok {
+		panic("can't cast x")
+	}
+	*h = append(*h, oi)
 }
 
 func (h *optimalHeap) Pop() any {
