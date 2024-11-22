@@ -1,3 +1,9 @@
+## 1.2.4 - 2024-11-23
+
+### 🐞 Bug Fixes
+
+- Fixed a bug due to changing [gammazero/deque](https://github.com/gammazero/deque/pull/33) contracts without v2 release. ([#112](https://github.com/maypok86/otter/issues/112))
+
 ## 1.2.3 - 2024-09-30
 
 ### 🐞 Bug Fixes
