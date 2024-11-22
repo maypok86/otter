@@ -19,7 +19,6 @@ linters:
     - bidichk
     - bodyclose
     - contextcheck
-    - copyloopvar
     - durationcheck
     - errcheck
     - errname
