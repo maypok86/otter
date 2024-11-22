@@ -32,7 +32,7 @@ type ghost[K comparable, V any] struct {
 
 func newGhost[K comparable, V any](main *main[K, V], evictNode func(node.Node[K, V])) *ghost[K, V] {
 	return &ghost[K, V]{
-		q:         deque.New[uint64](),
+		q:         &deque.Deque[uint64]{},
 		m:         make(map[uint64]struct{}),
 		main:      main,
 		hasher:    maphash.NewHasher[K](),
