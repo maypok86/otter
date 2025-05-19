@@ -21,20 +21,16 @@ import (
 )
 
 type call[K comparable, V any] struct {
-	key    K
-	value  V
-	err    error
-	wg     sync.WaitGroup
-	ctx    context.Context
-	cancel context.CancelFunc
+	key         K
+	value       V
+	err         error
+	wg          sync.WaitGroup
+	isCancelled atomic.Bool
 }
 
-func newCall[K comparable, V any](ctx context.Context, key K) *call[K, V] {
-	ctx, cancel := context.WithCancel(ctx)
+func newCall[K comparable, V any](key K) *call[K, V] {
 	c := &call[K, V]{
-		key:    key,
-		ctx:    ctx,
-		cancel: cancel,
+		key: key,
 	}
 	c.wg.Add(1)
 	return c
@@ -50,6 +46,15 @@ func (c *call[K, V]) Value() V {
 
 func (c *call[K, V]) AsPointer() unsafe.Pointer {
 	return unsafe.Pointer(c)
+}
+
+func (c *call[K, V]) cancel() {
+	if c.isCancelled.Load() {
+		return
+	}
+	if c.isCancelled.CompareAndSwap(false, true) {
+		c.wg.Done()
+	}
 }
 
 func (c *call[K, V]) wait() {
@@ -87,10 +92,10 @@ func (g *group[K, V]) getCall(key K) *call[K, V] {
 	return g.calls.Get(key)
 }
 
-func (g *group[K, V]) startCall(ctx context.Context, key K) (c *call[K, V], shouldDo bool) {
+func (g *group[K, V]) startCall(key K) (c *call[K, V], shouldLoad bool) {
 	// fast path
 	if c := g.getCall(key); c != nil {
-		return c, shouldDo
+		return c, shouldLoad
 	}
 
 	return g.calls.Compute(key, func(prevCall *call[K, V]) *call[K, V] {
@@ -98,21 +103,62 @@ func (g *group[K, V]) startCall(ctx context.Context, key K) (c *call[K, V], shou
 		if prevCall != nil {
 			return prevCall
 		}
-		shouldDo = true
-		return newCall[K, V](ctx, key)
-	}), shouldDo
+		shouldLoad = true
+		return newCall[K, V](key)
+	}), shouldLoad
 }
 
-func (g *group[K, V]) doCall(c *call[K, V], loader Loader[K, V], afterFinish func(c *call[K, V])) {
+func (g *group[K, V]) doCall(
+	ctx context.Context,
+	c *call[K, V],
+	loader Loader[K, V],
+	afterFinish func(c *call[K, V]),
+) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			c.err = newPanicError(r)
+			err = newPanicError(r)
 		}
 
+		c.err = err
 		afterFinish(c)
 	}()
 
-	c.value, c.err = loader.Load(c.ctx, c.key)
+	c.value, err = loader.Load(ctx, c.key)
+	return err
+}
+
+func (g *group[K, V]) doBulkCall(
+	ctx context.Context,
+	callsInBulk map[K]*call[K, V],
+	bulkLoader BulkLoader[K, V],
+	afterFinish func(c *call[K, V]),
+) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = newPanicError(r)
+		}
+
+		for _, cl := range callsInBulk {
+			cl.err = err
+		}
+
+		for _, cl := range callsInBulk {
+			afterFinish(cl)
+		}
+	}()
+
+	keys := make([]K, 0, len(callsInBulk))
+	for k := range callsInBulk {
+		keys = append(keys, k)
+	}
+
+	res, err := bulkLoader.BulkLoad(ctx, keys)
+
+	for k, v := range res {
+		callsInBulk[k].value = v
+	}
+
+	return err
 }
 
 func (g *group[K, V]) deleteCall(c *call[K, V]) (deleted bool) {
@@ -125,7 +171,6 @@ func (g *group[K, V]) deleteCall(c *call[K, V]) (deleted bool) {
 		// double check
 		if prevCall == c {
 			// delete
-			c.wg.Done()
 			return nil
 		}
 		return prevCall

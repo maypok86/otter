@@ -614,7 +614,7 @@ func TestCache_InvalidateByFunc(t *testing.T) {
 	}
 }
 
-func TestCache_Advanced(t *testing.T) {
+func TestCache_Extension(t *testing.T) {
 	size := getRandomSize(t)
 	defaultTTL := time.Hour
 	c, err := NewBuilder[int, int]().

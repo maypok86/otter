@@ -11,8 +11,8 @@ const (
 	// missing at the underlying data source. This helps the cache to determine
 	// if an entry should be deleted.
 	//
-	// NOTE: this only applies to Cache.Load. For Cache.BulkLoad, this works implicitly
-	// if you return a map without the ID, and have store missing records enabled.
+	// NOTE: this only applies to Cache.Get/Loader.Load. For Cache.BulkGet, this works implicitly
+	// if you return a map without the key.
 	ErrNotFound strError = "otter: the entry was not found in the data source"
 )
 

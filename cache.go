@@ -311,7 +311,7 @@ func (c *Cache[K, V]) set(key K, value V, expiration int64, onlyIfAbsent bool) (
 func (c *Cache[K, V]) afterWrite(n, old node.Node[K, V]) {
 	if !c.withProcess {
 		if old != nil {
-			c.notifyDeletion(n.Key(), n.Value(), CauseReplacement)
+			c.notifyDeletion(old.Key(), old.Value(), CauseReplacement)
 		}
 		return
 	}
@@ -361,31 +361,17 @@ func (c *Cache[K, V]) Get(ctx context.Context, key K, loader Loader[K, V]) (V, e
 		c.clock.Init()
 	}
 
-	startTime := int64(0)
-
 	// node.Node compute?
-	cl, shouldDo := c.singleflight.startCall(ctx, key)
-	if shouldDo {
-		startTime = c.clock.Offset()
-		c.singleflight.doCall(cl, loader, c.afterDeleteCall)
+	loadCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	cl, shouldLoad := c.singleflight.startCall(key)
+	if shouldLoad {
+		_ = c.wrapLoad(func() error {
+			return c.singleflight.doCall(loadCtx, cl, loader, c.afterDeleteCall)
+		})
 	}
 	cl.wait()
-
-	if shouldDo {
-		if c.withStats {
-			loadTime := time.Duration(c.clock.Offset() - startTime)
-			if cl.err == nil || errors.Is(cl.err, ErrNotFound) {
-				c.stats.RecordLoadSuccess(loadTime)
-			} else {
-				c.stats.RecordLoadFailure(loadTime)
-			}
-		}
-
-		var pe *panicError
-		if errors.As(cl.err, &pe) {
-			panic(pe)
-		}
-	}
 
 	if cl.err != nil {
 		return zeroValue[V](), cl.err
@@ -400,17 +386,133 @@ func (c *Cache[K, V]) afterDeleteCall(cl *call[K, V]) {
 		old      node.Node[K, V]
 	)
 	newNode := c.hashmap.Compute(cl.key, func(oldNode node.Node[K, V]) node.Node[K, V] {
-		old = oldNode
+		defer cl.cancel()
+
 		deleted := c.singleflight.deleteCall(cl)
-		if !deleted || cl.err != nil {
+		if cl.err != nil {
 			return oldNode
 		}
+		if !deleted {
+			if oldNode != nil {
+				cl.value = oldNode.Value()
+			}
+			return oldNode
+		}
+		old = oldNode
 		inserted = true
 		return c.nodeManager.Create(cl.key, cl.value, c.defaultExpiration(), c.weigher(cl.key, cl.value))
 	})
 	if inserted {
 		c.afterWrite(newNode, old)
 	}
+}
+
+func (c *Cache[K, V]) BulkGet(ctx context.Context, keys []K, bulkLoader BulkLoader[K, V]) (map[K]V, error) {
+	result := make(map[K]V, len(keys))
+	var misses map[K]*call[K, V]
+	for _, key := range keys {
+		if _, found := result[key]; found {
+			continue
+		}
+		if _, found := misses[key]; found {
+			continue
+		}
+		if value, ok := c.GetIfPresent(key); ok {
+			result[key] = value
+			continue
+		}
+
+		if misses == nil {
+			misses = make(map[K]*call[K, V], len(keys)-len(result))
+		}
+		misses[key] = nil
+	}
+
+	if len(misses) == 0 {
+		return result, nil
+	}
+
+	loadCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	c.singleflight.init()
+	if c.withStats {
+		c.clock.Init()
+	}
+
+	var toLoadCalls map[K]*call[K, V]
+	i := 0
+	for key := range misses {
+		// node.Node compute?
+		cl, shouldLoad := c.singleflight.startCall(key)
+		if shouldLoad {
+			if toLoadCalls == nil {
+				toLoadCalls = make(map[K]*call[K, V], len(misses)-i)
+			}
+
+			toLoadCalls[key] = cl
+		}
+		misses[key] = cl
+		i++
+	}
+
+	var loadErr error
+	if len(toLoadCalls) > 0 {
+		loadErr = c.wrapLoad(func() error {
+			return c.singleflight.doBulkCall(loadCtx, toLoadCalls, bulkLoader, c.afterDeleteCall)
+		})
+	}
+	if loadErr != nil {
+		return result, loadErr
+	}
+
+	var errsFromCalls []error
+	i = 0
+	for key, cl := range misses {
+		cl.wait()
+		i++
+
+		if cl.err == nil {
+			result[key] = cl.value
+			continue
+		}
+		if _, ok := toLoadCalls[key]; ok || errors.Is(cl.err, ErrNotFound) {
+			continue
+		}
+		if errsFromCalls == nil {
+			errsFromCalls = make([]error, 0, len(misses)-i+1)
+		}
+		errsFromCalls = append(errsFromCalls, cl.err)
+	}
+
+	var err error
+	if len(errsFromCalls) > 0 {
+		err = errors.Join(errsFromCalls...)
+	}
+
+	return result, err
+}
+
+func (c *Cache[K, V]) wrapLoad(fn func() error) error {
+	startTime := c.clock.Offset()
+
+	err := fn()
+
+	if c.withStats {
+		loadTime := time.Duration(c.clock.Offset() - startTime)
+		if err == nil || errors.Is(err, ErrNotFound) {
+			c.stats.RecordLoadSuccess(loadTime)
+		} else {
+			c.stats.RecordLoadFailure(loadTime)
+		}
+	}
+
+	var pe *panicError
+	if errors.As(err, &pe) {
+		panic(pe)
+	}
+
+	return err
 }
 
 // Invalidate discards any cached value for the key.
