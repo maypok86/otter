@@ -15,6 +15,7 @@
 package xruntime
 
 import (
+	"math/rand/v2"
 	"runtime"
 )
 
@@ -33,4 +34,9 @@ func Parallelism() uint32 {
 		return maxProcs
 	}
 	return numCPU
+}
+
+func Fastrand() uint32 {
+	//nolint:gosec // we don't need a cryptographically secure random number generator
+	return rand.Uint32()
 }
