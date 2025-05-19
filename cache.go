@@ -682,15 +682,37 @@ func (c *Cache[K, V]) onWrite(t task[K, V]) {
 	}
 }
 
+func (c *Cache[K, V]) onBulkWrite(buffer []task[K, V]) bool {
+	for _, t := range buffer {
+		c.onWrite(t)
+		if t.isClose() {
+			return true
+		}
+	}
+	return false
+}
+
 func (c *Cache[K, V]) process() {
+	const maxBufferSize = 128
+	buffer := make([]task[K, V], 0, maxBufferSize)
 	for {
-		t := c.writeBuffer.Pop()
+		buffer = append(buffer, c.writeBuffer.Pop())
+
+		for i := 0; i < maxBufferSize-1; i++ {
+			t, ok := c.writeBuffer.TryPop()
+			if !ok {
+				break
+			}
+			buffer = append(buffer, t)
+		}
 
 		c.evictionMutex.Lock()
-		c.onWrite(t)
+		shouldClose := c.onBulkWrite(buffer)
 		c.evictionMutex.Unlock()
 
-		if t.isClose() {
+		buffer = buffer[:0]
+
+		if shouldClose {
 			break
 		}
 	}
