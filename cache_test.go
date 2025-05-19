@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"math/rand"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -611,6 +612,46 @@ func TestCache_InvalidateByFunc(t *testing.T) {
 	defer mutex.Unlock()
 	if len(m) != 1 || m[CauseInvalidation] != expected {
 		t.Fatalf("cache was supposed to delete %d, but deleted %d entries", expected, m[CauseInvalidation])
+	}
+}
+
+func TestCache_ConcurrentInvalidateAll(t *testing.T) {
+	t.Parallel()
+
+	cache, err := NewBuilder[string, string]().
+		MaximumSize(1000).
+		WithTTL(time.Hour).
+		Build()
+	if err != nil {
+		panic(err)
+	}
+
+	var success atomic.Bool
+	go func() {
+		const (
+			goroutines = 10
+			iterations = 5
+		)
+
+		var wg sync.WaitGroup
+		wg.Add(goroutines)
+		for i := 0; i < goroutines; i++ {
+			go func() {
+				for j := 0; j < iterations; j++ {
+					cache.InvalidateAll()
+				}
+				wg.Done()
+			}()
+		}
+
+		wg.Wait()
+		success.Store(true)
+	}()
+
+	time.Sleep(2 * time.Second)
+
+	if !success.Load() {
+		t.Fatal("multiple concurrent clearing operations should not be blocked")
 	}
 }
 

@@ -654,7 +654,9 @@ func (c *Cache[K, V]) deleteFromPolicies(n node.Node[K, V], cause DeletionCause)
 
 func (c *Cache[K, V]) onWrite(t task[K, V]) {
 	if t.isClear() || t.isClose() {
-		c.writeBuffer.Clear()
+		c.writeBuffer.DeleteAllByPredicate(func(t task[K, V]) bool {
+			return !(t.isClear() || t.isClose())
+		})
 
 		c.policy.Clear()
 		c.expiryPolicy.Clear()
