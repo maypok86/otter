@@ -10,9 +10,6 @@ output:
     tab:
       path: lint.txt
       colors: false
-  print-issued-lines: false
-  uniq-by-line: false
-  sort-results: true
 formatters:
   enable:
     - gci
