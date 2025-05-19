@@ -15,10 +15,9 @@
 package s3fifo
 
 import (
-	"github.com/dolthub/maphash"
-
 	"github.com/maypok86/otter/v2/internal/deque"
 	"github.com/maypok86/otter/v2/internal/generated/node"
+	"github.com/maypok86/otter/v2/internal/xruntime"
 )
 
 type ghost[K comparable, V any] struct {
@@ -26,7 +25,7 @@ type ghost[K comparable, V any] struct {
 	m      map[uint64]struct{}
 	main   *main[K, V]
 	small  *small[K, V]
-	hasher maphash.Hasher[K]
+	hasher xruntime.Hasher[K]
 }
 
 func newGhost[K comparable, V any](main *main[K, V]) *ghost[K, V] {
@@ -34,7 +33,7 @@ func newGhost[K comparable, V any](main *main[K, V]) *ghost[K, V] {
 		q:      &deque.Deque[uint64]{},
 		m:      make(map[uint64]struct{}),
 		main:   main,
-		hasher: maphash.NewHasher[K](),
+		hasher: xruntime.NewHasher[K](),
 	}
 }
 

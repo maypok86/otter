@@ -28,8 +28,6 @@ import (
 	"sync/atomic"
 	"unsafe"
 
-	"github.com/dolthub/maphash"
-
 	"github.com/maypok86/otter/v2/internal/xmath"
 	"github.com/maypok86/otter/v2/internal/xruntime"
 )
@@ -111,7 +109,7 @@ type mapTable[K comparable] struct {
 	// used to determine if a table shrinking is needed
 	// occupies min(buckets_memory/1024, 64KB) of memory
 	size   []counterStripe
-	hasher maphash.Hasher[K]
+	hasher xruntime.Hasher[K]
 }
 
 // bucketPadded is a CL-sized map bucket holding up to
@@ -147,12 +145,11 @@ func newMap[K comparable, V any, N mapNode[K, V]](nodeManager mapNodeManager[K, 
 	}
 	m.resizeCond = *sync.NewCond(&m.resizeMu)
 	var table *mapTable[K]
-	prevHasher := maphash.NewHasher[K]()
 	if sizeHint <= defaultMinMapTableLen*nodesPerMapBucket {
-		table = newMapTable[K](defaultMinMapTableLen, prevHasher)
+		table = newMapTable[K](defaultMinMapTableLen)
 	} else {
 		tableLen := xmath.RoundUpPowerOf2(uint32((float64(sizeHint) / nodesPerMapBucket) / mapLoadFactor))
-		table = newMapTable[K](int(tableLen), prevHasher)
+		table = newMapTable[K](int(tableLen))
 	}
 	m.minTableLen = len(table.buckets)
 	//nolint:gosec // it's ok
@@ -160,7 +157,7 @@ func newMap[K comparable, V any, N mapNode[K, V]](nodeManager mapNodeManager[K, 
 	return m
 }
 
-func newMapTable[K comparable](minTableLen int, prevHasher maphash.Hasher[K]) *mapTable[K] {
+func newMapTable[K comparable](minTableLen int) *mapTable[K] {
 	buckets := make([]bucketPadded, minTableLen)
 	for i := range buckets {
 		buckets[i].meta = defaultMeta
@@ -175,7 +172,7 @@ func newMapTable[K comparable](minTableLen int, prevHasher maphash.Hasher[K]) *m
 	t := &mapTable[K]{
 		buckets: buckets,
 		size:    counter,
-		hasher:  maphash.NewSeed[K](prevHasher),
+		hasher:  xruntime.NewHasher[K](),
 	}
 	return t
 }
@@ -387,13 +384,13 @@ func (m *Map[K, V, N]) resize(knownTable *mapTable[K], hint mapResizeHint) {
 	case mapGrowHint:
 		// Grow the table with factor of 2.
 		atomic.AddInt64(&m.totalGrowths, 1)
-		newTable = newMapTable[K](tableLen<<1, table.hasher)
+		newTable = newMapTable[K](tableLen << 1)
 	case mapShrinkHint:
 		shrinkThreshold := int64((tableLen * nodesPerMapBucket) / mapShrinkFraction)
 		if tableLen > m.minTableLen && table.sumSize() <= shrinkThreshold {
 			// Shrink the table with factor of 2.
 			atomic.AddInt64(&m.totalShrinks, 1)
-			newTable = newMapTable[K](tableLen>>1, table.hasher)
+			newTable = newMapTable[K](tableLen >> 1)
 		} else {
 			// No need to shrink. Wake up all waiters and give up.
 			m.resizeMu.Lock()
@@ -403,7 +400,7 @@ func (m *Map[K, V, N]) resize(knownTable *mapTable[K], hint mapResizeHint) {
 			return
 		}
 	case mapClearHint:
-		newTable = newMapTable[K](m.minTableLen, table.hasher)
+		newTable = newMapTable[K](m.minTableLen)
 	default:
 		panic(fmt.Sprintf("unexpected resize hint: %d", hint))
 	}
