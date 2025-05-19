@@ -45,7 +45,7 @@ func TestGrowable_ClearAndPopBlocksOnEmpty(t *testing.T) {
 		g.Push(i)
 	}
 
-	g.Clear()
+	g.DeleteAllByPredicate(nil)
 
 	cdone := make(chan bool)
 	flag := int32(0)

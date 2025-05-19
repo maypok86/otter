@@ -13,7 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 //
-// Copyright notice. This code is a fork of tests for xsync.MapOf from this file with some changes:
+// Copyright notice. This code is a fork of xsync.MapOf from this file with some changes:
 // https://github.com/puzpuzpuz/xsync/blob/main/mapof_test.go
 //
 // Use of this source code is governed by a MIT license that can be found
