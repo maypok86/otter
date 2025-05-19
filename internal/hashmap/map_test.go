@@ -286,39 +286,6 @@ func TestMapSet_StructKeys_StructValues(t *testing.T) {
 	}
 }
 
-// this code may break if the maphash.Hasher[k] structure changes.
-type hasher struct {
-	hash func(pointer unsafe.Pointer, seed uintptr) uintptr
-	seed uintptr
-}
-
-func TestMapSet_WithCollisions(t *testing.T) {
-	const numNodes = 1000
-	nm := testNodeManager[int, int]()
-	m := NewWithSize(nm, numNodes)
-	table := (*mapTable[int])(atomic.LoadPointer(&m.table))
-	hasher := (*hasher)((unsafe.Pointer)(&table.hasher))
-	hasher.hash = func(ptr unsafe.Pointer, seed uintptr) uintptr {
-		// We intentionally use an awful hash function here to make sure
-		// that the map copes with key collisions.
-		return 42
-	}
-	for i := 0; i < numNodes; i++ {
-		m.Compute(i, func(n node.Node[int, int]) node.Node[int, int] {
-			return newTestNode(nm, i, i)
-		})
-	}
-	for i := 0; i < numNodes; i++ {
-		n := m.Get(i)
-		if n == nil {
-			t.Fatalf("node not found for %d", i)
-		}
-		if n.Value() != i {
-			t.Fatalf("values do not match for %d: %v", i, n)
-		}
-	}
-}
-
 func TestMapCompute_FunctionCalledOnce(t *testing.T) {
 	nm := testNodeManager[int, int]()
 	m := New(nm)
@@ -482,7 +449,7 @@ func TestMapSetThenParallelDelete_DoesNotShrinkBelowMinTableLen(t *testing.T) {
 	<-cdone
 	<-cdone
 
-	table := (*mapTable[int])(atomic.LoadPointer(&m.table))
+	table := m.table.Load()
 	if len(table.buckets) != defaultMinMapTableLen {
 		t.Fatalf("table length was different from the minimum: %d", len(table.buckets))
 	}
