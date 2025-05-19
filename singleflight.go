@@ -45,6 +45,7 @@ func (c *call[K, V]) Value() V {
 }
 
 func (c *call[K, V]) AsPointer() unsafe.Pointer {
+	//nolint:gosec // it's ok
 	return unsafe.Pointer(c)
 }
 

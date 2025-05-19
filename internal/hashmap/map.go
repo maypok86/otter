@@ -155,6 +155,7 @@ func newMap[K comparable, V any, N mapNode[K, V]](nodeManager mapNodeManager[K, 
 		table = newMapTable[K](int(tableLen), prevHasher)
 	}
 	m.minTableLen = len(table.buckets)
+	//nolint:gosec // it's ok
 	atomic.StorePointer(&m.table, unsafe.Pointer(table))
 	return m
 }
@@ -335,6 +336,7 @@ func (m *Map[K, V, N]) Compute(key K, computeFunc func(n N) N) N {
 				newb := new(bucketPadded)
 				newb.meta = setByte(defaultMeta, h2, 0)
 				newb.nodes[0] = newNode.AsPointer()
+				//nolint:gosec // it's ok
 				atomic.StorePointer(&b.next, unsafe.Pointer(newb))
 				rootb.mu.Unlock()
 				table.addSize(bidx, 1)
@@ -347,6 +349,7 @@ func (m *Map[K, V, N]) Compute(key K, computeFunc func(n N) N) N {
 
 func (m *Map[K, V, N]) newerTableExists(table *mapTable[K]) bool {
 	curTablePtr := atomic.LoadPointer(&m.table)
+	//nolint:gosec // it's ok
 	return uintptr(curTablePtr) != uintptr(unsafe.Pointer(table))
 }
 
@@ -413,6 +416,7 @@ func (m *Map[K, V, N]) resize(knownTable *mapTable[K], hint mapResizeHint) {
 		}
 	}
 	// Publish the new table and wake up all waiters.
+	//nolint:gosec // it's ok
 	atomic.StorePointer(&m.table, unsafe.Pointer(newTable))
 	m.resizeMu.Lock()
 	atomic.StoreInt64(&m.resizing, 0)
@@ -520,6 +524,7 @@ func appendToBucket(h2 uint8, nodePtr unsafe.Pointer, b *bucketPadded) {
 			newb := new(bucketPadded)
 			newb.meta = setByte(defaultMeta, h2, 0)
 			newb.nodes[0] = nodePtr
+			//nolint:gosec // it's ok
 			b.next = unsafe.Pointer(newb)
 			return
 		}

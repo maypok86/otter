@@ -84,6 +84,7 @@ func TestCache_GetPanic(t *testing.T) {
 			t.Parallel()
 
 			tl := newTestLoader[int, int](func(ctx context.Context, key int) (int, error) {
+				//nolint:govet // it's ok
 				panic(tt.panicValue)
 			})
 
@@ -105,6 +106,7 @@ func TestCache_GetPanic(t *testing.T) {
 			func() {
 				defer func() {
 					recovered = recover()
+					//nolint:govet // it's ok
 					t.Logf("after panic(%#v) in cache.Get, recovered %#v", tt.panicValue, recovered)
 				}()
 
@@ -120,6 +122,7 @@ func TestCache_GetPanic(t *testing.T) {
 				t.Fatalf("recovered non-error type: %T", recovered)
 			}
 
+			//nolint:govet // it's ok
 			if !errors.Is(err, new(errValue)) && tt.wrappedErrorType {
 				t.Fatalf("unexpected wrapped error type %T; want %T", err, new(errValue))
 			}
@@ -159,6 +162,7 @@ func TestCache_BulkGetPanic(t *testing.T) {
 			t.Parallel()
 
 			tl := newTestBulkLoader[int, int](func(ctx context.Context, keys []int) (map[int]int, error) {
+				//nolint:govet // it's ok
 				panic(tt.panicValue)
 			})
 
@@ -180,6 +184,7 @@ func TestCache_BulkGetPanic(t *testing.T) {
 			func() {
 				defer func() {
 					recovered = recover()
+					//nolint:govet // it's ok
 					t.Logf("after panic(%#v) in cache.BulkGet, recovered %#v", tt.panicValue, recovered)
 				}()
 
@@ -195,6 +200,7 @@ func TestCache_BulkGetPanic(t *testing.T) {
 				t.Fatalf("recovered non-error type: %T", recovered)
 			}
 
+			//nolint:govet // it's ok
 			if !errors.Is(err, new(errValue)) && tt.wrappedErrorType {
 				t.Fatalf("unexpected wrapped error type %T; want %T", err, new(errValue))
 			}

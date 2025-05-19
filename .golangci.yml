@@ -1,17 +1,28 @@
+version: "2"
 run:
   concurrency: 8
   timeout: 5m
   build-tags:
     - integration
   modules-download-mode: readonly
-  go: '1.19'
 output:
   formats:
-    - format: tab
+    tab:
       path: lint.txt
+      colors: false
   print-issued-lines: false
   uniq-by-line: false
   sort-results: true
+formatters:
+  enable:
+    - gci
+    - gofumpt
+  settings:
+    gci:
+      sections:
+        - standard # Standard lib
+        - default # External dependencies
+        - prefix(github.com/maypok86/otter) # Internal packages
 linters:
   enable:
     - asasalint
@@ -19,7 +30,6 @@ linters:
     - bidichk
     - bodyclose
     - contextcheck
-    #- copyloopvar
     - durationcheck
     - errcheck
     - errname
@@ -27,11 +37,8 @@ linters:
     - gocheckcompilerdirectives
     - gocritic
     - godot
-    - gofumpt
-    - gci
     - gomoddirectives
     - gosec
-    - gosimple
     - govet
     - ineffassign
     - misspell
@@ -48,9 +55,7 @@ linters:
     - rowserrcheck
     - sqlclosecheck
     - staticcheck
-    - stylecheck
     - tagliatelle
-    - tenv
     - testableexamples
     - tparallel
     - unconvert
@@ -59,48 +64,51 @@ linters:
     - wastedassign
   disable:
     - unused
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters:
+          - gosec
+          - errname
+          - errcheck
+          - errorlint
+      - path: cmd/generator
+        linters:
+          - errcheck
+          - gosec
+      - linters:
+          - staticcheck
+        text: "QF1001:"
+  settings:
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - experimental
+        - opinionated
+        - performance
+        - style
+      disabled-checks:
+        - hugeParam
+        - rangeExprCopy
+        - rangeValCopy
+    errcheck:
+      check-type-assertions: true
+      check-blank: true
+      exclude-functions:
+        - io/ioutil.ReadFile
+        - io.Copy(*bytes.Buffer)
+        - io.Copy(os.Stdout)
+    nakedret:
+      max-func-lines: 1
+    revive:
+      rules:
+        - name: empty-block
+          disabled: true
+    tagliatelle:
+      case:
+        rules:
+          json: snake
+          yaml: snake
 issues:
   max-issues-per-linter: 0
   max-same-issues: 0
-  exclude-rules:
-    - path: _test\.go
-      linters:
-        - gosec
-        - errname
-        - errcheck
-        - errorlint
-linters-settings:
-  gci:
-    sections:
-      - standard # Standard lib
-      - default # External dependencies
-      - prefix(github.com/maypok86/otter) # Internal packages
-  gocritic:
-    enabled-tags:
-      - diagnostic
-      - experimental
-      - opinionated
-      - performance
-      - style
-    disabled-checks:
-      - hugeParam
-      - rangeExprCopy
-      - rangeValCopy
-  errcheck:
-    check-type-assertions: true
-    check-blank: true
-    exclude-functions:
-      - io/ioutil.ReadFile
-      - io.Copy(*bytes.Buffer)
-      - io.Copy(os.Stdout)
-  nakedret:
-    max-func-lines: 1
-  revive:
-    rules:
-      - name: empty-block
-        disabled: true
-  tagliatelle:
-    case:
-      rules:
-        json: snake
-        yaml: snake

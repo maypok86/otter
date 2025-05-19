@@ -367,6 +367,7 @@ func (c *Cache[K, V]) Get(ctx context.Context, key K, loader Loader[K, V]) (V, e
 
 	cl, shouldLoad := c.singleflight.startCall(key)
 	if shouldLoad {
+		//nolint:errcheck // there is no need to check error
 		_ = c.wrapLoad(func() error {
 			return c.singleflight.doCall(loadCtx, cl, loader, c.afterDeleteCall)
 		})
@@ -466,6 +467,7 @@ func (c *Cache[K, V]) BulkGet(ctx context.Context, keys []K, bulkLoader BulkLoad
 		return result, loadErr
 	}
 
+	//nolint:prealloc // it's ok
 	var errsFromCalls []error
 	i = 0
 	for key, cl := range misses {
