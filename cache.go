@@ -177,7 +177,22 @@ func newCache[K comparable, V any](b *Builder[K, V]) *Cache[K, V] {
 }
 
 func (c *Cache[K, V]) getExpiration(duration time.Duration) int64 {
-	return c.clock.CachedOffset() + duration.Nanoseconds()
+	return c.clock.Offset() + duration.Nanoseconds()
+}
+
+func (c *Cache[K, V]) hasExpired(n node.Node[K, V]) bool {
+	if !c.withExpiration {
+		return false
+	}
+
+	cachedOffset := c.clock.CachedOffset()
+	if n.HasExpired(cachedOffset) {
+		return true
+	}
+	if n.Expiration()-cachedOffset < 30*1e9 {
+		return n.HasExpired(c.clock.Offset())
+	}
+	return false
 }
 
 // Has checks if there is an item with the given key in the cache.
@@ -199,7 +214,7 @@ func (c *Cache[K, V]) GetIfPresent(key K) (V, bool) {
 // GetNode returns the node associated with the key in this cache.
 func (c *Cache[K, V]) GetNode(key K) node.Node[K, V] {
 	n := c.hashmap.Get(key)
-	if n == nil || !n.IsAlive() || n.HasExpired(c.clock.CachedOffset()) {
+	if n == nil || !n.IsAlive() || c.hasExpired(n) {
 		c.stats.RecordMisses(1)
 		return nil
 	}
@@ -215,7 +230,7 @@ func (c *Cache[K, V]) GetNode(key K) node.Node[K, V] {
 // such as updating statistics or the eviction policy.
 func (c *Cache[K, V]) GetNodeQuietly(key K) node.Node[K, V] {
 	n := c.hashmap.Get(key)
-	if n == nil || !n.IsAlive() || n.HasExpired(c.clock.CachedOffset()) {
+	if n == nil || !n.IsAlive() || c.hasExpired(n) {
 		return nil
 	}
 
@@ -327,7 +342,7 @@ func (c *Cache[K, V]) afterWrite(n, old node.Node[K, V]) {
 	// update
 	old.Die()
 	cause := CauseReplacement
-	if old.HasExpired(c.clock.CachedOffset()) {
+	if c.hasExpired(old) {
 		cause = CauseExpiration
 	}
 
@@ -572,7 +587,7 @@ func (c *Cache[K, V]) afterDelete(deleted node.Node[K, V]) {
 	// delete
 	deleted.Die()
 	cause := CauseInvalidation
-	if deleted.HasExpired(c.clock.CachedOffset()) {
+	if c.hasExpired(deleted) {
 		cause = CauseExpiration
 	}
 
@@ -581,7 +596,7 @@ func (c *Cache[K, V]) afterDelete(deleted node.Node[K, V]) {
 
 // InvalidateByFunc deletes the association for this key from the cache when the given function returns true.
 func (c *Cache[K, V]) InvalidateByFunc(fn func(key K, value V) bool) {
-	offset := c.clock.CachedOffset()
+	offset := c.clock.Offset()
 	c.hashmap.Range(func(n node.Node[K, V]) bool {
 		if !n.IsAlive() || n.HasExpired(offset) {
 			return true
@@ -640,13 +655,13 @@ func (c *Cache[K, V]) evictOrExpireNode(n node.Node[K, V], nowNanos int64) {
 	}
 }
 
-func (c *Cache[K, V]) addToPolicies(n node.Node[K, V]) {
+func (c *Cache[K, V]) addToPolicies(n node.Node[K, V], offset int64) {
 	if !n.IsAlive() {
 		return
 	}
 
 	c.expiryPolicy.Add(n)
-	c.policy.Add(n, c.clock.CachedOffset(), c.evictOrExpireNode)
+	c.policy.Add(n, offset, c.evictOrExpireNode)
 }
 
 func (c *Cache[K, V]) deleteFromPolicies(n node.Node[K, V], cause DeletionCause) {
@@ -655,7 +670,7 @@ func (c *Cache[K, V]) deleteFromPolicies(n node.Node[K, V], cause DeletionCause)
 	c.notifyDeletion(n.Key(), n.Value(), cause)
 }
 
-func (c *Cache[K, V]) onWrite(t task[K, V]) {
+func (c *Cache[K, V]) onWrite(t task[K, V], offset int64) {
 	if t.isClear() || t.isClose() {
 		c.writeBuffer.DeleteAllByPredicate(func(t task[K, V]) bool {
 			return !(t.isClear() || t.isClose())
@@ -674,10 +689,10 @@ func (c *Cache[K, V]) onWrite(t task[K, V]) {
 	n := t.node()
 	switch {
 	case t.isAdd():
-		c.addToPolicies(n)
+		c.addToPolicies(n, offset)
 	case t.isUpdate():
 		c.deleteFromPolicies(t.oldNode(), t.deletionCause)
-		c.addToPolicies(n)
+		c.addToPolicies(n, offset)
 	case t.isDelete():
 		c.deleteFromPolicies(n, t.deletionCause)
 	default:
@@ -685,9 +700,9 @@ func (c *Cache[K, V]) onWrite(t task[K, V]) {
 	}
 }
 
-func (c *Cache[K, V]) onBulkWrite(buffer []task[K, V]) bool {
+func (c *Cache[K, V]) onBulkWrite(buffer []task[K, V], offset int64) bool {
 	for _, t := range buffer {
-		c.onWrite(t)
+		c.onWrite(t, offset)
 		if t.isClose() {
 			return true
 		}
@@ -709,8 +724,9 @@ func (c *Cache[K, V]) process() {
 			buffer = append(buffer, t)
 		}
 
+		offset := c.clock.Offset()
 		c.evictionMutex.Lock()
-		shouldClose := c.onBulkWrite(buffer)
+		shouldClose := c.onBulkWrite(buffer, offset)
 		c.evictionMutex.Unlock()
 
 		buffer = buffer[:0]
@@ -725,7 +741,7 @@ func (c *Cache[K, V]) process() {
 //
 // Iteration stops early when the given function returns false.
 func (c *Cache[K, V]) Range(fn func(key K, value V) bool) {
-	offset := c.clock.CachedOffset()
+	offset := c.clock.Offset()
 	c.hashmap.Range(func(n node.Node[K, V]) bool {
 		if !n.IsAlive() || n.HasExpired(offset) {
 			return true
