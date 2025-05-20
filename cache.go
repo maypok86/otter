@@ -65,6 +65,8 @@ type expiryPolicy[K comparable, V any] interface {
 
 type timeSource interface {
 	Init()
+	CachedOffset() int64
+	Refresh() int64
 	Offset() int64
 	Time(offset int64) time.Time
 }
@@ -175,7 +177,7 @@ func newCache[K comparable, V any](b *Builder[K, V]) *Cache[K, V] {
 }
 
 func (c *Cache[K, V]) getExpiration(duration time.Duration) int64 {
-	return c.clock.Offset() + duration.Nanoseconds()
+	return c.clock.CachedOffset() + duration.Nanoseconds()
 }
 
 // Has checks if there is an item with the given key in the cache.
@@ -197,7 +199,7 @@ func (c *Cache[K, V]) GetIfPresent(key K) (V, bool) {
 // GetNode returns the node associated with the key in this cache.
 func (c *Cache[K, V]) GetNode(key K) node.Node[K, V] {
 	n := c.hashmap.Get(key)
-	if n == nil || !n.IsAlive() || n.HasExpired(c.clock.Offset()) {
+	if n == nil || !n.IsAlive() || n.HasExpired(c.clock.CachedOffset()) {
 		c.stats.RecordMisses(1)
 		return nil
 	}
@@ -213,7 +215,7 @@ func (c *Cache[K, V]) GetNode(key K) node.Node[K, V] {
 // such as updating statistics or the eviction policy.
 func (c *Cache[K, V]) GetNodeQuietly(key K) node.Node[K, V] {
 	n := c.hashmap.Get(key)
-	if n == nil || !n.IsAlive() || n.HasExpired(c.clock.Offset()) {
+	if n == nil || !n.IsAlive() || n.HasExpired(c.clock.CachedOffset()) {
 		return nil
 	}
 
@@ -325,7 +327,7 @@ func (c *Cache[K, V]) afterWrite(n, old node.Node[K, V]) {
 	// update
 	old.Die()
 	cause := CauseReplacement
-	if old.HasExpired(c.clock.Offset()) {
+	if old.HasExpired(c.clock.CachedOffset()) {
 		cause = CauseExpiration
 	}
 
@@ -570,7 +572,7 @@ func (c *Cache[K, V]) afterDelete(deleted node.Node[K, V]) {
 	// delete
 	deleted.Die()
 	cause := CauseInvalidation
-	if deleted.HasExpired(c.clock.Offset()) {
+	if deleted.HasExpired(c.clock.CachedOffset()) {
 		cause = CauseExpiration
 	}
 
@@ -579,7 +581,7 @@ func (c *Cache[K, V]) afterDelete(deleted node.Node[K, V]) {
 
 // InvalidateByFunc deletes the association for this key from the cache when the given function returns true.
 func (c *Cache[K, V]) InvalidateByFunc(fn func(key K, value V) bool) {
-	offset := c.clock.Offset()
+	offset := c.clock.CachedOffset()
 	c.hashmap.Range(func(n node.Node[K, V]) bool {
 		if !n.IsAlive() || n.HasExpired(offset) {
 			return true
@@ -613,8 +615,9 @@ func (c *Cache[K, V]) cleanup() {
 		case <-c.doneClose:
 			return
 		case <-ticker.C:
+			offset := c.clock.Refresh()
 			c.evictionMutex.Lock()
-			c.expiryPolicy.DeleteExpired(c.clock.Offset(), c.evictOrExpireNode)
+			c.expiryPolicy.DeleteExpired(offset, c.evictOrExpireNode)
 			c.evictionMutex.Unlock()
 		}
 	}
@@ -643,7 +646,7 @@ func (c *Cache[K, V]) addToPolicies(n node.Node[K, V]) {
 	}
 
 	c.expiryPolicy.Add(n)
-	c.policy.Add(n, c.clock.Offset(), c.evictOrExpireNode)
+	c.policy.Add(n, c.clock.CachedOffset(), c.evictOrExpireNode)
 }
 
 func (c *Cache[K, V]) deleteFromPolicies(n node.Node[K, V], cause DeletionCause) {
@@ -722,7 +725,7 @@ func (c *Cache[K, V]) process() {
 //
 // Iteration stops early when the given function returns false.
 func (c *Cache[K, V]) Range(fn func(key K, value V) bool) {
-	offset := c.clock.Offset()
+	offset := c.clock.CachedOffset()
 	c.hashmap.Range(func(n node.Node[K, V]) bool {
 		if !n.IsAlive() || n.HasExpired(offset) {
 			return true
