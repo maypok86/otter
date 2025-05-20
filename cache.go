@@ -696,7 +696,7 @@ func (c *Cache[K, V]) onBulkWrite(buffer []task[K, V]) bool {
 }
 
 func (c *Cache[K, V]) process() {
-	const maxBufferSize = 128
+	const maxBufferSize = 64
 	buffer := make([]task[K, V], 0, maxBufferSize)
 	for {
 		buffer = append(buffer, c.writeBuffer.Pop())
