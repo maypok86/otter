@@ -23,9 +23,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/maypok86/otter/v2/core/stats"
 	"github.com/maypok86/otter/v2/internal/generated/node"
 	"github.com/maypok86/otter/v2/internal/xruntime"
-	"github.com/maypok86/otter/v2/stats"
 )
 
 func getRandomSize(t *testing.T) int {

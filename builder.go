@@ -17,6 +17,8 @@ package otter
 import (
 	"errors"
 	"time"
+
+	"github.com/maypok86/otter/v2/core/stats"
 )
 
 // Builder is a one-shot builder for creating a cache instance.
@@ -24,7 +26,7 @@ type Builder[K comparable, V any] struct {
 	maximumSize     *int
 	maximumWeight   *uint64
 	initialCapacity *int
-	statsRecorder   StatsRecorder
+	statsRecorder   stats.Recorder
 	ttl             *time.Duration
 	withVariableTTL bool
 	weigher         func(key K, value V) uint32
@@ -35,8 +37,7 @@ type Builder[K comparable, V any] struct {
 // NewBuilder creates a builder and sets the future cache capacity.
 func NewBuilder[K comparable, V any]() *Builder[K, V] {
 	return &Builder[K, V]{
-		statsRecorder: noopStatsRecorder{},
-		logger:        noopLogger{},
+		logger: noopLogger{},
 	}
 }
 
@@ -73,7 +74,7 @@ func (b *Builder[K, V]) MaximumWeight(maximumWeight uint64) *Builder[K, V] {
 //
 // NOTE: recording statistics requires bookkeeping to be performed with each operation,
 // and thus imposes a performance penalty on cache operations.
-func (b *Builder[K, V]) RecordStats(statsRecorder StatsRecorder) *Builder[K, V] {
+func (b *Builder[K, V]) RecordStats(statsRecorder stats.Recorder) *Builder[K, V] {
 	b.statsRecorder = statsRecorder
 	return b
 }
@@ -175,9 +176,6 @@ func (b *Builder[K, V]) validate() error {
 
 	if b.initialCapacity != nil && *b.initialCapacity <= 0 {
 		return errors.New("otter: initial capacity should be positive")
-	}
-	if b.statsRecorder == nil {
-		return errors.New("otter: stats collector should not be nil")
 	}
 	if b.logger == nil {
 		return errors.New("otter: logger should not be nil")

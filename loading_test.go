@@ -22,7 +22,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/maypok86/otter/v2/stats"
+	"github.com/maypok86/otter/v2/core/stats"
 )
 
 type errValue struct{}

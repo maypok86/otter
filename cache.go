@@ -20,6 +20,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/maypok86/otter/v2/core/stats"
 	"github.com/maypok86/otter/v2/internal/clock"
 	"github.com/maypok86/otter/v2/internal/deque/queue"
 	"github.com/maypok86/otter/v2/internal/eviction"
@@ -78,7 +79,7 @@ type Cache[K comparable, V any] struct {
 	hashmap        *hashmap.Map[K, V, node.Node[K, V]]
 	policy         evictionPolicy[K, V]
 	expiryPolicy   expiryPolicy[K, V]
-	stats          statsRecorder
+	stats          stats.Recorder
 	logger         Logger
 	clock          timeSource
 	stripedBuffer  *lossy.Striped[K, V]
@@ -120,10 +121,15 @@ func newCache[K comparable, V any](b *Builder[K, V]) *Cache[K, V] {
 		hm = hashmap.NewWithSize[K, V, node.Node[K, V]](nodeManager, *b.initialCapacity)
 	}
 
+	withStats := b.statsRecorder != nil
+	if !withStats {
+		b.statsRecorder = stats.NoopRecorder{}
+	}
+
 	cache := &Cache[K, V]{
 		nodeManager:   nodeManager,
 		hashmap:       hm,
-		stats:         newStatsRecorder(b.statsRecorder),
+		stats:         b.statsRecorder,
 		logger:        b.logger,
 		stripedBuffer: stripedBuffer,
 		singleflight:  &group[K, V]{},
@@ -132,10 +138,7 @@ func newCache[K comparable, V any](b *Builder[K, V]) *Cache[K, V] {
 		weigher:       b.getWeigher(),
 		onDeletion:    b.onDeletion,
 		clock:         &clock.Real{},
-	}
-
-	if _, ok := b.statsRecorder.(noopStatsRecorder); !ok {
-		cache.withStats = true
+		withStats:     withStats,
 	}
 
 	cache.withEviction = withEviction

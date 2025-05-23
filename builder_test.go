@@ -18,7 +18,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/maypok86/otter/v2/stats"
+	"github.com/maypok86/otter/v2/core/stats"
 )
 
 func ptr[T any](t T) *T {
@@ -99,12 +99,6 @@ func TestBuilder_Build(t *testing.T) {
 				b.InitialCapacity(0)
 			},
 			want: ptr("otter: initial capacity should be positive"),
-		},
-		{
-			fn: func(b *Builder[string, string]) {
-				b.RecordStats(nil)
-			},
-			want: ptr("otter: stats collector should not be nil"),
 		},
 		{
 			fn: func(b *Builder[string, string]) {
