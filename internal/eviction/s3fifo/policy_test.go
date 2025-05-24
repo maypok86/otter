@@ -33,6 +33,8 @@ func read[K comparable, V any](p *Policy[K, V], nodes []node.Node[K, V]) {
 }
 
 func TestPolicy_ReadAndWrite(t *testing.T) {
+	t.Parallel()
+
 	n := newNode(2)
 	evictNode := func(n node.Node[int, int], nowNanos int64) {
 	}
@@ -44,6 +46,8 @@ func TestPolicy_ReadAndWrite(t *testing.T) {
 }
 
 func TestPolicy_OneHitWonders(t *testing.T) {
+	t.Parallel()
+
 	evictNode := func(n node.Node[int, int], nowNanos int64) {
 	}
 	p := NewPolicy[int, int](10)
@@ -108,6 +112,8 @@ func TestPolicy_OneHitWonders(t *testing.T) {
 }
 
 func TestPolicy_Update(t *testing.T) {
+	t.Parallel()
+
 	collect := false
 	var deleted []node.Node[int, int]
 	evictNode := func(n node.Node[int, int], nowNanos int64) {

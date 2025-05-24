@@ -44,6 +44,8 @@ func getRandomSize(t *testing.T) int {
 }
 
 func TestCache_Unbounded(t *testing.T) {
+	t.Parallel()
+
 	statsCounter := stats.NewCounter()
 	m := make(map[DeletionCause]int)
 	mutex := sync.Mutex{}
@@ -93,6 +95,8 @@ func TestCache_Unbounded(t *testing.T) {
 }
 
 func TestCache_PinnedWeight(t *testing.T) {
+	t.Parallel()
+
 	size := 10
 	pinned := 4
 	m := make(map[DeletionCause]int)
@@ -150,6 +154,8 @@ func TestCache_PinnedWeight(t *testing.T) {
 }
 
 func TestCache_SetWithWeight(t *testing.T) {
+	t.Parallel()
+
 	statsCounter := stats.NewCounter()
 	size := uint64(10)
 	c := Must[uint32, int](&Options[uint32, int]{
@@ -180,6 +186,8 @@ func TestCache_SetWithWeight(t *testing.T) {
 }
 
 func TestCache_Range(t *testing.T) {
+	t.Parallel()
+
 	size := 10
 	ttl := time.Hour
 	c := Must[int, int](&Options[int, int]{
@@ -215,6 +223,8 @@ func TestCache_Range(t *testing.T) {
 }
 
 func TestCache_Close(t *testing.T) {
+	t.Parallel()
+
 	size := 10
 	c := Must(&Options[int, int]{
 		MaximumSize: size,
@@ -244,6 +254,8 @@ func TestCache_Close(t *testing.T) {
 }
 
 func TestCache_InvalidateAll(t *testing.T) {
+	t.Parallel()
+
 	size := 10
 	c := Must(&Options[int, int]{
 		MaximumSize: size,
@@ -267,6 +279,8 @@ func TestCache_InvalidateAll(t *testing.T) {
 }
 
 func TestCache_Set(t *testing.T) {
+	t.Parallel()
+
 	size := getRandomSize(t)
 	var mutex sync.Mutex
 	m := make(map[DeletionCause]int)
@@ -341,6 +355,8 @@ func TestCache_Set(t *testing.T) {
 }
 
 func TestCache_SetIfAbsent(t *testing.T) {
+	t.Parallel()
+
 	size := getRandomSize(t)
 	statsCounter := stats.NewCounter()
 	c := Must(&Options[int, int]{
@@ -508,6 +524,8 @@ func TestCache_SetWithExpiresAt(t *testing.T) {
 }
 
 func TestCache_Invalidate(t *testing.T) {
+	t.Parallel()
+
 	size := getRandomSize(t)
 	var mutex sync.Mutex
 	m := make(map[DeletionCause]int)
@@ -552,6 +570,8 @@ func TestCache_Invalidate(t *testing.T) {
 }
 
 func TestCache_InvalidateByFunc(t *testing.T) {
+	t.Parallel()
+
 	size := getRandomSize(t)
 	var mutex sync.Mutex
 	m := make(map[DeletionCause]int)
@@ -629,6 +649,8 @@ func TestCache_ConcurrentInvalidateAll(t *testing.T) {
 }
 
 func TestCache_Ratio(t *testing.T) {
+	t.Parallel()
+
 	var mutex sync.Mutex
 	m := make(map[DeletionCause]int)
 	statsCounter := stats.NewCounter()
@@ -740,6 +762,8 @@ func (h *optimalHeap) Pop() any {
 }
 
 func Test_GetExpired(t *testing.T) {
+	t.Parallel()
+
 	done := make(chan struct{})
 
 	c := Must(&Options[string, string]{

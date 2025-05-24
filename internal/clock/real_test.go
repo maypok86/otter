@@ -20,6 +20,8 @@ import (
 )
 
 func TestNow(t *testing.T) {
+	t.Parallel()
+
 	c := &Real{}
 	c.Init()
 

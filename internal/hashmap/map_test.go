@@ -51,6 +51,8 @@ type point struct {
 }
 
 func TestMap_BucketStructSize(t *testing.T) {
+	t.Parallel()
+
 	size := unsafe.Sizeof(bucketPadded{})
 	if size != 64 {
 		t.Fatalf("size of 64B (one cache line) is expected, got: %d", size)
@@ -58,6 +60,8 @@ func TestMap_BucketStructSize(t *testing.T) {
 }
 
 func TestMap_MissingNode(t *testing.T) {
+	t.Parallel()
+
 	nm := testNodeManager[string, string]()
 	m := New(nm)
 	n := m.Get("foo")
@@ -79,6 +83,8 @@ func TestMap_MissingNode(t *testing.T) {
 }
 
 func TestMapOf_EmptyStringKey(t *testing.T) {
+	t.Parallel()
+
 	nm := testNodeManager[string, string]()
 	m := New(nm)
 	m.Compute("", func(n node.Node[string, string]) node.Node[string, string] {
@@ -94,6 +100,8 @@ func TestMapOf_EmptyStringKey(t *testing.T) {
 }
 
 func TestMapSet_NilValue(t *testing.T) {
+	t.Parallel()
+
 	nm := testNodeManager[string, *struct{}]()
 	m := New(nm)
 	m.Compute("foo", func(n node.Node[string, *struct{}]) node.Node[string, *struct{}] {
@@ -109,6 +117,8 @@ func TestMapSet_NilValue(t *testing.T) {
 }
 
 func TestMapSet_NonNilValue(t *testing.T) {
+	t.Parallel()
+
 	type foo struct{}
 	nm := testNodeManager[string, *foo]()
 	m := New[string, *foo](nm)
@@ -126,6 +136,8 @@ func TestMapSet_NonNilValue(t *testing.T) {
 }
 
 func TestMapRange(t *testing.T) {
+	t.Parallel()
+
 	const numNodes = 1000
 	nm := testNodeManager[string, int]()
 	m := New(nm)
@@ -157,6 +169,8 @@ func TestMapRange(t *testing.T) {
 }
 
 func TestMapRange_FalseReturned(t *testing.T) {
+	t.Parallel()
+
 	nm := testNodeManager[string, int]()
 	m := New(nm)
 	for i := 0; i < 100; i++ {
@@ -176,6 +190,8 @@ func TestMapRange_FalseReturned(t *testing.T) {
 }
 
 func TestMapRange_NestedDelete(t *testing.T) {
+	t.Parallel()
+
 	const numNodes = 256
 	nm := testNodeManager[string, int]()
 	m := New(nm)
@@ -199,6 +215,8 @@ func TestMapRange_NestedDelete(t *testing.T) {
 }
 
 func TestMapStringSet(t *testing.T) {
+	t.Parallel()
+
 	const numNodes = 128
 	nm := testNodeManager[string, int]()
 	m := New(nm)
@@ -220,6 +238,8 @@ func TestMapStringSet(t *testing.T) {
 }
 
 func TestMapIntSet(t *testing.T) {
+	t.Parallel()
+
 	const numNodes = 128
 	nm := testNodeManager[int, int]()
 	m := New(nm)
@@ -240,6 +260,8 @@ func TestMapIntSet(t *testing.T) {
 }
 
 func TestMapSet_StructKeys_IntValues(t *testing.T) {
+	t.Parallel()
+
 	const numNodes = 128
 	nm := testNodeManager[point, int]()
 	m := New(nm)
@@ -261,6 +283,8 @@ func TestMapSet_StructKeys_IntValues(t *testing.T) {
 }
 
 func TestMapSet_StructKeys_StructValues(t *testing.T) {
+	t.Parallel()
+
 	const numNodes = 128
 	nm := testNodeManager[point, point]()
 	m := New(nm)
@@ -287,6 +311,8 @@ func TestMapSet_StructKeys_StructValues(t *testing.T) {
 }
 
 func TestMapCompute_FunctionCalledOnce(t *testing.T) {
+	t.Parallel()
+
 	nm := testNodeManager[int, int]()
 	m := New(nm)
 	for i := 0; i < 100; {
@@ -306,6 +332,8 @@ func TestMapCompute_FunctionCalledOnce(t *testing.T) {
 }
 
 func TestMapCompute(t *testing.T) {
+	t.Parallel()
+
 	nm := testNodeManager[string, int]()
 	m := New(nm)
 	// Store a new value.
@@ -358,6 +386,8 @@ func TestMapCompute(t *testing.T) {
 }
 
 func TestMapStringSetThenDelete(t *testing.T) {
+	t.Parallel()
+
 	const numNodes = 1000
 	nm := testNodeManager[string, int]()
 	m := New(nm)
@@ -378,6 +408,8 @@ func TestMapStringSetThenDelete(t *testing.T) {
 }
 
 func TestMapIntSetThenDelete(t *testing.T) {
+	t.Parallel()
+
 	const numNodes = 1000
 	nm := testNodeManager[int32, int32]()
 	m := New(nm)
@@ -397,6 +429,8 @@ func TestMapIntSetThenDelete(t *testing.T) {
 }
 
 func TestMapStructSetThenDelete(t *testing.T) {
+	t.Parallel()
+
 	const numNodes = 1000
 	nm := testNodeManager[point, string]()
 	m := New(nm)
@@ -418,6 +452,8 @@ func TestMapStructSetThenDelete(t *testing.T) {
 }
 
 func TestMapSetThenParallelDelete_DoesNotShrinkBelowMinTableLen(t *testing.T) {
+	t.Parallel()
+
 	const numNodes = 1000
 	nm := testNodeManager[int, int]()
 	m := New(nm)
@@ -465,6 +501,8 @@ func sizeBasedOnTypedRange(m *Map[string, int, node.Node[string, int]]) int {
 }
 
 func TestMapSize(t *testing.T) {
+	t.Parallel()
+
 	const numNodes = 1000
 	nm := testNodeManager[string, int]()
 	m := New(nm)
@@ -505,6 +543,8 @@ func TestMapSize(t *testing.T) {
 }
 
 func TestMapClear(t *testing.T) {
+	t.Parallel()
+
 	const numNodes = 1000
 	nm := testNodeManager[string, int]()
 	m := New(nm)
@@ -550,6 +590,8 @@ func parallelRandTypedResizer(m *Map[string, int, node.Node[string, int]], numIt
 }
 
 func TestMapParallelResize(t *testing.T) {
+	t.Parallel()
+
 	const numIters = 1_000
 	const numNodes = 2 * nodesPerMapBucket * defaultMinMapTableLen
 	nm := testNodeManager[string, int]()
@@ -600,6 +642,8 @@ func parallelRandTypedClearer(m *Map[string, int, node.Node[string, int]], numIt
 }
 
 func TestMapParallelClear(t *testing.T) {
+	t.Parallel()
+
 	const numIters = 100
 	const numNodes = 1_000
 	nm := testNodeManager[string, int]()
@@ -652,6 +696,8 @@ func parallelSeqTypedSetter(
 }
 
 func TestMapParallelSetter(t *testing.T) {
+	t.Parallel()
+
 	const numSetters = 4
 	const numIters = 10_000
 	const numNodes = 100
@@ -746,6 +792,8 @@ func parallelTypedGetter(
 }
 
 func TestMapAtomicSnapshot(t *testing.T) {
+	t.Parallel()
+
 	const numIters = 100_000
 	const numNodes = 100
 	nm := testNodeManager[string, int]()
@@ -762,6 +810,8 @@ func TestMapAtomicSnapshot(t *testing.T) {
 }
 
 func TestMapParallelSetsAndDeletes(t *testing.T) {
+	t.Parallel()
+
 	const numWorkers = 2
 	const numIters = 100_000
 	const numNodes = 1000
@@ -795,6 +845,8 @@ func parallelTypedComputer(m *Map[uint64, uint64, node.Node[uint64, uint64]], nu
 }
 
 func TestMapParallelComputes(t *testing.T) {
+	t.Parallel()
+
 	const numWorkers = 4 // Also stands for numNodes.
 	const numIters = 10_000
 	nm := testNodeManager[uint64, uint64]()
@@ -848,6 +900,8 @@ func parallelTypedRangeDeleter(m *Map[int, int, node.Node[int, int]], numSetter 
 }
 
 func TestMapParallelRange(t *testing.T) {
+	t.Parallel()
+
 	const numNodes = 10_000
 	nm := testNodeManager[int, int]()
 	m := NewWithSize(nm, numNodes)
@@ -946,6 +1000,8 @@ func parallelTypedUpdater(
 }
 
 func TestMapDoesNotLoseNodesOnResize(t *testing.T) {
+	t.Parallel()
+
 	const numIters = 10_000
 	const numNodes = 128
 	nm := testNodeManager[uint64, *point]()

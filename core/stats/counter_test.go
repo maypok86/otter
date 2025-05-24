@@ -21,7 +21,11 @@ import (
 )
 
 func TestCounter_Basic(t *testing.T) {
+	t.Parallel()
+
 	t.Run("enabled", func(t *testing.T) {
+		t.Parallel()
+
 		c := NewCounter()
 		c.RecordHits(1)
 		c.RecordMisses(1)
@@ -44,6 +48,8 @@ func TestCounter_Basic(t *testing.T) {
 	})
 
 	t.Run("overflow", func(t *testing.T) {
+		t.Parallel()
+
 		c := NewCounter()
 		c.totalLoadTime.Add(math.MaxUint64)
 
@@ -58,6 +64,8 @@ func TestCounter_Basic(t *testing.T) {
 }
 
 func TestCounter_Concurrent(t *testing.T) {
+	t.Parallel()
+
 	c := NewCounter()
 
 	goroutines := 50

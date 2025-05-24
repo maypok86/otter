@@ -7,6 +7,8 @@ import (
 )
 
 func TestEntry(t *testing.T) {
+	t.Parallel()
+
 	k := 2
 	v := 3
 	exp := int64(math.MaxInt64)
@@ -50,7 +52,7 @@ func TestEntry(t *testing.T) {
 	}
 
 	newRefreshableAfter := int64(10)
-	e.RefreshableAtNano = time.Now().UnixNano() + (time.Duration(newRefreshableAfter) * time.Second).Nanoseconds()
+	e.RefreshableAtNano = e.SnapshotAtNano + (time.Duration(newRefreshableAfter) * time.Second).Nanoseconds()
 	if refreshableAfter := e.RefreshableAfter(); refreshableAfter <= 0 || refreshableAfter > time.Duration(newRefreshableAfter)*time.Second {
 		t.Fatalf("refreshableAfter should be in the range (0, %d] seconds, but got %d seconds", newRefreshableAfter, refreshableAfter/time.Second)
 	}

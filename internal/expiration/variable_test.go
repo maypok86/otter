@@ -52,6 +52,8 @@ func match[K comparable, V any](t *testing.T, nodes []node.Node[K, V], keys []K)
 }
 
 func TestVariable_Add(t *testing.T) {
+	t.Parallel()
+
 	nm := node.NewManager[string, string](node.Config{
 		WithExpiration: true,
 	})
@@ -101,6 +103,8 @@ func TestVariable_Add(t *testing.T) {
 }
 
 func TestVariable_DeleteExpired(t *testing.T) {
+	t.Parallel()
+
 	nm := node.NewManager[string, string](node.Config{
 		WithExpiration: true,
 	})

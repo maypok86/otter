@@ -32,6 +32,8 @@ var validStatuses = map[Status]bool{
 }
 
 func TestNewStriped(t *testing.T) {
+	t.Parallel()
+
 	nm := node.NewManager[int, int](node.Config{
 		WithSize:       true,
 		WithExpiration: true,
@@ -50,6 +52,8 @@ func TestNewStriped(t *testing.T) {
 }
 
 func TestStriped_Add(t *testing.T) {
+	t.Parallel()
+
 	parallelism := int(xmath.RoundUpPowerOf2(xruntime.Parallelism()))
 	maxBufferLen := 4 * parallelism
 	goroutines := 100 * parallelism
@@ -86,6 +90,8 @@ func TestStriped_Add(t *testing.T) {
 }
 
 func TestStriped_DrainTo(t *testing.T) {
+	t.Parallel()
+
 	nm := node.NewManager[int, int](node.Config{
 		WithSize:       true,
 		WithExpiration: true,
@@ -118,6 +124,8 @@ func TestStriped_DrainTo(t *testing.T) {
 }
 
 func TestStriped_AddAndDrain(t *testing.T) {
+	t.Parallel()
+
 	parallelism := int(xmath.RoundUpPowerOf2(xruntime.Parallelism()))
 	maxBufferLen := 4 * parallelism
 	goroutines := 100 * parallelism

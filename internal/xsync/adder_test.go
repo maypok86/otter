@@ -17,6 +17,8 @@ import (
 )
 
 func TestAdderAdd(t *testing.T) {
+	t.Parallel()
+
 	a := NewAdder()
 	for i := 0; i < 100; i++ {
 		if v := a.Value(); v != uint64(i*42) {
@@ -51,7 +53,11 @@ func testParallelIncrement(t *testing.T, modifiers, gomaxprocs int) {
 }
 
 func TestAdderParallelIncrementors(t *testing.T) {
-	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(-1))
+	t.Parallel()
+
+	t.Cleanup(func() {
+		runtime.GOMAXPROCS(runtime.GOMAXPROCS(-1))
+	})
 
 	tests := []struct {
 		modifiers  int
@@ -73,6 +79,8 @@ func TestAdderParallelIncrementors(t *testing.T) {
 
 	for i, tt := range tests {
 		t.Run(fmt.Sprintf("parallelIncrement-%d", i+1), func(t *testing.T) {
+			t.Parallel()
+
 			testParallelIncrement(t, tt.modifiers, tt.gomaxprocs)
 			testParallelIncrement(t, tt.modifiers, tt.gomaxprocs)
 			testParallelIncrement(t, tt.modifiers, tt.gomaxprocs)

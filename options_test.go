@@ -27,6 +27,8 @@ func ptr[T any](t T) *T {
 }
 
 func TestOptions(t *testing.T) {
+	t.Parallel()
+
 	for _, test := range []struct {
 		fn   func(o *Options[string, string])
 		want *string

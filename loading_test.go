@@ -207,6 +207,8 @@ func TestCache_BulkGetPanic(t *testing.T) {
 }
 
 func TestCache_GetWithSuccessLoad(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	size := 100
 	statsCounter := stats.NewCounter()
@@ -252,6 +254,8 @@ func TestCache_GetWithSuccessLoad(t *testing.T) {
 }
 
 func TestCache_BulkGetWithSuccessLoad(t *testing.T) {
+	t.Parallel()
+
 	size := 100
 
 	keys := []int{0, 1, 1, 2, 3, 5, 6, 7, 8, 3, 9}
@@ -327,6 +331,8 @@ func TestCache_BulkGetWithSuccessLoad(t *testing.T) {
 }
 
 func TestCache_GetWithFailedLoad(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	size := 100
 	statsCounter := stats.NewCounter()
@@ -375,6 +381,8 @@ func TestCache_GetWithFailedLoad(t *testing.T) {
 }
 
 func TestCache_BulkGetWithFailedLoad(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	size := 100
 	statsCounter := stats.NewCounter()
@@ -441,6 +449,8 @@ func TestCache_BulkGetWithFailedLoad(t *testing.T) {
 }
 
 func TestCache_GetWithSuppressedLoad(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	size := 100
 	statsCounter := stats.NewCounter()
@@ -509,6 +519,8 @@ func TestCache_GetWithSuppressedLoad(t *testing.T) {
 }
 
 func TestCache_ConcurrentGetAndSet(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	size := 100
 	statsCounter := stats.NewCounter()

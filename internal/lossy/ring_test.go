@@ -27,6 +27,8 @@ import (
 )
 
 func TestRing_Add(t *testing.T) {
+	t.Parallel()
+
 	parallelism := int(xmath.RoundUpPowerOf2(xruntime.Parallelism()))
 	goroutines := 100 * parallelism
 
@@ -68,6 +70,8 @@ func TestRing_Add(t *testing.T) {
 }
 
 func TestRing_DrainTo(t *testing.T) {
+	t.Parallel()
+
 	nm := node.NewManager[int, int](node.Config{
 		WithSize:       true,
 		WithExpiration: true,
@@ -97,6 +101,8 @@ func TestRing_DrainTo(t *testing.T) {
 }
 
 func TestRing_AddAndDrain(t *testing.T) {
+	t.Parallel()
+
 	parallelism := int(xmath.RoundUpPowerOf2(xruntime.Parallelism()))
 	goroutines := 100 * parallelism
 
@@ -152,6 +158,8 @@ func TestRing_AddAndDrain(t *testing.T) {
 }
 
 func TestRing_Overflow(t *testing.T) {
+	t.Parallel()
+
 	nm := node.NewManager[int, int](node.Config{
 		WithSize:       true,
 		WithExpiration: true,

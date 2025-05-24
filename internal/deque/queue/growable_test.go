@@ -26,6 +26,8 @@ import (
 const minCapacity = 4
 
 func TestGrowable_PushPop(t *testing.T) {
+	t.Parallel()
+
 	const capacity = 10
 	g := NewGrowable[int](minCapacity, capacity)
 	for i := 0; i < capacity; i++ {
@@ -39,6 +41,8 @@ func TestGrowable_PushPop(t *testing.T) {
 }
 
 func TestGrowable_ClearAndPopBlocksOnEmpty(t *testing.T) {
+	t.Parallel()
+
 	const capacity = 10
 	g := NewGrowable[int](minCapacity, capacity)
 	for i := 0; i < capacity; i++ {
@@ -63,6 +67,8 @@ func TestGrowable_ClearAndPopBlocksOnEmpty(t *testing.T) {
 }
 
 func TestGrowable_PushBlocksOnFull(t *testing.T) {
+	t.Parallel()
+
 	g := NewGrowable[string](1, 1)
 	g.Push("foo")
 
@@ -85,6 +91,8 @@ func TestGrowable_PushBlocksOnFull(t *testing.T) {
 }
 
 func TestGrowable_PopBlocksOnEmpty(t *testing.T) {
+	t.Parallel()
+
 	g := NewGrowable[string](2, 2)
 
 	done := make(chan struct{})
@@ -149,7 +157,11 @@ func testGrowableConcurrent(t *testing.T, parallelism, ops, goroutines int) {
 }
 
 func TestGrowable_Concurrent(t *testing.T) {
-	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(-1))
+	t.Parallel()
+
+	t.Cleanup(func() {
+		runtime.GOMAXPROCS(runtime.GOMAXPROCS(-1))
+	})
 
 	n := 100
 	if testing.Short() {
@@ -195,6 +207,7 @@ func TestGrowable_Concurrent(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(fmt.Sprintf("testConcurrent-%d-%d", tt.parallelism, tt.ops), func(t *testing.T) {
+			t.Parallel()
 			testGrowableConcurrent(t, tt.parallelism, tt.ops, tt.goroutines)
 		})
 	}

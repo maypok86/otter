@@ -21,6 +21,8 @@ import (
 )
 
 func TestTask(t *testing.T) {
+	t.Parallel()
+
 	nm := node.NewManager[int, int](node.Config{
 		WithExpiration: true,
 		WithWeight:     true,

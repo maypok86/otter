@@ -69,6 +69,8 @@ func newNode[K comparable](e K) node.Node[K, K] {
 }
 
 func TestLinked(t *testing.T) {
+	t.Parallel()
+
 	d := NewLinked[string, string](false)
 	checkLinkedPtrs(t, d, []node.Node[string, string]{})
 
@@ -135,6 +137,8 @@ func TestLinked(t *testing.T) {
 }
 
 func TestLinked_Delete(t *testing.T) {
+	t.Parallel()
+
 	d := NewLinked[int, int](true)
 
 	e1 := newNode(1)

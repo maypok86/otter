@@ -81,7 +81,11 @@ func testStats(
 }
 
 func TestStats(t *testing.T) {
+	t.Parallel()
+
 	t.Run("empty", func(t *testing.T) {
+		t.Parallel()
+
 		testStats(t, Stats{},
 			0,
 			0,
@@ -100,6 +104,8 @@ func TestStats(t *testing.T) {
 	})
 
 	t.Run("populated", func(t *testing.T) {
+		t.Parallel()
+
 		testStats(t, Stats{
 			hits:           11,
 			misses:         13,
@@ -126,6 +132,8 @@ func TestStats(t *testing.T) {
 	})
 
 	t.Run("overflow", func(t *testing.T) {
+		t.Parallel()
+
 		testStats(t, Stats{
 			hits:           math.MaxUint64,
 			misses:         math.MaxUint64,

@@ -29,6 +29,8 @@ import (
 )
 
 func TestEmpty(t *testing.T) {
+	t.Parallel()
+
 	q := new(Deque[string])
 	if q.Len() != 0 {
 		t.Error("q.Len() =", q.Len(), "expect 0")
@@ -51,6 +53,8 @@ func TestEmpty(t *testing.T) {
 }
 
 func TestNil(t *testing.T) {
+	t.Parallel()
+
 	var q *Deque[int]
 	if q.Len() != 0 {
 		t.Error("expected q.Len() == 0")
@@ -74,6 +78,8 @@ func TestNil(t *testing.T) {
 }
 
 func TestFrontBack(t *testing.T) {
+	t.Parallel()
+
 	var q Deque[string]
 	q.PushBack("foo")
 	q.PushBack("bar")
@@ -107,6 +113,8 @@ func TestFrontBack(t *testing.T) {
 }
 
 func TestGrowShrinkBack(t *testing.T) {
+	t.Parallel()
+
 	var q Deque[int]
 	size := minCapacity * 2
 
@@ -137,6 +145,8 @@ func TestGrowShrinkBack(t *testing.T) {
 }
 
 func TestGrowShrinkFront(t *testing.T) {
+	t.Parallel()
+
 	var q Deque[int]
 	size := minCapacity * 2
 
@@ -167,6 +177,8 @@ func TestGrowShrinkFront(t *testing.T) {
 }
 
 func TestSimple(t *testing.T) {
+	t.Parallel()
+
 	var q Deque[int]
 
 	for i := 0; i < minCapacity; i++ {
@@ -202,6 +214,8 @@ func TestSimple(t *testing.T) {
 }
 
 func TestBufferWrap(t *testing.T) {
+	t.Parallel()
+
 	var q Deque[int]
 
 	for i := 0; i < minCapacity; i++ {
@@ -222,6 +236,8 @@ func TestBufferWrap(t *testing.T) {
 }
 
 func TestBufferWrapReverse(t *testing.T) {
+	t.Parallel()
+
 	var q Deque[int]
 
 	for i := 0; i < minCapacity; i++ {
@@ -241,6 +257,8 @@ func TestBufferWrapReverse(t *testing.T) {
 }
 
 func TestLen(t *testing.T) {
+	t.Parallel()
+
 	var q Deque[int]
 
 	if q.Len() != 0 {
@@ -262,6 +280,8 @@ func TestLen(t *testing.T) {
 }
 
 func TestBack(t *testing.T) {
+	t.Parallel()
+
 	var q Deque[int]
 
 	for i := 0; i < minCapacity+5; i++ {
@@ -273,6 +293,8 @@ func TestBack(t *testing.T) {
 }
 
 func TestGrow(t *testing.T) {
+	t.Parallel()
+
 	var q Deque[int]
 	assertPanics(t, "should panic when calling Groe with invalid size", func() {
 		q.Grow(-1)
@@ -307,6 +329,8 @@ func TestGrow(t *testing.T) {
 }
 
 func TestNew(t *testing.T) {
+	t.Parallel()
+
 	minCap := 64
 	q := &Deque[string]{}
 	q.SetBaseCap(minCap)
@@ -368,6 +392,8 @@ func checkRotate(t *testing.T, size int) {
 }
 
 func TestRotate(t *testing.T) {
+	t.Parallel()
+
 	checkRotate(t, 10)
 	checkRotate(t, minCapacity)
 	checkRotate(t, minCapacity+minCapacity/2)
@@ -397,6 +423,8 @@ func TestRotate(t *testing.T) {
 }
 
 func TestAt(t *testing.T) {
+	t.Parallel()
+
 	var q Deque[int]
 
 	for i := 0; i < 1000; i++ {
@@ -419,6 +447,8 @@ func TestAt(t *testing.T) {
 }
 
 func TestSet(t *testing.T) {
+	t.Parallel()
+
 	var q Deque[int]
 
 	for i := 0; i < 1000; i++ {
@@ -435,6 +465,8 @@ func TestSet(t *testing.T) {
 }
 
 func TestClear(t *testing.T) {
+	t.Parallel()
+
 	var q Deque[int]
 
 	for i := 0; i < 100; i++ {
@@ -474,6 +506,8 @@ func TestClear(t *testing.T) {
 }
 
 func TestIndex(t *testing.T) {
+	t.Parallel()
+
 	var q Deque[rune]
 	for _, x := range "Hello, 世界" {
 		q.PushBack(x)
@@ -501,6 +535,8 @@ func TestIndex(t *testing.T) {
 }
 
 func TestRIndex(t *testing.T) {
+	t.Parallel()
+
 	var q Deque[rune]
 	for _, x := range "Hello, 世界" {
 		q.PushBack(x)
@@ -528,6 +564,8 @@ func TestRIndex(t *testing.T) {
 }
 
 func TestInsert(t *testing.T) {
+	t.Parallel()
+
 	q := new(Deque[rune])
 	for _, x := range "ABCDEFG" {
 		q.PushBack(x)
@@ -625,6 +663,8 @@ func TestInsert(t *testing.T) {
 }
 
 func TestRemove(t *testing.T) {
+	t.Parallel()
+
 	q := new(Deque[rune])
 	for _, x := range "ABCDEFG" {
 		q.PushBack(x)
@@ -661,6 +701,8 @@ func TestRemove(t *testing.T) {
 }
 
 func TestSwap(t *testing.T) {
+	t.Parallel()
+
 	var q Deque[string]
 
 	q.PushBack("a")
@@ -697,6 +739,8 @@ func TestSwap(t *testing.T) {
 }
 
 func TestFrontBackOutOfRangePanics(t *testing.T) {
+	t.Parallel()
+
 	const msg = "should panic when peeking empty queue"
 	var q Deque[int]
 	assertPanics(t, msg, func() {
@@ -718,6 +762,8 @@ func TestFrontBackOutOfRangePanics(t *testing.T) {
 }
 
 func TestPopFrontOutOfRangePanics(t *testing.T) {
+	t.Parallel()
+
 	var q Deque[int]
 
 	assertPanics(t, "should panic when removing empty queue", func() {
@@ -733,6 +779,8 @@ func TestPopFrontOutOfRangePanics(t *testing.T) {
 }
 
 func TestPopBackOutOfRangePanics(t *testing.T) {
+	t.Parallel()
+
 	var q Deque[int]
 
 	assertPanics(t, "should panic when removing empty queue", func() {
@@ -748,6 +796,8 @@ func TestPopBackOutOfRangePanics(t *testing.T) {
 }
 
 func TestAtOutOfRangePanics(t *testing.T) {
+	t.Parallel()
+
 	var q Deque[int]
 
 	q.PushBack(1)
@@ -764,6 +814,8 @@ func TestAtOutOfRangePanics(t *testing.T) {
 }
 
 func TestSetOutOfRangePanics(t *testing.T) {
+	t.Parallel()
+
 	var q Deque[int]
 
 	q.PushBack(1)
@@ -780,6 +832,8 @@ func TestSetOutOfRangePanics(t *testing.T) {
 }
 
 func TestInsertOutOfRangePanics(t *testing.T) {
+	t.Parallel()
+
 	q := new(Deque[string])
 
 	q.Insert(1, "A")
@@ -802,6 +856,8 @@ func TestInsertOutOfRangePanics(t *testing.T) {
 }
 
 func TestRemoveOutOfRangePanics(t *testing.T) {
+	t.Parallel()
+
 	q := new(Deque[string])
 
 	assertPanics(t, "should panic when removing from empty queue", func() {
@@ -820,6 +876,8 @@ func TestRemoveOutOfRangePanics(t *testing.T) {
 }
 
 func TestSetMBaseapacity(t *testing.T) {
+	t.Parallel()
+
 	var q Deque[string]
 	q.SetBaseCap(200)
 	q.PushBack("A")
