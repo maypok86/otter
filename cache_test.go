@@ -204,7 +204,7 @@ func TestCache_Range(t *testing.T) {
 
 	c.Set(1, 1)
 	c.hashmap.Compute(2, func(n node.Node[int, int]) node.Node[int, int] {
-		return nm.Create(2, 2, 1, 1)
+		return nm.Create(2, 2, 1, 1, 1)
 	})
 	c.Set(3, 3)
 	aliveNodes := 2

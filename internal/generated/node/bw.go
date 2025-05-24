@@ -25,7 +25,7 @@ type BW[K comparable, V any] struct {
 }
 
 // NewBW creates a new BW.
-func NewBW[K comparable, V any](key K, value V, expiresAt int64, weight uint32) Node[K, V] {
+func NewBW[K comparable, V any](key K, value V, expiresAt, refreshableAt int64, weight uint32) Node[K, V] {
 	n := &BW[K, V]{
 		key:    key,
 		value:  value,
@@ -102,6 +102,14 @@ func (n *BW[K, V]) ExpiresAt() int64 {
 }
 
 func (n *BW[K, V]) CASExpiresAt(old, new int64) bool {
+	panic("not implemented")
+}
+
+func (n *BW[K, V]) RefreshableAt() int64 {
+	panic("not implemented")
+}
+
+func (n *BW[K, V]) CASRefreshableAt(old, new int64) bool {
 	panic("not implemented")
 }
 

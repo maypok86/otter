@@ -39,7 +39,10 @@ cover: test.unit ## Run all the tests and opens the coverage report
 ci: lint test ## Run all the tests and code checks
 
 .PHONY: generate
-generate: ## Generate files for the project
+generate: gennode fmt ## Generate files for the project
+
+.PHONY: gennode
+gennode: ## Generate nodes
 	go run ./cmd/generator ./internal/generated/node
 
 .PHONY: clean

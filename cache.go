@@ -118,6 +118,7 @@ type Cache[K comparable, V any] struct {
 	refreshCalculator refresh.Calculator[K, V]
 	withTime          bool
 	withExpiration    bool
+	withRefresh       bool
 	withEviction      bool
 	withProcess       bool
 	withStats         bool
@@ -128,6 +129,7 @@ func newCache[K comparable, V any](o *Options[K, V]) *Cache[K, V] {
 	nodeManager := node.NewManager[K, V](node.Config{
 		WithSize:       o.MaximumSize > 0,
 		WithExpiration: o.ExpiryCalculator != nil,
+		WithRefresh:    o.RefreshCalculator != nil,
 		WithWeight:     o.MaximumWeight > 0,
 	})
 
@@ -181,7 +183,8 @@ func newCache[K comparable, V any](o *Options[K, V]) *Cache[K, V] {
 	}
 
 	cache.withExpiration = o.ExpiryCalculator != nil
-	cache.withTime = cache.withExpiration
+	cache.withRefresh = o.RefreshCalculator != nil
+	cache.withTime = cache.withExpiration || cache.withRefresh
 	cache.withProcess = cache.withEviction || cache.withExpiration
 
 	if cache.withProcess {
@@ -201,23 +204,45 @@ func newCache[K comparable, V any](o *Options[K, V]) *Cache[K, V] {
 }
 
 func (c *Cache[K, V]) nodeToEntry(n node.Node[K, V], offset int64) core.Entry[K, V] {
-	var expiresAt int64
+	var (
+		nowNano       int64
+		expiresAt     int64
+		refreshableAt int64
+	)
 
-	nowNano := c.clock.Nanos(offset)
-	exp := n.ExpiresAt()
-	if exp == noTime {
-		expiresAt = int64(unreachableExpiresAfter)
+	if c.withTime {
+		nowNano = c.clock.Nanos(offset)
 	} else {
-		expiresAt = c.clock.Nanos(exp)
+		nowNano = noTime
+	}
+	if c.withExpiration {
+		exp := n.ExpiresAt()
+		if exp == noTime {
+			expiresAt = int64(unreachableExpiresAfter)
+		} else {
+			expiresAt = c.clock.Nanos(exp)
+		}
+	} else {
+		expiresAt = int64(unreachableExpiresAfter)
+	}
+	if c.withRefresh {
+		refr := n.RefreshableAt()
+		if refr == noTime {
+			refreshableAt = int64(unreachableRefreshableAfter)
+		} else {
+			refreshableAt = c.clock.Nanos(refr)
+		}
+	} else {
+		refreshableAt = int64(unreachableRefreshableAfter)
 	}
 
 	return core.Entry[K, V]{
-		Key:           n.Key(),
-		Value:         n.Value(),
-		Weight:        n.Weight(),
-		ExpiresAtNano: expiresAt,
-		// TODO: RefreshableAtNano
-		SnapshotAtNano: nowNano,
+		Key:               n.Key(),
+		Value:             n.Value(),
+		Weight:            n.Weight(),
+		ExpiresAtNano:     expiresAt,
+		RefreshableAtNano: refreshableAt,
+		SnapshotAtNano:    nowNano,
 	}
 }
 
@@ -373,7 +398,7 @@ func (c *Cache[K, V]) set(key K, value V, onlyIfAbsent bool) (V, bool) {
 		// set
 		c.singleflight.delete(key)
 
-		n = c.nodeManager.Create(key, value, noTime, c.weigher(key, value))
+		n = c.nodeManager.Create(key, value, noTime, noTime, c.weigher(key, value))
 		c.setExpiresAtAfterWrite(n, old, offset)
 		return n
 	})
@@ -487,7 +512,7 @@ func (c *Cache[K, V]) afterDeleteCall(cl *call[K, V]) {
 		}
 		old = oldNode
 		inserted = true
-		n := c.nodeManager.Create(cl.key, cl.value, noTime, c.weigher(cl.key, cl.value))
+		n := c.nodeManager.Create(cl.key, cl.value, noTime, noTime, c.weigher(cl.key, cl.value))
 		c.setExpiresAtAfterWrite(n, old, offset)
 		return n
 	})

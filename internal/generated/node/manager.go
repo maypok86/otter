@@ -51,6 +51,10 @@ type Node[K comparable, V any] interface {
 	ExpiresAt() int64
 	// CASExpiresAt executes the compare-and-swap operation for expiresAt.
 	CASExpiresAt(old, new int64) bool
+	// RefreshableAt returns the refresh time.
+	RefreshableAt() int64
+	// CASRefreshableAt executes the compare-and-swap operation for refreshableAt.
+	CASRefreshableAt(old, new int64) bool
 	// Weight returns the weight of the node.
 	Weight() uint32
 	// IsAlive returns true if the entry is available in the hash-table.
@@ -91,10 +95,11 @@ type Config struct {
 	WithSize       bool
 	WithExpiration bool
 	WithWeight     bool
+	WithRefresh    bool
 }
 
 type Manager[K comparable, V any] struct {
-	create      func(key K, value V, expiration int64, weight uint32) Node[K, V]
+	create      func(key K, value V, expiresAt, refreshableAt int64, weight uint32) Node[K, V]
 	fromPointer func(ptr unsafe.Pointer) Node[K, V]
 }
 
@@ -106,6 +111,9 @@ func NewManager[K comparable, V any](c Config) *Manager[K, V] {
 	}
 	if c.WithExpiration {
 		sb.WriteString("e")
+	}
+	if c.WithRefresh {
+		sb.WriteString("r")
 	}
 	if c.WithWeight {
 		sb.WriteString("w")
@@ -120,15 +128,33 @@ func NewManager[K comparable, V any](c Config) *Manager[K, V] {
 	case "be":
 		m.create = NewBE[K, V]
 		m.fromPointer = CastPointerToBE[K, V]
+	case "ber":
+		m.create = NewBER[K, V]
+		m.fromPointer = CastPointerToBER[K, V]
+	case "berw":
+		m.create = NewBERW[K, V]
+		m.fromPointer = CastPointerToBERW[K, V]
 	case "bew":
 		m.create = NewBEW[K, V]
 		m.fromPointer = CastPointerToBEW[K, V]
+	case "br":
+		m.create = NewBR[K, V]
+		m.fromPointer = CastPointerToBR[K, V]
+	case "brw":
+		m.create = NewBRW[K, V]
+		m.fromPointer = CastPointerToBRW[K, V]
 	case "bs":
 		m.create = NewBS[K, V]
 		m.fromPointer = CastPointerToBS[K, V]
 	case "bse":
 		m.create = NewBSE[K, V]
 		m.fromPointer = CastPointerToBSE[K, V]
+	case "bser":
+		m.create = NewBSER[K, V]
+		m.fromPointer = CastPointerToBSER[K, V]
+	case "bsr":
+		m.create = NewBSR[K, V]
+		m.fromPointer = CastPointerToBSR[K, V]
 	case "bw":
 		m.create = NewBW[K, V]
 		m.fromPointer = CastPointerToBW[K, V]
@@ -138,8 +164,8 @@ func NewManager[K comparable, V any](c Config) *Manager[K, V] {
 	return m
 }
 
-func (m *Manager[K, V]) Create(key K, value V, expiresAt int64, weight uint32) Node[K, V] {
-	return m.create(key, value, expiresAt, weight)
+func (m *Manager[K, V]) Create(key K, value V, expiresAt, refreshableAt int64, weight uint32) Node[K, V] {
+	return m.create(key, value, expiresAt, refreshableAt, weight)
 }
 
 func (m *Manager[K, V]) FromPointer(ptr unsafe.Pointer) Node[K, V] {

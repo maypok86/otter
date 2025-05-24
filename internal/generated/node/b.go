@@ -16,7 +16,7 @@ type B[K comparable, V any] struct {
 }
 
 // NewB creates a new B.
-func NewB[K comparable, V any](key K, value V, expiresAt int64, weight uint32) Node[K, V] {
+func NewB[K comparable, V any](key K, value V, expiresAt, refreshableAt int64, weight uint32) Node[K, V] {
 	n := &B[K, V]{
 		key:   key,
 		value: value,
@@ -83,6 +83,14 @@ func (n *B[K, V]) ExpiresAt() int64 {
 }
 
 func (n *B[K, V]) CASExpiresAt(old, new int64) bool {
+	panic("not implemented")
+}
+
+func (n *B[K, V]) RefreshableAt() int64 {
+	panic("not implemented")
+}
+
+func (n *B[K, V]) CASRefreshableAt(old, new int64) bool {
 	panic("not implemented")
 }
 

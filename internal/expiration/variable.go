@@ -53,7 +53,7 @@ func NewVariable[K comparable, V any](nodeManager *node.Manager[K, V]) *Variable
 		for j := 0; j < len(wheel[i]); j++ {
 			var k K
 			var v V
-			fn := nodeManager.Create(k, v, math.MaxUint32, 1)
+			fn := nodeManager.Create(k, v, math.MaxUint32, math.MaxUint32, 1)
 			fn.SetPrevExp(fn)
 			fn.SetNextExp(fn)
 			wheel[i][j] = fn

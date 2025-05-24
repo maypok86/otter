@@ -22,7 +22,7 @@ import (
 
 func newNode(k int) node.Node[int, int] {
 	m := node.NewManager[int, int](node.Config{WithSize: true})
-	n := m.Create(k, k, 0, 1)
+	n := m.Create(k, k, 0, 0, 1)
 	return n
 }
 
@@ -126,13 +126,13 @@ func TestPolicy_Update(t *testing.T) {
 
 	n := newNode(1)
 	m := node.NewManager[int, int](node.Config{WithWeight: true})
-	n1 := m.Create(1, 1, 0, n.Weight()+11)
+	n1 := m.Create(1, 1, 0, 0, n.Weight()+11)
 
 	p.Add(n, 1, evictNode)
 	p.Delete(n)
 	p.Add(n1, 1, evictNode)
 
-	n2 := m.Create(2, 1, 0, 89)
+	n2 := m.Create(2, 1, 0, 0, 89)
 	p.Read(n2)
 	p.Read(n2)
 
@@ -148,7 +148,7 @@ func TestPolicy_Update(t *testing.T) {
 		t.Fatalf("updated node should be evicted: %+v", n1)
 	}
 
-	n3 := m.Create(1, 1, 0, 109)
+	n3 := m.Create(1, 1, 0, 0, 109)
 	p.Delete(n1)
 	p.Add(n3, 1, evictNode)
 	if n3.IsSmall() || n3.IsMain() || len(deleted) != 1 || deleted[0] != n3 {

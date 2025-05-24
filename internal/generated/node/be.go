@@ -23,7 +23,7 @@ type BE[K comparable, V any] struct {
 }
 
 // NewBE creates a new BE.
-func NewBE[K comparable, V any](key K, value V, expiresAt int64, weight uint32) Node[K, V] {
+func NewBE[K comparable, V any](key K, value V, expiresAt, refreshableAt int64, weight uint32) Node[K, V] {
 	n := &BE[K, V]{
 		key:   key,
 		value: value,
@@ -92,12 +92,7 @@ func (n *BE[K, V]) SetNextExp(v Node[K, V]) {
 }
 
 func (n *BE[K, V]) HasExpired(now int64) bool {
-	expiresAt := n.ExpiresAt()
-	if expiresAt == 0 {
-		return false
-	}
-
-	return expiresAt <= now
+	return n.ExpiresAt() <= now
 }
 
 func (n *BE[K, V]) ExpiresAt() int64 {
@@ -106,6 +101,14 @@ func (n *BE[K, V]) ExpiresAt() int64 {
 
 func (n *BE[K, V]) CASExpiresAt(old, new int64) bool {
 	return n.expiresAt.CompareAndSwap(old, new)
+}
+
+func (n *BE[K, V]) RefreshableAt() int64 {
+	panic("not implemented")
+}
+
+func (n *BE[K, V]) CASRefreshableAt(old, new int64) bool {
+	panic("not implemented")
 }
 
 func (n *BE[K, V]) Weight() uint32 {

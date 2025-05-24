@@ -41,11 +41,13 @@ func (f feature) alias() string {
 var (
 	size       = newFeature("size")
 	expiration = newFeature("expiration")
+	refresh    = newFeature("refresh")
 	weight     = newFeature("weight")
 
 	declaredFeatures = []feature{
 		size,
 		expiration,
+		refresh,
 		weight,
 	}
 
@@ -187,7 +189,7 @@ func (g *generator) withState() bool {
 func (g *generator) printImports() {
 	g.p("import (")
 	g.in()
-	if g.withState() {
+	if g.withState() || g.features[refresh] {
 		g.p("\"sync/atomic\"")
 	}
 	g.p("\"unsafe\"")
@@ -230,6 +232,9 @@ func (g *generator) printStruct() {
 		g.p("nextExp    *%s[K, V]", g.structName)
 		g.p("expiresAt  atomic.Int64")
 	}
+	if g.features[refresh] {
+		g.p("refreshableAt atomic.Int64")
+	}
 	if g.features[weight] {
 		g.p("weight     uint32")
 	}
@@ -248,7 +253,7 @@ func (g *generator) printStruct() {
 
 func (g *generator) printConstructors() {
 	g.p("// New%s creates a new %s.", g.structName, g.structName)
-	g.p("func New%s[K comparable, V any](key K, value V, expiresAt int64, weight uint32) Node[K, V] {", g.structName)
+	g.p("func New%s[K comparable, V any](key K, value V, expiresAt, refreshableAt int64, weight uint32) Node[K, V] {", g.structName)
 	g.in()
 	g.p("n := &%s[K, V]{", g.structName)
 	g.in()
@@ -261,6 +266,9 @@ func (g *generator) printConstructors() {
 	g.p("}")
 	if g.features[expiration] {
 		g.p("n.expiresAt.Store(expiresAt)")
+	}
+	if g.features[refresh] {
+		g.p("n.refreshableAt.Store(refreshableAt)")
 	}
 	if g.withState() {
 		g.p("n.state.Store(aliveState)")
@@ -417,14 +425,7 @@ func (g *generator) printFunctions() {
 	g.p("func (n *%s[K, V]) HasExpired(now int64) bool {", g.structName)
 	g.in()
 	if g.features[expiration] {
-		g.p("expiresAt := n.ExpiresAt()")
-		g.p("if expiresAt == 0 {")
-		g.in()
-		g.p("return false")
-		g.out()
-		g.p("}")
-		g.p("")
-		g.p("return expiresAt <= now")
+		g.p("return n.ExpiresAt() <= now")
 	} else {
 		g.p("return false")
 	}
@@ -447,6 +448,28 @@ func (g *generator) printFunctions() {
 	g.in()
 	if g.features[expiration] {
 		g.p("return n.expiresAt.CompareAndSwap(old, new)")
+	} else {
+		g.p("panic(\"not implemented\")")
+	}
+	g.out()
+	g.p("}")
+	g.p("")
+
+	g.p("func (n *%s[K, V]) RefreshableAt() int64 {", g.structName)
+	g.in()
+	if g.features[refresh] {
+		g.p("return n.refreshableAt.Load()")
+	} else {
+		g.p("panic(\"not implemented\")")
+	}
+	g.out()
+	g.p("}")
+	g.p("")
+
+	g.p("func (n *%s[K, V]) CASRefreshableAt(old, new int64) bool {", g.structName)
+	g.in()
+	if g.features[refresh] {
+		g.p("return n.refreshableAt.CompareAndSwap(old, new)")
 	} else {
 		g.p("panic(\"not implemented\")")
 	}
@@ -671,6 +694,10 @@ type Node[K comparable, V any] interface {
 	ExpiresAt() int64
 	// CASExpiresAt executes the compare-and-swap operation for expiresAt.
 	CASExpiresAt(old, new int64) bool
+	// RefreshableAt returns the refresh time.
+	RefreshableAt() int64
+	// CASRefreshableAt executes the compare-and-swap operation for refreshableAt.
+	CASRefreshableAt(old, new int64) bool
 	// Weight returns the weight of the node.
 	Weight() uint32
 	// IsAlive returns true if the entry is available in the hash-table.
@@ -711,10 +738,11 @@ type Config struct {
 	WithSize       bool
 	WithExpiration bool
 	WithWeight     bool
+	WithRefresh    bool
 }
 
 type Manager[K comparable, V any] struct {
-	create      func(key K, value V, expiration int64, weight uint32) Node[K, V]
+	create      func(key K, value V, expiresAt, refreshableAt int64, weight uint32) Node[K, V]
 	fromPointer func(ptr unsafe.Pointer) Node[K, V]
 }
 
@@ -727,6 +755,9 @@ func NewManager[K comparable, V any](c Config) *Manager[K, V] {
 	if c.WithExpiration {
 		sb.WriteString("e")
 	}
+	if c.WithRefresh {
+		sb.WriteString("r")
+	}
 	if c.WithWeight {
 		sb.WriteString("w")
 	}
@@ -737,8 +768,8 @@ func NewManager[K comparable, V any](c Config) *Manager[K, V] {
 	const nodeFooter = `return m
 }
 
-func (m *Manager[K, V]) Create(key K, value V, expiresAt int64, weight uint32) Node[K, V] {
-	return m.create(key, value, expiresAt, weight)
+func (m *Manager[K, V]) Create(key K, value V, expiresAt, refreshableAt int64, weight uint32) Node[K, V] {
+	return m.create(key, value, expiresAt, refreshableAt, weight)
 }
 
 func (m *Manager[K, V]) FromPointer(ptr unsafe.Pointer) Node[K, V] {
