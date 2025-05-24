@@ -22,14 +22,14 @@ import (
 	"time"
 
 	"github.com/maypok86/otter/v2/core"
-	expiryCore "github.com/maypok86/otter/v2/core/expiry"
+	"github.com/maypok86/otter/v2/core/expiry"
 	"github.com/maypok86/otter/v2/core/refresh"
 	"github.com/maypok86/otter/v2/core/stats"
 	"github.com/maypok86/otter/v2/internal/clock"
 	"github.com/maypok86/otter/v2/internal/deque/queue"
 	"github.com/maypok86/otter/v2/internal/eviction"
 	"github.com/maypok86/otter/v2/internal/eviction/s3fifo"
-	"github.com/maypok86/otter/v2/internal/expiry"
+	"github.com/maypok86/otter/v2/internal/expiration"
 	"github.com/maypok86/otter/v2/internal/generated/node"
 	"github.com/maypok86/otter/v2/internal/hashmap"
 	"github.com/maypok86/otter/v2/internal/lossy"
@@ -67,7 +67,7 @@ type evictionPolicy[K comparable, V any] interface {
 	Clear()
 }
 
-type expiryPolicy[K comparable, V any] interface {
+type expirationPolicy[K comparable, V any] interface {
 	Add(n node.Node[K, V])
 	Delete(n node.Node[K, V])
 	DeleteExpired(nowNanos int64, expireNode func(n node.Node[K, V], nowNanos int64))
@@ -101,7 +101,7 @@ type Cache[K comparable, V any] struct {
 	nodeManager       *node.Manager[K, V]
 	hashmap           *hashmap.Map[K, V, node.Node[K, V]]
 	policy            evictionPolicy[K, V]
-	expiryPolicy      expiryPolicy[K, V]
+	expirationPolicy  expirationPolicy[K, V]
 	stats             stats.Recorder
 	logger            Logger
 	clock             timeSource
@@ -114,7 +114,7 @@ type Cache[K comparable, V any] struct {
 	doneClose         chan struct{}
 	weigher           func(key K, value V) uint32
 	onDeletion        func(e DeletionEvent[K, V])
-	expiryCalculator  expiryCore.Calculator[K, V]
+	expiryCalculator  expiry.Calculator[K, V]
 	refreshCalculator refresh.Calculator[K, V]
 	withTime          bool
 	withExpiration    bool
@@ -175,9 +175,9 @@ func newCache[K comparable, V any](o *Options[K, V]) *Cache[K, V] {
 	}
 
 	if o.ExpiryCalculator != nil {
-		cache.expiryPolicy = expiry.NewVariable(nodeManager)
+		cache.expirationPolicy = expiration.NewVariable(nodeManager)
 	} else {
-		cache.expiryPolicy = expiry.NewDisabled[K, V]()
+		cache.expirationPolicy = expiration.NewDisabled[K, V]()
 	}
 
 	cache.withExpiration = o.ExpiryCalculator != nil
@@ -688,7 +688,7 @@ func (c *Cache[K, V]) cleanup() {
 		case <-ticker.C:
 			offset := c.clock.Refresh()
 			c.evictionMutex.Lock()
-			c.expiryPolicy.DeleteExpired(offset, c.evictOrExpireNode)
+			c.expirationPolicy.DeleteExpired(offset, c.evictOrExpireNode)
 			c.evictionMutex.Unlock()
 		}
 	}
@@ -696,7 +696,7 @@ func (c *Cache[K, V]) cleanup() {
 
 func (c *Cache[K, V]) evictOrExpireNode(n node.Node[K, V], nowNanos int64) {
 	c.policy.Delete(n)
-	c.expiryPolicy.Delete(n)
+	c.expirationPolicy.Delete(n)
 	deleted := c.deleteNodeFromMap(n)
 	if deleted != nil {
 		n.Die()
@@ -716,12 +716,12 @@ func (c *Cache[K, V]) addToPolicies(n node.Node[K, V], offset int64) {
 		return
 	}
 
-	c.expiryPolicy.Add(n)
+	c.expirationPolicy.Add(n)
 	c.policy.Add(n, offset, c.evictOrExpireNode)
 }
 
 func (c *Cache[K, V]) deleteFromPolicies(n node.Node[K, V], cause DeletionCause) {
-	c.expiryPolicy.Delete(n)
+	c.expirationPolicy.Delete(n)
 	c.policy.Delete(n)
 	c.notifyDeletion(n.Key(), n.Value(), cause)
 }
@@ -733,7 +733,7 @@ func (c *Cache[K, V]) onWrite(t task[K, V], offset int64) {
 		})
 
 		c.policy.Clear()
-		c.expiryPolicy.Clear()
+		c.expirationPolicy.Clear()
 
 		if t.isClose() {
 			c.doneClose <- struct{}{}
@@ -752,8 +752,8 @@ func (c *Cache[K, V]) onWrite(t task[K, V], offset int64) {
 	case t.isDelete():
 		c.deleteFromPolicies(n, t.deletionCause)
 	case t.isReschedule():
-		c.expiryPolicy.Delete(t.n)
-		c.expiryPolicy.Add(t.n)
+		c.expirationPolicy.Delete(t.n)
+		c.expirationPolicy.Add(t.n)
 	default:
 		panic("invalid task type")
 	}

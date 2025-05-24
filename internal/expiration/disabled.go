@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package expiry
+package expiration
 
 import "github.com/maypok86/otter/v2/internal/generated/node"
 
