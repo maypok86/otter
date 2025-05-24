@@ -39,12 +39,12 @@ type Entry[K comparable, V any] struct {
 	// ExpiresAtNano is the entry's expiration time as a unix time,
 	// the number of nanoseconds elapsed since January 1, 1970 UTC.
 	//
-	// If the cache was not configured with an expiration policy then this value is always 0.
+	// If the cache was not configured with an expiration policy then this value is always math.MaxInt64.
 	ExpiresAtNano int64
 	// RefreshableAtNano is the time after which the entry will be reloaded as a unix time,
 	// the number of nanoseconds elapsed since January 1, 1970 UTC.
 	//
-	// If the cache was not configured with a refresh policy then this value is always 0.
+	// If the cache was not configured with a refresh policy then this value is always math.MaxInt64.
 	RefreshableAtNano int64
 	// SnapshotAtNano is the time when this snapshot of the entry was taken as a unix time,
 	// the number of nanoseconds elapsed since January 1, 1970 UTC.
@@ -55,7 +55,8 @@ type Entry[K comparable, V any] struct {
 
 // ExpiresAt returns the entry's expiration time.
 //
-// If the cache was not configured with an expiration policy then this value is always 1970-01-01 00:00:00 UTC.
+// If the cache was not configured with an expiration policy then this value is roughly math.MaxInt64
+// nanoseconds away from the SnapshotAt.
 func (e Entry[K, V]) ExpiresAt() time.Time {
 	return time.Unix(0, e.ExpiresAtNano)
 }
@@ -65,33 +66,19 @@ func (e Entry[K, V]) ExpiresAt() time.Time {
 // duration, and stale otherwise. The expiration policy determines when the entry's age is reset.
 //
 // If the cache was not configured with an expiration policy then this value is always math.MaxInt64.
-//
-// If the entry is expired then this value is always 0.
 func (e Entry[K, V]) ExpiresAfter() time.Duration {
-	expiresAt := e.ExpiresAtNano
-	if expiresAt == 0 {
-		return maxDuration
-	}
-
-	snapshotAt := e.SnapshotAtNano
-	if expiresAt <= snapshotAt {
-		return 0
-	}
-
-	return time.Duration(expiresAt - snapshotAt)
+	return time.Duration(e.ExpiresAtNano - e.SnapshotAtNano)
 }
 
 // HasExpired returns true if the entry has expired.
 func (e Entry[K, V]) HasExpired() bool {
-	if e.ExpiresAtNano == 0 {
-		return false
-	}
 	return e.ExpiresAtNano < e.SnapshotAtNano
 }
 
 // RefreshableAt is the time after which the entry will be reloaded.
 //
-// If the cache was not configured with a refresh policy then this value is always 1970-01-01 00:00:00 UTC.
+// If the cache was not configured with a refresh policy then this value is roughly math.MaxInt64
+// nanoseconds away from the SnapshotAt.
 func (e Entry[K, V]) RefreshableAt() time.Time {
 	return time.Unix(0, e.RefreshableAtNano)
 }
@@ -101,20 +88,8 @@ func (e Entry[K, V]) RefreshableAt() time.Time {
 // duration, and stale otherwise. The refresh policy determines when the entry's age is reset.
 //
 // If the cache was not configured with a refresh policy then this value is always math.MaxInt64.
-//
-// If the entry is reloaded then this value is always 0.
 func (e Entry[K, V]) RefreshableAfter() time.Duration {
-	refreshableAt := e.RefreshableAtNano
-	if refreshableAt == 0 {
-		return maxDuration
-	}
-
-	snapshotAt := e.SnapshotAtNano
-	if refreshableAt <= snapshotAt {
-		return 0
-	}
-
-	return time.Duration(refreshableAt - snapshotAt)
+	return time.Duration(e.RefreshableAtNano - e.SnapshotAtNano)
 }
 
 // SnapshotAt is the time when this snapshot of the entry was taken.

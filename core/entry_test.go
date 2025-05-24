@@ -1,6 +1,7 @@
 package core
 
 import (
+	"math"
 	"testing"
 	"time"
 )
@@ -8,16 +9,17 @@ import (
 func TestEntry(t *testing.T) {
 	k := 2
 	v := 3
-	exp := int64(0)
-	refr := int64(0)
+	exp := int64(math.MaxInt64)
+	refr := int64(math.MaxInt64)
 	w := uint32(5)
-	snapshotAt := time.Now().UnixNano()
+	snapshotAt := int64(0)
 	e := Entry[int, int]{
-		Key:            k,
-		Value:          v,
-		ExpiresAtNano:  exp,
-		Weight:         w,
-		SnapshotAtNano: snapshotAt,
+		Key:               k,
+		Value:             v,
+		ExpiresAtNano:     exp,
+		RefreshableAtNano: refr,
+		Weight:            w,
+		SnapshotAtNano:    snapshotAt,
 	}
 
 	if !e.ExpiresAt().Equal(time.Unix(0, exp)) {
@@ -38,7 +40,8 @@ func TestEntry(t *testing.T) {
 	}
 
 	newExpiresAfter := int64(10)
-	e.ExpiresAtNano = time.Now().UnixNano() + (time.Duration(newExpiresAfter) * time.Second).Nanoseconds()
+	e.SnapshotAtNano = time.Now().UnixNano()
+	e.ExpiresAtNano = e.SnapshotAtNano + (time.Duration(newExpiresAfter) * time.Second).Nanoseconds()
 	if expiresAfter := e.ExpiresAfter(); expiresAfter <= 0 || expiresAfter > time.Duration(newExpiresAfter)*time.Second {
 		t.Fatalf("expiresAfter should be in the range (0, %d] seconds, but got %d seconds", newExpiresAfter, expiresAfter/time.Second)
 	}
@@ -52,6 +55,7 @@ func TestEntry(t *testing.T) {
 		t.Fatalf("refreshableAfter should be in the range (0, %d] seconds, but got %d seconds", newRefreshableAfter, refreshableAfter/time.Second)
 	}
 
+	e.SnapshotAtNano = snapshotAt
 	if !e.SnapshotAt().Equal(time.Unix(0, snapshotAt)) {
 		t.Fatalf("not valid snaphotAt. want %v, got %v", time.Unix(0, snapshotAt), e.SnapshotAt())
 	}

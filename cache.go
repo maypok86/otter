@@ -214,7 +214,7 @@ func (c *Cache[K, V]) nodeToEntry(n node.Node[K, V], offset int64) core.Entry[K,
 	if c.withExpiration {
 		expiresAt = c.clock.Nanos(n.ExpiresAt())
 	} else {
-		expiresAt = nowNano + int64(unreachableExpiresAfter)
+		expiresAt = int64(unreachableExpiresAfter)
 	}
 
 	return core.Entry[K, V]{
