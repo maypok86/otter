@@ -47,8 +47,10 @@ type Node[K comparable, V any] interface {
 	SetNextExp(v Node[K, V])
 	// HasExpired returns true if node has expired.
 	HasExpired(now int64) bool
-	// Expiration returns the expiration time.
-	Expiration() int64
+	// ExpiresAt returns the expiration time.
+	ExpiresAt() int64
+	// CASExpiresAt executes the compare-and-swap operation for expiresAt.
+	CASExpiresAt(old, new int64) bool
 	// Weight returns the weight of the node.
 	Weight() uint32
 	// IsAlive returns true if the entry is available in the hash-table.
@@ -112,21 +114,21 @@ func NewManager[K comparable, V any](c Config) *Manager[K, V] {
 	m := &Manager[K, V]{}
 
 	switch nodeType {
-	case "be":
-		m.create = NewBE[K, V]
-		m.fromPointer = CastPointerToBE[K, V]
 	case "b":
 		m.create = NewB[K, V]
 		m.fromPointer = CastPointerToB[K, V]
-	case "bse":
-		m.create = NewBSE[K, V]
-		m.fromPointer = CastPointerToBSE[K, V]
+	case "be":
+		m.create = NewBE[K, V]
+		m.fromPointer = CastPointerToBE[K, V]
 	case "bew":
 		m.create = NewBEW[K, V]
 		m.fromPointer = CastPointerToBEW[K, V]
 	case "bs":
 		m.create = NewBS[K, V]
 		m.fromPointer = CastPointerToBS[K, V]
+	case "bse":
+		m.create = NewBSE[K, V]
+		m.fromPointer = CastPointerToBSE[K, V]
 	case "bw":
 		m.create = NewBW[K, V]
 		m.fromPointer = CastPointerToBW[K, V]
@@ -136,8 +138,8 @@ func NewManager[K comparable, V any](c Config) *Manager[K, V] {
 	return m
 }
 
-func (m *Manager[K, V]) Create(key K, value V, expiration int64, weight uint32) Node[K, V] {
-	return m.create(key, value, expiration, weight)
+func (m *Manager[K, V]) Create(key K, value V, expiresAt int64, weight uint32) Node[K, V] {
+	return m.create(key, value, expiresAt, weight)
 }
 
 func (m *Manager[K, V]) FromPointer(ptr unsafe.Pointer) Node[K, V] {

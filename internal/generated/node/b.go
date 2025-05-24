@@ -16,11 +16,13 @@ type B[K comparable, V any] struct {
 }
 
 // NewB creates a new B.
-func NewB[K comparable, V any](key K, value V, expiration int64, weight uint32) Node[K, V] {
-	return &B[K, V]{
+func NewB[K comparable, V any](key K, value V, expiresAt int64, weight uint32) Node[K, V] {
+	n := &B[K, V]{
 		key:   key,
 		value: value,
 	}
+
+	return n
 }
 
 // CastPointerToB casts a pointer to B.
@@ -76,7 +78,11 @@ func (n *B[K, V]) HasExpired(now int64) bool {
 	return false
 }
 
-func (n *B[K, V]) Expiration() int64 {
+func (n *B[K, V]) ExpiresAt() int64 {
+	panic("not implemented")
+}
+
+func (n *B[K, V]) CASExpiresAt(old, new int64) bool {
 	panic("not implemented")
 }
 

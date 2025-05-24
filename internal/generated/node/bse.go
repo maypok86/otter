@@ -16,26 +16,28 @@ import (
 //
 // 3. Expiration
 type BSE[K comparable, V any] struct {
-	key        K
-	value      V
-	prev       *BSE[K, V]
-	next       *BSE[K, V]
-	prevExp    *BSE[K, V]
-	nextExp    *BSE[K, V]
-	expiration int64
-	state      uint32
-	frequency  uint8
-	queueType  uint8
+	key       K
+	value     V
+	prev      *BSE[K, V]
+	next      *BSE[K, V]
+	prevExp   *BSE[K, V]
+	nextExp   *BSE[K, V]
+	expiresAt atomic.Int64
+	state     atomic.Uint32
+	frequency uint8
+	queueType uint8
 }
 
 // NewBSE creates a new BSE.
-func NewBSE[K comparable, V any](key K, value V, expiration int64, weight uint32) Node[K, V] {
-	return &BSE[K, V]{
-		key:        key,
-		value:      value,
-		expiration: expiration,
-		state:      aliveState,
+func NewBSE[K comparable, V any](key K, value V, expiresAt int64, weight uint32) Node[K, V] {
+	n := &BSE[K, V]{
+		key:   key,
+		value: value,
 	}
+	n.expiresAt.Store(expiresAt)
+	n.state.Store(aliveState)
+
+	return n
 }
 
 // CastPointerToBSE casts a pointer to BSE.
@@ -104,11 +106,20 @@ func (n *BSE[K, V]) SetNextExp(v Node[K, V]) {
 }
 
 func (n *BSE[K, V]) HasExpired(now int64) bool {
-	return n.expiration <= now
+	expiresAt := n.ExpiresAt()
+	if expiresAt == 0 {
+		return false
+	}
+
+	return expiresAt <= now
 }
 
-func (n *BSE[K, V]) Expiration() int64 {
-	return n.expiration
+func (n *BSE[K, V]) ExpiresAt() int64 {
+	return n.expiresAt.Load()
+}
+
+func (n *BSE[K, V]) CASExpiresAt(old, new int64) bool {
+	return n.expiresAt.CompareAndSwap(old, new)
 }
 
 func (n *BSE[K, V]) Weight() uint32 {
@@ -116,11 +127,11 @@ func (n *BSE[K, V]) Weight() uint32 {
 }
 
 func (n *BSE[K, V]) IsAlive() bool {
-	return atomic.LoadUint32(&n.state) == aliveState
+	return n.state.Load() == aliveState
 }
 
 func (n *BSE[K, V]) Die() {
-	atomic.StoreUint32(&n.state, deadState)
+	n.state.Store(deadState)
 }
 
 func (n *BSE[K, V]) Frequency() uint8 {

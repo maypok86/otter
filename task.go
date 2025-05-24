@@ -26,6 +26,7 @@ const (
 	addReason
 	deleteReason
 	updateReason
+	rescheduleReason
 	clearReason
 	closeReason
 )
@@ -66,6 +67,13 @@ func newUpdateTask[K comparable, V any](n, oldNode node.Node[K, V], cause Deleti
 	}
 }
 
+func newRescheduleTask[K comparable, V any](n node.Node[K, V]) task[K, V] {
+	return task[K, V]{
+		n:           n,
+		writeReason: rescheduleReason,
+	}
+}
+
 // newClearTask creates a task to clear policies.
 func newClearTask[K comparable, V any]() task[K, V] {
 	return task[K, V]{
@@ -103,6 +111,10 @@ func (t *task[K, V]) isDelete() bool {
 // isUpdate returns true if this is an update task.
 func (t *task[K, V]) isUpdate() bool {
 	return t.writeReason == updateReason
+}
+
+func (t *task[K, V]) isReschedule() bool {
+	return t.writeReason == rescheduleReason
 }
 
 // isClear returns true if this is a clear task.

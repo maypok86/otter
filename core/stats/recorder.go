@@ -34,7 +34,7 @@ type Recorder interface {
 	RecordLoadFailure(loadTime time.Duration)
 }
 
-// NoopRecorder is noop stats recorder.
+// NoopRecorder is a noop stats recorder.
 type NoopRecorder struct{}
 
 func (np NoopRecorder) RecordHits(count int)                     {}

@@ -16,28 +16,30 @@ import (
 //
 // 3. Weight
 type BEW[K comparable, V any] struct {
-	key        K
-	value      V
-	prev       *BEW[K, V]
-	next       *BEW[K, V]
-	prevExp    *BEW[K, V]
-	nextExp    *BEW[K, V]
-	expiration int64
-	weight     uint32
-	state      uint32
-	frequency  uint8
-	queueType  uint8
+	key       K
+	value     V
+	prev      *BEW[K, V]
+	next      *BEW[K, V]
+	prevExp   *BEW[K, V]
+	nextExp   *BEW[K, V]
+	expiresAt atomic.Int64
+	weight    uint32
+	state     atomic.Uint32
+	frequency uint8
+	queueType uint8
 }
 
 // NewBEW creates a new BEW.
-func NewBEW[K comparable, V any](key K, value V, expiration int64, weight uint32) Node[K, V] {
-	return &BEW[K, V]{
-		key:        key,
-		value:      value,
-		expiration: expiration,
-		weight:     weight,
-		state:      aliveState,
+func NewBEW[K comparable, V any](key K, value V, expiresAt int64, weight uint32) Node[K, V] {
+	n := &BEW[K, V]{
+		key:    key,
+		value:  value,
+		weight: weight,
 	}
+	n.expiresAt.Store(expiresAt)
+	n.state.Store(aliveState)
+
+	return n
 }
 
 // CastPointerToBEW casts a pointer to BEW.
@@ -106,11 +108,20 @@ func (n *BEW[K, V]) SetNextExp(v Node[K, V]) {
 }
 
 func (n *BEW[K, V]) HasExpired(now int64) bool {
-	return n.expiration <= now
+	expiresAt := n.ExpiresAt()
+	if expiresAt == 0 {
+		return false
+	}
+
+	return expiresAt <= now
 }
 
-func (n *BEW[K, V]) Expiration() int64 {
-	return n.expiration
+func (n *BEW[K, V]) ExpiresAt() int64 {
+	return n.expiresAt.Load()
+}
+
+func (n *BEW[K, V]) CASExpiresAt(old, new int64) bool {
+	return n.expiresAt.CompareAndSwap(old, new)
 }
 
 func (n *BEW[K, V]) Weight() uint32 {
@@ -118,11 +129,11 @@ func (n *BEW[K, V]) Weight() uint32 {
 }
 
 func (n *BEW[K, V]) IsAlive() bool {
-	return atomic.LoadUint32(&n.state) == aliveState
+	return n.state.Load() == aliveState
 }
 
 func (n *BEW[K, V]) Die() {
-	atomic.StoreUint32(&n.state, deadState)
+	n.state.Store(deadState)
 }
 
 func (n *BEW[K, V]) Frequency() uint8 {

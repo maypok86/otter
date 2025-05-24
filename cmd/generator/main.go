@@ -116,6 +116,9 @@ func init() {
 	for nodeType := range nodeTypesSet {
 		nodeTypes = append(nodeTypes, nodeType)
 	}
+	sort.Slice(nodeTypes, func(i, j int) bool {
+		return nodeTypes[i] < nodeTypes[j]
+	})
 }
 
 func getFeatures(nodeType string) map[feature]bool {
@@ -225,14 +228,14 @@ func (g *generator) printStruct() {
 	if g.features[expiration] {
 		g.p("prevExp    *%s[K, V]", g.structName)
 		g.p("nextExp    *%s[K, V]", g.structName)
-		g.p("expiration int64")
+		g.p("expiresAt  atomic.Int64")
 	}
 	if g.features[weight] {
 		g.p("weight     uint32")
 	}
 
 	if g.withState() {
-		g.p("state      uint32")
+		g.p("state      atomic.Uint32")
 	}
 	if g.isBounded() {
 		g.p("frequency  uint8")
@@ -245,23 +248,25 @@ func (g *generator) printStruct() {
 
 func (g *generator) printConstructors() {
 	g.p("// New%s creates a new %s.", g.structName, g.structName)
-	g.p("func New%s[K comparable, V any](key K, value V, expiration int64, weight uint32) Node[K, V] {", g.structName)
+	g.p("func New%s[K comparable, V any](key K, value V, expiresAt int64, weight uint32) Node[K, V] {", g.structName)
 	g.in()
-	g.p("return &%s[K, V]{", g.structName)
+	g.p("n := &%s[K, V]{", g.structName)
 	g.in()
 	g.p("key:        key,")
 	g.p("value:      value,")
-	if g.features[expiration] {
-		g.p("expiration: expiration,")
-	}
 	if g.features[weight] {
 		g.p("weight:     weight,")
 	}
-	if g.withState() {
-		g.p("state:      aliveState,")
-	}
 	g.out()
 	g.p("}")
+	if g.features[expiration] {
+		g.p("n.expiresAt.Store(expiresAt)")
+	}
+	if g.withState() {
+		g.p("n.state.Store(aliveState)")
+	}
+	g.p("")
+	g.p("return n")
 	g.out()
 	g.p("}")
 	g.p("")
@@ -412,7 +417,14 @@ func (g *generator) printFunctions() {
 	g.p("func (n *%s[K, V]) HasExpired(now int64) bool {", g.structName)
 	g.in()
 	if g.features[expiration] {
-		g.p("return n.expiration <= now")
+		g.p("expiresAt := n.ExpiresAt()")
+		g.p("if expiresAt == 0 {")
+		g.in()
+		g.p("return false")
+		g.out()
+		g.p("}")
+		g.p("")
+		g.p("return expiresAt <= now")
 	} else {
 		g.p("return false")
 	}
@@ -420,10 +432,21 @@ func (g *generator) printFunctions() {
 	g.p("}")
 	g.p("")
 
-	g.p("func (n *%s[K, V]) Expiration() int64 {", g.structName)
+	g.p("func (n *%s[K, V]) ExpiresAt() int64 {", g.structName)
 	g.in()
 	if g.features[expiration] {
-		g.p("return n.expiration")
+		g.p("return n.expiresAt.Load()")
+	} else {
+		g.p("panic(\"not implemented\")")
+	}
+	g.out()
+	g.p("}")
+	g.p("")
+
+	g.p("func (n *%s[K, V]) CASExpiresAt(old, new int64) bool {", g.structName)
+	g.in()
+	if g.features[expiration] {
+		g.p("return n.expiresAt.CompareAndSwap(old, new)")
 	} else {
 		g.p("panic(\"not implemented\")")
 	}
@@ -445,7 +468,7 @@ func (g *generator) printFunctions() {
 	g.p("func (n *%s[K, V]) IsAlive() bool {", g.structName)
 	g.in()
 	if g.withState() {
-		g.p("return atomic.LoadUint32(&n.state) == aliveState")
+		g.p("return n.state.Load() == aliveState")
 	} else {
 		g.p("return true")
 	}
@@ -456,7 +479,7 @@ func (g *generator) printFunctions() {
 	g.p("func (n *%s[K, V]) Die() {", g.structName)
 	g.in()
 	if g.withState() {
-		g.p("atomic.StoreUint32(&n.state, deadState)")
+		g.p("n.state.Store(deadState)")
 	} else {
 		g.p("panic(\"not implemented\")")
 	}
@@ -644,8 +667,10 @@ type Node[K comparable, V any] interface {
 	SetNextExp(v Node[K, V])
 	// HasExpired returns true if node has expired.
 	HasExpired(now int64) bool
-	// Expiration returns the expiration time.
-	Expiration() int64
+	// ExpiresAt returns the expiration time.
+	ExpiresAt() int64
+	// CASExpiresAt executes the compare-and-swap operation for expiresAt.
+	CASExpiresAt(old, new int64) bool
 	// Weight returns the weight of the node.
 	Weight() uint32
 	// IsAlive returns true if the entry is available in the hash-table.
@@ -712,8 +737,8 @@ func NewManager[K comparable, V any](c Config) *Manager[K, V] {
 	const nodeFooter = `return m
 }
 
-func (m *Manager[K, V]) Create(key K, value V, expiration int64, weight uint32) Node[K, V] {
-	return m.create(key, value, expiration, weight)
+func (m *Manager[K, V]) Create(key K, value V, expiresAt int64, weight uint32) Node[K, V] {
+	return m.create(key, value, expiresAt, weight)
 }
 
 func (m *Manager[K, V]) FromPointer(ptr unsafe.Pointer) Node[K, V] {

@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/maypok86/otter/v2/core/expiry"
 	"github.com/maypok86/otter/v2/core/stats"
 )
 
@@ -90,14 +91,11 @@ func TestCache_GetPanic(t *testing.T) {
 			ctx := context.Background()
 			size := 100
 			statsCounter := stats.NewCounter()
-			c, err := NewBuilder[int, int]().
-				MaximumSize(size).
-				WithTTL(5 * time.Minute).
-				RecordStats(statsCounter).
-				Build()
-			if err != nil {
-				t.Fatalf("can not create cache: %v", err)
-			}
+			c := Must(&Options[int, int]{
+				MaximumSize:      size,
+				StatsRecorder:    statsCounter,
+				ExpiryCalculator: expiry.Writing[int, int](5 * time.Minute),
+			})
 
 			k1 := 1
 			var recovered any
@@ -165,14 +163,11 @@ func TestCache_BulkGetPanic(t *testing.T) {
 			ctx := context.Background()
 			size := 100
 			statsCounter := stats.NewCounter()
-			c, err := NewBuilder[int, int]().
-				MaximumSize(size).
-				WithTTL(5 * time.Minute).
-				RecordStats(statsCounter).
-				Build()
-			if err != nil {
-				t.Fatalf("can not create cache: %v", err)
-			}
+			c := Must(&Options[int, int]{
+				MaximumSize:      size,
+				ExpiryCalculator: expiry.Writing[int, int](5 * time.Minute),
+				StatsRecorder:    statsCounter,
+			})
 
 			ks := []int{1, 2}
 			var recovered any
@@ -215,14 +210,11 @@ func TestCache_GetWithSuccessLoad(t *testing.T) {
 	ctx := context.Background()
 	size := 100
 	statsCounter := stats.NewCounter()
-	c, err := NewBuilder[int, int]().
-		MaximumSize(size).
-		WithTTL(5 * time.Minute).
-		RecordStats(statsCounter).
-		Build()
-	if err != nil {
-		t.Fatalf("can not create cache: %v", err)
-	}
+	c := Must(&Options[int, int]{
+		MaximumSize:      size,
+		StatsRecorder:    statsCounter,
+		ExpiryCalculator: expiry.Writing[int, int](5 * time.Minute),
+	})
 
 	k1 := 1
 	v1 := 100
@@ -246,7 +238,7 @@ func TestCache_GetWithSuccessLoad(t *testing.T) {
 		t.Fatalf("Get value = %v; want = %v", v, v1)
 	}
 
-	if c.Size() != 1 || c.GetNodeQuietly(k1).Value() != v1 {
+	if c.Size() != 1 || c.getNodeQuietly(k1).Value() != v1 {
 		t.Fatalf("the cache should only contain the key = %v", k1)
 	}
 
@@ -274,14 +266,11 @@ func TestCache_BulkGetWithSuccessLoad(t *testing.T) {
 
 	ctx := context.Background()
 	statsCounter := stats.NewCounter()
-	c, err := NewBuilder[int, int]().
-		MaximumSize(size).
-		WithTTL(5 * time.Minute).
-		RecordStats(statsCounter).
-		Build()
-	if err != nil {
-		t.Fatalf("can not create cache: %v", err)
-	}
+	c := Must(&Options[int, int]{
+		MaximumSize:      size,
+		StatsRecorder:    statsCounter,
+		ExpiryCalculator: expiry.Writing[int, int](5 * time.Minute),
+	})
 
 	for _, k := range toSet {
 		c.Set(k, k)
@@ -341,14 +330,11 @@ func TestCache_GetWithFailedLoad(t *testing.T) {
 	ctx := context.Background()
 	size := 100
 	statsCounter := stats.NewCounter()
-	c, err := NewBuilder[int, int]().
-		MaximumSize(size).
-		WithTTL(5 * time.Minute).
-		RecordStats(statsCounter).
-		Build()
-	if err != nil {
-		t.Fatalf("can not create cache: %v", err)
-	}
+	c := Must(&Options[int, int]{
+		MaximumSize:      size,
+		StatsRecorder:    statsCounter,
+		ExpiryCalculator: expiry.Writing[int, int](5 * time.Minute),
+	})
 
 	k1 := 1
 	someErr := errors.New("some error")
@@ -392,14 +378,11 @@ func TestCache_BulkGetWithFailedLoad(t *testing.T) {
 	ctx := context.Background()
 	size := 100
 	statsCounter := stats.NewCounter()
-	c, err := NewBuilder[int, int]().
-		MaximumSize(size).
-		WithTTL(5 * time.Minute).
-		RecordStats(statsCounter).
-		Build()
-	if err != nil {
-		t.Fatalf("can not create cache: %v", err)
-	}
+	c := Must(&Options[int, int]{
+		MaximumSize:      size,
+		StatsRecorder:    statsCounter,
+		ExpiryCalculator: expiry.Writing[int, int](5 * time.Minute),
+	})
 
 	ks := []int{0, 1}
 	someErr := errors.New("some error")
@@ -407,7 +390,7 @@ func TestCache_BulkGetWithFailedLoad(t *testing.T) {
 		return nil, someErr
 	})
 
-	_, err = c.BulkGet(ctx, ks, tbl)
+	_, err := c.BulkGet(ctx, ks, tbl)
 	if err != someErr {
 		t.Fatalf("BulkGet error = %v; want someErr %v", err, someErr)
 	}
@@ -461,14 +444,11 @@ func TestCache_GetWithSuppressedLoad(t *testing.T) {
 	ctx := context.Background()
 	size := 100
 	statsCounter := stats.NewCounter()
-	c, err := NewBuilder[int, int]().
-		MaximumSize(size).
-		WithTTL(5 * time.Minute).
-		RecordStats(statsCounter).
-		Build()
-	if err != nil {
-		t.Fatalf("can not create cache: %v", err)
-	}
+	c := Must(&Options[int, int]{
+		MaximumSize:      size,
+		StatsRecorder:    statsCounter,
+		ExpiryCalculator: expiry.Writing[int, int](5 * time.Minute),
+	})
 
 	k1 := 1
 	v1 := 100
@@ -515,7 +495,7 @@ func TestCache_GetWithSuppressedLoad(t *testing.T) {
 		t.Fatalf("number of calls = %d; want over 0 and less than %d", got, n)
 	}
 
-	if c.Size() != 1 || c.GetNodeQuietly(k1).Value() != v1 {
+	if c.Size() != 1 || c.getNodeQuietly(k1).Value() != v1 {
 		t.Fatalf("the cache should only contain the key = %v", k1)
 	}
 
@@ -532,14 +512,11 @@ func TestCache_ConcurrentGetAndSet(t *testing.T) {
 	ctx := context.Background()
 	size := 100
 	statsCounter := stats.NewCounter()
-	c, err := NewBuilder[int, int]().
-		MaximumSize(size).
-		WithTTL(5 * time.Minute).
-		RecordStats(statsCounter).
-		Build()
-	if err != nil {
-		t.Fatalf("can not create cache: %v", err)
-	}
+	c := Must(&Options[int, int]{
+		MaximumSize:      size,
+		StatsRecorder:    statsCounter,
+		ExpiryCalculator: expiry.Writing[int, int](5 * time.Minute),
+	})
 
 	ch := make(chan struct{})
 	wg := sync.WaitGroup{}

@@ -14,22 +14,24 @@ import (
 //
 // 2. Expiration
 type BE[K comparable, V any] struct {
-	key        K
-	value      V
-	prevExp    *BE[K, V]
-	nextExp    *BE[K, V]
-	expiration int64
-	state      uint32
+	key       K
+	value     V
+	prevExp   *BE[K, V]
+	nextExp   *BE[K, V]
+	expiresAt atomic.Int64
+	state     atomic.Uint32
 }
 
 // NewBE creates a new BE.
-func NewBE[K comparable, V any](key K, value V, expiration int64, weight uint32) Node[K, V] {
-	return &BE[K, V]{
-		key:        key,
-		value:      value,
-		expiration: expiration,
-		state:      aliveState,
+func NewBE[K comparable, V any](key K, value V, expiresAt int64, weight uint32) Node[K, V] {
+	n := &BE[K, V]{
+		key:   key,
+		value: value,
 	}
+	n.expiresAt.Store(expiresAt)
+	n.state.Store(aliveState)
+
+	return n
 }
 
 // CastPointerToBE casts a pointer to BE.
@@ -90,11 +92,20 @@ func (n *BE[K, V]) SetNextExp(v Node[K, V]) {
 }
 
 func (n *BE[K, V]) HasExpired(now int64) bool {
-	return n.expiration <= now
+	expiresAt := n.ExpiresAt()
+	if expiresAt == 0 {
+		return false
+	}
+
+	return expiresAt <= now
 }
 
-func (n *BE[K, V]) Expiration() int64 {
-	return n.expiration
+func (n *BE[K, V]) ExpiresAt() int64 {
+	return n.expiresAt.Load()
+}
+
+func (n *BE[K, V]) CASExpiresAt(old, new int64) bool {
+	return n.expiresAt.CompareAndSwap(old, new)
 }
 
 func (n *BE[K, V]) Weight() uint32 {
@@ -102,11 +113,11 @@ func (n *BE[K, V]) Weight() uint32 {
 }
 
 func (n *BE[K, V]) IsAlive() bool {
-	return atomic.LoadUint32(&n.state) == aliveState
+	return n.state.Load() == aliveState
 }
 
 func (n *BE[K, V]) Die() {
-	atomic.StoreUint32(&n.state, deadState)
+	n.state.Store(deadState)
 }
 
 func (n *BE[K, V]) Frequency() uint8 {

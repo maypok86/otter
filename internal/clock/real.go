@@ -24,6 +24,7 @@ type Real struct {
 	start         time.Time
 	initMutex     sync.Mutex
 	isInitialized atomic.Bool
+	startNanos    atomic.Int64
 	cachedOffset  atomic.Int64
 }
 
@@ -31,7 +32,9 @@ func (c *Real) Init() {
 	if !c.isInitialized.Load() {
 		c.initMutex.Lock()
 		if !c.isInitialized.Load() {
-			c.start = time.Now()
+			now := time.Now()
+			c.start = now
+			c.startNanos.Store(now.UnixNano())
 			c.isInitialized.Store(true)
 		}
 		c.initMutex.Unlock()
@@ -53,6 +56,10 @@ func (c *Real) Offset() int64 {
 
 func (c *Real) CachedOffset() int64 {
 	return c.cachedOffset.Load()
+}
+
+func (c *Real) Nanos(offset int64) int64 {
+	return c.startNanos.Load() + offset
 }
 
 func (c *Real) Time(offset int64) time.Time {

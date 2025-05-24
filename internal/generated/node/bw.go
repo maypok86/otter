@@ -19,19 +19,21 @@ type BW[K comparable, V any] struct {
 	prev      *BW[K, V]
 	next      *BW[K, V]
 	weight    uint32
-	state     uint32
+	state     atomic.Uint32
 	frequency uint8
 	queueType uint8
 }
 
 // NewBW creates a new BW.
-func NewBW[K comparable, V any](key K, value V, expiration int64, weight uint32) Node[K, V] {
-	return &BW[K, V]{
+func NewBW[K comparable, V any](key K, value V, expiresAt int64, weight uint32) Node[K, V] {
+	n := &BW[K, V]{
 		key:    key,
 		value:  value,
 		weight: weight,
-		state:  aliveState,
 	}
+	n.state.Store(aliveState)
+
+	return n
 }
 
 // CastPointerToBW casts a pointer to BW.
@@ -95,7 +97,11 @@ func (n *BW[K, V]) HasExpired(now int64) bool {
 	return false
 }
 
-func (n *BW[K, V]) Expiration() int64 {
+func (n *BW[K, V]) ExpiresAt() int64 {
+	panic("not implemented")
+}
+
+func (n *BW[K, V]) CASExpiresAt(old, new int64) bool {
 	panic("not implemented")
 }
 
@@ -104,11 +110,11 @@ func (n *BW[K, V]) Weight() uint32 {
 }
 
 func (n *BW[K, V]) IsAlive() bool {
-	return atomic.LoadUint32(&n.state) == aliveState
+	return n.state.Load() == aliveState
 }
 
 func (n *BW[K, V]) Die() {
-	atomic.StoreUint32(&n.state, deadState)
+	n.state.Store(deadState)
 }
 
 func (n *BW[K, V]) Frequency() uint8 {

@@ -81,7 +81,7 @@ func (v *Variable[K, V]) findBucket(expiration uint64) node.Node[K, V] {
 // Add schedules a timer event for the node.
 func (v *Variable[K, V]) Add(n node.Node[K, V]) {
 	//nolint:gosec // there is no overflow
-	root := v.findBucket(uint64(n.Expiration()))
+	root := v.findBucket(uint64(n.ExpiresAt()))
 	link(root, n)
 }
 
@@ -135,7 +135,7 @@ func (v *Variable[K, V]) deleteExpiredFromBucket(
 			n.SetNextExp(nil)
 
 			//nolint:gosec // there is no overflow
-			if uint64(n.Expiration()) <= v.time {
+			if uint64(n.ExpiresAt()) <= v.time {
 				expireNode(n, int64(v.time))
 			} else {
 				v.Add(n)

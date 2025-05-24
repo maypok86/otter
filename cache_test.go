@@ -23,6 +23,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/maypok86/otter/v2/core"
+	"github.com/maypok86/otter/v2/core/expiry"
 	"github.com/maypok86/otter/v2/core/stats"
 	"github.com/maypok86/otter/v2/internal/generated/node"
 	"github.com/maypok86/otter/v2/internal/xruntime"
@@ -45,17 +47,14 @@ func TestCache_Unbounded(t *testing.T) {
 	statsCounter := stats.NewCounter()
 	m := make(map[DeletionCause]int)
 	mutex := sync.Mutex{}
-	c, err := NewBuilder[int, int]().
-		OnDeletion(func(e DeletionEvent[int, int]) {
+	c := Must[int, int](&Options[int, int]{
+		StatsRecorder: statsCounter,
+		OnDeletion: func(e DeletionEvent[int, int]) {
 			mutex.Lock()
 			m[e.Cause]++
 			mutex.Unlock()
-		}).
-		RecordStats(statsCounter).
-		Build()
-	if err != nil {
-		t.Fatalf("can not create cache: %v", err)
-	}
+		},
+	})
 
 	size := getRandomSize(t)
 	for i := 0; i < size; i++ {
@@ -98,24 +97,21 @@ func TestCache_PinnedWeight(t *testing.T) {
 	pinned := 4
 	m := make(map[DeletionCause]int)
 	mutex := sync.Mutex{}
-	c, err := NewBuilder[int, int]().
-		MaximumWeight(uint64(size)).
-		Weigher(func(key int, value int) uint32 {
+	c := Must[int, int](&Options[int, int]{
+		MaximumWeight: uint64(size),
+		Weigher: func(key int, value int) uint32 {
 			if key == pinned {
 				return 0
 			}
 			return 1
-		}).
-		WithTTL(2 * time.Second).
-		OnDeletion(func(e DeletionEvent[int, int]) {
+		},
+		ExpiryCalculator: expiry.Writing[int, int](2 * time.Second),
+		OnDeletion: func(e DeletionEvent[int, int]) {
 			mutex.Lock()
 			m[e.Cause]++
 			mutex.Unlock()
-		}).
-		Build()
-	if err != nil {
-		t.Fatalf("can not create cache: %v", err)
-	}
+		},
+	})
 
 	for i := 0; i < size; i++ {
 		c.Set(i, i)
@@ -156,16 +152,13 @@ func TestCache_PinnedWeight(t *testing.T) {
 func TestCache_SetWithWeight(t *testing.T) {
 	statsCounter := stats.NewCounter()
 	size := uint64(10)
-	c, err := NewBuilder[uint32, int]().
-		MaximumWeight(size).
-		Weigher(func(key uint32, value int) uint32 {
+	c := Must[uint32, int](&Options[uint32, int]{
+		MaximumWeight: size,
+		Weigher: func(key uint32, value int) uint32 {
 			return key
-		}).
-		RecordStats(statsCounter).
-		Build()
-	if err != nil {
-		t.Fatalf("can not create cache: %v", err)
-	}
+		},
+		StatsRecorder: statsCounter,
+	})
 
 	goodWeight1 := 1
 	goodWeight2 := 2
@@ -189,13 +182,10 @@ func TestCache_SetWithWeight(t *testing.T) {
 func TestCache_Range(t *testing.T) {
 	size := 10
 	ttl := time.Hour
-	c, err := NewBuilder[int, int]().
-		MaximumSize(size).
-		WithTTL(ttl).
-		Build()
-	if err != nil {
-		t.Fatalf("can not create cache: %v", err)
-	}
+	c := Must[int, int](&Options[int, int]{
+		MaximumSize:      size,
+		ExpiryCalculator: expiry.Writing[int, int](ttl),
+	})
 
 	time.Sleep(3 * time.Second)
 
@@ -226,12 +216,9 @@ func TestCache_Range(t *testing.T) {
 
 func TestCache_Close(t *testing.T) {
 	size := 10
-	c, err := NewBuilder[int, int]().
-		MaximumSize(size).
-		Build()
-	if err != nil {
-		t.Fatalf("can not create cache: %v", err)
-	}
+	c := Must(&Options[int, int]{
+		MaximumSize: size,
+	})
 
 	for i := 0; i < size; i++ {
 		c.Set(i, i)
@@ -258,12 +245,9 @@ func TestCache_Close(t *testing.T) {
 
 func TestCache_InvalidateAll(t *testing.T) {
 	size := 10
-	c, err := NewBuilder[int, int]().
-		MaximumSize(size).
-		Build()
-	if err != nil {
-		t.Fatalf("can not create cache: %v", err)
-	}
+	c := Must(&Options[int, int]{
+		MaximumSize: size,
+	})
 
 	for i := 0; i < size; i++ {
 		c.Set(i, i)
@@ -289,11 +273,11 @@ func TestCache_Set(t *testing.T) {
 	statsCounter := stats.NewCounter()
 	done := make(chan struct{})
 	count := 0
-	c, err := NewBuilder[int, int]().
-		MaximumSize(size).
-		WithTTL(time.Minute).
-		RecordStats(statsCounter).
-		OnDeletion(func(e DeletionEvent[int, int]) {
+	c := Must(&Options[int, int]{
+		MaximumSize:      size,
+		StatsRecorder:    statsCounter,
+		ExpiryCalculator: expiry.Writing[int, int](time.Minute),
+		OnDeletion: func(e DeletionEvent[int, int]) {
 			mutex.Lock()
 			count++
 			m[e.Cause]++
@@ -301,11 +285,8 @@ func TestCache_Set(t *testing.T) {
 				done <- struct{}{}
 			}
 			mutex.Unlock()
-		}).
-		Build()
-	if err != nil {
-		t.Fatalf("can not create cache: %v", err)
-	}
+		},
+	})
 
 	for i := 0; i < size; i++ {
 		c.Set(i, i)
@@ -317,7 +298,10 @@ func TestCache_Set(t *testing.T) {
 	}
 
 	parallelism := xruntime.Parallelism()
-	var wg sync.WaitGroup
+	var (
+		wg  sync.WaitGroup
+		err error
+	)
 	for i := 0; i < int(parallelism); i++ {
 		wg.Add(1)
 		go func() {
@@ -359,14 +343,11 @@ func TestCache_Set(t *testing.T) {
 func TestCache_SetIfAbsent(t *testing.T) {
 	size := getRandomSize(t)
 	statsCounter := stats.NewCounter()
-	c, err := NewBuilder[int, int]().
-		MaximumSize(size).
-		WithTTL(time.Hour).
-		RecordStats(statsCounter).
-		Build()
-	if err != nil {
-		t.Fatalf("can not create cache: %v", err)
-	}
+	c := Must(&Options[int, int]{
+		MaximumSize:      size,
+		StatsRecorder:    statsCounter,
+		ExpiryCalculator: expiry.Writing[int, int](time.Hour),
+	})
 
 	for i := 0; i < size; i++ {
 		if _, ok := c.SetIfAbsent(i, i); !ok {
@@ -388,59 +369,31 @@ func TestCache_SetIfAbsent(t *testing.T) {
 
 	c.InvalidateAll()
 
-	cc, err := NewBuilder[int, int]().
-		MaximumSize(size).
-		WithVariableTTL().
-		RecordStats(statsCounter).
-		Build()
-	if err != nil {
-		t.Fatalf("can not create cache: %v", err)
-	}
-
-	for i := 0; i < size; i++ {
-		if _, ok := cc.SetIfAbsentWithTTL(i, i, time.Hour); !ok {
-			t.Fatalf("set was dropped. key: %d", i)
-		}
-	}
-
-	for i := 0; i < size; i++ {
-		if !cc.Has(i) {
-			t.Fatalf("the key must exist: %d", i)
-		}
-	}
-
-	for i := 0; i < size; i++ {
-		if _, ok := cc.SetIfAbsentWithTTL(i, i, time.Second); ok {
-			t.Fatalf("set wasn't dropped. key: %d", i)
-		}
-	}
-
 	if hitRatio := statsCounter.Snapshot().HitRatio(); hitRatio != 1.0 {
 		t.Fatalf("hit rate should be 100%%. Hite rate: %.2f", hitRatio*100)
 	}
 
-	cc.Close()
+	c.Close()
 }
 
-func TestCache_SetWithTTL(t *testing.T) {
+func TestCache_SetWithExpiresAt(t *testing.T) {
+	t.Parallel()
+
 	size := getRandomSize(t)
 	var mutex sync.Mutex
 	m := make(map[DeletionCause]int)
 	statsCounter := stats.NewCounter()
-	c, err := NewBuilder[int, int]().
-		MaximumSize(size).
-		InitialCapacity(size).
-		RecordStats(statsCounter).
-		WithTTL(time.Second).
-		OnDeletion(func(e DeletionEvent[int, int]) {
+	c := Must(&Options[int, int]{
+		MaximumSize:      size,
+		InitialCapacity:  size,
+		StatsRecorder:    statsCounter,
+		ExpiryCalculator: expiry.Creating[int, int](time.Second),
+		OnDeletion: func(e DeletionEvent[int, int]) {
 			mutex.Lock()
 			m[e.Cause]++
 			mutex.Unlock()
-		}).
-		Build()
-	if err != nil {
-		t.Fatalf("can not create builder: %v", err)
-	}
+		},
+	})
 
 	for i := 0; i < size; i++ {
 		c.Set(i, i)
@@ -476,25 +429,54 @@ func TestCache_SetWithTTL(t *testing.T) {
 
 	m = make(map[DeletionCause]int)
 	statsCounter = stats.NewCounter()
-	cc, err := NewBuilder[int, int]().
-		MaximumSize(size).
-		WithVariableTTL().
-		RecordStats(statsCounter).
-		OnDeletion(func(e DeletionEvent[int, int]) {
+	if size%2 == 1 {
+		size++
+	}
+	cc := Must(&Options[int, int]{
+		MaximumSize:   size,
+		StatsRecorder: statsCounter,
+		ExpiryCalculator: expiry.WritingFunc(func(entry core.Entry[int, int]) time.Duration {
+			if entry.Key%2 == 0 {
+				return time.Second
+			}
+			return 4 * time.Second
+		}),
+		OnDeletion: func(e DeletionEvent[int, int]) {
 			mutex.Lock()
 			m[e.Cause]++
 			mutex.Unlock()
-		}).
-		Build()
-	if err != nil {
-		t.Fatalf("can not create builder: %v", err)
+		},
+	})
+
+	for i := 0; i < size; i++ {
+		cc.Set(i, i)
+	}
+
+	time.Sleep(2 * time.Second)
+
+	if c.Size() != size%2 {
+		t.Fatalf("half of the keys must be expired. wantedCurrentSize %d, got %d", size%2, c.Size())
 	}
 
 	for i := 0; i < size; i++ {
-		cc.SetWithTTL(i, i, 5*time.Second)
+		if i%2 == 0 {
+			continue
+		}
+		cc.Set(i, i)
 	}
 
-	time.Sleep(7 * time.Second)
+	time.Sleep(3 * time.Second)
+
+	for i := 0; i < size; i++ {
+		if i%2 == 0 {
+			continue
+		}
+		if !cc.Has(i) {
+			t.Fatalf("key should not be expired: %d", i)
+		}
+	}
+
+	time.Sleep(5 * time.Second)
 
 	for i := 0; i < size; i++ {
 		if cc.Has(i) {
@@ -512,7 +494,7 @@ func TestCache_SetWithTTL(t *testing.T) {
 	}
 	mutex.Lock()
 	defer mutex.Unlock()
-	if len(m) != 1 || m[CauseExpiration] != size {
+	if len(m) != 2 || m[CauseExpiration] != size && m[CauseReplacement] != size/2 {
 		t.Fatalf("cache was supposed to expire %d, but expired %d entries", size, m[CauseExpiration])
 	}
 	if statsCounter.Snapshot().Evictions() != uint64(m[CauseExpiration]) {
@@ -529,19 +511,16 @@ func TestCache_Invalidate(t *testing.T) {
 	size := getRandomSize(t)
 	var mutex sync.Mutex
 	m := make(map[DeletionCause]int)
-	c, err := NewBuilder[int, int]().
-		MaximumSize(size).
-		InitialCapacity(size).
-		WithTTL(time.Hour).
-		OnDeletion(func(e DeletionEvent[int, int]) {
+	c := Must(&Options[int, int]{
+		MaximumSize:      size,
+		InitialCapacity:  size,
+		ExpiryCalculator: expiry.Writing[int, int](time.Hour),
+		OnDeletion: func(e DeletionEvent[int, int]) {
 			mutex.Lock()
 			m[e.Cause]++
 			mutex.Unlock()
-		}).
-		Build()
-	if err != nil {
-		t.Fatalf("can not create builder: %v", err)
-	}
+		},
+	})
 
 	for i := 0; i < size; i++ {
 		c.Set(i, i)
@@ -576,19 +555,16 @@ func TestCache_InvalidateByFunc(t *testing.T) {
 	size := getRandomSize(t)
 	var mutex sync.Mutex
 	m := make(map[DeletionCause]int)
-	c, err := NewBuilder[int, int]().
-		MaximumSize(size).
-		InitialCapacity(size).
-		WithTTL(time.Hour).
-		OnDeletion(func(e DeletionEvent[int, int]) {
+	c := Must(&Options[int, int]{
+		MaximumSize:      size,
+		InitialCapacity:  size,
+		ExpiryCalculator: expiry.Writing[int, int](time.Hour),
+		OnDeletion: func(e DeletionEvent[int, int]) {
 			mutex.Lock()
 			m[e.Cause]++
 			mutex.Unlock()
-		}).
-		Build()
-	if err != nil {
-		t.Fatalf("can not create builder: %v", err)
-	}
+		},
+	})
 
 	for i := 0; i < size; i++ {
 		c.Set(i, i)
@@ -618,13 +594,10 @@ func TestCache_InvalidateByFunc(t *testing.T) {
 func TestCache_ConcurrentInvalidateAll(t *testing.T) {
 	t.Parallel()
 
-	cache, err := NewBuilder[string, string]().
-		MaximumSize(1000).
-		WithTTL(time.Hour).
-		Build()
-	if err != nil {
-		panic(err)
-	}
+	c := Must(&Options[string, string]{
+		MaximumSize:      1000,
+		ExpiryCalculator: expiry.Writing[string, string](time.Hour),
+	})
 
 	var success atomic.Bool
 	go func() {
@@ -638,7 +611,7 @@ func TestCache_ConcurrentInvalidateAll(t *testing.T) {
 		for i := 0; i < goroutines; i++ {
 			go func() {
 				for j := 0; j < iterations; j++ {
-					cache.InvalidateAll()
+					c.InvalidateAll()
 				}
 				wg.Done()
 			}()
@@ -655,78 +628,20 @@ func TestCache_ConcurrentInvalidateAll(t *testing.T) {
 	}
 }
 
-func TestCache_Extension(t *testing.T) {
-	size := getRandomSize(t)
-	defaultTTL := time.Hour
-	c, err := NewBuilder[int, int]().
-		MaximumSize(size).
-		WithTTL(defaultTTL).
-		Build()
-	if err != nil {
-		t.Fatalf("can not create builder: %v", err)
-	}
-
-	for i := 0; i < size; i++ {
-		c.Set(i, i)
-	}
-
-	k1 := 4
-	v1, ok := c.Extension().GetQuietly(k1)
-	if !ok {
-		t.Fatalf("not found key %d", k1)
-	}
-
-	e1, ok := c.Extension().GetEntryQuietly(k1)
-	if !ok {
-		t.Fatalf("not found key %d", k1)
-	}
-
-	e2, ok := c.Extension().GetEntry(k1)
-	if !ok {
-		t.Fatalf("not found key %d", k1)
-	}
-
-	time.Sleep(time.Second)
-
-	isValidEntries := e1.Key() == k1 &&
-		e1.Value() == v1 &&
-		e1.Weight() == 1 &&
-		e1 == e2 &&
-		e1.TTL() < defaultTTL &&
-		!e1.HasExpired()
-
-	if !isValidEntries {
-		t.Fatalf("found not valid entries. e1: %+v, e2: %+v, v1:%d", e1, e2, v1)
-	}
-
-	if _, ok := c.Extension().GetQuietly(size); ok {
-		t.Fatalf("found not valid key: %d", size)
-	}
-	if _, ok := c.Extension().GetEntryQuietly(size); ok {
-		t.Fatalf("found not valid key: %d", size)
-	}
-	if _, ok := c.Extension().GetEntry(size); ok {
-		t.Fatalf("found not valid key: %d", size)
-	}
-}
-
 func TestCache_Ratio(t *testing.T) {
 	var mutex sync.Mutex
 	m := make(map[DeletionCause]int)
 	statsCounter := stats.NewCounter()
 	capacity := 100
-	c, err := NewBuilder[uint64, uint64]().
-		MaximumSize(capacity).
-		RecordStats(statsCounter).
-		OnDeletion(func(e DeletionEvent[uint64, uint64]) {
+	c := Must(&Options[uint64, uint64]{
+		MaximumSize:   capacity,
+		StatsRecorder: statsCounter,
+		OnDeletion: func(e DeletionEvent[uint64, uint64]) {
 			mutex.Lock()
 			m[e.Cause]++
 			mutex.Unlock()
-		}).
-		Build()
-	if err != nil {
-		t.Fatalf("can not create cache: %v", err)
-	}
+		},
+	})
 
 	z := rand.NewZipf(rand.New(rand.NewSource(time.Now().UnixNano())), 1.0001, 1, 1000)
 
@@ -827,9 +742,9 @@ func (h *optimalHeap) Pop() any {
 func Test_GetExpired(t *testing.T) {
 	done := make(chan struct{})
 
-	c, err := NewBuilder[string, string]().
-		RecordStats(stats.NewCounter()).
-		OnDeletion(func(e DeletionEvent[string, string]) {
+	c := Must(&Options[string, string]{
+		StatsRecorder: stats.NewCounter(),
+		OnDeletion: func(e DeletionEvent[string, string]) {
 			defer func() {
 				done <- struct{}{}
 			}()
@@ -837,12 +752,9 @@ func Test_GetExpired(t *testing.T) {
 			if e.Cause != CauseExpiration {
 				t.Fatalf("err not expired: %v", e.Cause)
 			}
-		}).
-		WithTTL(3 * time.Second).
-		Build()
-	if err != nil {
-		t.Fatal(err)
-	}
+		},
+		ExpiryCalculator: expiry.Writing[string, string](3 * time.Second),
+	})
 
 	c.Set("test1", "123456")
 	for i := 0; i < 5; i++ {
