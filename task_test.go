@@ -27,8 +27,8 @@ func TestTask(t *testing.T) {
 		WithExpiration: true,
 		WithWeight:     true,
 	})
-	n := nm.Create(1, 2, 6, 4)
-	oldNode := nm.Create(1, 3, 8, 6)
+	n := nm.Create(1, 2, 6, 0, 4)
+	oldNode := nm.Create(1, 3, 8, 0, 6)
 
 	addTask := newAddTask(n)
 	if addTask.node() != n || !addTask.isAdd() {

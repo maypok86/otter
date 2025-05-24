@@ -4,6 +4,8 @@ import (
 	"math"
 	"testing"
 	"time"
+
+	"github.com/maypok86/otter/v2/internal/xruntime"
 )
 
 func TestEntry(t *testing.T) {
@@ -27,8 +29,8 @@ func TestEntry(t *testing.T) {
 	if !e.ExpiresAt().Equal(time.Unix(0, exp)) {
 		t.Fatalf("not valid expiresAt. want %v, got %v", time.Unix(0, exp), e.ExpiresAt())
 	}
-	if expiresAfter := e.ExpiresAfter(); expiresAfter != maxDuration {
-		t.Fatalf("not valid expiresAfter. want %d, got %d", maxDuration, expiresAfter)
+	if expiresAfter := e.ExpiresAfter(); expiresAfter != xruntime.MaxDuration {
+		t.Fatalf("not valid expiresAfter. want %d, got %d", xruntime.MaxDuration, expiresAfter)
 	}
 	if e.HasExpired() {
 		t.Fatal("entry should not be expire")
@@ -37,8 +39,8 @@ func TestEntry(t *testing.T) {
 	if !e.RefreshableAt().Equal(time.Unix(0, refr)) {
 		t.Fatalf("not valid refreshableAt. want %v, got %v", time.Unix(0, refr), e.RefreshableAt())
 	}
-	if refreshableAfter := e.RefreshableAfter(); refreshableAfter != maxDuration {
-		t.Fatalf("not valid refreshableAfter. want %d, got %d", maxDuration, refreshableAfter)
+	if refreshableAfter := e.RefreshableAfter(); refreshableAfter != xruntime.MaxDuration {
+		t.Fatalf("not valid refreshableAfter. want %d, got %d", xruntime.MaxDuration, refreshableAfter)
 	}
 
 	newExpiresAfter := int64(10)

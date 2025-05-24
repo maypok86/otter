@@ -51,10 +51,15 @@ type Node[K comparable, V any] interface {
 	ExpiresAt() int64
 	// CASExpiresAt executes the compare-and-swap operation for expiresAt.
 	CASExpiresAt(old, new int64) bool
+	// SetExpiresAt sets the expiration time.
+	SetExpiresAt(new int64)
 	// RefreshableAt returns the refresh time.
 	RefreshableAt() int64
 	// CASRefreshableAt executes the compare-and-swap operation for refreshableAt.
 	CASRefreshableAt(old, new int64) bool
+	// SetRefreshableAt returns the refresh time.
+	SetRefreshableAt(new int64)
+	IsFresh(now int64) bool
 	// Weight returns the weight of the node.
 	Weight() uint32
 	// IsAlive returns true if the entry is available in the hash-table.

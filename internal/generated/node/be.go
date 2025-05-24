@@ -103,12 +103,24 @@ func (n *BE[K, V]) CASExpiresAt(old, new int64) bool {
 	return n.expiresAt.CompareAndSwap(old, new)
 }
 
+func (n *BE[K, V]) SetExpiresAt(new int64) {
+	n.expiresAt.Store(new)
+}
+
 func (n *BE[K, V]) RefreshableAt() int64 {
 	panic("not implemented")
 }
 
 func (n *BE[K, V]) CASRefreshableAt(old, new int64) bool {
 	panic("not implemented")
+}
+
+func (n *BE[K, V]) SetRefreshableAt(new int64) {
+	panic("not implemented")
+}
+
+func (n *BE[K, V]) IsFresh(now int64) bool {
+	return true
 }
 
 func (n *BE[K, V]) Weight() uint32 {

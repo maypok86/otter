@@ -38,7 +38,7 @@ func newTestNode[K comparable, V any](nm mapNodeManager[K, V, node.Node[K, V]], 
 	if !ok {
 		panic("not valid node manager")
 	}
-	return m.Create(key, value, 0, 1)
+	return m.Create(key, value, 0, 0, 1)
 }
 
 func testNodeManager[K comparable, V any]() mapNodeManager[K, V, node.Node[K, V]] {

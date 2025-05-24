@@ -15,12 +15,7 @@
 package core
 
 import (
-	"math"
 	"time"
-)
-
-const (
-	maxDuration = time.Duration(math.MaxInt64)
 )
 
 // Entry is a key-value pair that may include policy metadata for the cached entry.

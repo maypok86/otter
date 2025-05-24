@@ -36,7 +36,7 @@ func TestRing_Add(t *testing.T) {
 		WithSize:       true,
 		WithExpiration: true,
 	})
-	n := nm.Create(1, 2, 100, 1)
+	n := nm.Create(1, 2, 100, 0, 1)
 	r := &ring[int, int]{
 		nodeManager: nm,
 	}
@@ -76,7 +76,7 @@ func TestRing_DrainTo(t *testing.T) {
 		WithSize:       true,
 		WithExpiration: true,
 	})
-	n := nm.Create(1, 2, 100, 1)
+	n := nm.Create(1, 2, 100, 0, 1)
 	r := &ring[int, int]{
 		nodeManager: nm,
 	}
@@ -110,7 +110,7 @@ func TestRing_AddAndDrain(t *testing.T) {
 		WithSize:       true,
 		WithExpiration: true,
 	})
-	n := nm.Create(1, 2, 100, 1)
+	n := nm.Create(1, 2, 100, 0, 1)
 	r := &ring[int, int]{
 		nodeManager: nm,
 	}
@@ -164,7 +164,7 @@ func TestRing_Overflow(t *testing.T) {
 		WithSize:       true,
 		WithExpiration: true,
 	})
-	n := nm.Create(1, 2, 100, 1)
+	n := nm.Create(1, 2, 100, 0, 1)
 	r := &ring[int, int]{
 		nodeManager: nm,
 	}

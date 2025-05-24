@@ -13,6 +13,7 @@ package otter
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"unsafe"
@@ -26,11 +27,14 @@ type call[K comparable, V any] struct {
 	err         error
 	wg          sync.WaitGroup
 	isCancelled atomic.Bool
+	isRefresh   bool
+	isNotFound  bool
 }
 
-func newCall[K comparable, V any](key K) *call[K, V] {
+func newCall[K comparable, V any](key K, isRefresh bool) *call[K, V] {
 	c := &call[K, V]{
-		key: key,
+		key:       key,
+		isRefresh: isRefresh,
 	}
 	c.wg.Add(1)
 	return c
@@ -93,7 +97,7 @@ func (g *group[K, V]) getCall(key K) *call[K, V] {
 	return g.calls.Get(key)
 }
 
-func (g *group[K, V]) startCall(key K) (c *call[K, V], shouldLoad bool) {
+func (g *group[K, V]) startCall(key K, isRefresh bool) (c *call[K, V], shouldLoad bool) {
 	// fast path
 	if c := g.getCall(key); c != nil {
 		return c, shouldLoad
@@ -105,14 +109,14 @@ func (g *group[K, V]) startCall(key K) (c *call[K, V], shouldLoad bool) {
 			return prevCall
 		}
 		shouldLoad = true
-		return newCall[K, V](key)
+		return newCall[K, V](key, isRefresh)
 	}), shouldLoad
 }
 
 func (g *group[K, V]) doCall(
 	ctx context.Context,
 	c *call[K, V],
-	loader Loader[K, V],
+	load func(ctx context.Context, key K) (V, error),
 	afterFinish func(c *call[K, V]),
 ) (err error) {
 	defer func() {
@@ -121,17 +125,18 @@ func (g *group[K, V]) doCall(
 		}
 
 		c.err = err
+		c.isNotFound = errors.Is(err, ErrNotFound)
 		afterFinish(c)
 	}()
 
-	c.value, err = loader.Load(ctx, c.key)
+	c.value, err = load(ctx, c.key)
 	return err
 }
 
 func (g *group[K, V]) doBulkCall(
 	ctx context.Context,
 	callsInBulk map[K]*call[K, V],
-	bulkLoader BulkLoader[K, V],
+	bulkLoad func(ctx context.Context, keys []K) (map[K]V, error),
 	afterFinish func(c *call[K, V]),
 ) (err error) {
 	defer func() {
@@ -153,7 +158,7 @@ func (g *group[K, V]) doBulkCall(
 		keys = append(keys, k)
 	}
 
-	res, err := bulkLoader.BulkLoad(ctx, keys)
+	res, err := bulkLoad(ctx, keys)
 
 	for k, v := range res {
 		callsInBulk[k].value = v

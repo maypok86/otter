@@ -15,13 +15,17 @@
 package xruntime
 
 import (
+	"math"
 	"math/rand/v2"
 	"runtime"
+	"time"
 )
 
 const (
 	// CacheLineSize is useful for preventing false sharing.
 	CacheLineSize = 64
+
+	MaxDuration = time.Duration(math.MaxInt64)
 )
 
 // Parallelism returns the maximum possible number of concurrently running goroutines.

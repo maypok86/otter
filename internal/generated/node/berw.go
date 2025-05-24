@@ -123,12 +123,24 @@ func (n *BERW[K, V]) CASExpiresAt(old, new int64) bool {
 	return n.expiresAt.CompareAndSwap(old, new)
 }
 
+func (n *BERW[K, V]) SetExpiresAt(new int64) {
+	n.expiresAt.Store(new)
+}
+
 func (n *BERW[K, V]) RefreshableAt() int64 {
 	return n.refreshableAt.Load()
 }
 
 func (n *BERW[K, V]) CASRefreshableAt(old, new int64) bool {
 	return n.refreshableAt.CompareAndSwap(old, new)
+}
+
+func (n *BERW[K, V]) SetRefreshableAt(new int64) {
+	n.refreshableAt.Store(new)
+}
+
+func (n *BERW[K, V]) IsFresh(now int64) bool {
+	return n.IsAlive() && n.RefreshableAt() > now
 }
 
 func (n *BERW[K, V]) Weight() uint32 {

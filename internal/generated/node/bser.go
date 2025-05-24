@@ -121,12 +121,24 @@ func (n *BSER[K, V]) CASExpiresAt(old, new int64) bool {
 	return n.expiresAt.CompareAndSwap(old, new)
 }
 
+func (n *BSER[K, V]) SetExpiresAt(new int64) {
+	n.expiresAt.Store(new)
+}
+
 func (n *BSER[K, V]) RefreshableAt() int64 {
 	return n.refreshableAt.Load()
 }
 
 func (n *BSER[K, V]) CASRefreshableAt(old, new int64) bool {
 	return n.refreshableAt.CompareAndSwap(old, new)
+}
+
+func (n *BSER[K, V]) SetRefreshableAt(new int64) {
+	n.refreshableAt.Store(new)
+}
+
+func (n *BSER[K, V]) IsFresh(now int64) bool {
+	return n.IsAlive() && n.RefreshableAt() > now
 }
 
 func (n *BSER[K, V]) Weight() uint32 {

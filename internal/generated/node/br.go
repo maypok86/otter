@@ -91,12 +91,24 @@ func (n *BR[K, V]) CASExpiresAt(old, new int64) bool {
 	panic("not implemented")
 }
 
+func (n *BR[K, V]) SetExpiresAt(new int64) {
+	panic("not implemented")
+}
+
 func (n *BR[K, V]) RefreshableAt() int64 {
 	return n.refreshableAt.Load()
 }
 
 func (n *BR[K, V]) CASRefreshableAt(old, new int64) bool {
 	return n.refreshableAt.CompareAndSwap(old, new)
+}
+
+func (n *BR[K, V]) SetRefreshableAt(new int64) {
+	n.refreshableAt.Store(new)
+}
+
+func (n *BR[K, V]) IsFresh(now int64) bool {
+	return n.IsAlive() && n.RefreshableAt() > now
 }
 
 func (n *BR[K, V]) Weight() uint32 {

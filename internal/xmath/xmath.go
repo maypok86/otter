@@ -14,6 +14,13 @@
 
 package xmath
 
+func Abs(a int64) int64 {
+	if a < 0 {
+		return -a
+	}
+	return a
+}
+
 // RoundUpPowerOf2 is based on https://graphics.stanford.edu/~seander/bithacks.html#RoundUpPowerOf2.
 func RoundUpPowerOf2(v uint32) uint32 {
 	if v == 0 {

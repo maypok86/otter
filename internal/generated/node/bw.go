@@ -105,12 +105,24 @@ func (n *BW[K, V]) CASExpiresAt(old, new int64) bool {
 	panic("not implemented")
 }
 
+func (n *BW[K, V]) SetExpiresAt(new int64) {
+	panic("not implemented")
+}
+
 func (n *BW[K, V]) RefreshableAt() int64 {
 	panic("not implemented")
 }
 
 func (n *BW[K, V]) CASRefreshableAt(old, new int64) bool {
 	panic("not implemented")
+}
+
+func (n *BW[K, V]) SetRefreshableAt(new int64) {
+	panic("not implemented")
+}
+
+func (n *BW[K, V]) IsFresh(now int64) bool {
+	return true
 }
 
 func (n *BW[K, V]) Weight() uint32 {

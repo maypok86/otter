@@ -58,9 +58,9 @@ func TestVariable_Add(t *testing.T) {
 		WithExpiration: true,
 	})
 	nodes := []node.Node[string, string]{
-		nm.Create("k1", "", getTestExp(1), 1),
-		nm.Create("k2", "", getTestExp(69), 1),
-		nm.Create("k3", "", getTestExp(4399), 1),
+		nm.Create("k1", "", getTestExp(1), 0, 1),
+		nm.Create("k2", "", getTestExp(69), 0, 1),
+		nm.Create("k3", "", getTestExp(4399), 0, 1),
 	}
 	v := NewVariable(nm)
 
@@ -109,13 +109,13 @@ func TestVariable_DeleteExpired(t *testing.T) {
 		WithExpiration: true,
 	})
 	nodes := []node.Node[string, string]{
-		nm.Create("k1", "", getTestExp(1), 1),
-		nm.Create("k2", "", getTestExp(10), 1),
-		nm.Create("k3", "", getTestExp(30), 1),
-		nm.Create("k4", "", getTestExp(120), 1),
-		nm.Create("k5", "", getTestExp(6500), 1),
-		nm.Create("k6", "", getTestExp(142000), 1),
-		nm.Create("k7", "", getTestExp(1420000), 1),
+		nm.Create("k1", "", getTestExp(1), 0, 1),
+		nm.Create("k2", "", getTestExp(10), 0, 1),
+		nm.Create("k3", "", getTestExp(30), 0, 1),
+		nm.Create("k4", "", getTestExp(120), 0, 1),
+		nm.Create("k5", "", getTestExp(6500), 0, 1),
+		nm.Create("k6", "", getTestExp(142000), 0, 1),
+		nm.Create("k7", "", getTestExp(1420000), 0, 1),
 	}
 	var expired []node.Node[string, string]
 	expireNode := func(n node.Node[string, string], nowNanos int64) {

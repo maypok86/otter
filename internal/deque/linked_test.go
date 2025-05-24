@@ -65,7 +65,7 @@ func checkLinkedPtrs[K comparable, V any](t *testing.T, d *Linked[K, V], nodes [
 
 func newNode[K comparable](e K) node.Node[K, K] {
 	m := node.NewManager[K, K](node.Config{WithWeight: true, WithExpiration: true})
-	return m.Create(e, e, 0, 0)
+	return m.Create(e, e, 0, 0, 0)
 }
 
 func TestLinked(t *testing.T) {

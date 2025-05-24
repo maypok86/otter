@@ -17,7 +17,6 @@ package otter
 import (
 	"context"
 	"errors"
-	"math"
 	"sync"
 	"time"
 
@@ -38,11 +37,10 @@ import (
 )
 
 const (
-	maxDuration                 = time.Duration(math.MaxInt64)
-	unreachableExpiresAfter     = maxDuration
-	unreachableRefreshableAfter = maxDuration
-	noTime                      = int64(0)
+	unreachableExpiresAfter     = xruntime.MaxDuration
+	unreachableRefreshableAfter = xruntime.MaxDuration
 	expireTolerance             = int64(time.Second)
+	noTime                      = int64(0)
 
 	minWriteBufferSize uint32 = 4
 )
@@ -86,13 +84,6 @@ type timeSource interface {
 func zeroValue[V any]() V {
 	var v V
 	return v
-}
-
-func abs(a int64) int64 {
-	if a < 0 {
-		return -a
-	}
-	return a
 }
 
 // Cache is a structure performs a best-effort bounding of a hash table using eviction algorithm
@@ -203,37 +194,33 @@ func newCache[K comparable, V any](o *Options[K, V]) *Cache[K, V] {
 	return cache
 }
 
-func (c *Cache[K, V]) nodeToEntry(n node.Node[K, V], offset int64) core.Entry[K, V] {
-	var (
-		nowNano       int64
-		expiresAt     int64
-		refreshableAt int64
-	)
+func (c *Cache[K, V]) newNode(key K, value V, old node.Node[K, V]) node.Node[K, V] {
+	weight := c.weigher(key, value)
+	expiresAt := int64(unreachableExpiresAfter)
+	if c.withExpiration && old != nil {
+		expiresAt = old.ExpiresAt()
+	}
+	refreshableAt := int64(unreachableRefreshableAfter)
+	if c.withRefresh && old != nil {
+		refreshableAt = old.RefreshableAt()
+	}
+	return c.nodeManager.Create(key, value, expiresAt, refreshableAt, weight)
+}
 
+func (c *Cache[K, V]) nodeToEntry(n node.Node[K, V], offset int64) core.Entry[K, V] {
+	nowNano := noTime
 	if c.withTime {
 		nowNano = c.clock.Nanos(offset)
-	} else {
-		nowNano = noTime
 	}
+
+	expiresAt := int64(unreachableExpiresAfter)
 	if c.withExpiration {
-		exp := n.ExpiresAt()
-		if exp == noTime {
-			expiresAt = int64(unreachableExpiresAfter)
-		} else {
-			expiresAt = c.clock.Nanos(exp)
-		}
-	} else {
-		expiresAt = int64(unreachableExpiresAfter)
+		expiresAt = c.clock.Nanos(n.ExpiresAt())
 	}
+
+	refreshableAt := int64(unreachableRefreshableAfter)
 	if c.withRefresh {
-		refr := n.RefreshableAt()
-		if refr == noTime {
-			refreshableAt = int64(unreachableRefreshableAfter)
-		} else {
-			refreshableAt = c.clock.Nanos(refr)
-		}
-	} else {
-		refreshableAt = int64(unreachableRefreshableAfter)
+		refreshableAt = c.clock.Nanos(n.RefreshableAt())
 	}
 
 	return core.Entry[K, V]{
@@ -254,7 +241,8 @@ func (c *Cache[K, V]) Has(key K) bool {
 
 // GetIfPresent returns the value associated with the key in this cache.
 func (c *Cache[K, V]) GetIfPresent(key K) (V, bool) {
-	n := c.getNode(key)
+	offset := c.clock.Offset()
+	n := c.getNode(key, offset)
 	if n == nil {
 		return zeroValue[V](), false
 	}
@@ -263,8 +251,7 @@ func (c *Cache[K, V]) GetIfPresent(key K) (V, bool) {
 }
 
 // getNode returns the node associated with the key in this cache.
-func (c *Cache[K, V]) getNode(key K) node.Node[K, V] {
-	offset := c.clock.Offset()
+func (c *Cache[K, V]) getNode(key K, offset int64) node.Node[K, V] {
 	n := c.hashmap.Get(key)
 	if n == nil || !n.IsAlive() || n.HasExpired(offset) {
 		c.stats.RecordMisses(1)
@@ -293,7 +280,7 @@ func (c *Cache[K, V]) getNodeQuietly(key K) node.Node[K, V] {
 func (c *Cache[K, V]) afterHit(got node.Node[K, V], offset int64) {
 	c.stats.RecordHits(1)
 
-	c.setExpiresAtAfterRead(got, offset)
+	c.calcExpiresAtAfterRead(got, offset)
 
 	if !c.withEviction {
 		return
@@ -324,23 +311,23 @@ func (c *Cache[K, V]) SetIfAbsent(key K, value V) (V, bool) {
 	return c.set(key, value, true)
 }
 
-func (c *Cache[K, V]) setExpiresAtAfterRead(n node.Node[K, V], offset int64) {
+func (c *Cache[K, V]) calcExpiresAtAfterRead(n node.Node[K, V], offset int64) {
 	if !c.withExpiration {
 		return
 	}
 
 	expiresAfter := c.expiryCalculator.ExpireAfterRead(c.nodeToEntry(n, offset))
-	c.manualSetExpiresAfterRead(n, offset, expiresAfter)
+	c.manualCalcExpiresAfterRead(n, offset, expiresAfter)
 }
 
-func (c *Cache[K, V]) manualSetExpiresAfterRead(n node.Node[K, V], offset int64, expiresAfter time.Duration) {
+func (c *Cache[K, V]) manualCalcExpiresAfterRead(n node.Node[K, V], offset int64, expiresAfter time.Duration) {
 	if expiresAfter <= 0 {
 		return
 	}
 
 	expiresAt := n.ExpiresAt()
 	currentDuration := time.Duration(expiresAt - offset)
-	diff := abs(int64(expiresAfter - currentDuration))
+	diff := xmath.Abs(int64(expiresAfter - currentDuration))
 	if diff > 0 {
 		n.CASExpiresAt(expiresAt, offset+int64(expiresAfter))
 		if diff >= expireTolerance {
@@ -360,26 +347,25 @@ func (c *Cache[K, V]) setExpiresAfter(key K, expiresAfter time.Duration) {
 		return
 	}
 
-	c.manualSetExpiresAfterRead(n, offset, expiresAfter)
+	c.manualCalcExpiresAfterRead(n, offset, expiresAfter)
 }
 
-func (c *Cache[K, V]) setExpiresAtAfterWrite(n, old node.Node[K, V], offset int64) {
+func (c *Cache[K, V]) calcExpiresAtAfterWrite(n, old node.Node[K, V], offset int64) {
 	if !c.withExpiration {
 		return
 	}
 
 	entry := c.nodeToEntry(n, offset)
-	currentDuration := unreachableExpiresAfter
+	currentDuration := entry.ExpiresAfter()
 	var expiresAfter time.Duration
 	if old == nil {
 		expiresAfter = c.expiryCalculator.ExpireAfterCreate(entry)
 	} else {
-		currentDuration = time.Duration(old.ExpiresAt() - offset)
 		expiresAfter = c.expiryCalculator.ExpireAfterUpdate(entry, old.Value())
 	}
 
 	if expiresAfter > 0 && currentDuration != expiresAfter {
-		n.CASExpiresAt(noTime, offset+int64(expiresAfter))
+		n.SetExpiresAt(offset + int64(expiresAfter))
 	}
 }
 
@@ -397,9 +383,9 @@ func (c *Cache[K, V]) set(key K, value V, onlyIfAbsent bool) (V, bool) {
 		}
 		// set
 		c.singleflight.delete(key)
-
-		n = c.nodeManager.Create(key, value, noTime, noTime, c.weigher(key, value))
-		c.setExpiresAtAfterWrite(n, old, offset)
+		n = c.newNode(key, value, old)
+		c.calcExpiresAtAfterWrite(n, old, offset)
+		c.calcRefreshableAt(n, old, nil, offset)
 		return n
 	})
 	if onlyIfAbsent {
@@ -407,7 +393,7 @@ func (c *Cache[K, V]) set(key K, value V, onlyIfAbsent bool) (V, bool) {
 			c.afterWrite(n, nil, offset)
 			return value, true
 		}
-		c.setExpiresAtAfterRead(old, offset)
+		c.calcExpiresAtAfterRead(old, offset)
 		return old.Value(), false
 	}
 
@@ -442,6 +428,37 @@ func (c *Cache[K, V]) afterWrite(n, old node.Node[K, V], offset int64) {
 	c.writeBuffer.Push(newUpdateTask(n, old, cause))
 }
 
+func (c *Cache[K, V]) refreshNode(n node.Node[K, V], loader Loader[K, V], offset int64) {
+	if !c.withRefresh || n.IsFresh(offset) {
+		return
+	}
+
+	go func() {
+		var reload func(ctx context.Context, key K) (V, error)
+		if reloader, ok := loader.(Reloader[K, V]); ok {
+			reload = reloader.Reload
+		} else {
+			reload = loader.Load
+		}
+
+		loadCtx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		cl, shouldLoad := c.singleflight.startCall(n.Key(), true)
+		if shouldLoad {
+			//nolint:errcheck // there is no need to check error
+			_ = c.wrapLoad(func() error {
+				return c.singleflight.doCall(loadCtx, cl, reload, c.afterDeleteCall)
+			})
+		}
+		cl.wait()
+
+		if cl.err != nil && !cl.isNotFound {
+			c.logger.Error(loadCtx, "Reload returned an error", cl.err)
+		}
+	}()
+}
+
 // Get returns the value associated with key in this cache, obtaining that value from loader if necessary.
 // The method improves upon the conventional "if cached, return; otherwise create, cache and return" pattern.
 //
@@ -462,11 +479,15 @@ func (c *Cache[K, V]) afterWrite(n, old node.Node[K, V], offset int64) {
 // for an RPC may wait for a similar call that requests a long timeout, or a call by an
 // unprivileged user may return a resource accessible only to a privileged user making a similar call.
 func (c *Cache[K, V]) Get(ctx context.Context, key K, loader Loader[K, V]) (V, error) {
-	if value, ok := c.GetIfPresent(key); ok {
-		return value, nil
+	c.singleflight.init()
+
+	offset := c.clock.Offset()
+	n := c.getNode(key, offset)
+	if n != nil {
+		c.refreshNode(n, loader, offset)
+		return n.Value(), nil
 	}
 
-	c.singleflight.init()
 	if c.withStats {
 		c.clock.Init()
 	}
@@ -475,11 +496,11 @@ func (c *Cache[K, V]) Get(ctx context.Context, key K, loader Loader[K, V]) (V, e
 	loadCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	cl, shouldLoad := c.singleflight.startCall(key)
+	cl, shouldLoad := c.singleflight.startCall(key, false)
 	if shouldLoad {
 		//nolint:errcheck // there is no need to check error
 		_ = c.wrapLoad(func() error {
-			return c.singleflight.doCall(loadCtx, cl, loader, c.afterDeleteCall)
+			return c.singleflight.doCall(loadCtx, cl, loader.Load, c.afterDeleteCall)
 		})
 	}
 	cl.wait()
@@ -489,6 +510,34 @@ func (c *Cache[K, V]) Get(ctx context.Context, key K, loader Loader[K, V]) (V, e
 	}
 
 	return cl.value, nil
+}
+
+func (c *Cache[K, V]) calcRefreshableAt(n, old node.Node[K, V], cl *call[K, V], offset int64) {
+	if !c.withRefresh {
+		return
+	}
+
+	var refreshableAfter time.Duration
+	entry := c.nodeToEntry(n, offset)
+	currentDuration := entry.RefreshableAfter()
+	//nolint:gocritic // it's ok
+	if cl != nil && cl.isRefresh {
+		if cl.err != nil {
+			if !cl.isNotFound {
+				refreshableAfter = c.refreshCalculator.RefreshAfterReloadFailure(entry, cl.err)
+			}
+		} else {
+			refreshableAfter = c.refreshCalculator.RefreshAfterReload(entry, old.Value())
+		}
+	} else if old != nil {
+		refreshableAfter = c.refreshCalculator.RefreshAfterUpdate(entry, old.Value())
+	} else {
+		refreshableAfter = c.refreshCalculator.RefreshAfterCreate(entry)
+	}
+
+	if refreshableAfter > 0 && currentDuration != refreshableAfter {
+		n.SetRefreshableAt(offset + int64(refreshableAfter))
+	}
 }
 
 func (c *Cache[K, V]) afterDeleteCall(cl *call[K, V]) {
@@ -502,6 +551,7 @@ func (c *Cache[K, V]) afterDeleteCall(cl *call[K, V]) {
 
 		deleted := c.singleflight.deleteCall(cl)
 		if cl.err != nil {
+			c.calcRefreshableAt(oldNode, oldNode, cl, offset)
 			return oldNode
 		}
 		if !deleted {
@@ -512,8 +562,9 @@ func (c *Cache[K, V]) afterDeleteCall(cl *call[K, V]) {
 		}
 		old = oldNode
 		inserted = true
-		n := c.nodeManager.Create(cl.key, cl.value, noTime, noTime, c.weigher(cl.key, cl.value))
-		c.setExpiresAtAfterWrite(n, old, offset)
+		n := c.newNode(cl.key, cl.value, old)
+		c.calcExpiresAtAfterWrite(n, old, offset)
+		c.calcRefreshableAt(n, old, cl, offset)
 		return n
 	})
 	if inserted {
@@ -521,9 +572,58 @@ func (c *Cache[K, V]) afterDeleteCall(cl *call[K, V]) {
 	}
 }
 
+func (c *Cache[K, V]) bulkRefreshNodes(keys []K, bulkLoader BulkLoader[K, V]) {
+	if len(keys) == 0 {
+		return
+	}
+
+	go func() {
+		var bulkReload func(ctx context.Context, keys []K) (map[K]V, error)
+		if bulkReloader, ok := bulkLoader.(BulkReloader[K, V]); ok {
+			bulkReload = bulkReloader.BulkReload
+		} else {
+			bulkReload = bulkLoader.BulkLoad
+		}
+
+		loadCtx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		var toLoadCalls map[K]*call[K, V]
+		i := 0
+		for _, key := range keys {
+			cl, shouldLoad := c.singleflight.startCall(key, true)
+			if shouldLoad {
+				if toLoadCalls == nil {
+					toLoadCalls = make(map[K]*call[K, V], len(keys)-i)
+				}
+
+				toLoadCalls[key] = cl
+			}
+			i++
+		}
+
+		var loadErr error
+		if len(toLoadCalls) > 0 {
+			loadErr = c.wrapLoad(func() error {
+				return c.singleflight.doBulkCall(loadCtx, toLoadCalls, bulkReload, c.afterDeleteCall)
+			})
+		}
+		if loadErr != nil {
+			c.logger.Error(loadCtx, "BulkReload returned an error", loadErr)
+		}
+		// all calls?
+	}()
+}
+
 func (c *Cache[K, V]) BulkGet(ctx context.Context, keys []K, bulkLoader BulkLoader[K, V]) (map[K]V, error) {
+	c.singleflight.init()
+
+	offset := c.clock.Offset()
 	result := make(map[K]V, len(keys))
-	var misses map[K]*call[K, V]
+	var (
+		misses    map[K]*call[K, V]
+		toRefresh []K
+	)
 	for _, key := range keys {
 		if _, found := result[key]; found {
 			continue
@@ -531,8 +631,18 @@ func (c *Cache[K, V]) BulkGet(ctx context.Context, keys []K, bulkLoader BulkLoad
 		if _, found := misses[key]; found {
 			continue
 		}
-		if value, ok := c.GetIfPresent(key); ok {
-			result[key] = value
+
+		n := c.getNode(key, offset)
+		if n != nil {
+			if c.withRefresh && !n.IsFresh(offset) {
+				if toRefresh == nil {
+					toRefresh = make([]K, 0, len(keys)-len(result))
+				}
+
+				toRefresh = append(toRefresh, n.Key())
+			}
+
+			result[key] = n.Value()
 			continue
 		}
 
@@ -542,6 +652,7 @@ func (c *Cache[K, V]) BulkGet(ctx context.Context, keys []K, bulkLoader BulkLoad
 		misses[key] = nil
 	}
 
+	c.bulkRefreshNodes(toRefresh, bulkLoader)
 	if len(misses) == 0 {
 		return result, nil
 	}
@@ -549,7 +660,6 @@ func (c *Cache[K, V]) BulkGet(ctx context.Context, keys []K, bulkLoader BulkLoad
 	loadCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	c.singleflight.init()
 	if c.withStats {
 		c.clock.Init()
 	}
@@ -558,7 +668,7 @@ func (c *Cache[K, V]) BulkGet(ctx context.Context, keys []K, bulkLoader BulkLoad
 	i := 0
 	for key := range misses {
 		// node.Node compute?
-		cl, shouldLoad := c.singleflight.startCall(key)
+		cl, shouldLoad := c.singleflight.startCall(key, false)
 		if shouldLoad {
 			if toLoadCalls == nil {
 				toLoadCalls = make(map[K]*call[K, V], len(misses)-i)
@@ -573,7 +683,7 @@ func (c *Cache[K, V]) BulkGet(ctx context.Context, keys []K, bulkLoader BulkLoad
 	var loadErr error
 	if len(toLoadCalls) > 0 {
 		loadErr = c.wrapLoad(func() error {
-			return c.singleflight.doBulkCall(loadCtx, toLoadCalls, bulkLoader, c.afterDeleteCall)
+			return c.singleflight.doBulkCall(loadCtx, toLoadCalls, bulkLoader.BulkLoad, c.afterDeleteCall)
 		})
 	}
 	if loadErr != nil {
@@ -591,7 +701,7 @@ func (c *Cache[K, V]) BulkGet(ctx context.Context, keys []K, bulkLoader BulkLoad
 			result[key] = cl.value
 			continue
 		}
-		if _, ok := toLoadCalls[key]; ok || errors.Is(cl.err, ErrNotFound) {
+		if _, ok := toLoadCalls[key]; ok || cl.isNotFound {
 			continue
 		}
 		if errsFromCalls == nil {

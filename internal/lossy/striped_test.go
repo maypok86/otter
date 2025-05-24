@@ -42,7 +42,7 @@ func TestNewStriped(t *testing.T) {
 	if got := s.striped.Load(); got != nil {
 		t.Fatalf("the striped buffer must be nil, but got: %v", got)
 	}
-	res := s.Add(nm.Create(1, 2, 100, 1))
+	res := s.Add(nm.Create(1, 2, 100, 0, 1))
 	if l := s.striped.Load().len; l != 1 {
 		t.Fatalf("the striped buffer length must be 1, but got: %d", l)
 	}
@@ -63,7 +63,7 @@ func TestStriped_Add(t *testing.T) {
 		WithExpiration: true,
 	})
 	s := NewStriped(maxBufferLen, nm)
-	n := nm.Create(1, 2, 100, 1)
+	n := nm.Create(1, 2, 100, 0, 1)
 
 	var wg sync.WaitGroup
 	wg.Add(goroutines)
@@ -97,7 +97,7 @@ func TestStriped_DrainTo(t *testing.T) {
 		WithExpiration: true,
 	})
 	s := NewStriped(64, nm)
-	n := nm.Create(1, 2, 100, 1)
+	n := nm.Create(1, 2, 100, 0, 1)
 
 	var drains int
 	s.DrainTo(func(n node.Node[int, int]) {
@@ -135,7 +135,7 @@ func TestStriped_AddAndDrain(t *testing.T) {
 		WithExpiration: true,
 	})
 	s := NewStriped(maxBufferLen, nm)
-	n := nm.Create(1, 2, 100, 1)
+	n := nm.Create(1, 2, 100, 0, 1)
 
 	var (
 		wg     sync.WaitGroup

@@ -107,12 +107,24 @@ func (n *BSR[K, V]) CASExpiresAt(old, new int64) bool {
 	panic("not implemented")
 }
 
+func (n *BSR[K, V]) SetExpiresAt(new int64) {
+	panic("not implemented")
+}
+
 func (n *BSR[K, V]) RefreshableAt() int64 {
 	return n.refreshableAt.Load()
 }
 
 func (n *BSR[K, V]) CASRefreshableAt(old, new int64) bool {
 	return n.refreshableAt.CompareAndSwap(old, new)
+}
+
+func (n *BSR[K, V]) SetRefreshableAt(new int64) {
+	n.refreshableAt.Store(new)
+}
+
+func (n *BSR[K, V]) IsFresh(now int64) bool {
+	return n.IsAlive() && n.RefreshableAt() > now
 }
 
 func (n *BSR[K, V]) Weight() uint32 {
