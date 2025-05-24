@@ -83,6 +83,9 @@ func (e Entry[K, V]) ExpiresAfter() time.Duration {
 
 // HasExpired returns true if the entry has expired.
 func (e Entry[K, V]) HasExpired() bool {
+	if e.ExpiresAtNano == 0 {
+		return false
+	}
 	return e.ExpiresAtNano < e.SnapshotAtNano
 }
 
