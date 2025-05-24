@@ -523,6 +523,81 @@ func TestCache_SetWithExpiresAt(t *testing.T) {
 	}
 }
 
+func TestCache_SetWithExpiresAfterAccessing(t *testing.T) {
+	t.Parallel()
+
+	size := getRandomSize(t)
+	var mutex sync.Mutex
+	m := make(map[DeletionCause]int)
+	statsCounter := stats.NewCounter()
+	c := Must(&Options[int, int]{
+		MaximumSize:      size,
+		InitialCapacity:  size,
+		StatsRecorder:    statsCounter,
+		ExpiryCalculator: expiry.Accessing[int, int](2 * time.Second),
+		OnDeletion: func(e DeletionEvent[int, int]) {
+			mutex.Lock()
+			m[e.Cause]++
+			mutex.Unlock()
+		},
+	})
+
+	for i := 0; i < size; i++ {
+		c.Set(i, i)
+	}
+
+	time.Sleep(3 * time.Second)
+	for i := 0; i < size; i++ {
+		if c.Has(i) {
+			t.Fatalf("key should be expired: %d", i)
+		}
+	}
+
+	time.Sleep(10 * time.Millisecond)
+
+	if cacheSize := c.Size(); cacheSize != 0 {
+		t.Fatalf("cacheSize = %d, want = %d", cacheSize, 0)
+	}
+
+	for i := 0; i < size; i++ {
+		c.Set(i, i)
+	}
+
+	time.Sleep(time.Second)
+
+	for i := 0; i < size; i++ {
+		if i%2 == 0 {
+			if !c.Has(i) {
+				t.Fatalf("key should be expired: %d", i)
+			}
+		} else {
+			c.Set(i, i)
+		}
+	}
+
+	time.Sleep(2 * time.Second)
+
+	if cacheSize := c.Size(); cacheSize == 0 {
+		t.Fatal("cacheSize should be positive")
+	}
+	if misses := statsCounter.Snapshot().Misses(); misses != uint64(size) {
+		t.Fatalf("c.Stats().Misses() = %d, want = %d", misses, size)
+	}
+	mutex.Lock()
+	defer mutex.Unlock()
+	if len(m) != 2 || m[CauseExpiration] != size && m[CauseReplacement] != size/2 {
+		t.Fatalf("cache was supposed to expire %d, but expired %d entries", size, m[CauseExpiration])
+	}
+	if statsCounter.Snapshot().Evictions() != uint64(m[CauseExpiration]) {
+		mutex.Unlock()
+		t.Fatalf(
+			"Eviction statistics are not collected for expiration. Evictions: %d, expired entries: %d",
+			statsCounter.Snapshot().Evictions(),
+			m[CauseExpiration],
+		)
+	}
+}
+
 func TestCache_Invalidate(t *testing.T) {
 	t.Parallel()
 

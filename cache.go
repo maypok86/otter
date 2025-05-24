@@ -201,25 +201,14 @@ func newCache[K comparable, V any](o *Options[K, V]) *Cache[K, V] {
 }
 
 func (c *Cache[K, V]) nodeToEntry(n node.Node[K, V], offset int64) core.Entry[K, V] {
-	var (
-		nowNano   int64
-		expiresAt int64
-	)
+	var expiresAt int64
 
-	if c.withTime {
-		nowNano = c.clock.Nanos(offset)
-	} else {
-		nowNano = noTime
-	}
-	if c.withExpiration {
-		exp := n.ExpiresAt()
-		if exp == noTime {
-			expiresAt = int64(unreachableExpiresAfter)
-		} else {
-			expiresAt = c.clock.Nanos(exp)
-		}
-	} else {
+	nowNano := c.clock.Nanos(offset)
+	exp := n.ExpiresAt()
+	if exp == noTime {
 		expiresAt = int64(unreachableExpiresAfter)
+	} else {
+		expiresAt = c.clock.Nanos(exp)
 	}
 
 	return core.Entry[K, V]{
