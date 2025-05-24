@@ -212,7 +212,12 @@ func (c *Cache[K, V]) nodeToEntry(n node.Node[K, V], offset int64) core.Entry[K,
 		nowNano = noTime
 	}
 	if c.withExpiration {
-		expiresAt = c.clock.Nanos(n.ExpiresAt())
+		exp := n.ExpiresAt()
+		if exp == noTime {
+			expiresAt = int64(unreachableExpiresAfter)
+		} else {
+			expiresAt = c.clock.Nanos(exp)
+		}
 	} else {
 		expiresAt = int64(unreachableExpiresAfter)
 	}
@@ -310,16 +315,38 @@ func (c *Cache[K, V]) setExpiresAtAfterRead(n node.Node[K, V], offset int64) {
 		return
 	}
 
-	entry := c.nodeToEntry(n, offset)
-	currentDuration := time.Duration(n.ExpiresAt() - offset)
-	expiresAfter := c.expiryCalculator.ExpireAfterRead(entry)
+	expiresAfter := c.expiryCalculator.ExpireAfterRead(c.nodeToEntry(n, offset))
+	c.manualSetExpiresAfterRead(n, offset, expiresAfter)
+}
+
+func (c *Cache[K, V]) manualSetExpiresAfterRead(n node.Node[K, V], offset int64, expiresAfter time.Duration) {
+	if expiresAfter <= 0 {
+		return
+	}
+
+	expiresAt := n.ExpiresAt()
+	currentDuration := time.Duration(expiresAt - offset)
 	diff := abs(int64(expiresAfter - currentDuration))
 	if diff > 0 {
-		n.CASExpiresAt(n.ExpiresAt(), offset+int64(expiresAfter))
+		n.CASExpiresAt(expiresAt, offset+int64(expiresAfter))
 		if diff >= expireTolerance {
 			c.writeBuffer.Push(newRescheduleTask(n))
 		}
 	}
+}
+
+func (c *Cache[K, V]) setExpiresAfter(key K, expiresAfter time.Duration) {
+	if !c.withExpiration || expiresAfter <= 0 {
+		return
+	}
+
+	offset := c.clock.Offset()
+	n := c.hashmap.Get(key)
+	if n == nil || !n.IsAlive() {
+		return
+	}
+
+	c.manualSetExpiresAfterRead(n, offset, expiresAfter)
 }
 
 func (c *Cache[K, V]) setExpiresAtAfterWrite(n, old node.Node[K, V], offset int64) {
@@ -337,7 +364,7 @@ func (c *Cache[K, V]) setExpiresAtAfterWrite(n, old node.Node[K, V], offset int6
 		expiresAfter = c.expiryCalculator.ExpireAfterUpdate(entry, old.Value())
 	}
 
-	if currentDuration != expiresAfter {
+	if expiresAfter > 0 && currentDuration != expiresAfter {
 		n.CASExpiresAt(noTime, offset+int64(expiresAfter))
 	}
 }
@@ -695,10 +722,11 @@ func (c *Cache[K, V]) cleanup() {
 }
 
 func (c *Cache[K, V]) evictOrExpireNode(n node.Node[K, V], nowNanos int64) {
-	c.policy.Delete(n)
-	c.expirationPolicy.Delete(n)
 	deleted := c.deleteNodeFromMap(n)
 	if deleted != nil {
+		c.policy.Delete(n)
+		c.expirationPolicy.Delete(n)
+
 		n.Die()
 
 		cause := CauseOverflow
