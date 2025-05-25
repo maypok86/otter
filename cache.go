@@ -343,11 +343,29 @@ func (c *Cache[K, V]) setExpiresAfter(key K, expiresAfter time.Duration) {
 
 	offset := c.clock.Offset()
 	n := c.hashmap.Get(key)
-	if n == nil || !n.IsAlive() {
+	if n == nil {
 		return
 	}
 
 	c.manualCalcExpiresAfterRead(n, offset, expiresAfter)
+}
+
+func (c *Cache[K, V]) setRefreshableAfter(key K, refreshableAfter time.Duration) {
+	if !c.withRefresh || refreshableAfter <= 0 {
+		return
+	}
+
+	offset := c.clock.Offset()
+	n := c.hashmap.Get(key)
+	if n == nil {
+		return
+	}
+
+	entry := c.nodeToEntry(n, offset)
+	currentDuration := entry.RefreshableAfter()
+	if refreshableAfter > 0 && currentDuration != refreshableAfter {
+		n.SetRefreshableAt(offset + int64(refreshableAfter))
+	}
 }
 
 func (c *Cache[K, V]) calcExpiresAtAfterWrite(n, old node.Node[K, V], offset int64) {
@@ -433,7 +451,6 @@ type refreshableKey[K comparable] struct {
 	found bool
 }
 
-//nolint:contextcheck // No context is needed here.
 func (c *Cache[K, V]) refreshKey(rk refreshableKey[K], loader Loader[K, V]) {
 	if !c.withRefresh {
 		return
@@ -583,7 +600,6 @@ func (c *Cache[K, V]) afterDeleteCall(cl *call[K, V]) {
 	}
 }
 
-//nolint:contextcheck // No context is needed here.
 func (c *Cache[K, V]) bulkRefreshKeys(rks []refreshableKey[K], bulkLoader BulkLoader[K, V]) {
 	if !c.withRefresh || len(rks) == 0 {
 		return

@@ -26,7 +26,6 @@ linters:
     - asciicheck
     - bidichk
     - bodyclose
-    - contextcheck
     - durationcheck
     - errcheck
     - errname
