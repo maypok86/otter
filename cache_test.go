@@ -244,11 +244,48 @@ func TestCache_Close(t *testing.T) {
 	if cacheSize := c.Size(); cacheSize != 0 {
 		t.Fatalf("c.Size() = %d, want = %d", cacheSize, 0)
 	}
+	if l := c.writeBuffer.Len(); l != 0 {
+		t.Fatalf("writeBufferLen = %d, want = %d", l, 0)
+	}
 
 	c.Close()
 
 	if cacheSize := c.Size(); cacheSize != 0 {
 		t.Fatalf("c.Size() = %d, want = %d", cacheSize, 0)
+	}
+	if l := c.writeBuffer.Len(); l != 0 {
+		t.Fatalf("writeBufferLen = %d, want = %d", l, 0)
+	}
+}
+
+func TestCache_CleanUp(t *testing.T) {
+	t.Parallel()
+
+	size := 10
+	c := Must(&Options[int, int]{
+		MaximumSize:      size,
+		ExpiryCalculator: expiry.Creating[int, int](2 * time.Second),
+	})
+
+	for i := 0; i < size; i++ {
+		c.Set(i, i)
+	}
+
+	for i := 0; i < size; i++ {
+		c.Has(i)
+		c.Has(i)
+	}
+
+	if l := c.stripedBuffer.Len(); l == 0 {
+		t.Fatalf("stripedBufferLen = %d, want > %d", l, 0)
+	}
+	c.CleanUp()
+
+	if cacheSize := c.Size(); cacheSize != size {
+		t.Fatalf("c.Size() = %d, want = %d", cacheSize, size)
+	}
+	if l := c.stripedBuffer.Len(); l != 0 {
+		t.Fatalf("stripedBufferLen = %d, want = %d", l, 0)
 	}
 }
 

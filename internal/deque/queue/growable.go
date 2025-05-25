@@ -87,18 +87,16 @@ func (g *Growable[T]) TryPop() (T, bool) {
 	return item, true
 }
 
-func (g *Growable[T]) pop() T {
-	item, _ := g.popByPredicate(nil)
-	return item
+func (g *Growable[T]) Len() int {
+	g.mutex.Lock()
+	defer g.mutex.Unlock()
+	return g.count
 }
 
-func (g *Growable[T]) popByPredicate(predicate func(T) bool) (T, bool) {
+func (g *Growable[T]) pop() T {
 	var zero T
 
 	item := g.buf[g.head]
-	if predicate != nil && !predicate(item) {
-		return zero, false
-	}
 
 	g.buf[g.head] = zero
 
@@ -107,17 +105,15 @@ func (g *Growable[T]) popByPredicate(predicate func(T) bool) (T, bool) {
 
 	g.notFull.Signal()
 
-	return item, true
+	return item
 }
 
-func (g *Growable[T]) DeleteAllByPredicate(predicate func(T) bool) {
+func (g *Growable[T]) clear() {
 	g.mutex.Lock()
 	defer g.mutex.Unlock()
 
 	for g.count > 0 {
-		if _, ok := g.popByPredicate(predicate); !ok {
-			return
-		}
+		g.pop()
 	}
 }
 

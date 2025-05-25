@@ -102,7 +102,6 @@ type Cache[K comparable, V any] struct {
 	singleflight      *group[K, V]
 	evictionMutex     sync.Mutex
 	closeOnce         sync.Once
-	doneClear         chan struct{}
 	doneClose         chan struct{}
 	weigher           func(key K, value V) uint32
 	onDeletion        func(e DeletionEvent[K, V])
@@ -152,8 +151,6 @@ func newCache[K comparable, V any](o *Options[K, V]) *Cache[K, V] {
 		logger:            o.Logger,
 		stripedBuffer:     stripedBuffer,
 		singleflight:      &group[K, V]{},
-		doneClear:         make(chan struct{}),
-		doneClose:         make(chan struct{}, 1),
 		weigher:           o.Weigher,
 		onDeletion:        o.OnDeletion,
 		clock:             &clock.Real{},
@@ -180,13 +177,14 @@ func newCache[K comparable, V any](o *Options[K, V]) *Cache[K, V] {
 	cache.withProcess = cache.withEviction || cache.withExpiration
 
 	if cache.withProcess {
+		cache.doneClose = make(chan struct{})
 		cache.writeBuffer = queue.NewGrowable[task[K, V]](minWriteBufferSize, maxWriteBufferSize)
 	}
 	if cache.withTime {
 		cache.clock.Init()
 	}
 	if cache.withExpiration {
-		go cache.cleanup()
+		go cache.periodicExpire()
 	}
 	if cache.withProcess {
 		go cache.process()
@@ -982,7 +980,14 @@ func (c *Cache[K, V]) notifyDeletion(key K, value V, cause DeletionCause) {
 	})
 }
 
-func (c *Cache[K, V]) cleanup() {
+func (c *Cache[K, V]) expire() {
+	offset := c.clock.Refresh()
+	c.evictionMutex.Lock()
+	c.expirationPolicy.DeleteExpired(offset, c.evictOrExpireNode)
+	c.evictionMutex.Unlock()
+}
+
+func (c *Cache[K, V]) periodicExpire() {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	for {
@@ -990,10 +995,7 @@ func (c *Cache[K, V]) cleanup() {
 		case <-c.doneClose:
 			return
 		case <-ticker.C:
-			offset := c.clock.Refresh()
-			c.evictionMutex.Lock()
-			c.expirationPolicy.DeleteExpired(offset, c.evictOrExpireNode)
-			c.evictionMutex.Unlock()
+			c.expire()
 		}
 	}
 }
@@ -1031,19 +1033,14 @@ func (c *Cache[K, V]) deleteFromPolicies(n node.Node[K, V], cause DeletionCause)
 	c.notifyDeletion(n.Key(), n.Value(), cause)
 }
 
-func (c *Cache[K, V]) onWrite(t task[K, V], offset int64) {
-	if t.isClear() || t.isClose() {
-		c.writeBuffer.DeleteAllByPredicate(func(t task[K, V]) bool {
-			return !(t.isClear() || t.isClose())
-		})
-
-		c.policy.Clear()
-		c.expirationPolicy.Clear()
-
-		if t.isClose() {
+func (c *Cache[K, V]) onWrite(t task[K, V], offset int64, isBackground bool) {
+	if t.isClose() {
+		if isBackground {
+			if c.withExpiration {
+				c.doneClose <- struct{}{}
+			}
 			c.doneClose <- struct{}{}
 		}
-		c.doneClear <- struct{}{}
 		return
 	}
 
@@ -1066,7 +1063,7 @@ func (c *Cache[K, V]) onWrite(t task[K, V], offset int64) {
 
 func (c *Cache[K, V]) onBulkWrite(buffer []task[K, V], offset int64) bool {
 	for _, t := range buffer {
-		c.onWrite(t, offset)
+		c.onWrite(t, offset, true)
 		if t.isClose() {
 			return true
 		}
@@ -1119,26 +1116,58 @@ func (c *Cache[K, V]) All() iter.Seq2[K, V] {
 	}
 }
 
-// InvalidateAll discards all entries in the cache.
-//
-// NOTE: this operation must be performed when no requests are made to the cache otherwise the behavior is undefined.
+// InvalidateAll discards all entries in the cache. The behavior of this operation is undefined for an entry
+// that is being loaded (or reloaded) and is otherwise not present.
 func (c *Cache[K, V]) InvalidateAll() {
-	c.clear(newClearTask[K, V]())
-}
-
-func (c *Cache[K, V]) clear(t task[K, V]) {
-	c.hashmap.Clear()
-
-	if !c.withProcess {
-		return
-	}
+	c.evictionMutex.Lock()
 
 	if c.withEviction {
-		c.stripedBuffer.Clear()
+		c.stripedBuffer.DrainTo(func(n node.Node[K, V]) {})
+		c.policy.Clear()
+	}
+	if c.withExpiration {
+		c.expirationPolicy.Clear()
+	}
+	c.cleanUpWriteBuffer()
+	c.hashmap.Clear()
+
+	c.evictionMutex.Unlock()
+}
+
+func (c *Cache[K, V]) cleanUpWriteBuffer() {
+	hasClose := false
+	if c.withProcess {
+		offset := c.clock.Offset()
+		for {
+			t, ok := c.writeBuffer.TryPop()
+			if !ok {
+				break
+			}
+			c.onWrite(t, offset, false)
+			if t.isClose() {
+				hasClose = true
+			}
+		}
+	}
+	if hasClose {
+		c.writeBuffer.Push(newCloseTask[K, V]())
+	}
+}
+
+// CleanUp performs any pending maintenance operations needed by the cache. Exactly which activities are
+// performed -- if any -- is implementation-dependent.
+func (c *Cache[K, V]) CleanUp() {
+	c.evictionMutex.Lock()
+	defer c.evictionMutex.Unlock()
+
+	if c.withEviction {
+		c.stripedBuffer.DrainTo(c.policy.Read)
+	}
+	if c.withExpiration {
+		c.expirationPolicy.DeleteExpired(c.clock.Offset(), c.evictOrExpireNode)
 	}
 
-	c.writeBuffer.Push(t)
-	<-c.doneClear
+	c.cleanUpWriteBuffer()
 }
 
 // Close discards all entries in the cache and stop all goroutines.
@@ -1146,7 +1175,11 @@ func (c *Cache[K, V]) clear(t task[K, V]) {
 // NOTE: this operation must be performed when no requests are made to the cache otherwise the behavior is undefined.
 func (c *Cache[K, V]) Close() {
 	c.closeOnce.Do(func() {
-		c.clear(newCloseTask[K, V]())
+		if c.withProcess {
+			c.writeBuffer.Push(newCloseTask[K, V]())
+		}
+		c.InvalidateAll()
+		<-c.doneClose
 	})
 }
 

@@ -27,7 +27,6 @@ const (
 	deleteReason
 	updateReason
 	rescheduleReason
-	clearReason
 	closeReason
 )
 
@@ -74,13 +73,6 @@ func newRescheduleTask[K comparable, V any](n node.Node[K, V]) task[K, V] {
 	}
 }
 
-// newClearTask creates a task to clear policies.
-func newClearTask[K comparable, V any]() task[K, V] {
-	return task[K, V]{
-		writeReason: clearReason,
-	}
-}
-
 // newCloseTask creates a task to clear policies and stop all goroutines.
 func newCloseTask[K comparable, V any]() task[K, V] {
 	return task[K, V]{
@@ -115,11 +107,6 @@ func (t *task[K, V]) isUpdate() bool {
 
 func (t *task[K, V]) isReschedule() bool {
 	return t.writeReason == rescheduleReason
-}
-
-// isClear returns true if this is a clear task.
-func (t *task[K, V]) isClear() bool {
-	return t.writeReason == clearReason
 }
 
 // isClose returns true if this is a close task.

@@ -115,6 +115,11 @@ func (r *ring[K, V]) drainTo(consumer func(n node.Node[K, V])) {
 	r.head.Store(head)
 }
 
+func (r *ring[K, V]) len() int {
+	//nolint:gosec // there is no overflow
+	return int(r.tail.Load() - r.head.Load())
+}
+
 func (r *ring[K, V]) clear() {
 	for i := 0; i < bufferSize; i++ {
 		atomic.StorePointer(&r.buffer[i], nil)

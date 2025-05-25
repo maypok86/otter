@@ -200,6 +200,22 @@ func (s *Striped[K, V]) DrainTo(consumer func(n node.Node[K, V])) {
 	}
 }
 
+func (s *Striped[K, V]) Len() int {
+	result := 0
+	bs := s.striped.Load()
+	if bs == nil {
+		return result
+	}
+	for i := 0; i < bs.len; i++ {
+		b := bs.buffers[i].Load()
+		if b == nil {
+			continue
+		}
+		result += b.len()
+	}
+	return result
+}
+
 func (s *Striped[K, V]) Clear() {
 	bs := s.striped.Load()
 	if bs == nil {

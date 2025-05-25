@@ -45,11 +45,6 @@ func TestTask(t *testing.T) {
 		t.Fatalf("not valid update task %+v", updateTask)
 	}
 
-	clearTask := newClearTask[int, int]()
-	if clearTask.node() != nil || !clearTask.isClear() {
-		t.Fatalf("not valid clear task %+v", clearTask)
-	}
-
 	closeTask := newCloseTask[int, int]()
 	if closeTask.node() != nil || !closeTask.isClose() {
 		t.Fatalf("not valid close task %+v", closeTask)
