@@ -549,7 +549,7 @@ func (c *Cache[K, V]) calcRefreshableAt(n, old node.Node[K, V], cl *call[K, V], 
 	entry := c.nodeToEntry(n, offset)
 	currentDuration := entry.RefreshableAfter()
 	//nolint:gocritic // it's ok
-	if cl != nil && cl.isRefresh {
+	if cl != nil && cl.isRefresh && old != nil {
 		if cl.err != nil {
 			if !cl.isNotFound {
 				refreshableAfter = c.refreshCalculator.RefreshAfterReloadFailure(entry, cl.err)
@@ -857,15 +857,20 @@ func (c *Cache[K, V]) Refresh(key K, loader Loader[K, V]) {
 // for an RPC may wait for a similar call that requests a long timeout, or a call by an
 // unprivileged user may return a resource accessible only to a privileged user making a similar call.
 func (c *Cache[K, V]) BulkRefresh(keys []K, bulkLoader BulkLoader[K, V]) {
-	if !c.withRefresh {
+	if !c.withRefresh || len(keys) == 0 {
 		return
 	}
 
 	c.singleflight.init()
 
+	uniq := make(map[K]struct{}, len(keys))
+	for _, k := range keys {
+		uniq[k] = struct{}{}
+	}
+
 	offset := c.clock.Offset()
-	toRefresh := make([]refreshableKey[K], 0, len(keys))
-	for _, key := range keys {
+	toRefresh := make([]refreshableKey[K], 0, len(uniq))
+	for key := range uniq {
 		n := c.getNode(key, offset)
 		toRefresh = append(toRefresh, refreshableKey[K]{
 			key:   key,
