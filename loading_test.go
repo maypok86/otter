@@ -164,7 +164,7 @@ func TestCache_GetPanic(t *testing.T) {
 			if c.singleflight.getCall(k1) != nil {
 				t.Fatal("the call should be deleted even in case of panic")
 			}
-			if c.Size() > 0 {
+			if c.EstimatedSize() > 0 {
 				t.Fatal("the cache should be empty after panic")
 			}
 		})
@@ -238,7 +238,7 @@ func TestCache_BulkGetPanic(t *testing.T) {
 					t.Fatal("calls should be deleted even in case of panic")
 				}
 			}
-			if c.Size() > 0 {
+			if c.EstimatedSize() > 0 {
 				t.Fatal("the cache should be empty after panic")
 			}
 		})
@@ -279,7 +279,7 @@ func TestCache_GetWithSuccessLoad(t *testing.T) {
 		t.Fatalf("Get value = %v; want = %v", v, v1)
 	}
 
-	if e, ok := c.GetEntryQuietly(k1); c.Size() != 1 || ok && e.Value != v1 {
+	if e, ok := c.GetEntryQuietly(k1); c.EstimatedSize() != 1 || ok && e.Value != v1 {
 		t.Fatalf("the cache should only contain the key = %v", k1)
 	}
 
@@ -481,7 +481,7 @@ func TestCache_BulkGetWithSuccessLoad(t *testing.T) {
 		}
 	}
 
-	if c.Size() != 9 {
+	if c.EstimatedSize() != 9 {
 		t.Fatalf("the cache should only contain unique keys")
 	}
 
@@ -580,7 +580,7 @@ func TestCache_BulkGetWithSuccessRefresh(t *testing.T) {
 		}
 	}
 
-	if c.Size() != 9 {
+	if c.EstimatedSize() != 9 {
 		t.Fatalf("the cache should only contain unique keys")
 	}
 
@@ -664,7 +664,7 @@ func TestCache_BulkRefresh(t *testing.T) {
 		}
 	}
 
-	if c.Size() != 9 {
+	if c.EstimatedSize() != 9 {
 		t.Fatalf("the cache should only contain unique keys")
 	}
 
@@ -717,7 +717,7 @@ func TestCache_GetWithFailedLoad(t *testing.T) {
 		t.Fatalf("unexpected non-zero value %#v", v)
 	}
 
-	if c.Size() > 0 {
+	if c.EstimatedSize() > 0 {
 		t.Fatal("the cache should be empty")
 	}
 
@@ -783,7 +783,7 @@ func TestCache_GetWithFailedRefresh(t *testing.T) {
 		t.Fatalf("not valid logger stats. errs = %v, warns = %v", l.errs.Load(), l.warns.Load())
 	}
 
-	if c.Size() > 1 {
+	if c.EstimatedSize() > 1 {
 		t.Fatal("the cache should not be empty")
 	}
 
@@ -906,7 +906,7 @@ func TestCache_BulkGetWithFailedRefresh(t *testing.T) {
 		t.Fatalf("not valid logger stats. errs = %v, warns = %v", l.errs.Load(), l.warns.Load())
 	}
 
-	if c.Size() > 2 {
+	if c.EstimatedSize() > 2 {
 		t.Fatal("the cache should not be empty")
 	}
 
@@ -977,7 +977,7 @@ func TestCache_GetWithSuppressedLoad(t *testing.T) {
 		t.Fatalf("number of calls = %d; want over 0 and less than %d", got, n)
 	}
 
-	if e, ok := c.GetEntryQuietly(k1); c.Size() != 1 || ok && e.Value != v1 {
+	if e, ok := c.GetEntryQuietly(k1); c.EstimatedSize() != 1 || ok && e.Value != v1 {
 		t.Fatalf("the cache should only contain the key = %v", k1)
 	}
 

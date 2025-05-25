@@ -233,16 +233,16 @@ func TestCache_Close(t *testing.T) {
 		c.Set(i, i)
 	}
 
-	if cacheSize := c.Size(); cacheSize != size {
-		t.Fatalf("c.Size() = %d, want = %d", cacheSize, size)
+	if cacheSize := c.EstimatedSize(); cacheSize != size {
+		t.Fatalf("c.EstimatedSize() = %d, want = %d", cacheSize, size)
 	}
 
 	c.Close()
 
 	time.Sleep(10 * time.Millisecond)
 
-	if cacheSize := c.Size(); cacheSize != 0 {
-		t.Fatalf("c.Size() = %d, want = %d", cacheSize, 0)
+	if cacheSize := c.EstimatedSize(); cacheSize != 0 {
+		t.Fatalf("c.EstimatedSize() = %d, want = %d", cacheSize, 0)
 	}
 	if l := c.writeBuffer.Len(); l != 0 {
 		t.Fatalf("writeBufferLen = %d, want = %d", l, 0)
@@ -250,8 +250,8 @@ func TestCache_Close(t *testing.T) {
 
 	c.Close()
 
-	if cacheSize := c.Size(); cacheSize != 0 {
-		t.Fatalf("c.Size() = %d, want = %d", cacheSize, 0)
+	if cacheSize := c.EstimatedSize(); cacheSize != 0 {
+		t.Fatalf("c.EstimatedSize() = %d, want = %d", cacheSize, 0)
 	}
 	if l := c.writeBuffer.Len(); l != 0 {
 		t.Fatalf("writeBufferLen = %d, want = %d", l, 0)
@@ -281,8 +281,8 @@ func TestCache_CleanUp(t *testing.T) {
 	}
 	c.CleanUp()
 
-	if cacheSize := c.Size(); cacheSize != size {
-		t.Fatalf("c.Size() = %d, want = %d", cacheSize, size)
+	if cacheSize := c.EstimatedSize(); cacheSize != size {
+		t.Fatalf("c.EstimatedSize() = %d, want = %d", cacheSize, size)
 	}
 	if l := c.stripedBuffer.Len(); l != 0 {
 		t.Fatalf("stripedBufferLen = %d, want = %d", l, 0)
@@ -301,16 +301,16 @@ func TestCache_InvalidateAll(t *testing.T) {
 		c.Set(i, i)
 	}
 
-	if cacheSize := c.Size(); cacheSize != size {
-		t.Fatalf("c.Size() = %d, want = %d", cacheSize, size)
+	if cacheSize := c.EstimatedSize(); cacheSize != size {
+		t.Fatalf("c.EstimatedSize() = %d, want = %d", cacheSize, size)
 	}
 
 	c.InvalidateAll()
 
 	time.Sleep(10 * time.Millisecond)
 
-	if cacheSize := c.Size(); cacheSize != 0 {
-		t.Fatalf("c.Size() = %d, want = %d", cacheSize, 0)
+	if cacheSize := c.EstimatedSize(); cacheSize != 0 {
+		t.Fatalf("c.EstimatedSize() = %d, want = %d", cacheSize, 0)
 	}
 }
 
@@ -460,8 +460,8 @@ func TestCache_SetWithExpiresAt(t *testing.T) {
 
 	time.Sleep(10 * time.Millisecond)
 
-	if cacheSize := c.Size(); cacheSize != 0 {
-		t.Fatalf("c.Size() = %d, want = %d", cacheSize, 0)
+	if cacheSize := c.EstimatedSize(); cacheSize != 0 {
+		t.Fatalf("c.EstimatedSize() = %d, want = %d", cacheSize, 0)
 	}
 
 	mutex.Lock()
@@ -506,8 +506,8 @@ func TestCache_SetWithExpiresAt(t *testing.T) {
 
 	time.Sleep(2 * time.Second)
 
-	if c.Size() != size%2 {
-		t.Fatalf("half of the keys must be expired. wantedCurrentSize %d, got %d", size%2, c.Size())
+	if c.EstimatedSize() != size%2 {
+		t.Fatalf("half of the keys must be expired. wantedCurrentSize %d, got %d", size%2, c.EstimatedSize())
 	}
 
 	for i := 0; i < size; i++ {
@@ -538,8 +538,8 @@ func TestCache_SetWithExpiresAt(t *testing.T) {
 
 	time.Sleep(10 * time.Millisecond)
 
-	if cacheSize := cc.Size(); cacheSize != 0 {
-		t.Fatalf("c.Size() = %d, want = %d", cacheSize, 0)
+	if cacheSize := cc.EstimatedSize(); cacheSize != 0 {
+		t.Fatalf("c.EstimatedSize() = %d, want = %d", cacheSize, 0)
 	}
 	if misses := statsCounter.Snapshot().Misses(); misses != uint64(size) {
 		t.Fatalf("c.Stats().Misses() = %d, want = %d", misses, size)
@@ -591,7 +591,7 @@ func TestCache_SetWithExpiresAfterAccessing(t *testing.T) {
 
 	time.Sleep(10 * time.Millisecond)
 
-	if cacheSize := c.Size(); cacheSize != 0 {
+	if cacheSize := c.EstimatedSize(); cacheSize != 0 {
 		t.Fatalf("cacheSize = %d, want = %d", cacheSize, 0)
 	}
 
@@ -613,7 +613,7 @@ func TestCache_SetWithExpiresAfterAccessing(t *testing.T) {
 
 	time.Sleep(2 * time.Second)
 
-	if cacheSize := c.Size(); cacheSize == 0 {
+	if cacheSize := c.EstimatedSize(); cacheSize == 0 {
 		t.Fatal("cacheSize should be positive")
 	}
 	if misses := statsCounter.Snapshot().Misses(); misses != uint64(size) {
@@ -746,12 +746,12 @@ func TestCache_Ratio(t *testing.T) {
 		}
 	}
 
-	t.Logf("actual size: %d, capacity: %d", c.Size(), capacity)
+	t.Logf("actual size: %d, capacity: %d", c.EstimatedSize(), capacity)
 	t.Logf("actual: %.2f, optimal: %.2f", statsCounter.Snapshot().HitRatio(), o.Ratio())
 
 	time.Sleep(2 * time.Second)
 
-	if size := c.Size(); size != capacity {
+	if size := c.EstimatedSize(); size != capacity {
 		t.Fatalf("not valid cache size. expected %d, but got %d", capacity, size)
 	}
 

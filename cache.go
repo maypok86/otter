@@ -1183,7 +1183,10 @@ func (c *Cache[K, V]) Close() {
 	})
 }
 
-// Size returns the current number of items in the cache.
-func (c *Cache[K, V]) Size() int {
+// EstimatedSize returns the approximate number of entries in this cache. The value returned is an estimate; the
+// actual count may differ if there are concurrent insertions or deletions, or if some entries are
+// pending deletion due to expiration. In the case of stale entries
+// this inaccuracy can be mitigated by performing a CleanUp first.
+func (c *Cache[K, V]) EstimatedSize() int {
 	return c.hashmap.Size()
 }
