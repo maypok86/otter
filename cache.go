@@ -267,8 +267,7 @@ func (c *Cache[K, V]) getNode(key K, offset int64) node.Node[K, V] {
 //
 // Unlike getNode, this function does not produce any side effects
 // such as updating statistics or the eviction policy.
-func (c *Cache[K, V]) getNodeQuietly(key K) node.Node[K, V] {
-	offset := c.clock.Offset()
+func (c *Cache[K, V]) getNodeQuietly(key K, offset int64) node.Node[K, V] {
 	n := c.hashmap.Get(key)
 	if n == nil || !n.IsAlive() || n.HasExpired(offset) {
 		return nil
@@ -317,10 +316,10 @@ func (c *Cache[K, V]) calcExpiresAtAfterRead(n node.Node[K, V], offset int64) {
 	}
 
 	expiresAfter := c.expiryCalculator.ExpireAfterRead(c.nodeToEntry(n, offset))
-	c.manualCalcExpiresAfterRead(n, offset, expiresAfter)
+	c.setExpiresAfterRead(n, offset, expiresAfter, false)
 }
 
-func (c *Cache[K, V]) manualCalcExpiresAfterRead(n node.Node[K, V], offset int64, expiresAfter time.Duration) {
+func (c *Cache[K, V]) setExpiresAfterRead(n node.Node[K, V], offset int64, expiresAfter time.Duration, isManual bool) {
 	if expiresAfter <= 0 {
 		return
 	}
@@ -330,13 +329,34 @@ func (c *Cache[K, V]) manualCalcExpiresAfterRead(n node.Node[K, V], offset int64
 	diff := xmath.Abs(int64(expiresAfter - currentDuration))
 	if diff > 0 {
 		n.CASExpiresAt(expiresAt, offset+int64(expiresAfter))
-		if diff >= expireTolerance {
+		c.writeBuffer.Push(newRescheduleTask(n))
+		if isManual || diff >= expireTolerance {
 			c.writeBuffer.Push(newRescheduleTask(n))
 		}
 	}
 }
 
-func (c *Cache[K, V]) setExpiresAfter(key K, expiresAfter time.Duration) {
+func (c *Cache[K, V]) getEntry(key K) (core.Entry[K, V], bool) {
+	offset := c.clock.Offset()
+	n := c.getNode(key, offset)
+	if n == nil {
+		return core.Entry[K, V]{}, false
+	}
+	return c.nodeToEntry(n, offset), true
+}
+
+func (c *Cache[K, V]) getEntryQuietly(key K) (core.Entry[K, V], bool) {
+	offset := c.clock.Offset()
+	n := c.getNodeQuietly(key, offset)
+	if n == nil {
+		return core.Entry[K, V]{}, false
+	}
+	return c.nodeToEntry(n, offset), true
+}
+
+// SetExpiresAfter specifies that the entry should be automatically removed from the cache once the duration has
+// elapsed. The expiration policy determines when the entry's age is reset.
+func (c *Cache[K, V]) SetExpiresAfter(key K, expiresAfter time.Duration) {
 	if !c.withExpiration || expiresAfter <= 0 {
 		return
 	}
@@ -347,10 +367,12 @@ func (c *Cache[K, V]) setExpiresAfter(key K, expiresAfter time.Duration) {
 		return
 	}
 
-	c.manualCalcExpiresAfterRead(n, offset, expiresAfter)
+	c.setExpiresAfterRead(n, offset, expiresAfter, true)
 }
 
-func (c *Cache[K, V]) setRefreshableAfter(key K, refreshableAfter time.Duration) {
+// SetRefreshableAfter specifies that each entry should be eligible for reloading once a fixed duration has elapsed.
+// The refresh policy determines when the entry's age is reset.
+func (c *Cache[K, V]) SetRefreshableAfter(key K, refreshableAfter time.Duration) {
 	if !c.withRefresh || refreshableAfter <= 0 {
 		return
 	}
