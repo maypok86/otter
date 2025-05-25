@@ -25,6 +25,15 @@ type Loader[K comparable, V any] interface {
 	// NOTE: The Loader implementation should always return ErrNotFound
 	// if the entry was not found in the data source.
 	Load(ctx context.Context, key K) (V, error)
+	// Reload computes or retrieves a replacement value corresponding to an already-cached key.
+	// If the replacement value is not found, then the mapping will be removed if ErrNotFound is returned.
+	// This method is called when an existing cache entry is refreshed by Cache.Get, or through a call to Cache.Refresh.
+	//
+	// WARNING: loading must not attempt to update any mappings of this cache directly
+	// or block waiting for other cache operations to complete.
+	//
+	// NOTE: all errors returned during refresh will be logged (using Logger) and then swallowed.
+	Reload(ctx context.Context, key K) (V, error)
 }
 
 // LoaderFunc is an adapter to allow the use of ordinary functions as loaders.
@@ -36,12 +45,26 @@ func (lf LoaderFunc[K, V]) Load(ctx context.Context, key K) (V, error) {
 	return lf(ctx, key)
 }
 
+// Reload calls f(ctx, key).
+func (lf LoaderFunc[K, V]) Reload(ctx context.Context, key K) (V, error) {
+	return lf(ctx, key)
+}
+
 // BulkLoader computes or retrieves values, based on the keys, for use in populating a Cache.
 type BulkLoader[K comparable, V any] interface {
 	// BulkLoad computes or retrieves the values corresponding to keys.
 	//
 	// WARNING: loading must not attempt to update any mappings of this cache directly.
 	BulkLoad(ctx context.Context, keys []K) (map[K]V, error)
+	// BulkReload computes or retrieves replacement values corresponding to already-cached keys.
+	// If the replacement value is not found, then the mapping will be removed.
+	// This method is called when an existing cache entry is refreshed by Cache.BulkGet, or through a call to Cache.BulkRefresh.
+	//
+	// WARNING: loading must not attempt to update any mappings of this cache directly
+	// or block waiting for other cache operations to complete.
+	//
+	// NOTE: all errors returned during refresh will be logged (using Logger) and then swallowed.
+	BulkReload(ctx context.Context, keys []K) (map[K]V, error)
 }
 
 // BulkLoaderFunc is an adapter to allow the use of ordinary functions as loaders.
@@ -50,5 +73,10 @@ type BulkLoaderFunc[K comparable, V any] func(ctx context.Context, keys []K) (ma
 
 // BulkLoad calls f(ctx, keys).
 func (blf BulkLoaderFunc[K, V]) BulkLoad(ctx context.Context, keys []K) (map[K]V, error) {
+	return blf(ctx, keys)
+}
+
+// BulkReload calls f(ctx, keys).
+func (blf BulkLoaderFunc[K, V]) BulkReload(ctx context.Context, keys []K) (map[K]V, error) {
 	return blf(ctx, keys)
 }

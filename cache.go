@@ -428,33 +428,39 @@ func (c *Cache[K, V]) afterWrite(n, old node.Node[K, V], offset int64) {
 	c.writeBuffer.Push(newUpdateTask(n, old, cause))
 }
 
-func (c *Cache[K, V]) refreshNode(n node.Node[K, V], loader Loader[K, V], offset int64) {
-	if !c.withRefresh || n.IsFresh(offset) {
+type refreshableKey[K comparable] struct {
+	key   K
+	found bool
+}
+
+//nolint:contextcheck // No context is needed here.
+func (c *Cache[K, V]) refreshKey(rk refreshableKey[K], loader Loader[K, V]) {
+	if !c.withRefresh {
 		return
 	}
 
 	go func() {
-		var reload func(ctx context.Context, key K) (V, error)
-		if reloader, ok := loader.(Reloader[K, V]); ok {
-			reload = reloader.Reload
+		var refresher func(ctx context.Context, key K) (V, error)
+		if rk.found {
+			refresher = loader.Reload
 		} else {
-			reload = loader.Load
+			refresher = loader.Load
 		}
 
 		loadCtx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		cl, shouldLoad := c.singleflight.startCall(n.Key(), true)
+		cl, shouldLoad := c.singleflight.startCall(rk.key, true)
 		if shouldLoad {
 			//nolint:errcheck // there is no need to check error
 			_ = c.wrapLoad(func() error {
-				return c.singleflight.doCall(loadCtx, cl, reload, c.afterDeleteCall)
+				return c.singleflight.doCall(loadCtx, cl, refresher, c.afterDeleteCall)
 			})
 		}
 		cl.wait()
 
 		if cl.err != nil && !cl.isNotFound {
-			c.logger.Error(loadCtx, "Reload returned an error", cl.err)
+			c.logger.Error(loadCtx, "Returned an error during the refreshing", cl.err)
 		}
 	}()
 }
@@ -484,7 +490,12 @@ func (c *Cache[K, V]) Get(ctx context.Context, key K, loader Loader[K, V]) (V, e
 	offset := c.clock.Offset()
 	n := c.getNode(key, offset)
 	if n != nil {
-		c.refreshNode(n, loader, offset)
+		if !n.IsFresh(offset) {
+			c.refreshKey(refreshableKey[K]{
+				key:   n.Key(),
+				found: true,
+			}, loader)
+		}
 		return n.Value(), nil
 	}
 
@@ -572,49 +583,85 @@ func (c *Cache[K, V]) afterDeleteCall(cl *call[K, V]) {
 	}
 }
 
-func (c *Cache[K, V]) bulkRefreshNodes(keys []K, bulkLoader BulkLoader[K, V]) {
-	if len(keys) == 0 {
+//nolint:contextcheck // No context is needed here.
+func (c *Cache[K, V]) bulkRefreshKeys(rks []refreshableKey[K], bulkLoader BulkLoader[K, V]) {
+	if !c.withRefresh || len(rks) == 0 {
 		return
 	}
 
 	go func() {
-		var bulkReload func(ctx context.Context, keys []K) (map[K]V, error)
-		if bulkReloader, ok := bulkLoader.(BulkReloader[K, V]); ok {
-			bulkReload = bulkReloader.BulkReload
-		} else {
-			bulkReload = bulkLoader.BulkLoad
-		}
-
-		loadCtx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		var toLoadCalls map[K]*call[K, V]
+		var (
+			toLoadCalls   map[K]*call[K, V]
+			toReloadCalls map[K]*call[K, V]
+		)
 		i := 0
-		for _, key := range keys {
-			cl, shouldLoad := c.singleflight.startCall(key, true)
+		for _, rk := range rks {
+			cl, shouldLoad := c.singleflight.startCall(rk.key, true)
 			if shouldLoad {
-				if toLoadCalls == nil {
-					toLoadCalls = make(map[K]*call[K, V], len(keys)-i)
-				}
+				if rk.found {
+					if toReloadCalls == nil {
+						toReloadCalls = make(map[K]*call[K, V], len(rks)-i)
+					}
 
-				toLoadCalls[key] = cl
+					toReloadCalls[rk.key] = cl
+				} else {
+					if toLoadCalls == nil {
+						toLoadCalls = make(map[K]*call[K, V], len(rks)-i)
+					}
+
+					toLoadCalls[rk.key] = cl
+				}
 			}
 			i++
 		}
 
-		var loadErr error
+		ctx := context.Background()
 		if len(toLoadCalls) > 0 {
-			loadErr = c.wrapLoad(func() error {
-				return c.singleflight.doBulkCall(loadCtx, toLoadCalls, bulkReload, c.afterDeleteCall)
-			})
+			func() {
+				loadCtx, cancel := context.WithCancel(ctx)
+				defer cancel()
+
+				loadErr := c.wrapLoad(func() error {
+					return c.singleflight.doBulkCall(loadCtx, toLoadCalls, bulkLoader.BulkLoad, c.afterDeleteCall)
+				})
+				if loadErr != nil {
+					c.logger.Error(loadCtx, "BulkLoad returned an error", loadErr)
+				}
+			}()
 		}
-		if loadErr != nil {
-			c.logger.Error(loadCtx, "BulkReload returned an error", loadErr)
+		if len(toReloadCalls) > 0 {
+			func() {
+				reloadCtx, cancel := context.WithCancel(ctx)
+				defer cancel()
+
+				reloadErr := c.wrapLoad(func() error {
+					return c.singleflight.doBulkCall(reloadCtx, toReloadCalls, bulkLoader.BulkReload, c.afterDeleteCall)
+				})
+				if reloadErr != nil {
+					c.logger.Error(reloadCtx, "BulkReload returned an error", reloadErr)
+				}
+			}()
 		}
 		// all calls?
 	}()
 }
 
+// BulkGet returns the value associated with key in this cache, obtaining that value from loader if necessary.
+// The method improves upon the conventional "if cached, return; otherwise create, cache and return" pattern.
+//
+// If another call to Get (BulkGet) is currently loading the value for key,
+// simply waits for that goroutine to finish and returns its loaded value. Note that
+// multiple goroutines can concurrently load values for distinct keys.
+//
+// No observable state associated with this cache is modified until loading completes.
+//
+// WARNING: BulkLoader.BulkLoad must not attempt to update any mappings of this cache directly.
+//
+// WARNING: For any given key, every bulkLoader used with it should compute the same value.
+// Otherwise, a call that passes one bulkLoader may return the result of another call
+// with a differently behaving bulkLoader. For example, a call that requests a short timeout
+// for an RPC may wait for a similar call that requests a long timeout, or a call by an
+// unprivileged user may return a resource accessible only to a privileged user making a similar call.
 func (c *Cache[K, V]) BulkGet(ctx context.Context, keys []K, bulkLoader BulkLoader[K, V]) (map[K]V, error) {
 	c.singleflight.init()
 
@@ -622,7 +669,7 @@ func (c *Cache[K, V]) BulkGet(ctx context.Context, keys []K, bulkLoader BulkLoad
 	result := make(map[K]V, len(keys))
 	var (
 		misses    map[K]*call[K, V]
-		toRefresh []K
+		toRefresh []refreshableKey[K]
 	)
 	for _, key := range keys {
 		if _, found := result[key]; found {
@@ -636,10 +683,13 @@ func (c *Cache[K, V]) BulkGet(ctx context.Context, keys []K, bulkLoader BulkLoad
 		if n != nil {
 			if c.withRefresh && !n.IsFresh(offset) {
 				if toRefresh == nil {
-					toRefresh = make([]K, 0, len(keys)-len(result))
+					toRefresh = make([]refreshableKey[K], 0, len(keys)-len(result))
 				}
 
-				toRefresh = append(toRefresh, n.Key())
+				toRefresh = append(toRefresh, refreshableKey[K]{
+					key:   key,
+					found: true,
+				})
 			}
 
 			result[key] = n.Value()
@@ -652,7 +702,7 @@ func (c *Cache[K, V]) BulkGet(ctx context.Context, keys []K, bulkLoader BulkLoad
 		misses[key] = nil
 	}
 
-	c.bulkRefreshNodes(toRefresh, bulkLoader)
+	c.bulkRefreshKeys(toRefresh, bulkLoader)
 	if len(misses) == 0 {
 		return result, nil
 	}
@@ -738,6 +788,76 @@ func (c *Cache[K, V]) wrapLoad(fn func() error) error {
 	}
 
 	return err
+}
+
+// Refresh loads a new value for the key, asynchronously. While the new value is loading the
+// previous value (if any) will continue to be returned by any Get unless it is evicted.
+// If the new value is loaded successfully, it will replace the previous value in the cache;
+// If refreshing returned an error, the previous value will remain,
+// and the error will be logged using Logger (if it's not ErrNotFound) and swallowed. If another goroutine is currently
+// loading the value for key, then this method does not perform an additional load.
+//
+// Cache will call Loader.Reload if the cache currently contains a value for the key,
+// and Loader.Load otherwise.
+//
+// WARNING: Loader.Load and Loader.Reload must not attempt to update any mappings of this cache directly.
+//
+// WARNING: For any given key, every loader used with it should compute the same value.
+// Otherwise, a call that passes one loader may return the result of another call
+// with a differently behaving loader. For example, a call that requests a short timeout
+// for an RPC may wait for a similar call that requests a long timeout, or a call by an
+// unprivileged user may return a resource accessible only to a privileged user making a similar call.
+func (c *Cache[K, V]) Refresh(key K, loader Loader[K, V]) {
+	if !c.withRefresh {
+		return
+	}
+
+	c.singleflight.init()
+
+	offset := c.clock.Offset()
+	n := c.getNode(key, offset)
+	found := n != nil
+
+	c.refreshKey(refreshableKey[K]{
+		key:   key,
+		found: found,
+	}, loader)
+}
+
+// BulkRefresh loads a new value for each key, asynchronously. While the new value is loading the
+// previous value (if any) will continue to be returned by any Get unless it is evicted.
+// If the new value is loaded successfully, it will replace the previous value in the cache;
+// If refreshing returned an error, the previous value will remain,
+// and the error will be logged using Logger and swallowed. If another goroutine is currently
+// loading the value for key, then this method does not perform an additional load.
+//
+// Cache will call BulkLoader.BulkReload for existing keys, and BulkLoader.BulkLoad otherwise.
+//
+// WARNING: BulkLoader.BulkLoad and BulkLoader.BulkReload must not attempt to update any mappings of this cache directly.
+//
+// WARNING: For any given key, every bulkLoader used with it should compute the same value.
+// Otherwise, a call that passes one bulkLoader may return the result of another call
+// with a differently behaving loader. For example, a call that requests a short timeout
+// for an RPC may wait for a similar call that requests a long timeout, or a call by an
+// unprivileged user may return a resource accessible only to a privileged user making a similar call.
+func (c *Cache[K, V]) BulkRefresh(keys []K, bulkLoader BulkLoader[K, V]) {
+	if !c.withRefresh {
+		return
+	}
+
+	c.singleflight.init()
+
+	offset := c.clock.Offset()
+	toRefresh := make([]refreshableKey[K], 0, len(keys))
+	for _, key := range keys {
+		n := c.getNode(key, offset)
+		toRefresh = append(toRefresh, refreshableKey[K]{
+			key:   key,
+			found: n != nil,
+		})
+	}
+
+	c.bulkRefreshKeys(toRefresh, bulkLoader)
 }
 
 // Invalidate discards any cached value for the key.

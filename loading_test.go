@@ -46,6 +46,11 @@ func (tl *testLoader[K, V]) Load(ctx context.Context, key K) (V, error) {
 	return tl.fn(ctx, key)
 }
 
+func (tl *testLoader[K, V]) Reload(ctx context.Context, key K) (V, error) {
+	tl.calls.Add(1)
+	return tl.fn(ctx, key)
+}
+
 type testBulkLoader[K comparable, V any] struct {
 	fn    func(ctx context.Context, keys []K) (map[K]V, error)
 	calls atomic.Uint64
@@ -56,6 +61,11 @@ func newTestBulkLoader[K comparable, V any](fn func(ctx context.Context, keys []
 }
 
 func (tl *testBulkLoader[K, V]) BulkLoad(ctx context.Context, keys []K) (map[K]V, error) {
+	tl.calls.Add(1)
+	return tl.fn(ctx, keys)
+}
+
+func (tl *testBulkLoader[K, V]) BulkReload(ctx context.Context, keys []K) (map[K]V, error) {
 	tl.calls.Add(1)
 	return tl.fn(ctx, keys)
 }
