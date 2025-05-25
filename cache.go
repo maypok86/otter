@@ -1179,7 +1179,9 @@ func (c *Cache[K, V]) Close() {
 			c.writeBuffer.Push(newCloseTask[K, V]())
 		}
 		c.InvalidateAll()
-		<-c.doneClose
+		if c.withProcess {
+			<-c.doneClose
+		}
 	})
 }
 
