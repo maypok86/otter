@@ -185,7 +185,7 @@ func TestCache_SetWithWeight(t *testing.T) {
 	}
 }
 
-func TestCache_Range(t *testing.T) {
+func TestCache_All(t *testing.T) {
 	t.Parallel()
 
 	size := 10
@@ -209,14 +209,13 @@ func TestCache_Range(t *testing.T) {
 	c.Set(3, 3)
 	aliveNodes := 2
 	iters := 0
-	c.Range(func(key, value int) bool {
+	for key, value := range c.All() {
 		if key != value {
 			t.Fatalf("got unexpected key/value for iteration %d: %d/%d", iters, key, value)
-			return false
+			break
 		}
 		iters++
-		return true
-	})
+	}
 	if iters != aliveNodes {
 		t.Fatalf("got unexpected number of iterations: %d", iters)
 	}
@@ -641,48 +640,6 @@ func TestCache_Invalidate(t *testing.T) {
 	defer mutex.Unlock()
 	if len(m) != 1 || m[CauseInvalidation] != size {
 		t.Fatalf("cache was supposed to delete %d, but deleted %d entries", size, m[CauseInvalidation])
-	}
-}
-
-func TestCache_InvalidateByFunc(t *testing.T) {
-	t.Parallel()
-
-	size := getRandomSize(t)
-	var mutex sync.Mutex
-	m := make(map[DeletionCause]int)
-	c := Must(&Options[int, int]{
-		MaximumSize:      size,
-		InitialCapacity:  size,
-		ExpiryCalculator: expiry.Writing[int, int](time.Hour),
-		OnDeletion: func(e DeletionEvent[int, int]) {
-			mutex.Lock()
-			m[e.Cause]++
-			mutex.Unlock()
-		},
-	})
-
-	for i := 0; i < size; i++ {
-		c.Set(i, i)
-	}
-
-	c.InvalidateByFunc(func(key int, value int) bool {
-		return key%2 == 1
-	})
-
-	c.Range(func(key int, value int) bool {
-		if key%2 == 1 {
-			t.Fatalf("key should be odd, but got: %d", key)
-		}
-		return true
-	})
-
-	time.Sleep(time.Second)
-
-	expected := size / 2
-	mutex.Lock()
-	defer mutex.Unlock()
-	if len(m) != 1 || m[CauseInvalidation] != expected {
-		t.Fatalf("cache was supposed to delete %d, but deleted %d entries", expected, m[CauseInvalidation])
 	}
 }
 

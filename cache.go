@@ -17,6 +17,7 @@ package otter
 import (
 	"context"
 	"errors"
+	"iter"
 	"sync"
 	"time"
 
@@ -969,22 +970,6 @@ func (c *Cache[K, V]) afterDelete(deleted node.Node[K, V], offset int64) {
 	c.writeBuffer.Push(newDeleteTask(deleted, cause))
 }
 
-// InvalidateByFunc deletes the association for this key from the cache when the given function returns true.
-func (c *Cache[K, V]) InvalidateByFunc(fn func(key K, value V) bool) {
-	offset := c.clock.Offset()
-	c.hashmap.Range(func(n node.Node[K, V]) bool {
-		if !n.IsAlive() || n.HasExpired(offset) {
-			return true
-		}
-
-		if fn(n.Key(), n.Value()) {
-			c.deleteNode(n, offset)
-		}
-
-		return true
-	})
-}
-
 func (c *Cache[K, V]) notifyDeletion(key K, value V, cause DeletionCause) {
 	if c.onDeletion == nil {
 		return
@@ -1116,18 +1101,22 @@ func (c *Cache[K, V]) process() {
 	}
 }
 
-// Range iterates over all items in the cache.
+// All returns an iterator over all entries in the cache.
 //
-// Iteration stops early when the given function returns false.
-func (c *Cache[K, V]) Range(fn func(key K, value V) bool) {
+// Iterator is at least weakly consistent: he is safe for concurrent use,
+// but if the cache is modified (including by eviction) after the iterator is
+// created, it is undefined which of the changes (if any) will be reflected in that iterator.
+func (c *Cache[K, V]) All() iter.Seq2[K, V] {
 	offset := c.clock.Offset()
-	c.hashmap.Range(func(n node.Node[K, V]) bool {
-		if !n.IsAlive() || n.HasExpired(offset) {
-			return true
-		}
+	return func(yield func(K, V) bool) {
+		c.hashmap.Range(func(n node.Node[K, V]) bool {
+			if !n.IsAlive() || n.HasExpired(offset) {
+				return true
+			}
 
-		return fn(n.Key(), n.Value())
-	})
+			return yield(n.Key(), n.Value())
+		})
+	}
 }
 
 // InvalidateAll discards all entries in the cache.
