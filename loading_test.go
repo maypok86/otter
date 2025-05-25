@@ -279,7 +279,7 @@ func TestCache_GetWithSuccessLoad(t *testing.T) {
 		t.Fatalf("Get value = %v; want = %v", v, v1)
 	}
 
-	if e, ok := c.getEntryQuietly(k1); c.Size() != 1 || ok && e.Value != v1 {
+	if e, ok := c.GetEntryQuietly(k1); c.Size() != 1 || ok && e.Value != v1 {
 		t.Fatalf("the cache should only contain the key = %v", k1)
 	}
 
@@ -977,7 +977,7 @@ func TestCache_GetWithSuppressedLoad(t *testing.T) {
 		t.Fatalf("number of calls = %d; want over 0 and less than %d", got, n)
 	}
 
-	if e, ok := c.getEntryQuietly(k1); c.Size() != 1 || ok && e.Value != v1 {
+	if e, ok := c.GetEntryQuietly(k1); c.Size() != 1 || ok && e.Value != v1 {
 		t.Fatalf("the cache should only contain the key = %v", k1)
 	}
 

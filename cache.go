@@ -336,7 +336,8 @@ func (c *Cache[K, V]) setExpiresAfterRead(n node.Node[K, V], offset int64, expir
 	}
 }
 
-func (c *Cache[K, V]) getEntry(key K) (core.Entry[K, V], bool) {
+// GetEntry returns the cache entry associated with the key in this cache.
+func (c *Cache[K, V]) GetEntry(key K) (core.Entry[K, V], bool) {
 	offset := c.clock.Offset()
 	n := c.getNode(key, offset)
 	if n == nil {
@@ -345,7 +346,11 @@ func (c *Cache[K, V]) getEntry(key K) (core.Entry[K, V], bool) {
 	return c.nodeToEntry(n, offset), true
 }
 
-func (c *Cache[K, V]) getEntryQuietly(key K) (core.Entry[K, V], bool) {
+// GetEntryQuietly returns the cache entry associated with the key in this cache.
+//
+// Unlike GetEntry, this function does not produce any side effects
+// such as updating statistics or the eviction policy.
+func (c *Cache[K, V]) GetEntryQuietly(key K) (core.Entry[K, V], bool) {
 	offset := c.clock.Offset()
 	n := c.getNodeQuietly(key, offset)
 	if n == nil {

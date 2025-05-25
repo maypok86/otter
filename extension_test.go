@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/maypok86/otter/v2/core"
 	"github.com/maypok86/otter/v2/core/expiry"
 	"github.com/maypok86/otter/v2/core/refresh"
 	"github.com/maypok86/otter/v2/core/stats"
@@ -51,17 +52,17 @@ func TestCache_SetExpiresAfter(t *testing.T) {
 	v1 := 100
 
 	c.SetExpiresAfter(k1, -2*time.Second)
-	_, ok := c.getEntryQuietly(k1)
+	_, ok := c.GetEntryQuietly(k1)
 	if ok {
 		t.Fatalf("found key = %v", k1)
 	}
 	c.SetExpiresAfter(k1, 2*time.Second)
-	_, ok = c.getEntry(k1)
+	_, ok = c.GetEntry(k1)
 	if ok {
 		t.Fatalf("found key = %v", k1)
 	}
 	c.Set(k1, v1)
-	e, ok := c.getEntry(k1)
+	e, ok := c.GetEntry(k1)
 	if !ok {
 		t.Fatalf("not found key = %v", k1)
 	}
@@ -72,7 +73,7 @@ func TestCache_SetExpiresAfter(t *testing.T) {
 		t.Fatalf("expiresAfter should be equal to %v. expiresAfter: %v", 200*time.Millisecond, expiresAfter)
 	}
 	c.SetExpiresAfter(k1, time.Second)
-	e, ok = c.getEntryQuietly(k1)
+	e, ok = c.GetEntryQuietly(k1)
 	if !ok {
 		t.Fatalf("not found key = %v", k1)
 	}
@@ -113,17 +114,17 @@ func TestCache_SetRefreshableAfter(t *testing.T) {
 	v1 := 100
 
 	c.SetRefreshableAfter(k1, -2*time.Second)
-	_, ok := c.getEntryQuietly(k1)
+	_, ok := c.GetEntryQuietly(k1)
 	if ok {
 		t.Fatalf("found key = %v", k1)
 	}
 	c.SetRefreshableAfter(k1, 2*time.Second)
-	_, ok = c.getEntry(k1)
+	_, ok = c.GetEntry(k1)
 	if ok {
 		t.Fatalf("found key = %v", k1)
 	}
 	c.Set(k1, v1)
-	e, ok := c.getEntry(k1)
+	e, ok := c.GetEntry(k1)
 	if !ok {
 		t.Fatalf("not found key = %v", k1)
 	}
@@ -134,7 +135,7 @@ func TestCache_SetRefreshableAfter(t *testing.T) {
 		t.Fatalf("refreshableAfter should be equal to %v. refreshableAfter: %v", 200*time.Millisecond, refreshableAfter)
 	}
 	c.SetRefreshableAfter(k1, time.Second)
-	e, ok = c.getEntryQuietly(k1)
+	e, ok = c.GetEntryQuietly(k1)
 	if !ok {
 		t.Fatalf("not found key = %v", k1)
 	}
@@ -149,5 +150,60 @@ func TestCache_SetRefreshableAfter(t *testing.T) {
 	if snapshot.Hits() != 1 ||
 		snapshot.Misses() != 1 {
 		t.Fatalf("statistics are not recorded correctly. snapshot: %v", snapshot)
+	}
+}
+
+func TestCache_Extension(t *testing.T) {
+	size := getRandomSize(t)
+
+	duration := time.Hour
+	c := Must(&Options[int, int]{
+		MaximumSize:       size,
+		ExpiryCalculator:  expiry.Writing[int, int](duration),
+		RefreshCalculator: refresh.Writing[int, int](duration),
+	})
+
+	for i := 0; i < size; i++ {
+		c.Set(i, i)
+	}
+
+	k1 := 4
+	v1 := k1
+	e1, ok := c.GetEntryQuietly(k1)
+	if !ok {
+		t.Fatalf("not found key %d", k1)
+	}
+
+	e2, ok := c.GetEntry(k1)
+	if !ok {
+		t.Fatalf("not found key %d", k1)
+	}
+
+	time.Sleep(time.Second)
+
+	isEqualEntries := func(a, b core.Entry[int, int]) bool {
+		return a.Key == b.Key &&
+			a.Value == b.Value &&
+			a.Weight == b.Weight &&
+			a.ExpiresAtNano == b.ExpiresAtNano &&
+			a.RefreshableAtNano == b.RefreshableAtNano
+	}
+
+	isValidEntries := e1.Key == k1 &&
+		e1.Value == v1 &&
+		e1.Weight == 1 &&
+		isEqualEntries(e1, e2) &&
+		e1.ExpiresAfter() < duration &&
+		!e1.HasExpired()
+
+	if !isValidEntries {
+		t.Fatalf("found not valid entries. e1: %+v, e2: %+v, v1:%d", e1, e2, v1)
+	}
+
+	if _, ok := c.GetEntryQuietly(size); ok {
+		t.Fatalf("found not valid key: %d", size)
+	}
+	if _, ok := c.GetEntry(size); ok {
+		t.Fatalf("found not valid key: %d", size)
 	}
 }
