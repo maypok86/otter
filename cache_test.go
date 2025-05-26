@@ -18,6 +18,8 @@ import (
 	"container/heap"
 	"fmt"
 	"math/rand"
+	"reflect"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -63,12 +65,12 @@ func TestCache_Unbounded(t *testing.T) {
 		c.Set(i, i)
 	}
 	for i := 0; i < size; i++ {
-		if !c.Has(i) {
+		if !c.has(i) {
 			t.Fatalf("the key must exist: %d", i)
 		}
 	}
 	for i := size; i < 2*size; i++ {
-		if c.Has(i) {
+		if c.has(i) {
 			t.Fatalf("the key must not exist: %d", i)
 		}
 	}
@@ -121,25 +123,25 @@ func TestCache_PinnedWeight(t *testing.T) {
 		c.Set(i, i)
 	}
 	for i := 0; i < size; i++ {
-		if !c.Has(i) {
+		if !c.has(i) {
 			t.Fatalf("the key must exist: %d", i)
 		}
-		c.Has(i)
+		c.has(i)
 	}
 	for i := size; i < 2*size; i++ {
 		c.Set(i, i)
-		if !c.Has(i) {
+		if !c.has(i) {
 			t.Fatalf("the key must exist: %d", i)
 		}
-		c.Has(i)
+		c.has(i)
 	}
-	if !c.Has(pinned) {
+	if !c.has(pinned) {
 		t.Fatalf("the key must exist: %d", pinned)
 	}
 
 	time.Sleep(4 * time.Second)
 
-	if c.Has(pinned) {
+	if c.has(pinned) {
 		t.Fatalf("the key must not exist: %d", pinned)
 	}
 
@@ -174,13 +176,13 @@ func TestCache_SetWithWeight(t *testing.T) {
 	c.Set(uint32(goodWeight2), 1)
 	c.Set(uint32(badWeight), 1)
 	time.Sleep(time.Second)
-	if !c.Has(uint32(goodWeight1)) {
+	if !c.has(uint32(goodWeight1)) {
 		t.Fatalf("the key must exist: %d", goodWeight1)
 	}
-	if !c.Has(uint32(goodWeight2)) {
+	if !c.has(uint32(goodWeight2)) {
 		t.Fatalf("the key must exist: %d", goodWeight2)
 	}
-	if c.Has(uint32(badWeight)) {
+	if c.has(uint32(badWeight)) {
 		t.Fatalf("the key must not exist: %d", badWeight)
 	}
 }
@@ -189,10 +191,10 @@ func TestCache_All(t *testing.T) {
 	t.Parallel()
 
 	size := 10
-	ttl := time.Hour
+	expiresAfter := time.Hour
 	c := Must[int, int](&Options[int, int]{
 		MaximumSize:      size,
-		ExpiryCalculator: expiry.Writing[int, int](ttl),
+		ExpiryCalculator: expiry.Writing[int, int](expiresAfter),
 	})
 
 	time.Sleep(3 * time.Second)
@@ -203,7 +205,7 @@ func TestCache_All(t *testing.T) {
 	})
 
 	c.Set(1, 1)
-	c.hashmap.Compute(2, func(n node.Node[int, int]) node.Node[int, int] {
+	c.cache.hashmap.Compute(2, func(n node.Node[int, int]) node.Node[int, int] {
 		return nm.Create(2, 2, 1, 1, 1)
 	})
 	c.Set(3, 3)
@@ -221,40 +223,38 @@ func TestCache_All(t *testing.T) {
 	}
 }
 
-func TestCache_Close(t *testing.T) {
-	t.Parallel()
+func gcHelper(t *testing.T) *atomic.Bool {
+	t.Helper()
 
 	size := 10
 	c := Must(&Options[int, int]{
 		MaximumSize: size,
 	})
 
+	var cleaned atomic.Bool
+	runtime.AddCleanup(c.cache, func(c *atomic.Bool) {
+		c.Store(true)
+	}, &cleaned)
+
 	for i := 0; i < size; i++ {
 		c.Set(i, i)
+		c.has(i)
 	}
 
-	if cacheSize := c.EstimatedSize(); cacheSize != size {
-		t.Fatalf("c.EstimatedSize() = %d, want = %d", cacheSize, size)
-	}
+	return &cleaned
+}
 
-	c.Close()
+func TestCache_GC(t *testing.T) {
+	t.Parallel()
 
-	time.Sleep(10 * time.Millisecond)
+	cleaned := gcHelper(t)
 
-	if cacheSize := c.EstimatedSize(); cacheSize != 0 {
-		t.Fatalf("c.EstimatedSize() = %d, want = %d", cacheSize, 0)
-	}
-	if l := c.writeBuffer.Len(); l != 0 {
-		t.Fatalf("writeBufferLen = %d, want = %d", l, 0)
-	}
+	runtime.GC()
+	time.Sleep(200 * time.Millisecond)
+	runtime.GC()
 
-	c.Close()
-
-	if cacheSize := c.EstimatedSize(); cacheSize != 0 {
-		t.Fatalf("c.EstimatedSize() = %d, want = %d", cacheSize, 0)
-	}
-	if l := c.writeBuffer.Len(); l != 0 {
-		t.Fatalf("writeBufferLen = %d, want = %d", l, 0)
+	if !cleaned.Load() {
+		t.Fatal("cache should be collected")
 	}
 }
 
@@ -272,11 +272,11 @@ func TestCache_CleanUp(t *testing.T) {
 	}
 
 	for i := 0; i < size; i++ {
-		c.Has(i)
-		c.Has(i)
+		c.has(i)
+		c.has(i)
 	}
 
-	if l := c.stripedBuffer.Len(); l == 0 {
+	if l := c.cache.stripedBuffer.Len(); l == 0 {
 		t.Fatalf("stripedBufferLen = %d, want > %d", l, 0)
 	}
 	c.CleanUp()
@@ -284,7 +284,10 @@ func TestCache_CleanUp(t *testing.T) {
 	if cacheSize := c.EstimatedSize(); cacheSize != size {
 		t.Fatalf("c.EstimatedSize() = %d, want = %d", cacheSize, size)
 	}
-	if l := c.stripedBuffer.Len(); l != 0 {
+	if l := c.cache.writeBuffer.Len(); l != 0 {
+		t.Fatalf("writeBufferLen = %d, want = %d", l, 0)
+	}
+	if l := c.cache.stripedBuffer.Len(); l != 0 {
 		t.Fatalf("stripedBufferLen = %d, want = %d", l, 0)
 	}
 }
@@ -408,7 +411,7 @@ func TestCache_SetIfAbsent(t *testing.T) {
 	}
 
 	for i := 0; i < size; i++ {
-		if !c.Has(i) {
+		if !c.has(i) {
 			t.Fatalf("the key must exist: %d", i)
 		}
 	}
@@ -424,8 +427,6 @@ func TestCache_SetIfAbsent(t *testing.T) {
 	if hitRatio := statsCounter.Snapshot().HitRatio(); hitRatio != 1.0 {
 		t.Fatalf("hit rate should be 100%%. Hite rate: %.2f", hitRatio*100)
 	}
-
-	c.Close()
 }
 
 func TestCache_SetWithExpiresAt(t *testing.T) {
@@ -453,7 +454,7 @@ func TestCache_SetWithExpiresAt(t *testing.T) {
 
 	time.Sleep(3 * time.Second)
 	for i := 0; i < size; i++ {
-		if c.Has(i) {
+		if c.has(i) {
 			t.Fatalf("key should be expired: %d", i)
 		}
 	}
@@ -523,7 +524,7 @@ func TestCache_SetWithExpiresAt(t *testing.T) {
 		if i%2 == 0 {
 			continue
 		}
-		if !cc.Has(i) {
+		if !cc.has(i) {
 			t.Fatalf("key should not be expired: %d", i)
 		}
 	}
@@ -531,7 +532,7 @@ func TestCache_SetWithExpiresAt(t *testing.T) {
 	time.Sleep(5 * time.Second)
 
 	for i := 0; i < size; i++ {
-		if cc.Has(i) {
+		if cc.has(i) {
 			t.Fatalf("key should be expired: %d", i)
 		}
 	}
@@ -584,7 +585,7 @@ func TestCache_SetWithExpiresAfterAccessing(t *testing.T) {
 
 	time.Sleep(3 * time.Second)
 	for i := 0; i < size; i++ {
-		if c.Has(i) {
+		if c.has(i) {
 			t.Fatalf("key should be expired: %d", i)
 		}
 	}
@@ -603,7 +604,7 @@ func TestCache_SetWithExpiresAfterAccessing(t *testing.T) {
 
 	for i := 0; i < size; i++ {
 		if i%2 == 0 {
-			if !c.Has(i) {
+			if !c.has(i) {
 				t.Fatalf("key should be expired: %d", i)
 			}
 		} else {
@@ -656,7 +657,7 @@ func TestCache_Invalidate(t *testing.T) {
 	}
 
 	for i := 0; i < size; i++ {
-		if !c.Has(i) {
+		if !c.has(i) {
 			t.Fatalf("the key must exist: %d", i)
 		}
 	}
@@ -666,7 +667,7 @@ func TestCache_Invalidate(t *testing.T) {
 	}
 
 	for i := 0; i < size; i++ {
-		if c.Has(i) {
+		if c.has(i) {
 			t.Fatalf("the key must not exist: %d", i)
 		}
 	}
@@ -741,7 +742,7 @@ func TestCache_Ratio(t *testing.T) {
 		k := z.Uint64()
 
 		o.Get(k)
-		if !c.Has(k) {
+		if !c.has(k) {
 			c.Set(k, k)
 		}
 	}
@@ -760,6 +761,37 @@ func TestCache_Ratio(t *testing.T) {
 	t.Logf("evicted: %d", m[CauseOverflow])
 	if len(m) != 1 || m[CauseOverflow] <= 0 || m[CauseOverflow] > 5000 {
 		t.Fatalf("cache was supposed to evict positive number of entries, but evicted %d entries", m[CauseOverflow])
+	}
+}
+
+func TestCache_ValidateFunctions(t *testing.T) {
+	t.Parallel()
+
+	getPublicMethods := func(v any) map[string]bool {
+		tp := reflect.TypeOf(v)
+
+		res := make(map[string]bool, tp.NumMethod())
+		for i := 0; i < tp.NumMethod(); i++ {
+			method := tp.Method(i)
+			res[method.Name] = true
+		}
+		return res
+	}
+
+	publicMethods := getPublicMethods(&Cache[int, int]{})
+	implPublicMethods := getPublicMethods(&cache[int, int]{})
+
+	for m := range publicMethods {
+		if implPublicMethods[m] {
+			continue
+		}
+		t.Errorf("Cache has an unknown %s method", m)
+	}
+	for m := range implPublicMethods {
+		if publicMethods[m] {
+			continue
+		}
+		t.Errorf("cache has an unknown %s method", m)
 	}
 }
 

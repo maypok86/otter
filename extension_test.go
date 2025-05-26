@@ -26,8 +26,6 @@ import (
 )
 
 func TestCache_SetExpiresAfter(t *testing.T) {
-	t.Parallel()
-
 	size := 100
 	statsCounter := stats.NewCounter()
 	var mutex sync.Mutex
@@ -36,7 +34,7 @@ func TestCache_SetExpiresAfter(t *testing.T) {
 	c := Must(&Options[int, int]{
 		MaximumSize:      size,
 		StatsRecorder:    statsCounter,
-		ExpiryCalculator: expiry.Writing[int, int](200 * time.Millisecond),
+		ExpiryCalculator: expiry.Writing[int, int](time.Second),
 		OnDeletion: func(e DeletionEvent[int, int]) {
 			defer func() {
 				done <- struct{}{}
@@ -69,10 +67,10 @@ func TestCache_SetExpiresAfter(t *testing.T) {
 	if e.Value != v1 {
 		t.Fatalf("value should be equal to v1. key: %v, value: %v", k1, e.Value)
 	}
-	if expiresAfter := e.ExpiresAfter(); expiresAfter > 200*time.Millisecond {
+	if expiresAfter := e.ExpiresAfter(); expiresAfter < 800*time.Millisecond || expiresAfter > time.Second {
 		t.Fatalf("expiresAfter should be equal to %v. expiresAfter: %v", 200*time.Millisecond, expiresAfter)
 	}
-	c.SetExpiresAfter(k1, time.Second)
+	c.SetExpiresAfter(k1, 2*time.Second)
 	e, ok = c.GetEntryQuietly(k1)
 	if !ok {
 		t.Fatalf("not found key = %v", k1)
@@ -80,7 +78,7 @@ func TestCache_SetExpiresAfter(t *testing.T) {
 	if e.Value != v1 {
 		t.Fatalf("value should be equal to v1. key: %v, value: %v", k1, e.Value)
 	}
-	if expiresAfter := e.ExpiresAfter(); expiresAfter > time.Second || expiresAfter < 500*time.Millisecond {
+	if expiresAfter := e.ExpiresAfter(); expiresAfter > 2*time.Second || expiresAfter < time.Second+800*time.Millisecond {
 		t.Fatalf("expiresAfter should be equal to %v. expiresAfter: %v", time.Second, expiresAfter)
 	}
 

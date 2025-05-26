@@ -130,23 +130,3 @@ func (o *Options[K, V]) setDefaults() {
 		o.Logger = noopLogger{}
 	}
 }
-
-// New creates a configured cache or
-// returns an error if invalid parameters were specified.
-func New[K comparable, V any](o *Options[K, V]) (*Cache[K, V], error) {
-	if err := o.validate(); err != nil {
-		return nil, err
-	}
-	o.setDefaults()
-	return newCache(o), nil
-}
-
-// Must creates a configured cache or
-// panics if invalid parameters were specified.
-func Must[K comparable, V any](o *Options[K, V]) *Cache[K, V] {
-	c, err := New(o)
-	if err != nil {
-		panic(err)
-	}
-	return c
-}

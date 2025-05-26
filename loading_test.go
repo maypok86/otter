@@ -161,7 +161,7 @@ func TestCache_GetPanic(t *testing.T) {
 				t.Fatalf("unexpected wrapped error type %T; want %T", err, new(errValue))
 			}
 
-			if c.singleflight.getCall(k1) != nil {
+			if c.cache.singleflight.getCall(k1) != nil {
 				t.Fatal("the call should be deleted even in case of panic")
 			}
 			if c.EstimatedSize() > 0 {
@@ -234,7 +234,7 @@ func TestCache_BulkGetPanic(t *testing.T) {
 			}
 
 			for k := range ks {
-				if c.singleflight.getCall(k) != nil {
+				if c.cache.singleflight.getCall(k) != nil {
 					t.Fatal("calls should be deleted even in case of panic")
 				}
 			}
