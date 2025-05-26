@@ -142,7 +142,6 @@ func TestCache_GetPanic(t *testing.T) {
 			func() {
 				defer func() {
 					recovered = recover()
-					t.Logf("after panic(%#v) in cache.Get, recovered %#v", tt.panicValue, recovered)
 				}()
 
 				_, _ = c.Get(ctx, k1, tl)
@@ -214,7 +213,6 @@ func TestCache_BulkGetPanic(t *testing.T) {
 			func() {
 				defer func() {
 					recovered = recover()
-					t.Logf("after panic(%#v) in cache.BulkGet, recovered %#v", tt.panicValue, recovered)
 				}()
 
 				_, _ = c.BulkGet(ctx, ks, tl)
