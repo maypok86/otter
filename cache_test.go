@@ -252,6 +252,10 @@ func TestCache_GC(t *testing.T) {
 	runtime.GC()
 	time.Sleep(200 * time.Millisecond)
 	runtime.GC()
+	time.Sleep(200 * time.Millisecond)
+	runtime.GC()
+	time.Sleep(200 * time.Millisecond)
+	runtime.GC()
 
 	if !cleaned.Load() {
 		t.Fatal("cache should be collected")
@@ -284,7 +288,7 @@ func TestCache_CleanUp(t *testing.T) {
 	if cacheSize := c.EstimatedSize(); cacheSize != size {
 		t.Fatalf("c.EstimatedSize() = %d, want = %d", cacheSize, size)
 	}
-	if l := c.cache.writeBuffer.Len(); l != 0 {
+	if l := c.cache.writeBuffer.Size(); l != 0 {
 		t.Fatalf("writeBufferLen = %d, want = %d", l, 0)
 	}
 	if l := c.cache.stripedBuffer.Len(); l != 0 {

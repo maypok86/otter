@@ -17,8 +17,11 @@ package otter
 import (
 	"context"
 	"errors"
+	"fmt"
 	"iter"
+	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/maypok86/otter/v2/core"
@@ -44,6 +47,18 @@ const (
 	noTime                      = int64(0)
 
 	minWriteBufferSize uint32 = 4
+	writeBufferRetries        = 100
+)
+
+const (
+	// A drain is not taking place.
+	idle uint32 = 0
+	// A drain is required due to a pending write modification.
+	required uint32 = 1
+	// A drain is in progress and will transition to idle.
+	processingToIdle uint32 = 2
+	// A drain is in progress and will transition to required.
+	processingToRequired uint32 = 3
 )
 
 var (
@@ -90,6 +105,8 @@ func zeroValue[V any]() V {
 // cache is a structure performs a best-effort bounding of a hash table using eviction algorithm
 // to determine which entries to evict when the capacity is exceeded.
 type cache[K comparable, V any] struct {
+	drainStatus       atomic.Uint32
+	_                 [xruntime.CacheLineSize - 4]byte
 	nodeManager       *node.Manager[K, V]
 	hashmap           *hashmap.Map[K, V, node.Node[K, V]]
 	policy            evictionPolicy[K, V]
@@ -98,20 +115,21 @@ type cache[K comparable, V any] struct {
 	logger            Logger
 	clock             timeSource
 	stripedBuffer     *lossy.Striped[K, V]
-	writeBuffer       *queue.Growable[task[K, V]]
+	writeBuffer       *queue.MPSC[task[K, V]]
 	singleflight      *group[K, V]
 	evictionMutex     sync.Mutex
-	closeOnce         sync.Once
 	doneClose         chan struct{}
 	weigher           func(key K, value V) uint32
 	onDeletion        func(e DeletionEvent[K, V])
+	executor          func(fn func())
 	expiryCalculator  expiry.Calculator[K, V]
 	refreshCalculator refresh.Calculator[K, V]
+	taskPool          sync.Pool
 	withTime          bool
 	withExpiration    bool
 	withRefresh       bool
 	withEviction      bool
-	withProcess       bool
+	withMaintenance   bool
 	withStats         bool
 }
 
@@ -145,16 +163,19 @@ func newCache[K comparable, V any](o *Options[K, V]) *cache[K, V] {
 	}
 
 	cache := &cache[K, V]{
-		nodeManager:       nodeManager,
-		hashmap:           hm,
-		stats:             o.StatsRecorder,
-		logger:            o.Logger,
-		stripedBuffer:     stripedBuffer,
-		singleflight:      &group[K, V]{},
-		weigher:           o.Weigher,
-		onDeletion:        o.OnDeletion,
-		clock:             &clock.Real{},
-		withStats:         withStats,
+		nodeManager:   nodeManager,
+		hashmap:       hm,
+		stats:         o.StatsRecorder,
+		logger:        o.Logger,
+		stripedBuffer: stripedBuffer,
+		singleflight:  &group[K, V]{},
+		weigher:       o.Weigher,
+		onDeletion:    o.OnDeletion,
+		clock:         &clock.Real{},
+		withStats:     withStats,
+		executor: func(fn func()) {
+			go fn()
+		},
 		expiryCalculator:  o.ExpiryCalculator,
 		refreshCalculator: o.RefreshCalculator,
 	}
@@ -174,20 +195,17 @@ func newCache[K comparable, V any](o *Options[K, V]) *cache[K, V] {
 	cache.withExpiration = o.ExpiryCalculator != nil
 	cache.withRefresh = o.RefreshCalculator != nil
 	cache.withTime = cache.withExpiration || cache.withRefresh
-	cache.withProcess = cache.withEviction || cache.withExpiration
+	cache.withMaintenance = cache.withEviction || cache.withExpiration
 
-	if cache.withProcess {
-		cache.doneClose = make(chan struct{})
-		cache.writeBuffer = queue.NewGrowable[task[K, V]](minWriteBufferSize, maxWriteBufferSize)
+	if cache.withMaintenance {
+		cache.writeBuffer = queue.NewMPSC[task[K, V]](minWriteBufferSize, maxWriteBufferSize)
 	}
 	if cache.withTime {
 		cache.clock.Init()
 	}
 	if cache.withExpiration {
+		cache.doneClose = make(chan struct{})
 		go cache.periodicExpire()
-	}
-	if cache.withProcess {
-		go cache.process()
 	}
 
 	return cache
@@ -257,7 +275,7 @@ func (c *cache[K, V]) getNode(key K, offset int64) node.Node[K, V] {
 		return nil
 	}
 
-	c.afterHit(n, offset)
+	c.afterRead(n, offset, true)
 
 	return n
 }
@@ -275,19 +293,16 @@ func (c *cache[K, V]) getNodeQuietly(key K, offset int64) node.Node[K, V] {
 	return n
 }
 
-func (c *cache[K, V]) afterHit(got node.Node[K, V], offset int64) {
-	c.stats.RecordHits(1)
+func (c *cache[K, V]) afterRead(got node.Node[K, V], offset int64, recordHit bool) {
+	if recordHit {
+		c.stats.RecordHits(1)
+	}
 
 	c.calcExpiresAtAfterRead(got, offset)
 
-	if !c.withEviction {
-		return
-	}
-
-	result := c.stripedBuffer.Add(got)
-	if result == lossy.Full && c.evictionMutex.TryLock() {
-		c.stripedBuffer.DrainTo(c.policy.Read)
-		c.evictionMutex.Unlock()
+	delayable := c.skipReadBuffer() || c.stripedBuffer.Add(got) != lossy.Full
+	if c.shouldDrainBuffers(delayable) {
+		c.scheduleDrainBuffers()
 	}
 }
 
@@ -315,10 +330,10 @@ func (c *cache[K, V]) calcExpiresAtAfterRead(n node.Node[K, V], offset int64) {
 	}
 
 	expiresAfter := c.expiryCalculator.ExpireAfterRead(c.nodeToEntry(n, offset))
-	c.setExpiresAfterRead(n, offset, expiresAfter, false)
+	c.setExpiresAfterRead(n, offset, expiresAfter)
 }
 
-func (c *cache[K, V]) setExpiresAfterRead(n node.Node[K, V], offset int64, expiresAfter time.Duration, isManual bool) {
+func (c *cache[K, V]) setExpiresAfterRead(n node.Node[K, V], offset int64, expiresAfter time.Duration) {
 	if expiresAfter <= 0 {
 		return
 	}
@@ -328,9 +343,6 @@ func (c *cache[K, V]) setExpiresAfterRead(n node.Node[K, V], offset int64, expir
 	diff := xmath.Abs(int64(expiresAfter - currentDuration))
 	if diff > 0 {
 		n.CASExpiresAt(expiresAt, offset+int64(expiresAfter))
-		if isManual || diff >= expireTolerance {
-			c.writeBuffer.Push(newRescheduleTask(n))
-		}
 	}
 }
 
@@ -370,7 +382,7 @@ func (c *cache[K, V]) SetExpiresAfter(key K, expiresAfter time.Duration) {
 		return
 	}
 
-	c.setExpiresAfterRead(n, offset, expiresAfter, true)
+	c.setExpiresAfterRead(n, offset, expiresAfter)
 }
 
 // SetRefreshableAfter specifies that each entry should be eligible for reloading once a fixed duration has elapsed.
@@ -422,6 +434,7 @@ func (c *cache[K, V]) set(key K, value V, onlyIfAbsent bool) (V, bool) {
 		old = current
 		if onlyIfAbsent && current != nil {
 			// no op
+			c.calcExpiresAtAfterRead(old, offset)
 			return current
 		}
 		// set
@@ -436,7 +449,6 @@ func (c *cache[K, V]) set(key K, value V, onlyIfAbsent bool) (V, bool) {
 			c.afterWrite(n, nil, offset)
 			return value, true
 		}
-		c.calcExpiresAtAfterRead(old, offset)
 		return old.Value(), false
 	}
 
@@ -448,7 +460,7 @@ func (c *cache[K, V]) set(key K, value V, onlyIfAbsent bool) (V, bool) {
 }
 
 func (c *cache[K, V]) afterWrite(n, old node.Node[K, V], offset int64) {
-	if !c.withProcess {
+	if !c.withMaintenance {
 		if old != nil {
 			c.notifyDeletion(old.Key(), old.Value(), CauseReplacement)
 		}
@@ -457,7 +469,7 @@ func (c *cache[K, V]) afterWrite(n, old node.Node[K, V], offset int64) {
 
 	if old == nil {
 		// insert
-		c.writeBuffer.Push(newAddTask(n))
+		c.afterWriteTask(c.getTask(n, nil, addReason, causeUnknown))
 		return
 	}
 
@@ -468,7 +480,7 @@ func (c *cache[K, V]) afterWrite(n, old node.Node[K, V], offset int64) {
 		cause = CauseExpiration
 	}
 
-	c.writeBuffer.Push(newUpdateTask(n, old, cause))
+	c.afterWriteTask(c.getTask(n, old, updateReason, cause))
 }
 
 type refreshableKey[K comparable] struct {
@@ -920,7 +932,7 @@ func (c *cache[K, V]) Invalidate(key K) (value V, invalidated bool) {
 		}
 		return nil
 	})
-	c.afterDelete(d, offset)
+	c.afterDelete(d, offset, false)
 	if d != nil {
 		return d.Value(), true
 	}
@@ -944,15 +956,15 @@ func (c *cache[K, V]) deleteNodeFromMap(n node.Node[K, V]) node.Node[K, V] {
 }
 
 func (c *cache[K, V]) deleteNode(n node.Node[K, V], offset int64) {
-	c.afterDelete(c.deleteNodeFromMap(n), offset)
+	c.afterDelete(c.deleteNodeFromMap(n), offset, true)
 }
 
-func (c *cache[K, V]) afterDelete(deleted node.Node[K, V], offset int64) {
+func (c *cache[K, V]) afterDelete(deleted node.Node[K, V], offset int64, withLock bool) {
 	if deleted == nil {
 		return
 	}
 
-	if !c.withProcess {
+	if !c.withMaintenance {
 		c.notifyDeletion(deleted.Key(), deleted.Value(), CauseInvalidation)
 		return
 	}
@@ -964,7 +976,12 @@ func (c *cache[K, V]) afterDelete(deleted node.Node[K, V], offset int64) {
 		cause = CauseExpiration
 	}
 
-	c.writeBuffer.Push(newDeleteTask(deleted, cause))
+	t := c.getTask(deleted, nil, deleteReason, cause)
+	if withLock {
+		c.runTask(t)
+	} else {
+		c.afterWriteTask(c.getTask(deleted, nil, deleteReason, cause))
+	}
 }
 
 func (c *cache[K, V]) notifyDeletion(key K, value V, cause DeletionCause) {
@@ -1032,71 +1049,6 @@ func (c *cache[K, V]) deleteFromPolicies(n node.Node[K, V], cause DeletionCause)
 	c.notifyDeletion(n.Key(), n.Value(), cause)
 }
 
-func (c *cache[K, V]) onWrite(t task[K, V], offset int64, isBackground bool) {
-	if t.isClose() {
-		if isBackground {
-			if c.withExpiration {
-				c.doneClose <- struct{}{}
-			}
-			c.doneClose <- struct{}{}
-		}
-		return
-	}
-
-	n := t.node()
-	switch {
-	case t.isAdd():
-		c.addToPolicies(n, offset)
-	case t.isUpdate():
-		c.deleteFromPolicies(t.oldNode(), t.deletionCause)
-		c.addToPolicies(n, offset)
-	case t.isDelete():
-		c.deleteFromPolicies(n, t.deletionCause)
-	case t.isReschedule():
-		c.expirationPolicy.Delete(t.n)
-		c.expirationPolicy.Add(t.n)
-	default:
-		panic("invalid task type")
-	}
-}
-
-func (c *cache[K, V]) onBulkWrite(buffer []task[K, V], offset int64) bool {
-	for _, t := range buffer {
-		c.onWrite(t, offset, true)
-		if t.isClose() {
-			return true
-		}
-	}
-	return false
-}
-
-func (c *cache[K, V]) process() {
-	const maxBufferSize = 64
-	buffer := make([]task[K, V], 0, maxBufferSize)
-	for {
-		buffer = append(buffer, c.writeBuffer.Pop())
-
-		for i := 0; i < maxBufferSize-1; i++ {
-			t, ok := c.writeBuffer.TryPop()
-			if !ok {
-				break
-			}
-			buffer = append(buffer, t)
-		}
-
-		offset := c.clock.Offset()
-		c.evictionMutex.Lock()
-		shouldClose := c.onBulkWrite(buffer, offset)
-		c.evictionMutex.Unlock()
-
-		buffer = buffer[:0]
-
-		if shouldClose {
-			break
-		}
-	}
-}
-
 // All returns an iterator over all entries in the cache.
 //
 // Iterator is at least weakly consistent: he is safe for concurrent use,
@@ -1120,65 +1072,234 @@ func (c *cache[K, V]) All() iter.Seq2[K, V] {
 func (c *cache[K, V]) InvalidateAll() {
 	c.evictionMutex.Lock()
 
-	if c.withEviction {
+	if !c.skipReadBuffer() {
 		c.stripedBuffer.DrainTo(func(n node.Node[K, V]) {})
-		c.policy.Clear()
 	}
-	if c.withExpiration {
-		c.expirationPolicy.Clear()
-	}
-	c.cleanUpWriteBuffer()
-	c.hashmap.Clear()
-
-	c.evictionMutex.Unlock()
-}
-
-func (c *cache[K, V]) cleanUpWriteBuffer() {
-	hasClose := false
-	if c.withProcess {
-		offset := c.clock.Offset()
+	if c.withMaintenance {
 		for {
-			t, ok := c.writeBuffer.TryPop()
-			if !ok {
+			t := c.writeBuffer.TryPop()
+			if t == nil {
 				break
 			}
-			c.onWrite(t, offset, false)
-			if t.isClose() {
-				hasClose = true
-			}
+			c.runTask(t)
 		}
 	}
-	if hasClose {
-		c.writeBuffer.Push(newCloseTask[K, V]())
+	// Discard all entries, falling back to one-by-one to avoid excessive lock hold times
+	nodes := make([]node.Node[K, V], 0, c.EstimatedSize())
+	threshold := uint64(maxWriteBufferSize / 2)
+	c.hashmap.Range(func(n node.Node[K, V]) bool {
+		nodes = append(nodes, n)
+		return true
+	})
+	offset := c.clock.Offset()
+	for len(nodes) > 0 && c.writeBuffer.Size() < threshold {
+		n := nodes[len(nodes)-1]
+		nodes = nodes[:len(nodes)-1]
+		c.deleteNode(n, offset)
+	}
+
+	c.evictionMutex.Unlock()
+
+	for _, n := range nodes {
+		c.Invalidate(n.Key())
 	}
 }
 
 // CleanUp performs any pending maintenance operations needed by the cache. Exactly which activities are
 // performed -- if any -- is implementation-dependent.
 func (c *cache[K, V]) CleanUp() {
+	c.performCleanUp(nil)
+}
+
+func (c *cache[K, V]) shouldDrainBuffers(delayable bool) bool {
+	drainStatus := c.drainStatus.Load()
+	switch drainStatus {
+	case idle:
+		return !delayable
+	case required:
+		return true
+	case processingToIdle, processingToRequired:
+		return false
+	default:
+		panic(fmt.Sprintf("Invalid drain status: %d", drainStatus))
+	}
+}
+
+func (c *cache[K, V]) skipReadBuffer() bool {
+	return !c.withEviction
+}
+
+func (c *cache[K, V]) afterWriteTask(t *task[K, V]) {
+	for i := 0; i < writeBufferRetries; i++ {
+		if c.writeBuffer.TryPush(t) {
+			c.scheduleAfterWrite()
+			return
+		}
+		c.scheduleDrainBuffers()
+		runtime.Gosched()
+	}
+
+	// In scenarios where the writing goroutines cannot make progress then they attempt to provide
+	// assistance by performing the eviction work directly. This can resolve cases where the
+	// maintenance task is scheduled but not running.
 	c.evictionMutex.Lock()
-	defer c.evictionMutex.Unlock()
+	c.maintenance(t)
+	c.evictionMutex.Unlock()
+	c.rescheduleCleanUpIfIncomplete()
+}
 
-	if c.withEviction {
-		c.stripedBuffer.DrainTo(c.policy.Read)
+func (c *cache[K, V]) scheduleAfterWrite() {
+	drainStatus := c.drainStatus.Load()
+	for {
+		switch drainStatus {
+		case idle:
+			c.drainStatus.CompareAndSwap(idle, required)
+			c.scheduleDrainBuffers()
+			return
+		case required:
+			c.scheduleDrainBuffers()
+			return
+		case processingToIdle:
+			if c.drainStatus.CompareAndSwap(processingToIdle, processingToRequired) {
+				return
+			}
+			drainStatus = c.drainStatus.Load()
+			continue
+		case processingToRequired:
+			return
+		default:
+			panic(fmt.Sprintf("Invalid drain status: %d", drainStatus))
+		}
 	}
-	if c.withExpiration {
-		c.expirationPolicy.DeleteExpired(c.clock.Offset(), c.evictOrExpireNode)
+}
+
+func (c *cache[K, V]) scheduleDrainBuffers() {
+	if c.drainStatus.Load() >= processingToIdle {
+		return
 	}
 
-	c.cleanUpWriteBuffer()
+	if c.evictionMutex.TryLock() {
+		drainStatus := c.drainStatus.Load()
+		if drainStatus >= processingToIdle {
+			c.evictionMutex.Unlock()
+			return
+		}
+
+		c.drainStatus.Store(processingToIdle)
+
+		c.executor(c.drainBuffers)
+
+		c.evictionMutex.Unlock()
+	}
+}
+
+func (c *cache[K, V]) drainBuffers() {
+	c.performCleanUp(nil)
+}
+
+func (c *cache[K, V]) performCleanUp(t *task[K, V]) {
+	c.evictionMutex.Lock()
+	c.maintenance(t)
+	c.evictionMutex.Unlock()
+	c.rescheduleCleanUpIfIncomplete()
+}
+
+func (c *cache[K, V]) rescheduleCleanUpIfIncomplete() {
+	if c.drainStatus.Load() != required {
+		return
+	}
+
+	// TODO: if executor
+	c.scheduleDrainBuffers()
+}
+
+func (c *cache[K, V]) maintenance(t *task[K, V]) {
+	c.drainStatus.Store(processingToIdle)
+
+	c.drainReadBuffer()
+	c.drainWriteBuffer()
+	c.runTask(t)
+
+	if c.drainStatus.Load() != processingToIdle || !c.drainStatus.CompareAndSwap(processingToIdle, idle) {
+		c.drainStatus.Store(required)
+	}
+}
+
+func (c *cache[K, V]) drainReadBuffer() {
+	if c.skipReadBuffer() {
+		return
+	}
+
+	c.stripedBuffer.DrainTo(c.policy.Read)
+}
+
+func (c *cache[K, V]) drainWriteBuffer() {
+	for i := uint32(0); i <= maxWriteBufferSize; i++ {
+		t := c.writeBuffer.TryPop()
+		if t == nil {
+			return
+		}
+		c.runTask(t)
+	}
+	c.drainStatus.Store(processingToRequired)
+}
+
+func (c *cache[K, V]) runTask(t *task[K, V]) {
+	if t == nil {
+		return
+	}
+
+	offset := c.clock.Offset()
+
+	n := t.node()
+	switch t.writeReason {
+	case addReason:
+		c.addToPolicies(n, offset)
+	case updateReason:
+		c.deleteFromPolicies(t.oldNode(), t.deletionCause)
+		c.addToPolicies(n, offset)
+	case deleteReason:
+		c.deleteFromPolicies(n, t.deletionCause)
+	default:
+		panic(fmt.Sprintf("Invalid task type: %d", t.writeReason))
+	}
+
+	c.putTask(t)
+}
+
+func (c *cache[K, V]) getTask(n, old node.Node[K, V], writeReason reason, cause DeletionCause) *task[K, V] {
+	t, ok := c.taskPool.Get().(*task[K, V])
+	if !ok {
+		return &task[K, V]{
+			n:             n,
+			old:           old,
+			writeReason:   writeReason,
+			deletionCause: cause,
+		}
+	}
+	t.n = n
+	t.old = old
+	t.writeReason = writeReason
+	t.deletionCause = cause
+
+	return t
+}
+
+func (c *cache[K, V]) putTask(t *task[K, V]) {
+	t.n = nil
+	t.old = nil
+	t.writeReason = unknownReason
+	t.deletionCause = causeUnknown
+	c.taskPool.Put(t)
 }
 
 // close discards all entries in the cache and stop all goroutines.
 //
 // NOTE: this operation must be performed when no requests are made to the cache otherwise the behavior is undefined.
 func (c *cache[K, V]) close() {
-	c.closeOnce.Do(func() {
-		if c.withProcess {
-			c.writeBuffer.Push(newCloseTask[K, V]())
-			<-c.doneClose
-		}
-	})
+	if c.withExpiration {
+		c.doneClose <- struct{}{}
+	}
 }
 
 // EstimatedSize returns the approximate number of entries in this cache. The value returned is an estimate; the

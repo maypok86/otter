@@ -26,8 +26,6 @@ const (
 	addReason
 	deleteReason
 	updateReason
-	rescheduleReason
-	closeReason
 )
 
 // task is a set of information to update the cache:
@@ -39,47 +37,6 @@ type task[K comparable, V any] struct {
 	deletionCause DeletionCause
 }
 
-// newAddTask creates a task to add a node to policies.
-func newAddTask[K comparable, V any](n node.Node[K, V]) task[K, V] {
-	return task[K, V]{
-		n:           n,
-		writeReason: addReason,
-	}
-}
-
-// newDeleteTask creates a task to delete a node from policies.
-func newDeleteTask[K comparable, V any](n node.Node[K, V], cause DeletionCause) task[K, V] {
-	return task[K, V]{
-		n:             n,
-		writeReason:   deleteReason,
-		deletionCause: cause,
-	}
-}
-
-// newUpdateTask creates a task to update the node in the policies.
-func newUpdateTask[K comparable, V any](n, oldNode node.Node[K, V], cause DeletionCause) task[K, V] {
-	return task[K, V]{
-		n:             n,
-		old:           oldNode,
-		writeReason:   updateReason,
-		deletionCause: cause,
-	}
-}
-
-func newRescheduleTask[K comparable, V any](n node.Node[K, V]) task[K, V] {
-	return task[K, V]{
-		n:           n,
-		writeReason: rescheduleReason,
-	}
-}
-
-// newCloseTask creates a task to clear policies and stop all goroutines.
-func newCloseTask[K comparable, V any]() task[K, V] {
-	return task[K, V]{
-		writeReason: closeReason,
-	}
-}
-
 // node returns the node contained in the task. If node was not specified, it returns nil.
 func (t *task[K, V]) node() node.Node[K, V] {
 	return t.n
@@ -88,28 +45,4 @@ func (t *task[K, V]) node() node.Node[K, V] {
 // oldNode returns the old node contained in the task. If old node was not specified, it returns nil.
 func (t *task[K, V]) oldNode() node.Node[K, V] {
 	return t.old
-}
-
-// isAdd returns true if this is an add task.
-func (t *task[K, V]) isAdd() bool {
-	return t.writeReason == addReason
-}
-
-// isDelete returns true if this is a delete task.
-func (t *task[K, V]) isDelete() bool {
-	return t.writeReason == deleteReason
-}
-
-// isUpdate returns true if this is an update task.
-func (t *task[K, V]) isUpdate() bool {
-	return t.writeReason == updateReason
-}
-
-func (t *task[K, V]) isReschedule() bool {
-	return t.writeReason == rescheduleReason
-}
-
-// isClose returns true if this is a close task.
-func (t *task[K, V]) isClose() bool {
-	return t.writeReason == closeReason
 }

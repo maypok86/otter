@@ -18,8 +18,9 @@ package otter
 type DeletionCause int
 
 const (
+	causeUnknown DeletionCause = iota
 	// CauseInvalidation means that the entry was manually deleted by the user.
-	CauseInvalidation DeletionCause = iota + 1
+	CauseInvalidation
 	// CauseReplacement means that the entry itself was not actually deleted, but its value was replaced by the user.
 	CauseReplacement
 	// CauseOverflow means that the entry was evicted due to size constraints.
