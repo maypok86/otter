@@ -19,7 +19,7 @@ require (
 	github.com/karlseguin/ccache/v3 v3.0.6
 	github.com/klauspost/compress v1.18.0
 	github.com/maypok86/otter/v2 v2.0.0-00010101000000-000000000000
-	github.com/olekukonko/tablewriter v1.0.7
+	github.com/olekukonko/tablewriter v0.0.5
 	github.com/pingcap/go-ycsb v1.0.1
 	github.com/scalalang2/golang-fifo/v2 v2.0.0-20231212012136-274aca942e14
 	golang.org/x/sync v0.14.0

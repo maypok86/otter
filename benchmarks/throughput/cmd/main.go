@@ -81,6 +81,9 @@ func run(path, dir string) error {
 			}),
 			// for png render
 			charts.WithAnimation(false),
+			charts.WithInitializationOpts(opts.Initialization{
+				BackgroundColor: "white",
+			}),
 		)
 
 		bar = bar.SetXAxis([]string{"cache"})

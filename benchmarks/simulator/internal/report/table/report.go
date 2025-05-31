@@ -6,10 +6,35 @@ import (
 	"strconv"
 
 	"github.com/olekukonko/tablewriter"
-	"github.com/olekukonko/tablewriter/tw"
 
 	"github.com/maypok86/otter/v2/benchmarks/simulator/internal/report/simulation"
 )
+
+func formatInt(n int64) string {
+	in := strconv.FormatInt(n, 10)
+	numOfDigits := len(in)
+	if n < 0 {
+		numOfDigits-- // First character is the - sign (not a digit)
+	}
+	numOfCommas := (numOfDigits - 1) / 3
+
+	out := make([]byte, len(in)+numOfCommas)
+	if n < 0 {
+		in, out[0] = in[1:], '-'
+	}
+
+	for i, j, k := len(in)-1, len(out)-1, 0; ; i, j = i-1, j-1 {
+		out[j] = in[i]
+		if i == 0 {
+			return string(out)
+		}
+		k++
+		if k == 3 {
+			j, k = j-1, 0
+			out[j] = ','
+		}
+	}
+}
 
 type Table struct {
 	table [][]simulation.Result
@@ -28,26 +53,21 @@ func (t *Table) Report() error {
 
 	capacities := make([]string, 0, len(t.table[0]))
 	for _, r := range t.table[0] {
-		capacities = append(capacities, strconv.FormatInt(int64(r.Capacity()), 10))
+		capacities = append(capacities, formatInt(int64(r.Capacity())))
 	}
 
-	w := tablewriter.NewWriter(os.Stdout).Options(tablewriter.WithRendition(tw.Rendition{
-		Borders: tw.Border{
-			Left:   tw.On,
-			Top:    tw.Off,
-			Right:  tw.On,
-			Bottom: tw.Off,
-		},
-	}), tablewriter.WithHeader(append([]string{"Cache"}, capacities...)))
+	tw := tablewriter.NewWriter(os.Stdout)
+	tw.SetBorders(tablewriter.Border{Left: true, Top: false, Right: true, Bottom: false})
+	tw.SetCenterSeparator("|")
+	tw.SetHeader(append([]string{"Cache"}, capacities...))
 	for _, results := range t.table {
-		processed := make([]any, 0, len(capacities)+1)
+		processed := make([]string, 0, len(capacities)+1)
 		processed = append(processed, results[0].Name())
 		for _, r := range results {
 			processed = append(processed, fmt.Sprintf("%0.2f", r.Ratio()))
 		}
-		if err := w.Append(processed...); err != nil {
-			return err
-		}
+		tw.Append(processed)
 	}
-	return w.Render()
+	tw.Render()
+	return nil
 }

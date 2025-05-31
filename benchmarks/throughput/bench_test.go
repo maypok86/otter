@@ -26,12 +26,12 @@ var (
 
 	clients = []client.Client[string, string]{
 		&client.Otter[string, string]{},
-		//&client.Theine[string, string]{},
-		//&client.Ristretto[string, string]{},
-		//&client.Ccache[string]{},
-		//&client.Gcache[string, string]{},
-		//&client.TTLCache[string, string]{},
-		//&client.GolangLRU[string, string]{},
+		&client.Theine[string, string]{},
+		&client.Ristretto[string, string]{},
+		&client.Ccache[string]{},
+		&client.Gcache[string, string]{},
+		&client.TTLCache[string, string]{},
+		&client.GolangLRU[string, string]{},
 	}
 )
 
@@ -63,10 +63,10 @@ type benchCase struct {
 
 var benchCases = []benchCase{
 	{"reads=100%,writes=0%", 100, 0},
-	//{"reads=75%,writes=25%", 75, 25},
-	//{"reads=50%,writes=50%", 50, 50},
-	//{"reads=25%,writes=75%", 25, 75},
-	//{"reads=0%,writes=100%", 0, 100},
+	{"reads=75%,writes=25%", 75, 25},
+	{"reads=50%,writes=50%", 50, 50},
+	{"reads=25%,writes=75%", 25, 75},
+	{"reads=0%,writes=100%", 0, 100},
 }
 
 type data struct {
