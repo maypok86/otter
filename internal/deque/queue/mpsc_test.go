@@ -15,11 +15,12 @@
 package queue
 
 import (
-	"github.com/stretchr/testify/require"
 	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 const (

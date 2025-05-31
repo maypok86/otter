@@ -219,6 +219,14 @@ func (c *Cache[K, V]) CleanUp() {
 	c.cache.CleanUp()
 }
 
+// SetMaximum specifies the maximum total size of this cache. This value may be interpreted as the weighted
+// or unweighted threshold size based on how this cache was constructed. If the cache currently
+// exceeds the new maximum size this operation eagerly evict entries until the cache shrinks to
+// the appropriate size.
+func (c *Cache[K, V]) SetMaximum(maximum uint64) {
+	c.cache.SetMaximum(maximum)
+}
+
 // EstimatedSize returns the approximate number of entries in this cache. The value returned is an estimate; the
 // actual count may differ if there are concurrent insertions or deletions, or if some entries are
 // pending deletion due to expiration. In the case of stale entries

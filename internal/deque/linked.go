@@ -77,6 +77,28 @@ func (d *Linked[K, V]) PopBack() node.Node[K, V] {
 	return result
 }
 
+func (d *Linked[K, V]) NotContains(n node.Node[K, V]) bool {
+	return node.Equals(d.getPrev(n), nil) || node.Equals(d.getNext(n), nil) || !node.Equals(d.head, n)
+}
+
+func (d *Linked[K, V]) Contains(n node.Node[K, V]) bool {
+	return !d.NotContains(n)
+}
+
+func (d *Linked[K, V]) MoveToBack(n node.Node[K, V]) {
+	if !node.Equals(n, d.tail) {
+		d.Delete(n)
+		d.PushBack(n)
+	}
+}
+
+func (d *Linked[K, V]) MoveToFront(n node.Node[K, V]) {
+	if !node.Equals(n, d.head) {
+		d.Delete(n)
+		d.PushFront(n)
+	}
+}
+
 func (d *Linked[K, V]) Delete(n node.Node[K, V]) {
 	next := d.getNext(n)
 	prev := d.getPrev(n)

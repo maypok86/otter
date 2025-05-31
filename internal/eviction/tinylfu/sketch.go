@@ -45,7 +45,7 @@ func newSketch[K comparable]() *sketch[K] {
 }
 
 func (s *sketch[K]) EnsureCapacity(maximumSize uint64) {
-	if s.table != nil && uint64(len(s.table)) >= maximumSize {
+	if uint64(len(s.table)) >= maximumSize {
 		return
 	}
 

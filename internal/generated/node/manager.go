@@ -9,15 +9,14 @@ import (
 )
 
 const (
-	unknownQueueType uint8 = iota
-	smallQueueType
-	mainQueueType
-
-	maxFrequency uint8 = 3
+	InWindowQueue uint8 = iota
+	InMainProbationQueue
+	InMainProtectedQueue
 )
 
 const (
 	aliveState uint32 = iota
+	retiredState
 	deadState
 )
 
@@ -62,28 +61,33 @@ type Node[K comparable, V any] interface {
 	IsFresh(now int64) bool
 	// Weight returns the weight of the node.
 	Weight() uint32
-	// IsAlive returns true if the entry is available in the hash-table.
+	// IsAlive returns true if the entry is available in the hash-table and page replacement policy.
 	IsAlive() bool
+	// IsRetired returns true if the entry was removed from the hash-table and is awaiting removal from the page
+	// replacement policy.
+	IsRetired() bool
+	// Retire sets the node to the retired state.
+	Retire()
+	// IsDead returns true if the entry was removed from the hash-table and the page replacement policy.
+	IsDead() bool
 	// Die sets the node to the dead state.
 	Die()
-	// Frequency returns the frequency of the node.
-	Frequency() uint8
-	// IncrementFrequency increments the frequency of the node.
-	IncrementFrequency()
-	// DecrementFrequency decrements the frequency of the node.
-	DecrementFrequency()
-	// ResetFrequency resets the frequency.
-	ResetFrequency()
-	// MarkSmall sets the status to the small queue.
-	MarkSmall()
-	// IsSmall returns true if node is in the small queue.
-	IsSmall() bool
-	// MarkMain sets the status to the main queue.
-	MarkMain()
-	// IsMain returns true if node is in the main queue.
-	IsMain() bool
-	// Unmark sets the status to unknown.
-	Unmark()
+	// GetQueueType returns the queue that the entry's resides in (window, probation, or protected).
+	GetQueueType() uint8
+	// SetQueueType sets queue that the entry resides in (window, probation, or protected).
+	SetQueueType(queueType uint8)
+	// InWindow returns true if the entry is in the Window or Main space.
+	InWindow() bool
+	// MakeWindow sets the status to the Window queue.
+	MakeWindow()
+	// InMainProbation returns true if the entry is in the Main space's probation queue.
+	InMainProbation() bool
+	// MakeMainProbation sets the status to the Main space's probation queue.
+	MakeMainProbation()
+	// InMainProtected returns if the entry is in the Main space's protected queue.
+	InMainProtected() bool
+	// MakeMainProtected sets the status to the Main space's protected queue.
+	MakeMainProtected()
 }
 
 func Equals[K comparable, V any](a, b Node[K, V]) bool {
@@ -179,12 +183,4 @@ func (m *Manager[K, V]) FromPointer(ptr unsafe.Pointer) Node[K, V] {
 
 func (m *Manager[K, V]) IsNil(n Node[K, V]) bool {
 	return n == nil || n.AsPointer() == nil
-}
-
-func minUint8(a, b uint8) uint8 {
-	if a < b {
-		return a
-	}
-
-	return b
 }

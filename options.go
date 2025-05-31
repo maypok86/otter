@@ -22,6 +22,10 @@ import (
 	"github.com/maypok86/otter/v2/core/stats"
 )
 
+const (
+	defaultInitialCapacity = 16
+)
+
 // Options should be passed to New to construct a Cache.
 type Options[K comparable, V any] struct {
 	// MaximumSize specifies the maximum number of entries the cache may contain.
@@ -93,6 +97,17 @@ func (o *Options[K, V]) getMaximum() uint64 {
 		return o.MaximumWeight
 	}
 	return 0
+}
+
+func (o *Options[K, V]) hasInitialCapacity() bool {
+	return o.InitialCapacity > 0
+}
+
+func (o *Options[K, V]) getInitialCapacity() int {
+	if o.hasInitialCapacity() {
+		return o.InitialCapacity
+	}
+	return defaultInitialCapacity
 }
 
 func (o *Options[K, V]) validate() error {

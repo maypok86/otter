@@ -145,42 +145,50 @@ func (n *BSE[K, V]) IsAlive() bool {
 	return n.state.Load() == aliveState
 }
 
+func (n *BSE[K, V]) IsRetired() bool {
+	return n.state.Load() == retiredState
+}
+
+func (n *BSE[K, V]) Retire() {
+	n.state.Store(retiredState)
+}
+
+func (n *BSE[K, V]) IsDead() bool {
+	return n.state.Load() == deadState
+}
+
 func (n *BSE[K, V]) Die() {
 	n.state.Store(deadState)
 }
 
-func (n *BSE[K, V]) Frequency() uint8 {
-	return n.frequency
+func (n *BSE[K, V]) GetQueueType() uint8 {
+	return n.queueType
 }
 
-func (n *BSE[K, V]) IncrementFrequency() {
-	n.frequency = minUint8(n.frequency+1, maxFrequency)
+func (n *BSE[K, V]) SetQueueType(queueType uint8) {
+	n.queueType = queueType
 }
 
-func (n *BSE[K, V]) DecrementFrequency() {
-	n.frequency--
+func (n *BSE[K, V]) InWindow() bool {
+	return n.GetQueueType() == InWindowQueue
 }
 
-func (n *BSE[K, V]) ResetFrequency() {
-	n.frequency = 0
+func (n *BSE[K, V]) MakeWindow() {
+	n.SetQueueType(InWindowQueue)
 }
 
-func (n *BSE[K, V]) MarkSmall() {
-	n.queueType = smallQueueType
+func (n *BSE[K, V]) InMainProbation() bool {
+	return n.GetQueueType() == InMainProbationQueue
 }
 
-func (n *BSE[K, V]) IsSmall() bool {
-	return n.queueType == smallQueueType
+func (n *BSE[K, V]) MakeMainProbation() {
+	n.SetQueueType(InMainProbationQueue)
 }
 
-func (n *BSE[K, V]) MarkMain() {
-	n.queueType = mainQueueType
+func (n *BSE[K, V]) InMainProtected() bool {
+	return n.GetQueueType() == InMainProtectedQueue
 }
 
-func (n *BSE[K, V]) IsMain() bool {
-	return n.queueType == mainQueueType
-}
-
-func (n *BSE[K, V]) Unmark() {
-	n.queueType = unknownQueueType
+func (n *BSE[K, V]) MakeMainProtected() {
+	n.SetQueueType(InMainProtectedQueue)
 }

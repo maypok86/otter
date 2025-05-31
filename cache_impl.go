@@ -30,8 +30,7 @@ import (
 	"github.com/maypok86/otter/v2/core/stats"
 	"github.com/maypok86/otter/v2/internal/clock"
 	"github.com/maypok86/otter/v2/internal/deque/queue"
-	"github.com/maypok86/otter/v2/internal/eviction"
-	"github.com/maypok86/otter/v2/internal/eviction/s3fifo"
+	"github.com/maypok86/otter/v2/internal/eviction/tinylfu"
 	"github.com/maypok86/otter/v2/internal/expiration"
 	"github.com/maypok86/otter/v2/internal/generated/node"
 	"github.com/maypok86/otter/v2/internal/hashmap"
@@ -74,20 +73,6 @@ func init() {
 	maxStripedBufferSize = 4 * roundedParallelism
 }
 
-type evictionPolicy[K comparable, V any] interface {
-	Read(n node.Node[K, V])
-	Add(n node.Node[K, V], nowNanos int64, evictNode func(n node.Node[K, V], nowNanos int64))
-	Delete(n node.Node[K, V])
-	Clear()
-}
-
-type expirationPolicy[K comparable, V any] interface {
-	Add(n node.Node[K, V])
-	Delete(n node.Node[K, V])
-	DeleteExpired(nowNanos int64, expireNode func(n node.Node[K, V], nowNanos int64))
-	Clear()
-}
-
 type timeSource interface {
 	Init()
 	CachedOffset() int64
@@ -109,8 +94,8 @@ type cache[K comparable, V any] struct {
 	_                 [xruntime.CacheLineSize - 4]byte
 	nodeManager       *node.Manager[K, V]
 	hashmap           *hashmap.Map[K, V, node.Node[K, V]]
-	policy            evictionPolicy[K, V]
-	expirationPolicy  expirationPolicy[K, V]
+	evictionPolicy    *tinylfu.Policy[K, V]
+	expirationPolicy  *expiration.Variable[K, V]
 	stats             stats.Recorder
 	logger            Logger
 	clock             timeSource
@@ -135,11 +120,12 @@ type cache[K comparable, V any] struct {
 
 // newCache returns a new cache instance based on the settings from Options.
 func newCache[K comparable, V any](o *Options[K, V]) *cache[K, V] {
+	withWeight := o.MaximumWeight > 0
 	nodeManager := node.NewManager[K, V](node.Config{
 		WithSize:       o.MaximumSize > 0,
 		WithExpiration: o.ExpiryCalculator != nil,
 		WithRefresh:    o.RefreshCalculator != nil,
-		WithWeight:     o.MaximumWeight > 0,
+		WithWeight:     withWeight,
 	})
 
 	maximum := o.getMaximum()
@@ -150,21 +136,14 @@ func newCache[K comparable, V any](o *Options[K, V]) *cache[K, V] {
 		stripedBuffer = lossy.NewStriped(maxStripedBufferSize, nodeManager)
 	}
 
-	var hm *hashmap.Map[K, V, node.Node[K, V]]
-	if o.InitialCapacity <= 0 {
-		hm = hashmap.New[K, V, node.Node[K, V]](nodeManager)
-	} else {
-		hm = hashmap.NewWithSize[K, V, node.Node[K, V]](nodeManager, o.InitialCapacity)
-	}
-
 	withStats := o.StatsRecorder != nil
 	if !withStats {
 		o.StatsRecorder = stats.NoopRecorder{}
 	}
 
-	cache := &cache[K, V]{
+	c := &cache[K, V]{
 		nodeManager:   nodeManager,
-		hashmap:       hm,
+		hashmap:       hashmap.NewWithSize[K, V, node.Node[K, V]](nodeManager, o.getInitialCapacity()),
 		stats:         o.StatsRecorder,
 		logger:        o.Logger,
 		stripedBuffer: stripedBuffer,
@@ -180,35 +159,39 @@ func newCache[K comparable, V any](o *Options[K, V]) *cache[K, V] {
 		refreshCalculator: o.RefreshCalculator,
 	}
 
-	cache.withEviction = withEviction
-	cache.policy = eviction.NewDisabled[K, V]()
-	if cache.withEviction {
-		cache.policy = s3fifo.NewPolicy[K, V](maximum)
+	c.withEviction = withEviction
+	if c.withEviction {
+		c.evictionPolicy = tinylfu.NewPolicy[K, V](withWeight)
+		if o.hasInitialCapacity() {
+			c.evictionPolicy.EnsureCapacity(min(maximum, uint64(o.getInitialCapacity())))
+		}
 	}
 
 	if o.ExpiryCalculator != nil {
-		cache.expirationPolicy = expiration.NewVariable(nodeManager)
-	} else {
-		cache.expirationPolicy = expiration.NewDisabled[K, V]()
+		c.expirationPolicy = expiration.NewVariable(nodeManager)
 	}
 
-	cache.withExpiration = o.ExpiryCalculator != nil
-	cache.withRefresh = o.RefreshCalculator != nil
-	cache.withTime = cache.withExpiration || cache.withRefresh
-	cache.withMaintenance = cache.withEviction || cache.withExpiration
+	c.withExpiration = o.ExpiryCalculator != nil
+	c.withRefresh = o.RefreshCalculator != nil
+	c.withTime = c.withExpiration || c.withRefresh
+	c.withMaintenance = c.withEviction || c.withExpiration
 
-	if cache.withMaintenance {
-		cache.writeBuffer = queue.NewMPSC[task[K, V]](minWriteBufferSize, maxWriteBufferSize)
+	if c.withMaintenance {
+		c.writeBuffer = queue.NewMPSC[task[K, V]](minWriteBufferSize, maxWriteBufferSize)
 	}
-	if cache.withTime {
-		cache.clock.Init()
+	if c.withTime {
+		c.clock.Init()
 	}
-	if cache.withExpiration {
-		cache.doneClose = make(chan struct{})
-		go cache.periodicExpire()
+	if c.withExpiration {
+		c.doneClose = make(chan struct{})
+		go c.periodicCleanUp()
 	}
 
-	return cache
+	if c.withEviction {
+		c.SetMaximum(maximum)
+	}
+
+	return c
 }
 
 func (c *cache[K, V]) newNode(key K, value V, old node.Node[K, V]) node.Node[K, V] {
@@ -442,6 +425,7 @@ func (c *cache[K, V]) set(key K, value V, onlyIfAbsent bool) (V, bool) {
 		n = c.newNode(key, value, old)
 		c.calcExpiresAtAfterWrite(n, old, offset)
 		c.calcRefreshableAt(n, old, nil, offset)
+		c.makeRetired(old)
 		return n
 	})
 	if onlyIfAbsent {
@@ -474,7 +458,6 @@ func (c *cache[K, V]) afterWrite(n, old node.Node[K, V], offset int64) {
 	}
 
 	// update
-	old.Die()
 	cause := CauseReplacement
 	if old.HasExpired(offset) {
 		cause = CauseExpiration
@@ -630,6 +613,7 @@ func (c *cache[K, V]) afterDeleteCall(cl *call[K, V]) {
 		n := c.newNode(cl.key, cl.value, old)
 		c.calcExpiresAtAfterWrite(n, old, offset)
 		c.calcRefreshableAt(n, old, cl, offset)
+		c.makeRetired(old)
 		return n
 	})
 	if inserted {
@@ -929,6 +913,7 @@ func (c *cache[K, V]) Invalidate(key K) (value V, invalidated bool) {
 		if n != nil {
 			c.singleflight.delete(key)
 			d = n
+			c.makeRetired(d)
 		}
 		return nil
 	})
@@ -948,6 +933,7 @@ func (c *cache[K, V]) deleteNodeFromMap(n node.Node[K, V]) node.Node[K, V] {
 		if n.AsPointer() == current.AsPointer() {
 			c.singleflight.delete(n.Key())
 			deleted = current
+			c.makeRetired(deleted)
 			return nil
 		}
 		return current
@@ -970,7 +956,6 @@ func (c *cache[K, V]) afterDelete(deleted node.Node[K, V], offset int64, withLoc
 	}
 
 	// delete
-	deleted.Die()
 	cause := CauseInvalidation
 	if deleted.HasExpired(offset) {
 		cause = CauseExpiration
@@ -996,14 +981,7 @@ func (c *cache[K, V]) notifyDeletion(key K, value V, cause DeletionCause) {
 	})
 }
 
-func (c *cache[K, V]) expire() {
-	offset := c.clock.Refresh()
-	c.evictionMutex.Lock()
-	c.expirationPolicy.DeleteExpired(offset, c.evictOrExpireNode)
-	c.evictionMutex.Unlock()
-}
-
-func (c *cache[K, V]) periodicExpire() {
+func (c *cache[K, V]) periodicCleanUp() {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	for {
@@ -1011,42 +989,32 @@ func (c *cache[K, V]) periodicExpire() {
 		case <-c.doneClose:
 			return
 		case <-ticker.C:
-			c.expire()
+			c.CleanUp()
 		}
 	}
 }
 
-func (c *cache[K, V]) evictOrExpireNode(n node.Node[K, V], nowNanos int64) {
+func (c *cache[K, V]) evictNode(n node.Node[K, V], nowNanos int64) {
 	deleted := c.deleteNodeFromMap(n)
-	if deleted != nil {
-		c.policy.Delete(n)
-		c.expirationPolicy.Delete(n)
-
-		n.Die()
-
-		cause := CauseOverflow
-		if n.HasExpired(nowNanos) {
-			cause = CauseExpiration
-		}
-
-		c.notifyDeletion(n.Key(), n.Value(), cause)
-		c.stats.RecordEviction(n.Weight())
-	}
-}
-
-func (c *cache[K, V]) addToPolicies(n node.Node[K, V], offset int64) {
-	if !n.IsAlive() {
+	if deleted == nil {
 		return
 	}
 
-	c.expirationPolicy.Add(n)
-	c.policy.Add(n, offset, c.evictOrExpireNode)
-}
+	if c.withEviction {
+		c.evictionPolicy.Delete(n)
+	}
+	if c.withExpiration {
+		c.expirationPolicy.Delete(n)
+	}
 
-func (c *cache[K, V]) deleteFromPolicies(n node.Node[K, V], cause DeletionCause) {
-	c.expirationPolicy.Delete(n)
-	c.policy.Delete(n)
+	c.makeDead(n)
+	cause := CauseOverflow
+	if n.HasExpired(nowNanos) {
+		cause = CauseExpiration
+	}
+
 	c.notifyDeletion(n.Key(), n.Value(), cause)
+	c.stats.RecordEviction(n.Weight())
 }
 
 // All returns an iterator over all entries in the cache.
@@ -1219,6 +1187,9 @@ func (c *cache[K, V]) maintenance(t *task[K, V]) {
 	c.drainReadBuffer()
 	c.drainWriteBuffer()
 	c.runTask(t)
+	c.expireNodes()
+	c.evictNodes()
+	c.climb()
 
 	if c.drainStatus.Load() != processingToIdle || !c.drainStatus.CompareAndSwap(processingToIdle, idle) {
 		c.drainStatus.Store(required)
@@ -1230,7 +1201,7 @@ func (c *cache[K, V]) drainReadBuffer() {
 		return
 	}
 
-	c.stripedBuffer.DrainTo(c.policy.Read)
+	c.stripedBuffer.DrainTo(c.evictionPolicy.Access)
 }
 
 func (c *cache[K, V]) drainWriteBuffer() {
@@ -1249,22 +1220,60 @@ func (c *cache[K, V]) runTask(t *task[K, V]) {
 		return
 	}
 
-	offset := c.clock.Offset()
-
 	n := t.node()
 	switch t.writeReason {
 	case addReason:
-		c.addToPolicies(n, offset)
+		if c.withExpiration && n.IsAlive() {
+			c.expirationPolicy.Add(n)
+		}
+		if c.withEviction {
+			c.evictionPolicy.Add(n, c.EstimatedSize, c.evictNode)
+		}
 	case updateReason:
-		c.deleteFromPolicies(t.oldNode(), t.deletionCause)
-		c.addToPolicies(n, offset)
+		old := t.oldNode()
+		if c.withExpiration {
+			c.expirationPolicy.Delete(old)
+			if n.IsAlive() {
+				c.expirationPolicy.Add(n)
+			}
+		}
+		if c.withEviction {
+			c.evictionPolicy.Update(n, old, c.evictNode)
+		}
+		c.notifyDeletion(old.Key(), old.Value(), t.deletionCause)
 	case deleteReason:
-		c.deleteFromPolicies(n, t.deletionCause)
+		if c.withExpiration {
+			c.expirationPolicy.Delete(n)
+		}
+		if c.withEviction {
+			c.evictionPolicy.Delete(n)
+		}
+		c.notifyDeletion(n.Key(), n.Value(), t.deletionCause)
 	default:
 		panic(fmt.Sprintf("Invalid task type: %d", t.writeReason))
 	}
 
 	c.putTask(t)
+}
+
+func (c *cache[K, V]) expireNodes() {
+	if c.withExpiration {
+		c.expirationPolicy.DeleteExpired(c.clock.Offset(), c.evictNode)
+	}
+}
+
+func (c *cache[K, V]) evictNodes() {
+	if !c.withEviction {
+		return
+	}
+	c.evictionPolicy.EvictNodes(c.evictNode)
+}
+
+func (c *cache[K, V]) climb() {
+	if !c.withEviction {
+		return
+	}
+	c.evictionPolicy.Climb()
 }
 
 func (c *cache[K, V]) getTask(n, old node.Node[K, V], writeReason reason, cause DeletionCause) *task[K, V] {
@@ -1293,6 +1302,21 @@ func (c *cache[K, V]) putTask(t *task[K, V]) {
 	c.taskPool.Put(t)
 }
 
+// SetMaximum specifies the maximum total size of this cache. This value may be interpreted as the weighted
+// or unweighted threshold size based on how this cache was constructed. If the cache currently
+// exceeds the new maximum size this operation eagerly evict entries until the cache shrinks to
+// the appropriate size.
+func (c *cache[K, V]) SetMaximum(maximum uint64) {
+	if !c.withEviction {
+		return
+	}
+	c.evictionMutex.Lock()
+	c.evictionPolicy.SetMaximumSize(maximum)
+	c.maintenance(nil)
+	c.evictionMutex.Unlock()
+	c.rescheduleCleanUpIfIncomplete()
+}
+
 // close discards all entries in the cache and stop all goroutines.
 //
 // NOTE: this operation must be performed when no requests are made to the cache otherwise the behavior is undefined.
@@ -1308,4 +1332,22 @@ func (c *cache[K, V]) close() {
 // this inaccuracy can be mitigated by performing a CleanUp first.
 func (c *cache[K, V]) EstimatedSize() int {
 	return c.hashmap.Size()
+}
+
+func (c *cache[K, V]) makeRetired(n node.Node[K, V]) {
+	if n != nil && c.withMaintenance && n.IsAlive() {
+		n.Retire()
+	}
+}
+
+func (c *cache[K, V]) makeDead(n node.Node[K, V]) {
+	if !c.withMaintenance {
+		return
+	}
+
+	if c.withEviction {
+		c.evictionPolicy.MakeDead(n)
+	} else if !n.IsDead() {
+		n.Die()
+	}
 }

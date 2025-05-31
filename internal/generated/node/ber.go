@@ -135,42 +135,50 @@ func (n *BER[K, V]) IsAlive() bool {
 	return n.state.Load() == aliveState
 }
 
+func (n *BER[K, V]) IsRetired() bool {
+	return n.state.Load() == retiredState
+}
+
+func (n *BER[K, V]) Retire() {
+	n.state.Store(retiredState)
+}
+
+func (n *BER[K, V]) IsDead() bool {
+	return n.state.Load() == deadState
+}
+
 func (n *BER[K, V]) Die() {
 	n.state.Store(deadState)
 }
 
-func (n *BER[K, V]) Frequency() uint8 {
+func (n *BER[K, V]) GetQueueType() uint8 {
 	panic("not implemented")
 }
 
-func (n *BER[K, V]) IncrementFrequency() {
+func (n *BER[K, V]) SetQueueType(queueType uint8) {
 	panic("not implemented")
 }
 
-func (n *BER[K, V]) DecrementFrequency() {
-	panic("not implemented")
+func (n *BER[K, V]) InWindow() bool {
+	return n.GetQueueType() == InWindowQueue
 }
 
-func (n *BER[K, V]) ResetFrequency() {
-	panic("not implemented")
+func (n *BER[K, V]) MakeWindow() {
+	n.SetQueueType(InWindowQueue)
 }
 
-func (n *BER[K, V]) MarkSmall() {
-	panic("not implemented")
+func (n *BER[K, V]) InMainProbation() bool {
+	return n.GetQueueType() == InMainProbationQueue
 }
 
-func (n *BER[K, V]) IsSmall() bool {
-	panic("not implemented")
+func (n *BER[K, V]) MakeMainProbation() {
+	n.SetQueueType(InMainProbationQueue)
 }
 
-func (n *BER[K, V]) MarkMain() {
-	panic("not implemented")
+func (n *BER[K, V]) InMainProtected() bool {
+	return n.GetQueueType() == InMainProtectedQueue
 }
 
-func (n *BER[K, V]) IsMain() bool {
-	panic("not implemented")
-}
-
-func (n *BER[K, V]) Unmark() {
-	panic("not implemented")
+func (n *BER[K, V]) MakeMainProtected() {
+	n.SetQueueType(InMainProtectedQueue)
 }

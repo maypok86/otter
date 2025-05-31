@@ -119,42 +119,50 @@ func (n *BR[K, V]) IsAlive() bool {
 	return true
 }
 
+func (n *BR[K, V]) IsRetired() bool {
+	panic("not implemented")
+}
+
+func (n *BR[K, V]) Retire() {
+	panic("not implemented")
+}
+
+func (n *BR[K, V]) IsDead() bool {
+	panic("not implemented")
+}
+
 func (n *BR[K, V]) Die() {
 	panic("not implemented")
 }
 
-func (n *BR[K, V]) Frequency() uint8 {
+func (n *BR[K, V]) GetQueueType() uint8 {
 	panic("not implemented")
 }
 
-func (n *BR[K, V]) IncrementFrequency() {
+func (n *BR[K, V]) SetQueueType(queueType uint8) {
 	panic("not implemented")
 }
 
-func (n *BR[K, V]) DecrementFrequency() {
-	panic("not implemented")
+func (n *BR[K, V]) InWindow() bool {
+	return n.GetQueueType() == InWindowQueue
 }
 
-func (n *BR[K, V]) ResetFrequency() {
-	panic("not implemented")
+func (n *BR[K, V]) MakeWindow() {
+	n.SetQueueType(InWindowQueue)
 }
 
-func (n *BR[K, V]) MarkSmall() {
-	panic("not implemented")
+func (n *BR[K, V]) InMainProbation() bool {
+	return n.GetQueueType() == InMainProbationQueue
 }
 
-func (n *BR[K, V]) IsSmall() bool {
-	panic("not implemented")
+func (n *BR[K, V]) MakeMainProbation() {
+	n.SetQueueType(InMainProbationQueue)
 }
 
-func (n *BR[K, V]) MarkMain() {
-	panic("not implemented")
+func (n *BR[K, V]) InMainProtected() bool {
+	return n.GetQueueType() == InMainProtectedQueue
 }
 
-func (n *BR[K, V]) IsMain() bool {
-	panic("not implemented")
-}
-
-func (n *BR[K, V]) Unmark() {
-	panic("not implemented")
+func (n *BR[K, V]) MakeMainProtected() {
+	n.SetQueueType(InMainProtectedQueue)
 }

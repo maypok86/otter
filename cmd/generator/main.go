@@ -532,6 +532,39 @@ func (g *generator) printFunctions() {
 	g.p("}")
 	g.p("")
 
+	g.p("func (n *%s[K, V]) IsRetired() bool {", g.structName)
+	g.in()
+	if g.withState() {
+		g.p("return n.state.Load() == retiredState")
+	} else {
+		g.p("panic(\"not implemented\")")
+	}
+	g.out()
+	g.p("}")
+	g.p("")
+
+	g.p("func (n *%s[K, V]) Retire() {", g.structName)
+	g.in()
+	if g.withState() {
+		g.p("n.state.Store(retiredState)")
+	} else {
+		g.p("panic(\"not implemented\")")
+	}
+	g.out()
+	g.p("}")
+	g.p("")
+
+	g.p("func (n *%s[K, V]) IsDead() bool {", g.structName)
+	g.in()
+	if g.withState() {
+		g.p("return n.state.Load() == deadState")
+	} else {
+		g.p("panic(\"not implemented\")")
+	}
+	g.out()
+	g.p("}")
+	g.p("")
+
 	g.p("func (n *%s[K, V]) Die() {", g.structName)
 	g.in()
 	if g.withState() {
@@ -543,10 +576,10 @@ func (g *generator) printFunctions() {
 	g.p("}")
 	g.p("")
 
-	g.p("func (n *%s[K, V]) Frequency() uint8 {", g.structName)
+	g.p("func (n *%s[K, V]) GetQueueType() uint8 {", g.structName)
 	g.in()
 	if g.isBounded() {
-		g.p("return n.frequency")
+		g.p("return n.queueType")
 	} else {
 		g.p("panic(\"not implemented\")")
 	}
@@ -554,10 +587,10 @@ func (g *generator) printFunctions() {
 	g.p("}")
 	g.p("")
 
-	g.p("func (n *%s[K, V]) IncrementFrequency() {", g.structName)
+	g.p("func (n *%s[K, V]) SetQueueType(queueType uint8) {", g.structName)
 	g.in()
 	if g.isBounded() {
-		g.p("n.frequency = minUint8(n.frequency+1, maxFrequency)")
+		g.p("n.queueType = queueType")
 	} else {
 		g.p("panic(\"not implemented\")")
 	}
@@ -565,81 +598,47 @@ func (g *generator) printFunctions() {
 	g.p("}")
 	g.p("")
 
-	g.p("func (n *%s[K, V]) DecrementFrequency() {", g.structName)
+	g.p("func (n *%s[K, V]) InWindow() bool {", g.structName)
 	g.in()
-	if g.isBounded() {
-		g.p("n.frequency--")
-	} else {
-		g.p("panic(\"not implemented\")")
-	}
+	g.p("return n.GetQueueType() == InWindowQueue")
 	g.out()
 	g.p("}")
 	g.p("")
 
-	g.p("func (n *%s[K, V]) ResetFrequency() {", g.structName)
+	g.p("func (n *%s[K, V]) MakeWindow() {", g.structName)
 	g.in()
-	if g.isBounded() {
-		g.p("n.frequency = 0")
-	} else {
-		g.p("panic(\"not implemented\")")
-	}
+	g.p("n.SetQueueType(InWindowQueue)")
 	g.out()
 	g.p("}")
 	g.p("")
 
-	g.p("func (n *%s[K, V]) MarkSmall() {", g.structName)
+	g.p("func (n *%s[K, V]) InMainProbation() bool {", g.structName)
 	g.in()
-	if g.isBounded() {
-		g.p("n.queueType = smallQueueType")
-	} else {
-		g.p("panic(\"not implemented\")")
-	}
+	g.p("return n.GetQueueType() == InMainProbationQueue")
 	g.out()
 	g.p("}")
 	g.p("")
 
-	g.p("func (n *%s[K, V]) IsSmall() bool {", g.structName)
+	g.p("func (n *%s[K, V]) MakeMainProbation() {", g.structName)
 	g.in()
-	if g.isBounded() {
-		g.p("return n.queueType == smallQueueType")
-	} else {
-		g.p("panic(\"not implemented\")")
-	}
+	g.p("n.SetQueueType(InMainProbationQueue)")
 	g.out()
 	g.p("}")
 	g.p("")
 
-	g.p("func (n *%s[K, V]) MarkMain() {", g.structName)
+	g.p("func (n *%s[K, V]) InMainProtected() bool {", g.structName)
 	g.in()
-	if g.isBounded() {
-		g.p("n.queueType = mainQueueType")
-	} else {
-		g.p("panic(\"not implemented\")")
-	}
+	g.p("return n.GetQueueType() == InMainProtectedQueue")
 	g.out()
 	g.p("}")
 	g.p("")
 
-	g.p("func (n *%s[K, V]) IsMain() bool {", g.structName)
+	g.p("func (n *%s[K, V]) MakeMainProtected() {", g.structName)
 	g.in()
-	if g.isBounded() {
-		g.p("return n.queueType == mainQueueType")
-	} else {
-		g.p("panic(\"not implemented\")")
-	}
+	g.p("n.SetQueueType(InMainProtectedQueue)")
 	g.out()
 	g.p("}")
 	g.p("")
-
-	g.p("func (n *%s[K, V]) Unmark() {", g.structName)
-	g.in()
-	if g.isBounded() {
-		g.p("n.queueType = unknownQueueType")
-	} else {
-		g.p("panic(\"not implemented\")")
-	}
-	g.out()
-	g.p("}")
 }
 
 func run(nodeType, dir string) error {
@@ -685,15 +684,14 @@ import (
 )
 
 const (
-	unknownQueueType uint8 = iota
-	smallQueueType
-	mainQueueType
-
-	maxFrequency uint8 = 3
+	InWindowQueue uint8 = iota
+	InMainProbationQueue
+	InMainProtectedQueue
 )
 
 const (
 	aliveState uint32 = iota
+	retiredState
 	deadState
 )
 
@@ -738,28 +736,33 @@ type Node[K comparable, V any] interface {
 	IsFresh(now int64) bool
 	// Weight returns the weight of the node.
 	Weight() uint32
-	// IsAlive returns true if the entry is available in the hash-table.
+	// IsAlive returns true if the entry is available in the hash-table and page replacement policy.
 	IsAlive() bool
+	// IsRetired returns true if the entry was removed from the hash-table and is awaiting removal from the page
+	// replacement policy.
+	IsRetired() bool
+	// Retire sets the node to the retired state.
+	Retire()
+	// IsDead returns true if the entry was removed from the hash-table and the page replacement policy.
+	IsDead() bool
 	// Die sets the node to the dead state.
 	Die()
-	// Frequency returns the frequency of the node.
-	Frequency() uint8
-	// IncrementFrequency increments the frequency of the node.
-	IncrementFrequency()
-	// DecrementFrequency decrements the frequency of the node.
-	DecrementFrequency()
-	// ResetFrequency resets the frequency.
-	ResetFrequency()
-	// MarkSmall sets the status to the small queue.
-	MarkSmall()
-	// IsSmall returns true if node is in the small queue.
-	IsSmall() bool
-	// MarkMain sets the status to the main queue.
-	MarkMain()
-	// IsMain returns true if node is in the main queue.
-	IsMain() bool
-	// Unmark sets the status to unknown.
-	Unmark()
+	// GetQueueType returns the queue that the entry's resides in (window, probation, or protected).
+	GetQueueType() uint8
+	// SetQueueType sets queue that the entry resides in (window, probation, or protected).
+	SetQueueType(queueType uint8)
+	// InWindow returns true if the entry is in the Window or Main space.
+	InWindow() bool
+	// MakeWindow sets the status to the Window queue.
+	MakeWindow()
+	// InMainProbation returns true if the entry is in the Main space's probation queue.
+	InMainProbation() bool
+	// MakeMainProbation sets the status to the Main space's probation queue.
+	MakeMainProbation()
+	// InMainProtected returns if the entry is in the Main space's protected queue.
+	InMainProtected() bool
+	// MakeMainProtected sets the status to the Main space's protected queue.
+	MakeMainProtected()
 }
 
 func Equals[K comparable, V any](a, b Node[K, V]) bool {
@@ -817,14 +820,7 @@ func (m *Manager[K, V]) FromPointer(ptr unsafe.Pointer) Node[K, V] {
 func (m *Manager[K, V]) IsNil(n Node[K, V]) bool {
 	return n == nil || n.AsPointer() == nil
 }
-
-func minUint8(a, b uint8) uint8 {
-	if a < b {
-		return a
-	}
-
-	return b
-}`
+`
 	w := newWriter()
 
 	w.p(nodeManager)
