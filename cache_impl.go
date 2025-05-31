@@ -254,8 +254,16 @@ func (c *cache[K, V]) GetIfPresent(key K) (V, bool) {
 // getNode returns the node associated with the key in this cache.
 func (c *cache[K, V]) getNode(key K, offset int64) node.Node[K, V] {
 	n := c.hashmap.Get(key)
-	if n == nil || !n.IsAlive() || n.HasExpired(offset) {
+	if n == nil {
 		c.stats.RecordMisses(1)
+		if c.drainStatus.Load() == required {
+			c.scheduleDrainBuffers()
+		}
+		return nil
+	}
+	if n.HasExpired(offset) {
+		c.stats.RecordMisses(1)
+		c.scheduleDrainBuffers()
 		return nil
 	}
 
@@ -1028,6 +1036,7 @@ func (c *cache[K, V]) All() iter.Seq2[K, V] {
 	return func(yield func(K, V) bool) {
 		c.hashmap.Range(func(n node.Node[K, V]) bool {
 			if !n.IsAlive() || n.HasExpired(offset) {
+				c.scheduleDrainBuffers()
 				return true
 			}
 
