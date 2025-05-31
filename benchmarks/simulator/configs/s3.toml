@@ -1,0 +1,14 @@
+type = "file"
+name = "S3"
+capacities = [ 100_000, 200_000, 300_000, 400_000, 500_000, 600_000, 700_000, 800_000 ]
+caches = [
+    "otter",
+    "theine",
+    "ristretto",
+    "lru",
+    "arc"
+]
+
+[file]
+trace_type = "arc"
+paths = [ "trace/arc/s3.gz" ]

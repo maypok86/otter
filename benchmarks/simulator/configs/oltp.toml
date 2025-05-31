@@ -1,0 +1,14 @@
+type = "file"
+name = "OLTP"
+capacities = [ 250, 500, 750, 1000, 1250, 1500, 1750, 2000 ]
+caches = [
+    "otter",
+    "theine",
+    "ristretto",
+    "lru",
+    "arc"
+]
+
+[file]
+trace_type = "arc"
+paths = [ "trace/arc/oltp.gz" ]

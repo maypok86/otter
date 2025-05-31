@@ -1,0 +1,14 @@
+type = "file"
+name = "P3"
+capacities = [ 25_000, 50_000, 100_000, 200_000, 300_000, 400_000, 500_000, 600_000 ]
+caches = [
+    "otter",
+    "theine",
+    "ristretto",
+    "lru",
+    "arc"
+]
+
+[file]
+trace_type = "arc"
+paths = [ "trace/arc/p3.gz" ]

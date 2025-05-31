@@ -1,0 +1,19 @@
+type = "zipf"
+name = "Zipf"
+capacities = [ 500, 1000, 2000, 5000, 10_000, 20_000, 40_000, 80_000 ]
+caches = [
+    "otter",
+    "theine",
+    "ristretto",
+    "lru",
+    "arc"
+]
+limit = 1_000_000
+
+# zipf
+# The generator generates values k ∈ [0, imax] such that P(k) is proportional to (v + k) ** (-s).
+# Requirements: s > 1 and v >= 1.
+[zipf]
+s = 1.0001
+v = 10
+imax = 50000000

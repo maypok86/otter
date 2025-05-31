@@ -1,0 +1,14 @@
+type = "file"
+name = "P8"
+capacities = [ 10_000, 20_000, 30_000, 40_000, 50_000, 60_000, 70_000, 80_000 ]
+caches = [
+    "otter",
+    "theine",
+    "ristretto",
+    "lru",
+    "arc"
+]
+
+[file]
+trace_type = "arc"
+paths = [ "trace/arc/p8.gz" ]

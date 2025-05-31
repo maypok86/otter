@@ -1,0 +1,14 @@
+type = "file"
+name = "DS1"
+capacities = [ 1_000_000, 2_000_000, 3_000_000, 4_000_000, 5_000_000, 6_000_000, 7_000_000, 8_000_000 ]
+caches = [
+    "otter",
+    "theine",
+    "ristretto",
+    "lru",
+    "arc"
+]
+
+[file]
+trace_type = "arc"
+paths = [ "trace/arc/ds1.gz" ]
