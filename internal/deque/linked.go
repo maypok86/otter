@@ -78,11 +78,11 @@ func (d *Linked[K, V]) PopBack() node.Node[K, V] {
 }
 
 func (d *Linked[K, V]) NotContains(n node.Node[K, V]) bool {
-	return node.Equals(d.getPrev(n), nil) || node.Equals(d.getNext(n), nil) || !node.Equals(d.head, n)
+	return !d.Contains(n)
 }
 
 func (d *Linked[K, V]) Contains(n node.Node[K, V]) bool {
-	return !d.NotContains(n)
+	return !node.Equals(d.getPrev(n), nil) || !node.Equals(d.getNext(n), nil) || node.Equals(d.head, n)
 }
 
 func (d *Linked[K, V]) MoveToBack(n node.Node[K, V]) {
