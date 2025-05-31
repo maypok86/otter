@@ -47,7 +47,7 @@ func TestSketch_Basic(t *testing.T) {
 			name: "ensureCapacity_smaller",
 			do: func(t *testing.T, s *sketch[int]) {
 				size := uint64(len(s.table))
-				s.EnsureCapacity(uint64(size) / 2)
+				s.EnsureCapacity(size / 2)
 				require.Len(t, s.table, int(size))
 				require.Equal(t, 10*size, s.sampleSize)
 				require.Equal(t, (size>>3)-1, s.blockMask)
@@ -57,7 +57,7 @@ func TestSketch_Basic(t *testing.T) {
 			name: "ensureCapacity_larger",
 			do: func(t *testing.T, s *sketch[int]) {
 				size := uint64(len(s.table))
-				s.EnsureCapacity(uint64(size) * 2)
+				s.EnsureCapacity(size * 2)
 				require.Len(t, s.table, 2*int(size))
 				require.Equal(t, 10*2*size, s.sampleSize)
 				require.Equal(t, ((2*size)>>3)-1, s.blockMask)

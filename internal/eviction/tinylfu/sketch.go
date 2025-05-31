@@ -143,6 +143,7 @@ func (s *sketch[K]) reset() {
 		count += bits.OnesCount64(s.table[i] & oneMask)
 		s.table[i] = (s.table[i] >> 1) & resetMask
 	}
+	//nolint:gosec // there's no overflow
 	s.size = (s.size - (uint64(count) >> 2)) >> 1
 }
 

@@ -78,7 +78,8 @@ func NewMPSC[T any](initialCapacity, maxCapacity uint32) *MPSC[T] {
 	var zero T
 	q := &MPSC[T]{
 		maxQueueCapacity: uint64(p2maxCapacity) << 1,
-		jump:             unsafe.Pointer(&zero),
+		//nolint:gosec // it's ok
+		jump: unsafe.Pointer(&zero),
 	}
 	q.consumerBuffer.Store(buffer)
 	q.consumerMask.Store(mask)
@@ -111,6 +112,7 @@ func (m *MPSC[T]) availableInQueue(pIndex, cIndex uint64) uint64 {
 }
 
 func (m *MPSC[T]) capacity() int {
+	//nolint:gosec // there's no overflow
 	return int(m.maxQueueCapacity / 2)
 }
 
@@ -157,6 +159,7 @@ func (m *MPSC[T]) TryPush(t *T) bool {
 	}
 
 	offset := modifiedCalcElementOffset(pIndex, mask)
+	//nolint:gosec // it's ok
 	atomic.StorePointer(&buffer.data[offset], unsafe.Pointer(t))
 	return true
 }
@@ -167,16 +170,17 @@ func (m *MPSC[T]) pushSlowPath(mask, pIndex, producerLimit uint64) uint8 {
 	cIndex := m.consumerIndex.Load()
 	bufferCapacity := m.getCurrentBufferCapacity(mask)
 
-	if cIndex+bufferCapacity > pIndex {
+	switch {
+	case cIndex+bufferCapacity > pIndex:
 		if !m.producerLimit.CompareAndSwap(producerLimit, cIndex+bufferCapacity) {
 			result = 1 // retry from top
 		}
 		// full and cannot grow
-	} else if m.availableInQueue(pIndex, cIndex) <= 0 {
+	case m.availableInQueue(pIndex, cIndex) <= 0:
 		result = 2 // -> return false
-	} else if m.producerIndex.CompareAndSwap(pIndex, pIndex+1) {
+	case m.producerIndex.CompareAndSwap(pIndex, pIndex+1):
 		result = 3 // -> resize
-	} else {
+	default:
 		result = 1 // failed resize attempt, retry from top
 	}
 
@@ -260,6 +264,7 @@ func (m *MPSC[T]) newBufferTryPush(b *buffer, index uint64) *T {
 
 func (m *MPSC[T]) newBufferAndOffset(b *buffer, index uint64) uint64 {
 	m.consumerBuffer.Store(b)
+	//nolint:gosec // there's no overflow
 	mask := uint64(len(b.data)-2) << 1
 	m.consumerMask.Store(mask)
 	return modifiedCalcElementOffset(index, mask)
@@ -276,7 +281,9 @@ func (m *MPSC[T]) resize(oldMask uint64, oldBuffer *buffer, pIndex uint64, t *T)
 	offsetInOld := modifiedCalcElementOffset(pIndex, oldMask)
 	offsetInNew := modifiedCalcElementOffset(pIndex, newMask)
 
-	atomic.StorePointer(&newBuffer.data[offsetInNew], unsafe.Pointer(t))                      // element in new array
+	//nolint:gosec // it's ok
+	atomic.StorePointer(&newBuffer.data[offsetInNew], unsafe.Pointer(t)) // element in new array
+	//nolint:gosec // it's ok
 	atomic.StorePointer(&oldBuffer.data[nextArrayOffset(oldMask)], unsafe.Pointer(newBuffer)) // buffer linked
 
 	cIndex := m.consumerIndex.Load()

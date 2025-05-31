@@ -45,8 +45,8 @@ const (
 	expireTolerance             = int64(time.Second)
 	noTime                      = int64(0)
 
-	minWriteBufferSize uint32 = 4
-	writeBufferRetries        = 100
+	minWriteBufferSize = 4
+	writeBufferRetries = 100
 )
 
 const (
@@ -163,6 +163,7 @@ func newCache[K comparable, V any](o *Options[K, V]) *cache[K, V] {
 	if c.withEviction {
 		c.evictionPolicy = tinylfu.NewPolicy[K, V](withWeight)
 		if o.hasInitialCapacity() {
+			//nolint:gosec // there's no overflow
 			c.evictionPolicy.EnsureCapacity(min(maximum, uint64(o.getInitialCapacity())))
 		}
 	}

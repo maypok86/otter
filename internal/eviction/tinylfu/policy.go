@@ -96,6 +96,7 @@ func (p *Policy[K, V]) Add(
 		// Lazily initialize when close to the maximum
 		capacity := p.maximum
 		if !p.isWeighted {
+			//nolint:gosec // there's no overflow
 			capacity = uint64(getEstimatedSize())
 		}
 		p.sketch.EnsureCapacity(capacity)
@@ -174,11 +175,12 @@ func (p *Policy[K, V]) updateNode(n, old node.Node[K, V]) {
 // Delete deletes node from the eviction policy.
 func (p *Policy[K, V]) Delete(n node.Node[K, V]) {
 	// add may not have been processed yet
-	if n.InWindow() {
+	switch {
+	case n.InWindow():
 		p.window.Delete(n)
-	} else if n.InMainProbation() {
+	case n.InMainProbation():
 		p.probation.Delete(n)
-	} else {
+	default:
 		p.protected.Delete(n)
 	}
 	p.MakeDead(n)
@@ -388,7 +390,8 @@ func (p *Policy[K, V]) Climb() {
 	amount := p.adjustment
 	if amount == 0 {
 		return
-	} else if amount > 0 {
+	}
+	if amount > 0 {
 		p.increaseWindow()
 	} else {
 		p.decreaseWindow()
