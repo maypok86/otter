@@ -73,15 +73,6 @@ func init() {
 	maxStripedBufferSize = 4 * roundedParallelism
 }
 
-type timeSource interface {
-	Init()
-	CachedOffset() int64
-	Refresh() int64
-	Offset() int64
-	Nanos(offset int64) int64
-	Time(offset int64) time.Time
-}
-
 func zeroValue[V any]() V {
 	var v V
 	return v
@@ -98,7 +89,7 @@ type cache[K comparable, V any] struct {
 	expirationPolicy  *expiration.Variable[K, V]
 	stats             stats.Recorder
 	logger            Logger
-	clock             timeSource
+	clock             *clock.Real
 	stripedBuffer     *lossy.Striped[K, V]
 	writeBuffer       *queue.MPSC[task[K, V]]
 	singleflight      *group[K, V]
@@ -211,17 +202,17 @@ func (c *cache[K, V]) newNode(key K, value V, old node.Node[K, V]) node.Node[K, 
 func (c *cache[K, V]) nodeToEntry(n node.Node[K, V], offset int64) core.Entry[K, V] {
 	nowNano := noTime
 	if c.withTime {
-		nowNano = c.clock.Nanos(offset)
+		nowNano = offset
 	}
 
 	expiresAt := int64(unreachableExpiresAfter)
 	if c.withExpiration {
-		expiresAt = c.clock.Nanos(n.ExpiresAt())
+		expiresAt = n.ExpiresAt()
 	}
 
 	refreshableAt := int64(unreachableRefreshableAfter)
 	if c.withRefresh {
-		refreshableAt = c.clock.Nanos(n.RefreshableAt())
+		refreshableAt = n.RefreshableAt()
 	}
 
 	return core.Entry[K, V]{

@@ -21,11 +21,10 @@ import (
 )
 
 type Real struct {
-	start         time.Time
 	initMutex     sync.Mutex
 	isInitialized atomic.Bool
+	start         time.Time
 	startNanos    atomic.Int64
-	cachedOffset  atomic.Int64
 }
 
 func (c *Real) Init() {
@@ -41,27 +40,9 @@ func (c *Real) Init() {
 	}
 }
 
-func (c *Real) Refresh() int64 {
-	offset := c.Offset()
-	c.cachedOffset.Store(offset)
-	return offset
-}
-
 func (c *Real) Offset() int64 {
 	if !c.isInitialized.Load() {
 		return 0
 	}
-	return time.Since(c.start).Nanoseconds()
-}
-
-func (c *Real) CachedOffset() int64 {
-	return c.cachedOffset.Load()
-}
-
-func (c *Real) Nanos(offset int64) int64 {
-	return c.startNanos.Load() + offset
-}
-
-func (c *Real) Time(offset int64) time.Time {
-	return c.start.Add(time.Duration(offset))
+	return c.startNanos.Load() + time.Since(c.start).Nanoseconds()
 }
