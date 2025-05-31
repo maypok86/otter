@@ -59,6 +59,9 @@ func (c *Chart) Report() error {
 		}),
 		// for png render
 		charts.WithAnimation(false),
+		charts.WithInitializationOpts(opts.Initialization{
+			BackgroundColor: "white",
+		}),
 	)
 
 	capacities := make([]int, 0, len(c.table[0]))
