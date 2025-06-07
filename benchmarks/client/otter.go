@@ -1,10 +1,7 @@
 package client
 
 import (
-	"time"
-
 	"github.com/maypok86/otter/v2"
-	"github.com/maypok86/otter/v2/core/expiry"
 )
 
 type Otter[K comparable, V any] struct {
@@ -13,8 +10,9 @@ type Otter[K comparable, V any] struct {
 
 func (c *Otter[K, V]) Init(capacity int) {
 	c.client = otter.Must[K, V](&otter.Options[K, V]{
-		MaximumSize:      capacity,
-		ExpiryCalculator: expiry.Writing[K, V](time.Hour),
+		MaximumSize:     capacity,
+		InitialCapacity: capacity,
+		//ExpiryCalculator: expiry.Writing[K, V](time.Hour),
 	})
 }
 

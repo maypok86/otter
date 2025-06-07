@@ -433,6 +433,7 @@ func (c *cache[K, V]) set(key K, value V, onlyIfAbsent bool) (V, bool) {
 			c.afterWrite(n, nil, offset)
 			return value, true
 		}
+		c.afterRead(old, offset, false)
 		return old.Value(), false
 	}
 
@@ -995,10 +996,7 @@ func (c *cache[K, V]) periodicCleanUp() {
 }
 
 func (c *cache[K, V]) evictNode(n node.Node[K, V], nowNanos int64) {
-	deleted := c.deleteNodeFromMap(n)
-	if deleted == nil {
-		return
-	}
+	deleted := c.deleteNodeFromMap(n) != nil
 
 	if c.withEviction {
 		c.evictionPolicy.Delete(n)
@@ -1013,8 +1011,10 @@ func (c *cache[K, V]) evictNode(n node.Node[K, V], nowNanos int64) {
 		cause = CauseExpiration
 	}
 
-	c.notifyDeletion(n.Key(), n.Value(), cause)
-	c.stats.RecordEviction(n.Weight())
+	if deleted {
+		c.notifyDeletion(n.Key(), n.Value(), cause)
+		c.stats.RecordEviction(n.Weight())
+	}
 }
 
 // All returns an iterator over all entries in the cache.
@@ -1312,7 +1312,7 @@ func (c *cache[K, V]) SetMaximum(maximum uint64) {
 		return
 	}
 	c.evictionMutex.Lock()
-	c.evictionPolicy.SetMaximumSize(maximum)
+	c.evictionPolicy.SetMaximumSize(int64(maximum))
 	c.maintenance(nil)
 	c.evictionMutex.Unlock()
 	c.rescheduleCleanUpIfIncomplete()

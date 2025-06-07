@@ -29,13 +29,13 @@ func TestSketch_Basic(t *testing.T) {
 	tests := []struct {
 		name          string
 		withoutEnsure bool
-		do            func(t *testing.T, s *sketch[int])
+		do            func(t *testing.T, s *Sketch[int])
 	}{
 		{
 			name:          "construct",
 			withoutEnsure: true,
-			do: func(t *testing.T, s *sketch[int]) {
-				require.Nil(t, s.table)
+			do: func(t *testing.T, s *Sketch[int]) {
+				require.Nil(t, s.Table)
 				require.True(t, s.IsNotInitialized())
 
 				item := rand.Int()
@@ -45,27 +45,27 @@ func TestSketch_Basic(t *testing.T) {
 		},
 		{
 			name: "ensureCapacity_smaller",
-			do: func(t *testing.T, s *sketch[int]) {
-				size := uint64(len(s.table))
+			do: func(t *testing.T, s *Sketch[int]) {
+				size := uint64(len(s.Table))
 				s.EnsureCapacity(size / 2)
-				require.Len(t, s.table, int(size))
-				require.Equal(t, 10*size, s.sampleSize)
-				require.Equal(t, (size>>3)-1, s.blockMask)
+				require.Len(t, s.Table, int(size))
+				require.Equal(t, 10*size, s.SampleSize)
+				require.Equal(t, (size>>3)-1, s.BlockMask)
 			},
 		},
 		{
 			name: "ensureCapacity_larger",
-			do: func(t *testing.T, s *sketch[int]) {
-				size := uint64(len(s.table))
+			do: func(t *testing.T, s *Sketch[int]) {
+				size := uint64(len(s.Table))
 				s.EnsureCapacity(size * 2)
-				require.Len(t, s.table, 2*int(size))
-				require.Equal(t, 10*2*size, s.sampleSize)
-				require.Equal(t, ((2*size)>>3)-1, s.blockMask)
+				require.Len(t, s.Table, 2*int(size))
+				require.Equal(t, 10*2*size, s.SampleSize)
+				require.Equal(t, ((2*size)>>3)-1, s.BlockMask)
 			},
 		},
 		{
 			name: "increment_once",
-			do: func(t *testing.T, s *sketch[int]) {
+			do: func(t *testing.T, s *Sketch[int]) {
 				item := rand.Int()
 
 				s.Increment(item)
@@ -74,7 +74,7 @@ func TestSketch_Basic(t *testing.T) {
 		},
 		{
 			name: "increment_max",
-			do: func(t *testing.T, s *sketch[int]) {
+			do: func(t *testing.T, s *Sketch[int]) {
 				item := rand.Int()
 
 				for i := 0; i < 20; i++ {
@@ -85,7 +85,7 @@ func TestSketch_Basic(t *testing.T) {
 		},
 		{
 			name: "increment_distinct",
-			do: func(t *testing.T, s *sketch[int]) {
+			do: func(t *testing.T, s *Sketch[int]) {
 				item := rand.Int()
 
 				s.Increment(item)
@@ -98,7 +98,7 @@ func TestSketch_Basic(t *testing.T) {
 		},
 		{
 			name: "increment_zero",
-			do: func(t *testing.T, s *sketch[int]) {
+			do: func(t *testing.T, s *Sketch[int]) {
 				s.Increment(0)
 				require.Equal(t, uint64(1), s.Frequency(0))
 			},
@@ -126,16 +126,16 @@ func TestSketch_Reset(t *testing.T) {
 	s := newSketch[int]()
 	s.EnsureCapacity(64)
 
-	for i := 1; i < 20*len(s.table); i++ {
+	for i := 1; i < 20*len(s.Table); i++ {
 		s.Increment(i)
-		if s.size != uint64(i) {
+		if s.Size != uint64(i) {
 			reset = true
 			break
 		}
 	}
 
 	require.True(t, reset)
-	require.LessOrEqual(t, s.size, s.sampleSize/2)
+	require.LessOrEqual(t, s.Size, s.SampleSize/2)
 }
 
 func TestSketch_Full(t *testing.T) {
@@ -143,13 +143,13 @@ func TestSketch_Full(t *testing.T) {
 
 	s := newSketch[int]()
 	s.EnsureCapacity(512)
-	s.sampleSize = math.MaxUint64
+	s.SampleSize = math.MaxUint64
 
 	for i := 0; i < 100000; i++ {
 		s.Increment(i)
 	}
 
-	for _, slot := range s.table {
+	for _, slot := range s.Table {
 		require.Equal(t, 64, bits.OnesCount64(slot))
 	}
 }

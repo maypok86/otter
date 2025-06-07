@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"github.com/maypok86/otter/v2/core/expiry"
 	"log"
 	"math"
 	"os"
@@ -16,7 +15,9 @@ import (
 	hashicorp "github.com/hashicorp/golang-lru/v2/expirable"
 	"github.com/jellydator/ttlcache/v3"
 	"github.com/karlseguin/ccache/v3"
+
 	"github.com/maypok86/otter/v2"
+	"github.com/maypok86/otter/v2/core/expiry"
 )
 
 var keys []string
