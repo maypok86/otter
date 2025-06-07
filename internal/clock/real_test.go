@@ -23,16 +23,17 @@ func TestNow(t *testing.T) {
 	t.Parallel()
 
 	c := &Real{}
+	start := time.Now().UnixNano()
 	c.Init()
 
-	got := c.Offset() / 1e9
+	got := (c.Offset() - start) / 1e9
 	if got != 0 {
 		t.Fatalf("unexpected time since program start; got %d; want %d", got, 0)
 	}
 
 	time.Sleep(3 * time.Second)
 
-	got = c.Offset() / 1e9
+	got = (c.Offset() - start) / 1e9
 	if got != 3 {
 		t.Fatalf("unexpected time since program start; got %d; want %d", got, 3)
 	}
