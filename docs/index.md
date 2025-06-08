@@ -13,6 +13,8 @@
 <a href="https://github.com/avelino/awesome-go"><img src="https://awesome.re/mentioned-badge.svg" alt="Mentioned in Awesome Go"></a>
 </p>
 
+Otter is one of the most powerful caching libraries for Go based on researches in caching and concurrent data structures. Otter also uses the experience of designing caching libraries in other languages (for example, [caffeine](https://github.com/ben-manes/caffeine)).
+
 ## :material-star-shooting: Features
 
 - **Simple API**: Just set the parameters you want in the builder and enjoy
@@ -22,6 +24,14 @@
 - **Cost-based eviction**: Otter supports eviction based on the cost of each item
 - **Excellent throughput**: Otter is currently the fastest cache library with a huge lead over the [competition](https://github.com/maypok86/otter/blob/main/README.md#throughput)
 - **Great hit ratio**: New S3-FIFO algorithm is used, which shows excellent [results](https://github.com/maypok86/otter/blob/main/README.md#hit-ratio)
+
+## :material-book-open-variant: Related works
+
+Otter is based on the following papers:
+
+- [BP-Wrapper: A Framework Making Any Replacement Algorithms (Almost) Lock Contention Free](https://www.researchgate.net/publication/220966845_BP-Wrapper_A_System_Framework_Making_Any_Replacement_Algorithms_Almost_Lock_Contention_Free)
+- [FIFO queues are all you need for cache eviction](https://dl.acm.org/doi/10.1145/3600006.3613147)
+- [A large scale analysis of hundreds of in-memory cache clusters at Twitter](https://www.usenix.org/system/files/osdi20-yang.pdf)
 
 ## :material-handshake: Contribute
 
