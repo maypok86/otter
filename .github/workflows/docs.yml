@@ -33,7 +33,7 @@ jobs:
 
       - name: Setup Pages
         id: pages
-        uses: actions/configure-pages@v4
+        uses: actions/configure-pages@v5
 
       - name: Install dependencies
         run: pip install mkdocs-material mkdocs-glightbox mkdocs-minify-plugin
