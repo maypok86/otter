@@ -1,0 +1,141 @@
+# Project information
+site_name: Otter
+site_url: https://maypok86.github.io/otter/
+site_author: Alexey Mayshev
+
+# Repository
+repo_name: maypok86/otter
+repo_url: https://github.com/maypok86/otter
+remote_branch: gh-pages
+edit_uri: ""
+
+# Copyright
+copyright: Copyright &copy; 2024 Alexey Mayshev
+
+# Configuration
+theme:
+  name: material
+  logo: assets/icon.png
+  favicon: assets/icon.png
+  icon:
+    repo: fontawesome/brands/github
+  features:
+    - navigation.tracking
+    - navigation.instant
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.top
+    #- navigation.sections
+    - navigation.indexes
+    - toc.follow
+    - content.code.copy
+    - content.tabs.link
+    - search.suggest
+    - search.highlight
+  font:
+    text: Roboto
+    code: JetBrains Mono
+  palette:
+    # Palette toggle for light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: teal
+      accent: blue
+      toggle:
+        icon: material/lightbulb-outline
+        name: Switch to dark mode
+
+    # Palette toggle for dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: teal
+      accent: blue
+      toggle:
+        icon: material/lightbulb
+        name: Switch to light mode
+
+# Plugins
+plugins:
+  #- blog
+  - glightbox
+  - search:
+      separator: '[\s\u200b\-_,:!=\[\]()"`/]+|\.(?!\d)|&[lg]t;|(?!\b)(?=[A-Z][a-z])'
+  - minify:
+      minify_html: true
+  - tags
+
+# Additional configuration
+extra:
+  status:
+    new: Recently added
+    deprecated: Deprecated
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/maypok86
+    - icon: fontawesome/brands/golang
+      link: https://pkg.go.dev/github.com/maypok86/otter/
+
+# Extensions
+markdown_extensions:
+  - abbr
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - toc:
+      permalink: true
+  - pymdownx.arithmatex:
+      generic: true
+  - pymdownx.betterem:
+      smart_enable: all
+  - pymdownx.caret
+  - pymdownx.details
+  - pymdownx.emoji:
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.keys
+  - pymdownx.magiclink:
+      normalize_issue_symbols: true
+      repo_url_shorthand: true
+      user: maypok86
+      repo: otter
+  - pymdownx.mark
+  - pymdownx.smartsymbols
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+      combine_header_slug: true
+      slugify: !!python/object/apply:pymdownx.slugs.slugify
+        kwds:
+          case: lower
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.tilde
+
+nav:
+  - Overview:
+      - Overview: index.md
+      - Ask a question: https://github.com/maypok86/otter/discussions/categories/q-a
+  - User guide:
+      - v1 manual:
+        - Getting started: user-guide/v1/getting-started.md
+        - Features:
+            - user-guide/v1/features/index.md
+            - Expiration policy: user-guide/v1/features/expiration-policy.md
+            - Cost-based eviction: user-guide/v1/features/cost.md
+            - Statistics: user-guide/v1/features/stats.md
+  - API: api/index.md
+  - Performance:
+      - Throughput: performance/throughput.md
+      - Hit ratio: performance/hit-ratio.md
+      - Memory consumption: performance/memory-consumption.md
