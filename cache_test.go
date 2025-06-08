@@ -175,7 +175,7 @@ func TestCache_SetWithWeight(t *testing.T) {
 	c.Set(uint32(goodWeight1), 1)
 	c.Set(uint32(goodWeight2), 1)
 	c.Set(uint32(badWeight), 1)
-	time.Sleep(time.Second)
+	c.CleanUp()
 	if !c.has(uint32(goodWeight1)) {
 		t.Fatalf("the key must exist: %d", goodWeight1)
 	}

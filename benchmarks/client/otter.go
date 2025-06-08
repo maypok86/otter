@@ -12,7 +12,7 @@ func (c *Otter[K, V]) Init(capacity int) {
 	c.client = otter.Must[K, V](&otter.Options[K, V]{
 		MaximumSize:     capacity,
 		InitialCapacity: capacity,
-		//ExpiryCalculator: expiry.Writing[K, V](time.Hour),
+		// ExpiryCalculator: expiry.Writing[K, V](time.Hour),
 	})
 }
 

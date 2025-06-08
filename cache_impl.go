@@ -1228,7 +1228,7 @@ func (c *cache[K, V]) runTask(t *task[K, V]) {
 			c.expirationPolicy.Add(n)
 		}
 		if c.withEviction {
-			c.evictionPolicy.Add(n, c.EstimatedSize, c.evictNode)
+			c.evictionPolicy.Add(n, c.evictNode)
 		}
 	case updateReason:
 		old := t.oldNode()
@@ -1312,7 +1312,7 @@ func (c *cache[K, V]) SetMaximum(maximum uint64) {
 		return
 	}
 	c.evictionMutex.Lock()
-	c.evictionPolicy.SetMaximumSize(int64(maximum))
+	c.evictionPolicy.SetMaximumSize(maximum)
 	c.maintenance(nil)
 	c.evictionMutex.Unlock()
 	c.rescheduleCleanUpIfIncomplete()

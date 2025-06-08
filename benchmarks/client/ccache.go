@@ -27,7 +27,7 @@ func (c *Ccache[V]) Name() string {
 
 func (c *Ccache[V]) Get(key string) (V, bool) {
 	item := c.client.Get(key)
-	if item == nil || item.Expired() {
+	if item == nil {
 		var value V
 		return value, false
 	}

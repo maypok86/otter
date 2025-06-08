@@ -1,8 +1,6 @@
 package client
 
 import (
-	"time"
-
 	"github.com/dgraph-io/ristretto"
 )
 
@@ -37,7 +35,7 @@ func (c *Ristretto[K, V]) Get(key K) (V, bool) {
 }
 
 func (c *Ristretto[K, V]) Set(key K, value V) {
-	c.client.SetWithTTL(key, value, 1, time.Hour)
+	c.client.Set(key, value, 1)
 }
 
 func (c *Ristretto[K, V]) Close() {

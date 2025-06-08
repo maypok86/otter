@@ -44,16 +44,16 @@ type Policy[K comparable, V any] struct {
 	Window                    *deque.Linked[K, V]
 	Probation                 *deque.Linked[K, V]
 	Protected                 *deque.Linked[K, V]
-	Maximum                   int64
-	WeightedSize              int64
-	WindowMaximum             int64
-	WindowWeightedSize        int64
-	MainProtectedMaximum      int64
-	MainProtectedWeightedSize int64
+	Maximum                   uint64
+	WeightedSize              uint64
+	WindowMaximum             uint64
+	WindowWeightedSize        uint64
+	MainProtectedMaximum      uint64
+	MainProtectedWeightedSize uint64
 	StepSize                  float64
 	Adjustment                int64
-	HitsInSample              int64
-	MissesInSample            int64
+	HitsInSample              uint64
+	MissesInSample            uint64
 	PreviousSampleHitRate     float64
 	IsWeighted                bool
 	Rand                      func() uint32
@@ -85,21 +85,17 @@ func (p *Policy[K, V]) Access(n node.Node[K, V]) {
 }
 
 // Add adds node to the eviction policy.
-func (p *Policy[K, V]) Add(
-	n node.Node[K, V],
-	getEstimatedSize func() int,
-	evictNode func(n node.Node[K, V], nowNanos int64),
-) {
-	nodeWeight := int64(n.Weight())
+func (p *Policy[K, V]) Add(n node.Node[K, V], evictNode func(n node.Node[K, V], nowNanos int64)) {
+	nodeWeight := uint64(n.Weight())
 
 	p.WeightedSize += nodeWeight
 	p.WindowWeightedSize += nodeWeight
 	if p.WeightedSize >= p.Maximum>>1 {
 		// Lazily initialize when close to the maximum
-		capacity := uint64(p.Maximum)
+		capacity := p.Maximum
 		if p.IsWeighted {
 			//nolint:gosec // there's no overflow
-			capacity = uint64(getEstimatedSize())
+			capacity = uint64(p.Window.Len()) + uint64(p.Probation.Len()) + uint64(p.Protected.Len())
 		}
 		p.Sketch.EnsureCapacity(capacity)
 	}
@@ -123,7 +119,54 @@ func (p *Policy[K, V]) Add(
 }
 
 func (p *Policy[K, V]) Update(n, old node.Node[K, V], evictNode func(n node.Node[K, V], nowNanos int64)) {
-	nodeWeight := int64(n.Weight())
+	nodeWeight := uint64(n.Weight())
+	p.updateNode(n, old)
+	switch {
+	case n.InWindow():
+		p.WindowWeightedSize += nodeWeight
+		switch {
+		case nodeWeight > p.Maximum:
+			evictNode(n, 0)
+		case nodeWeight <= p.WindowMaximum:
+			p.Access(n)
+		case p.Window.Contains(n):
+			p.Window.MoveToFront(n)
+		}
+	case n.InMainProbation():
+		if nodeWeight <= p.Maximum {
+			p.Access(n)
+		} else {
+			evictNode(n, 0)
+		}
+	case n.InMainProtected():
+		p.MainProtectedWeightedSize += nodeWeight
+		if nodeWeight <= p.Maximum {
+			p.Access(n)
+		} else {
+			evictNode(n, 0)
+		}
+	}
+
+	p.WeightedSize += nodeWeight
+}
+
+func (p *Policy[K, V]) updateNode(n, old node.Node[K, V]) {
+	n.SetQueueType(old.GetQueueType())
+
+	switch {
+	case n.InWindow():
+		p.Window.UpdateNode(n, old)
+	case n.InMainProbation():
+		p.Probation.UpdateNode(n, old)
+	default:
+		p.Protected.UpdateNode(n, old)
+	}
+	p.MakeDead(old)
+}
+
+/*
+func (p *Policy[K, V]) Update(n, old node.Node[K, V], evictNode func(n node.Node[K, V], nowNanos int64)) {
+	nodeWeight := uint64(n.Weight())
 	p.updateNode(n, old)
 
 	switch {
@@ -173,6 +216,7 @@ func (p *Policy[K, V]) updateNode(n, old node.Node[K, V]) {
 	old.SetNext(nil)
 	p.MakeDead(old)
 }
+*/
 
 // Delete deletes node from the eviction policy.
 func (p *Policy[K, V]) Delete(n node.Node[K, V]) {
@@ -190,7 +234,7 @@ func (p *Policy[K, V]) Delete(n node.Node[K, V]) {
 
 func (p *Policy[K, V]) MakeDead(n node.Node[K, V]) {
 	if !n.IsDead() {
-		nodeWeight := int64(n.Weight())
+		nodeWeight := uint64(n.Weight())
 		if n.InWindow() {
 			p.WindowWeightedSize -= nodeWeight
 		} else if n.InMainProtected() {
@@ -201,13 +245,13 @@ func (p *Policy[K, V]) MakeDead(n node.Node[K, V]) {
 	}
 }
 
-func (p *Policy[K, V]) SetMaximumSize(maximum int64) {
+func (p *Policy[K, V]) SetMaximumSize(maximum uint64) {
 	if maximum == p.Maximum {
 		return
 	}
 
-	window := maximum - int64(percentMain*float64(maximum))
-	mainProtected := int64(PercentMainProtected * float64(maximum-window))
+	window := maximum - uint64(percentMain*float64(maximum))
+	mainProtected := uint64(PercentMainProtected * float64(maximum-window))
 
 	p.Maximum = maximum
 	p.WindowMaximum = window
@@ -219,7 +263,7 @@ func (p *Policy[K, V]) SetMaximumSize(maximum int64) {
 
 	if p.Sketch != nil && !p.IsWeighted && p.WeightedSize >= (maximum>>1) {
 		// Lazily initialize when close to the maximum Size
-		p.Sketch.EnsureCapacity(uint64(maximum))
+		p.Sketch.EnsureCapacity(maximum)
 	}
 }
 
@@ -229,7 +273,7 @@ func (p *Policy[K, V]) EnsureCapacity(capacity uint64) {
 
 // Promote the node from probation to protected on access.
 func (p *Policy[K, V]) reorderProbation(n node.Node[K, V]) {
-	nodeWeight := int64(n.Weight())
+	nodeWeight := uint64(n.Weight())
 
 	if p.Probation.NotContains(n) {
 		// Ignore stale accesses for an entry that is no longer present
@@ -262,7 +306,7 @@ func (p *Policy[K, V]) EvictFromWindow() node.Node[K, V] {
 		}
 
 		next := n.Next()
-		nodeWeight := int64(n.Weight())
+		nodeWeight := uint64(n.Weight())
 		if nodeWeight != 0 {
 			n.MakeMainProbation()
 			p.Window.Delete(n)
@@ -350,7 +394,7 @@ func (p *Policy[K, V]) evictFromMain(candidate node.Node[K, V], evictNode func(n
 		}
 
 		// Evict immediately if the candidate's weight exceeds the maximum
-		if int64(candidate.Weight()) > p.Maximum {
+		if uint64(candidate.Weight()) > p.Maximum {
 			evict := candidate
 			candidate = candidate.Next()
 			evictNode(evict, 0)
@@ -409,7 +453,7 @@ func (p *Policy[K, V]) determineAdjustment() {
 	}
 
 	requestCount := p.HitsInSample + p.MissesInSample
-	if uint64(requestCount) < p.Sketch.SampleSize {
+	if requestCount < p.Sketch.SampleSize {
 		return
 	}
 
@@ -454,7 +498,7 @@ func (p *Policy[K, V]) demoteFromMainProtected() {
 		}
 		demoted.MakeMainProbation()
 		p.Probation.PushBack(demoted)
-		mainProtectedWeightedSize -= int64(demoted.Weight())
+		mainProtectedWeightedSize -= uint64(demoted.Weight())
 	}
 
 	p.MainProtectedWeightedSize = mainProtectedWeightedSize
@@ -465,9 +509,12 @@ func (p *Policy[K, V]) increaseWindow() {
 		return
 	}
 
-	quota := min(p.Adjustment, p.MainProtectedMaximum)
-	p.MainProtectedMaximum -= quota
-	p.WindowMaximum += quota
+	quota := p.Adjustment
+	if p.MainProtectedMaximum < uint64(p.Adjustment) {
+		quota = int64(p.MainProtectedMaximum)
+	}
+	p.MainProtectedMaximum -= uint64(quota)
+	p.WindowMaximum += uint64(quota)
 	p.demoteFromMainProtected()
 
 	for i := 0; i < queueTransferThreshold; i++ {
@@ -481,12 +528,12 @@ func (p *Policy[K, V]) increaseWindow() {
 			break
 		}
 
-		weight := int64(candidate.Weight())
-		if quota < weight {
+		weight := uint64(candidate.Weight())
+		if quota < int64(weight) {
 			break
 		}
 
-		quota -= weight
+		quota -= int64(weight)
 		if probation {
 			p.Probation.Delete(candidate)
 		} else {
@@ -498,8 +545,8 @@ func (p *Policy[K, V]) increaseWindow() {
 		candidate.MakeWindow()
 	}
 
-	p.MainProtectedMaximum += quota
-	p.WindowMaximum -= quota
+	p.MainProtectedMaximum += uint64(quota)
+	p.WindowMaximum -= uint64(quota)
 	p.Adjustment = quota
 }
 
@@ -508,9 +555,13 @@ func (p *Policy[K, V]) decreaseWindow() {
 		return
 	}
 
-	quota := min(-p.Adjustment, max(0, p.WindowMaximum-1))
-	p.MainProtectedMaximum += quota
-	p.WindowMaximum -= quota
+	quota := -p.Adjustment
+	windowMaximum := max(0, p.WindowMaximum-1)
+	if windowMaximum < uint64(-p.Adjustment) {
+		quota = int64(windowMaximum)
+	}
+	p.MainProtectedMaximum += uint64(quota)
+	p.WindowMaximum -= uint64(quota)
 
 	for i := 0; i < queueTransferThreshold; i++ {
 		candidate := p.Window.Head()
@@ -524,14 +575,14 @@ func (p *Policy[K, V]) decreaseWindow() {
 		}
 
 		quota -= weight
-		p.WindowWeightedSize -= weight
+		p.WindowWeightedSize -= uint64(weight)
 		p.Window.Delete(candidate)
 		p.Probation.PushBack(candidate)
 		candidate.MakeMainProbation()
 	}
 
-	p.MainProtectedMaximum -= quota
-	p.WindowMaximum += quota
+	p.MainProtectedMaximum -= uint64(quota)
+	p.WindowMaximum += uint64(quota)
 	p.Adjustment = -quota
 }
 

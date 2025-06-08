@@ -1,8 +1,6 @@
 package client
 
 import (
-	"time"
-
 	"github.com/jellydator/ttlcache/v3"
 )
 
@@ -12,7 +10,7 @@ type TTLCache[K comparable, V any] struct {
 
 func (c *TTLCache[K, V]) Init(capacity int) {
 	client := ttlcache.New[K, V](
-		ttlcache.WithTTL[K, V](time.Hour),
+		// ttlcache.WithTTL[K, V](time.Hour),
 		ttlcache.WithCapacity[K, V](uint64(capacity)),
 	)
 	go client.Start()

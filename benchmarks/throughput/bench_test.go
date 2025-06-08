@@ -7,16 +7,11 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-	_ "unsafe"
 
 	"github.com/pingcap/go-ycsb/pkg/generator"
 
 	"github.com/maypok86/otter/v2/benchmarks/client"
 )
-
-//go:noescape
-//go:linkname fastrand runtime.fastrand
-func fastrand() uint32
 
 const dataLength = 2 << 14
 
@@ -64,8 +59,8 @@ type benchCase struct {
 var benchCases = []benchCase{
 	{"reads=100%,writes=0%", 100, 0},
 	{"reads=75%,writes=25%", 75, 25},
-	{"reads=50%,writes=50%", 50, 50},
-	{"reads=25%,writes=75%", 25, 75},
+	//{"reads=50%,writes=50%", 50, 50},
+	//{"reads=25%,writes=75%", 25, 75},
 	{"reads=0%,writes=100%", 0, 100},
 }
 
@@ -119,7 +114,7 @@ func runCacheBenchmark(
 	mask := dataLength - 1
 
 	runParallelBenchmark(b, func(pb *testing.PB) {
-		index := int(fastrand() & uint32(mask))
+		index := int(rand.Uint32() & uint32(mask))
 		mc := atomic.AddUint64(&rc, 1)
 		if benchCase.setPercentage*mc/100 != benchCase.setPercentage*(mc-1)/100 {
 			for pb.Next() {

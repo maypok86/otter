@@ -23,6 +23,8 @@ func cleanup(c *Cache[int, int]) {
 }
 
 func firstBeforeAccess(c *Cache[int, int]) node.Node[int, int] {
+	c.cache.evictionMutex.Lock()
+	defer c.cache.evictionMutex.Unlock()
 	return c.cache.evictionPolicy.Probation.Head()
 }
 
@@ -30,6 +32,8 @@ func updateRecency(t *testing.T, c *Cache[int, int], isRead bool, fn func()) {
 	first := firstBeforeAccess(c)
 
 	fn()
+	c.cache.evictionMutex.Lock()
+	defer c.cache.evictionMutex.Unlock()
 	c.cache.maintenance(nil)
 
 	if isRead {
@@ -42,14 +46,16 @@ func updateRecency(t *testing.T, c *Cache[int, int], isRead bool, fn func()) {
 }
 
 func prepareAdaptation(t *testing.T, c *Cache[int, int], recencyBias bool) {
+	c.cache.evictionMutex.Lock()
 	k := -1
 	if recencyBias {
 		k = 1
 	}
 	c.cache.evictionPolicy.StepSize = float64(k) * math.Abs(c.cache.evictionPolicy.StepSize)
 	maximum := c.cache.evictionPolicy.Maximum
-	c.cache.evictionPolicy.WindowMaximum = int64(0.5 * float64(maximum))
-	c.cache.evictionPolicy.MainProtectedMaximum = int64(tinylfu.PercentMainProtected * float64(maximum-c.cache.evictionPolicy.WindowMaximum))
+	c.cache.evictionPolicy.WindowMaximum = uint64(0.5 * float64(maximum))
+	c.cache.evictionPolicy.MainProtectedMaximum = uint64(tinylfu.PercentMainProtected * float64(maximum-c.cache.evictionPolicy.WindowMaximum))
+	c.cache.evictionMutex.Unlock()
 
 	c.InvalidateAll()
 	for i := 0; i < int(maximum); i++ {
@@ -69,10 +75,12 @@ func prepareAdaptation(t *testing.T, c *Cache[int, int], recencyBias bool) {
 }
 
 func adapt(t *testing.T, c *Cache[int, int], sampleSize uint64) {
+	c.cache.evictionMutex.Lock()
 	c.cache.evictionPolicy.PreviousSampleHitRate = 0.8
-	c.cache.evictionPolicy.MissesInSample = int64(sampleSize) / 2
-	c.cache.evictionPolicy.HitsInSample = int64(sampleSize) - c.cache.evictionPolicy.MissesInSample
+	c.cache.evictionPolicy.MissesInSample = sampleSize / 2
+	c.cache.evictionPolicy.HitsInSample = sampleSize - c.cache.evictionPolicy.MissesInSample
 	c.cache.climb()
+	c.cache.evictionMutex.Unlock()
 
 	for k := range c.All() {
 		require.True(t, c.has(k))
@@ -101,7 +109,7 @@ func TestCache_Eviction(t *testing.T) {
 		require.True(t, ok)
 		require.Equal(t, 1, v)
 		cleanup(c)
-		require.Equal(t, int64(0), c.cache.evictionPolicy.WeightedSize)
+		require.Equal(t, uint64(0), c.cache.evictionPolicy.WeightedSize)
 		require.Equal(t, 1, m[CauseOverflow])
 		require.Equal(t, 1, len(m))
 	})
@@ -125,7 +133,7 @@ func TestCache_Eviction(t *testing.T) {
 			require.Equal(t, i, v)
 		}
 		cleanup(c)
-		require.Equal(t, int64(0), c.cache.evictionPolicy.WeightedSize)
+		require.Equal(t, uint64(0), c.cache.evictionPolicy.WeightedSize)
 		require.Equal(t, 10, m[CauseOverflow])
 		require.Equal(t, 1, len(m))
 	})
@@ -159,7 +167,7 @@ func TestCache_Eviction(t *testing.T) {
 			require.Equal(t, i, v)
 		}
 		cleanup(c)
-		require.Equal(t, int64(0), c.cache.evictionPolicy.WeightedSize)
+		require.Equal(t, uint64(0), c.cache.evictionPolicy.WeightedSize)
 		require.Equal(t, []int{0, 1, 2, 3, 4, 5, 6, 7, 8, 9}, m[CauseOverflow])
 		require.Equal(t, []int{0, 1, 2, 3, 4, 5, 6, 7, 8, 9}, m[CauseReplacement])
 		require.Equal(t, 2, len(m))
@@ -317,7 +325,7 @@ func TestCache_Eviction(t *testing.T) {
 		}
 		cleanup(c)
 
-		for i := 0; i < len(c.cache.evictionPolicy.Sketch.Table); i++ {
+		for i := range c.cache.evictionPolicy.Sketch.Table {
 			c.cache.evictionPolicy.Sketch.Table[i] = 0
 		}
 
@@ -360,7 +368,7 @@ func TestCache_Eviction(t *testing.T) {
 		}
 		cleanup(c)
 
-		for i := 0; i < len(c.cache.evictionPolicy.Sketch.Table); i++ {
+		for i := range c.cache.evictionPolicy.Sketch.Table {
 			c.cache.evictionPolicy.Sketch.Table[i] = 0
 		}
 
@@ -408,7 +416,7 @@ func TestCache_Eviction(t *testing.T) {
 			e.Protected.PushBack(n)
 			n.MakeMainProtected()
 		}
-		for i := 0; i < len(c.cache.evictionPolicy.Sketch.Table); i++ {
+		for i := range c.cache.evictionPolicy.Sketch.Table {
 			c.cache.evictionPolicy.Sketch.Table[i] = 0
 		}
 		e.MainProtectedWeightedSize = maximum - e.WindowWeightedSize
@@ -532,7 +540,7 @@ func TestCache_Eviction(t *testing.T) {
 		c.cache.evictNodes()
 
 		require.True(t, expected.IsDead())
-		require.Equal(t, e.Maximum, int64(c.EstimatedSize()))
+		require.Equal(t, e.Maximum, uint64(c.EstimatedSize()))
 		c.cache.evictionMutex.Unlock()
 	})
 	t.Run("evict_retired_victim", func(t *testing.T) {
@@ -580,7 +588,7 @@ func TestCache_Eviction(t *testing.T) {
 		c.cache.evictNodes()
 
 		require.True(t, expected.IsDead())
-		require.Equal(t, e.Maximum, int64(c.EstimatedSize()))
+		require.Equal(t, e.Maximum, uint64(c.EstimatedSize()))
 		c.cache.evictionMutex.Unlock()
 	})
 	t.Run("evict_zeroWeight_candidate", func(t *testing.T) {
@@ -618,7 +626,7 @@ func TestCache_Eviction(t *testing.T) {
 		c.cache.evictNodes()
 
 		require.True(t, c.has(candidate.Key()))
-		require.Equal(t, int64(0), e.WeightedSize)
+		require.Equal(t, uint64(0), e.WeightedSize)
 	})
 	t.Run("evict_admit", func(t *testing.T) {
 		t.Parallel()
@@ -737,6 +745,7 @@ func TestCache_Eviction(t *testing.T) {
 		t.Parallel()
 
 		const maximum = 50
+		var mutex sync.Mutex
 		m := make(map[DeletionCause]int)
 		actual := make([]int, 0, maximum)
 		s := stats.NewCounter()
@@ -744,8 +753,10 @@ func TestCache_Eviction(t *testing.T) {
 			MaximumSize:   maximum,
 			StatsRecorder: s,
 			OnDeletion: func(e DeletionEvent[int, int]) {
+				mutex.Lock()
 				m[e.Cause]++
 				actual = append(actual, e.Key)
+				mutex.Unlock()
 			},
 		})
 
@@ -792,18 +803,22 @@ func TestCache_Eviction(t *testing.T) {
 		e := c.cache.evictionPolicy
 
 		prepareAdaptation(t, c, false)
+		c.cache.evictionMutex.Lock()
 		sampleSize := e.Sketch.SampleSize
 		protectedSize := e.MainProtectedWeightedSize
 		protectedMaximum := e.MainProtectedMaximum
 		windowSize := e.WindowWeightedSize
 		windowMaximum := e.WindowMaximum
+		c.cache.evictionMutex.Unlock()
 
 		adapt(t, c, sampleSize)
 
+		c.cache.evictionMutex.Lock()
 		require.Less(t, e.MainProtectedWeightedSize, protectedSize)
 		require.Less(t, e.MainProtectedMaximum, protectedMaximum)
 		require.Greater(t, e.WindowWeightedSize, windowSize)
 		require.Greater(t, e.WindowMaximum, windowMaximum)
+		c.cache.evictionMutex.Unlock()
 	})
 	t.Run("adapt_decreaseWindow", func(t *testing.T) {
 		t.Parallel()
@@ -831,17 +846,21 @@ func TestCache_Eviction(t *testing.T) {
 		e := c.cache.evictionPolicy
 
 		prepareAdaptation(t, c, true)
+		c.cache.evictionMutex.Lock()
 		sampleSize := e.Sketch.SampleSize
 		protectedSize := e.MainProtectedWeightedSize
 		protectedMaximum := e.MainProtectedMaximum
 		windowSize := e.WindowWeightedSize
 		windowMaximum := e.WindowMaximum
+		c.cache.evictionMutex.Unlock()
 
 		adapt(t, c, sampleSize)
 
+		c.cache.evictionMutex.Lock()
 		require.Greater(t, e.MainProtectedWeightedSize, protectedSize)
 		require.Greater(t, e.MainProtectedMaximum, protectedMaximum)
 		require.Less(t, e.WindowWeightedSize, windowSize)
 		require.Less(t, e.WindowMaximum, windowMaximum)
+		c.cache.evictionMutex.Unlock()
 	})
 }

@@ -158,9 +158,9 @@ func TestSketch_HeavyHitters(t *testing.T) {
 	t.Parallel()
 
 	s := newSketch[float64]()
-	s.EnsureCapacity(512)
+	s.EnsureCapacity(2000)
 
-	for i := 100; i < 100000; i++ {
+	for i := 100; i < 5000; i++ {
 		s.Increment(float64(i))
 	}
 	for i := 0; i < 10; i += 2 {

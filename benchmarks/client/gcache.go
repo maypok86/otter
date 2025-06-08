@@ -1,8 +1,6 @@
 package client
 
 import (
-	"time"
-
 	"github.com/bluele/gcache"
 )
 
@@ -11,7 +9,7 @@ type Gcache[K comparable, V any] struct {
 }
 
 func (c *Gcache[K, V]) Init(capacity int) {
-	client := gcache.New(capacity).Expiration(time.Hour).LRU().Build()
+	client := gcache.New(capacity).LRU().Build()
 	c.client = client
 }
 

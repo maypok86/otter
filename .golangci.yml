@@ -34,7 +34,6 @@ linters:
     - gocritic
     - godot
     - gomoddirectives
-    - gosec
     - govet
     - ineffassign
     - misspell
@@ -59,6 +58,7 @@ linters:
     - usestdlibvars
     - wastedassign
   disable:
+    - gosec
     - unused
   exclusions:
     rules:

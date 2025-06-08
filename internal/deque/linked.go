@@ -44,6 +44,30 @@ func (d *Linked[K, V]) PushBack(n node.Node[K, V]) {
 	d.len++
 }
 
+func (d *Linked[K, V]) UpdateNode(n, old node.Node[K, V]) {
+	oldNext := d.getNext(old)
+	if node.Equals(oldNext, nil) {
+		if node.Equals(d.tail, old) {
+			d.tail = n
+		}
+	} else {
+		d.setPrev(oldNext, n)
+		d.setNext(n, oldNext)
+		d.setNext(old, nil)
+	}
+
+	oldPrev := d.getPrev(old)
+	if node.Equals(oldPrev, nil) {
+		if node.Equals(d.head, old) {
+			d.head = n
+		}
+	} else {
+		d.setPrev(n, oldPrev)
+		d.setNext(oldPrev, n)
+		d.setPrev(old, nil)
+	}
+}
+
 func (d *Linked[K, V]) PushFront(n node.Node[K, V]) {
 	if d.IsEmpty() {
 		d.head = n
