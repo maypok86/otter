@@ -164,60 +164,6 @@ func (p *Policy[K, V]) updateNode(n, old node.Node[K, V]) {
 	p.MakeDead(old)
 }
 
-/*
-func (p *Policy[K, V]) Update(n, old node.Node[K, V], evictNode func(n node.Node[K, V], nowNanos int64)) {
-	nodeWeight := uint64(n.Weight())
-	p.updateNode(n, old)
-
-	switch {
-	case n.InWindow():
-		p.WindowWeightedSize += nodeWeight
-		switch {
-		case nodeWeight > p.Maximum:
-			evictNode(n, 0)
-		case nodeWeight <= p.WindowMaximum:
-			p.Access(n)
-		case p.Window.Contains(n):
-			p.Window.MoveToFront(n)
-		}
-	case n.InMainProbation():
-		if nodeWeight <= p.Maximum {
-			p.Access(n)
-		} else {
-			evictNode(n, 0)
-		}
-	case n.InMainProtected():
-		p.MainProtectedWeightedSize += nodeWeight
-		if nodeWeight <= p.Maximum {
-			p.Access(n)
-		} else {
-			evictNode(n, 0)
-		}
-	}
-
-	p.WeightedSize += nodeWeight
-}
-
-func (p *Policy[K, V]) updateNode(n, old node.Node[K, V]) {
-	n.SetQueueType(old.GetQueueType())
-
-	oldNext := old.Next()
-	n.SetNext(oldNext)
-	if !node.Equals(oldNext, nil) {
-		oldNext.SetPrev(n)
-	}
-
-	oldPrev := old.Prev()
-	n.SetPrev(oldPrev)
-	if !node.Equals(oldPrev, nil) {
-		oldPrev.SetNext(n)
-	}
-	old.SetPrev(nil)
-	old.SetNext(nil)
-	p.MakeDead(old)
-}
-*/
-
 // Delete deletes node from the eviction policy.
 func (p *Policy[K, V]) Delete(n node.Node[K, V]) {
 	// add may not have been processed yet
