@@ -90,7 +90,7 @@ type cache[K comparable, V any] struct {
 	stats             stats.Recorder
 	logger            Logger
 	clock             *clock.Real
-	stripedBuffer     *lossy.Striped[K, V]
+	readBuffer        *lossy.Striped[K, V]
 	writeBuffer       *queue.MPSC[task[K, V]]
 	singleflight      *group[K, V]
 	evictionMutex     sync.Mutex
@@ -122,9 +122,9 @@ func newCache[K comparable, V any](o *Options[K, V]) *cache[K, V] {
 	maximum := o.getMaximum()
 	withEviction := maximum > 0
 
-	var stripedBuffer *lossy.Striped[K, V]
+	var readBuffer *lossy.Striped[K, V]
 	if withEviction {
-		stripedBuffer = lossy.NewStriped(maxStripedBufferSize, nodeManager)
+		readBuffer = lossy.NewStriped(maxStripedBufferSize, nodeManager)
 	}
 
 	withStats := o.StatsRecorder != nil
@@ -133,16 +133,16 @@ func newCache[K comparable, V any](o *Options[K, V]) *cache[K, V] {
 	}
 
 	c := &cache[K, V]{
-		nodeManager:   nodeManager,
-		hashmap:       hashmap.NewWithSize[K, V, node.Node[K, V]](nodeManager, o.getInitialCapacity()),
-		stats:         o.StatsRecorder,
-		logger:        o.Logger,
-		stripedBuffer: stripedBuffer,
-		singleflight:  &group[K, V]{},
-		weigher:       o.Weigher,
-		onDeletion:    o.OnDeletion,
-		clock:         &clock.Real{},
-		withStats:     withStats,
+		nodeManager:  nodeManager,
+		hashmap:      hashmap.NewWithSize[K, V, node.Node[K, V]](nodeManager, o.getInitialCapacity()),
+		stats:        o.StatsRecorder,
+		logger:       o.Logger,
+		readBuffer:   readBuffer,
+		singleflight: &group[K, V]{},
+		weigher:      o.Weigher,
+		onDeletion:   o.OnDeletion,
+		clock:        &clock.Real{},
+		withStats:    withStats,
 		executor: func(fn func()) {
 			go fn()
 		},
@@ -283,7 +283,7 @@ func (c *cache[K, V]) afterRead(got node.Node[K, V], offset int64, recordHit boo
 
 	c.calcExpiresAtAfterRead(got, offset)
 
-	delayable := c.skipReadBuffer() || c.stripedBuffer.Add(got) != lossy.Full
+	delayable := c.skipReadBuffer() || c.readBuffer.Add(got) != lossy.Full
 	if c.shouldDrainBuffers(delayable) {
 		c.scheduleDrainBuffers()
 	}
@@ -1042,7 +1042,7 @@ func (c *cache[K, V]) InvalidateAll() {
 	c.evictionMutex.Lock()
 
 	if !c.skipReadBuffer() {
-		c.stripedBuffer.DrainTo(func(n node.Node[K, V]) {})
+		c.readBuffer.DrainTo(func(n node.Node[K, V]) {})
 	}
 	if c.withMaintenance {
 		for {
@@ -1202,7 +1202,7 @@ func (c *cache[K, V]) drainReadBuffer() {
 		return
 	}
 
-	c.stripedBuffer.DrainTo(c.evictionPolicy.Access)
+	c.readBuffer.DrainTo(c.onAccess)
 }
 
 func (c *cache[K, V]) drainWriteBuffer() {
@@ -1255,6 +1255,18 @@ func (c *cache[K, V]) runTask(t *task[K, V]) {
 	}
 
 	c.putTask(t)
+}
+
+func (c *cache[K, V]) onAccess(n node.Node[K, V]) {
+	if c.withEviction {
+		c.evictionPolicy.Access(n)
+	}
+	if c.withExpiration && !node.Equals(n.NextExp(), nil) {
+		c.expirationPolicy.Delete(n)
+		if n.IsAlive() {
+			c.expirationPolicy.Add(n)
+		}
+	}
 }
 
 func (c *cache[K, V]) expireNodes() {

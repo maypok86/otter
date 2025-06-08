@@ -280,7 +280,7 @@ func TestCache_CleanUp(t *testing.T) {
 		c.has(i)
 	}
 
-	if l := c.cache.stripedBuffer.Len(); l == 0 {
+	if l := c.cache.readBuffer.Len(); l == 0 {
 		t.Fatalf("stripedBufferLen = %d, want > %d", l, 0)
 	}
 	c.CleanUp()
@@ -291,7 +291,7 @@ func TestCache_CleanUp(t *testing.T) {
 	if l := c.cache.writeBuffer.Size(); l != 0 {
 		t.Fatalf("writeBufferLen = %d, want = %d", l, 0)
 	}
-	if l := c.cache.stripedBuffer.Len(); l != 0 {
+	if l := c.cache.readBuffer.Len(); l != 0 {
 		t.Fatalf("stripedBufferLen = %d, want = %d", l, 0)
 	}
 }
