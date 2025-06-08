@@ -26,6 +26,7 @@ func getClients() map[string]client.Client[uint64, uint64] {
 		&client.Ristretto[uint64, uint64]{},
 		&client.LRU[uint64, uint64]{},
 		&client.ARC[uint64, uint64]{},
+		client.Wrap[uint64](&client.Sturdyc[uint64]{}),
 	}
 
 	clients := make(map[string]client.Client[uint64, uint64], len(cl))

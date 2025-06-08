@@ -10,6 +10,7 @@ caches=(
   "gcache"
   "ttlcache"
   "golang-lru"
+  "sturdyc"
 )
 
 capacities=(1000 10000 25000 100000 1000000)

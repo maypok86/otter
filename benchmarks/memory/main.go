@@ -15,6 +15,7 @@ import (
 	hashicorp "github.com/hashicorp/golang-lru/v2/expirable"
 	"github.com/jellydator/ttlcache/v3"
 	"github.com/karlseguin/ccache/v3"
+	"github.com/viccon/sturdyc"
 
 	"github.com/maypok86/otter/v2"
 	"github.com/maypok86/otter/v2/core/expiry"
@@ -56,6 +57,7 @@ func main() {
 		"gcache":     newGcache,
 		"ttlcache":   newTTLCache,
 		"golang-lru": newHashicorp,
+		"sturdyc":    newSturdyc,
 	}[name]
 	if !ok {
 		log.Fatalf("not found cache %s\n", name)
@@ -171,6 +173,17 @@ func newHashicorp(capacity int) {
 	cache := hashicorp.NewLRU[string, string](capacity, nil, time.Hour)
 	for _, key := range keys {
 		cache.Add(key, key)
+		for i := 0; i < 10; i++ {
+			cache.Get(key)
+		}
+		time.Sleep(5 * time.Microsecond)
+	}
+}
+
+func newSturdyc(capacity int) {
+	cache := sturdyc.New[string](capacity, 10, time.Hour, 10)
+	for _, key := range keys {
+		cache.Set(key, key)
 		for i := 0; i < 10; i++ {
 			cache.Get(key)
 		}
