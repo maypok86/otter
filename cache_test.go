@@ -594,6 +594,7 @@ func TestCache_SetWithExpiresAfterAccessing(t *testing.T) {
 		}
 	}
 
+	c.CleanUp()
 	time.Sleep(10 * time.Millisecond)
 
 	if cacheSize := c.EstimatedSize(); cacheSize != 0 {

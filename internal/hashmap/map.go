@@ -119,7 +119,7 @@ type mapTable[K comparable] struct {
 // nodesPerMapBucket nodes.
 type bucketPadded struct {
 	//lint:ignore U1000 ensure each bucket takes two cache lines on both 32 and 64-bit archs
-	pad [xruntime.CacheLineSize - unsafe.Sizeof(bucket{})]byte
+	pad [64 - unsafe.Sizeof(bucket{})]byte
 	bucket
 }
 
