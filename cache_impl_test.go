@@ -100,7 +100,7 @@ func TestCache_Eviction(t *testing.T) {
 			Weigher: func(key int, value int) uint32 {
 				return unreachable
 			},
-			OnDeletion: func(e DeletionEvent[int, int]) {
+			OnAtomicDeletion: func(e DeletionEvent[int, int]) {
 				m[e.Cause]++
 			},
 		})
@@ -117,13 +117,16 @@ func TestCache_Eviction(t *testing.T) {
 		t.Parallel()
 
 		m := make(map[DeletionCause]int)
+		var mutex sync.Mutex
 		c := Must(&Options[int, int]{
 			MaximumWeight: unreachable - 1,
 			Weigher: func(key int, value int) uint32 {
 				return unreachable
 			},
 			OnDeletion: func(e DeletionEvent[int, int]) {
+				mutex.Lock()
 				m[e.Cause]++
+				mutex.Unlock()
 			},
 		})
 
@@ -133,6 +136,8 @@ func TestCache_Eviction(t *testing.T) {
 			require.Equal(t, i, v)
 		}
 		cleanup(c)
+		mutex.Lock()
+		defer mutex.Unlock()
 		require.Equal(t, uint64(0), c.cache.evictionPolicy.WeightedSize)
 		require.Equal(t, 10, m[CauseOverflow])
 		require.Equal(t, 1, len(m))
@@ -142,6 +147,7 @@ func TestCache_Eviction(t *testing.T) {
 
 		m := make(map[DeletionCause][]int)
 		count := make(map[int]int)
+		var mutex sync.Mutex
 		c := Must(&Options[int, int]{
 			MaximumWeight: unreachable - 1,
 			Weigher: func(key int, value int) uint32 {
@@ -151,8 +157,10 @@ func TestCache_Eviction(t *testing.T) {
 				}
 				return unreachable
 			},
-			OnDeletion: func(e DeletionEvent[int, int]) {
+			OnAtomicDeletion: func(e DeletionEvent[int, int]) {
+				mutex.Lock()
 				m[e.Cause] = append(m[e.Cause], e.Key)
+				mutex.Unlock()
 			},
 		})
 
@@ -178,7 +186,7 @@ func TestCache_Eviction(t *testing.T) {
 		m := make(map[DeletionCause]int)
 		c := Must(&Options[int, int]{
 			MaximumSize: 1,
-			OnDeletion: func(e DeletionEvent[int, int]) {
+			OnAtomicDeletion: func(e DeletionEvent[int, int]) {
 				m[e.Cause]++
 			},
 		})
@@ -258,15 +266,18 @@ func TestCache_Eviction(t *testing.T) {
 		t.Parallel()
 
 		const maximum = 50
+		var mutex sync.Mutex
 		m := make(map[DeletionCause]int)
 		actual := make([]int, 0, maximum)
 		s := stats.NewCounter()
 		c := Must(&Options[int, int]{
 			MaximumSize:   maximum,
 			StatsRecorder: s,
-			OnDeletion: func(e DeletionEvent[int, int]) {
+			OnAtomicDeletion: func(e DeletionEvent[int, int]) {
+				mutex.Lock()
 				m[e.Cause]++
 				actual = append(actual, e.Key)
+				mutex.Unlock()
 			},
 		})
 		for i := 0; i < maximum; i++ {
@@ -307,7 +318,7 @@ func TestCache_Eviction(t *testing.T) {
 		c := Must(&Options[int, int]{
 			MaximumSize:   maximum,
 			StatsRecorder: s,
-			OnDeletion: func(e DeletionEvent[int, int]) {
+			OnAtomicDeletion: func(e DeletionEvent[int, int]) {
 				mutex.Lock()
 				m[e.Cause]++
 				actual = append(actual, e.Key)
@@ -349,12 +360,15 @@ func TestCache_Eviction(t *testing.T) {
 		m := make(map[DeletionCause]int)
 		actual := make([]int, 0, maximum)
 		s := stats.NewCounter()
+		var mutex sync.Mutex
 		c := Must(&Options[int, int]{
 			MaximumSize:   maximum,
 			StatsRecorder: s,
-			OnDeletion: func(e DeletionEvent[int, int]) {
+			OnAtomicDeletion: func(e DeletionEvent[int, int]) {
+				mutex.Lock()
 				m[e.Cause]++
 				actual = append(actual, e.Key)
+				mutex.Unlock()
 			},
 		})
 
@@ -391,12 +405,15 @@ func TestCache_Eviction(t *testing.T) {
 		m := make(map[DeletionCause]int)
 		actual := make([]int, 0, maximum)
 		s := stats.NewCounter()
+		var mutex sync.Mutex
 		c := Must(&Options[int, int]{
 			MaximumSize:   maximum,
 			StatsRecorder: s,
-			OnDeletion: func(e DeletionEvent[int, int]) {
+			OnAtomicDeletion: func(e DeletionEvent[int, int]) {
+				mutex.Lock()
 				m[e.Cause]++
 				actual = append(actual, e.Key)
+				mutex.Unlock()
 			},
 		})
 		e := c.cache.evictionPolicy
@@ -452,12 +469,15 @@ func TestCache_Eviction(t *testing.T) {
 		m := make(map[DeletionCause]int)
 		actual := make([]int, 0, maximum)
 		s := stats.NewCounter()
+		var mutex sync.Mutex
 		c := Must(&Options[int, int]{
 			MaximumSize:   maximum,
 			StatsRecorder: s,
-			OnDeletion: func(e DeletionEvent[int, int]) {
+			OnAtomicDeletion: func(e DeletionEvent[int, int]) {
+				mutex.Lock()
 				m[e.Cause]++
 				actual = append(actual, e.Key)
+				mutex.Unlock()
 			},
 		})
 		e := c.cache.evictionPolicy
@@ -598,6 +618,7 @@ func TestCache_Eviction(t *testing.T) {
 		m := make(map[DeletionCause]int)
 		actual := make([]int, 0, maximum)
 		s := stats.NewCounter()
+		var mutex sync.Mutex
 		c := Must(&Options[int, int]{
 			MaximumWeight: maximum,
 			Weigher: func(key int, value int) uint32 {
@@ -605,8 +626,10 @@ func TestCache_Eviction(t *testing.T) {
 			},
 			StatsRecorder: s,
 			OnDeletion: func(e DeletionEvent[int, int]) {
+				mutex.Lock()
 				m[e.Cause]++
 				actual = append(actual, e.Key)
+				mutex.Unlock()
 			},
 		})
 		e := c.cache.evictionPolicy
@@ -635,6 +658,7 @@ func TestCache_Eviction(t *testing.T) {
 		m := make(map[DeletionCause]int)
 		actual := make([]int, 0, maximum)
 		s := stats.NewCounter()
+		var mutex sync.Mutex
 		c := Must(&Options[int, int]{
 			MaximumWeight: maximum,
 			Weigher: func(key int, value int) uint32 {
@@ -642,8 +666,10 @@ func TestCache_Eviction(t *testing.T) {
 			},
 			StatsRecorder: s,
 			OnDeletion: func(e DeletionEvent[int, int]) {
+				mutex.Lock()
 				m[e.Cause]++
 				actual = append(actual, e.Key)
+				mutex.Unlock()
 			},
 		})
 		e := c.cache.evictionPolicy
@@ -778,6 +804,7 @@ func TestCache_Eviction(t *testing.T) {
 		t.Parallel()
 
 		const maximum = 50
+		var mutex sync.Mutex
 		m := make(map[DeletionCause]int)
 		actual := make([]int, 0, maximum)
 		s := stats.NewCounter()
@@ -788,8 +815,10 @@ func TestCache_Eviction(t *testing.T) {
 			},
 			StatsRecorder: s,
 			OnDeletion: func(e DeletionEvent[int, int]) {
+				mutex.Lock()
 				m[e.Cause]++
 				actual = append(actual, e.Key)
+				mutex.Unlock()
 			},
 		})
 
@@ -827,12 +856,15 @@ func TestCache_Eviction(t *testing.T) {
 		m := make(map[DeletionCause]int)
 		actual := make([]int, 0, maximum)
 		s := stats.NewCounter()
+		var mutex sync.Mutex
 		c := Must(&Options[int, int]{
 			MaximumSize:   maximum,
 			StatsRecorder: s,
 			OnDeletion: func(e DeletionEvent[int, int]) {
+				mutex.Lock()
 				m[e.Cause]++
 				actual = append(actual, e.Key)
+				mutex.Unlock()
 			},
 		})
 

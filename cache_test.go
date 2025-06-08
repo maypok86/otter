@@ -51,16 +51,22 @@ func TestCache_Unbounded(t *testing.T) {
 	statsCounter := stats.NewCounter()
 	m := make(map[DeletionCause]int)
 	mutex := sync.Mutex{}
+	size := getRandomSize(t)
+	done := make(chan struct{})
+	count := 0
 	c := Must[int, int](&Options[int, int]{
 		StatsRecorder: statsCounter,
 		OnDeletion: func(e DeletionEvent[int, int]) {
 			mutex.Lock()
 			m[e.Cause]++
+			count++
+			if count == size {
+				done <- struct{}{}
+			}
 			mutex.Unlock()
 		},
 	})
 
-	size := getRandomSize(t)
 	for i := 0; i < size; i++ {
 		c.Set(i, i)
 	}
@@ -83,6 +89,7 @@ func TestCache_Unbounded(t *testing.T) {
 		c.Invalidate(i)
 	}
 
+	<-done
 	mutex.Lock()
 	defer mutex.Unlock()
 	if len(m) != 2 || m[CauseInvalidation] != size-replaced {

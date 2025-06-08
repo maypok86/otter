@@ -97,6 +97,7 @@ type cache[K comparable, V any] struct {
 	doneClose         chan struct{}
 	weigher           func(key K, value V) uint32
 	onDeletion        func(e DeletionEvent[K, V])
+	onAtomicDeletion  func(e DeletionEvent[K, V])
 	executor          func(fn func())
 	expiryCalculator  expiry.Calculator[K, V]
 	refreshCalculator refresh.Calculator[K, V]
@@ -133,16 +134,17 @@ func newCache[K comparable, V any](o *Options[K, V]) *cache[K, V] {
 	}
 
 	c := &cache[K, V]{
-		nodeManager:  nodeManager,
-		hashmap:      hashmap.NewWithSize[K, V, node.Node[K, V]](nodeManager, o.getInitialCapacity()),
-		stats:        o.StatsRecorder,
-		logger:       o.Logger,
-		readBuffer:   readBuffer,
-		singleflight: &group[K, V]{},
-		weigher:      o.Weigher,
-		onDeletion:   o.OnDeletion,
-		clock:        &clock.Real{},
-		withStats:    withStats,
+		nodeManager:      nodeManager,
+		hashmap:          hashmap.NewWithSize[K, V, node.Node[K, V]](nodeManager, o.getInitialCapacity()),
+		stats:            o.StatsRecorder,
+		logger:           o.Logger,
+		readBuffer:       readBuffer,
+		singleflight:     &group[K, V]{},
+		weigher:          o.Weigher,
+		onDeletion:       o.OnDeletion,
+		onAtomicDeletion: o.OnAtomicDeletion,
+		clock:            &clock.Real{},
+		withStats:        withStats,
 		executor: func(fn func()) {
 			go fn()
 		},
@@ -258,7 +260,7 @@ func (c *cache[K, V]) getNode(key K, offset int64) node.Node[K, V] {
 		return nil
 	}
 
-	c.afterRead(n, offset, true)
+	c.afterRead(n, offset, true, true)
 
 	return n
 }
@@ -276,12 +278,14 @@ func (c *cache[K, V]) getNodeQuietly(key K, offset int64) node.Node[K, V] {
 	return n
 }
 
-func (c *cache[K, V]) afterRead(got node.Node[K, V], offset int64, recordHit bool) {
+func (c *cache[K, V]) afterRead(got node.Node[K, V], offset int64, recordHit, calcExpiresAt bool) {
 	if recordHit {
 		c.stats.RecordHits(1)
 	}
 
-	c.calcExpiresAtAfterRead(got, offset)
+	if calcExpiresAt {
+		c.calcExpiresAtAfterRead(got, offset)
+	}
 
 	delayable := c.skipReadBuffer() || c.readBuffer.Add(got) != lossy.Full
 	if c.shouldDrainBuffers(delayable) {
@@ -366,6 +370,7 @@ func (c *cache[K, V]) SetExpiresAfter(key K, expiresAfter time.Duration) {
 	}
 
 	c.setExpiresAfterRead(n, offset, expiresAfter)
+	c.afterRead(n, offset, false, false)
 }
 
 // SetRefreshableAfter specifies that each entry should be eligible for reloading once a fixed duration has elapsed.
@@ -426,6 +431,13 @@ func (c *cache[K, V]) set(key K, value V, onlyIfAbsent bool) (V, bool) {
 		c.calcExpiresAtAfterWrite(n, old, offset)
 		c.calcRefreshableAt(n, old, nil, offset)
 		c.makeRetired(old)
+		if old != nil {
+			cause := CauseReplacement
+			if old.HasExpired(offset) {
+				cause = CauseExpiration
+			}
+			c.notifyAtomicDeletion(old.Key(), old.Value(), cause)
+		}
 		return n
 	})
 	if onlyIfAbsent {
@@ -433,7 +445,7 @@ func (c *cache[K, V]) set(key K, value V, onlyIfAbsent bool) (V, bool) {
 			c.afterWrite(n, nil, offset)
 			return value, true
 		}
-		c.afterRead(old, offset, false)
+		c.afterRead(old, offset, false, false)
 		return old.Value(), false
 	}
 
@@ -615,6 +627,13 @@ func (c *cache[K, V]) afterDeleteCall(cl *call[K, V]) {
 		c.calcExpiresAtAfterWrite(n, old, offset)
 		c.calcRefreshableAt(n, old, cl, offset)
 		c.makeRetired(old)
+		if old != nil {
+			cause := CauseReplacement
+			if old.HasExpired(offset) {
+				cause = CauseExpiration
+			}
+			c.notifyAtomicDeletion(old.Key(), old.Value(), cause)
+		}
 		return n
 	})
 	if inserted {
@@ -915,6 +934,7 @@ func (c *cache[K, V]) Invalidate(key K) (value V, invalidated bool) {
 			c.singleflight.delete(key)
 			d = n
 			c.makeRetired(d)
+			c.notifyAtomicDeletion(d.Key(), d.Value(), CauseInvalidation)
 		}
 		return nil
 	})
@@ -925,7 +945,7 @@ func (c *cache[K, V]) Invalidate(key K) (value V, invalidated bool) {
 	return zeroValue[V](), false
 }
 
-func (c *cache[K, V]) deleteNodeFromMap(n node.Node[K, V]) node.Node[K, V] {
+func (c *cache[K, V]) deleteNodeFromMap(n node.Node[K, V], cause DeletionCause) node.Node[K, V] {
 	var deleted node.Node[K, V]
 	c.hashmap.Compute(n.Key(), func(current node.Node[K, V]) node.Node[K, V] {
 		if current == nil {
@@ -935,6 +955,7 @@ func (c *cache[K, V]) deleteNodeFromMap(n node.Node[K, V]) node.Node[K, V] {
 			c.singleflight.delete(n.Key())
 			deleted = current
 			c.makeRetired(deleted)
+			c.notifyAtomicDeletion(deleted.Key(), deleted.Value(), cause)
 			return nil
 		}
 		return current
@@ -943,7 +964,7 @@ func (c *cache[K, V]) deleteNodeFromMap(n node.Node[K, V]) node.Node[K, V] {
 }
 
 func (c *cache[K, V]) deleteNode(n node.Node[K, V], offset int64) {
-	c.afterDelete(c.deleteNodeFromMap(n), offset, true)
+	c.afterDelete(c.deleteNodeFromMap(n, CauseInvalidation), offset, true)
 }
 
 func (c *cache[K, V]) afterDelete(deleted node.Node[K, V], offset int64, withLock bool) {
@@ -975,7 +996,21 @@ func (c *cache[K, V]) notifyDeletion(key K, value V, cause DeletionCause) {
 		return
 	}
 
-	c.onDeletion(DeletionEvent[K, V]{
+	c.executor(func() {
+		c.onDeletion(DeletionEvent[K, V]{
+			Key:   key,
+			Value: value,
+			Cause: cause,
+		})
+	})
+}
+
+func (c *cache[K, V]) notifyAtomicDeletion(key K, value V, cause DeletionCause) {
+	if c.onAtomicDeletion == nil {
+		return
+	}
+
+	c.onAtomicDeletion(DeletionEvent[K, V]{
 		Key:   key,
 		Value: value,
 		Cause: cause,
@@ -996,7 +1031,12 @@ func (c *cache[K, V]) periodicCleanUp() {
 }
 
 func (c *cache[K, V]) evictNode(n node.Node[K, V], nowNanos int64) {
-	deleted := c.deleteNodeFromMap(n) != nil
+	cause := CauseOverflow
+	if n.HasExpired(nowNanos) {
+		cause = CauseExpiration
+	}
+
+	deleted := c.deleteNodeFromMap(n, cause) != nil
 
 	if c.withEviction {
 		c.evictionPolicy.Delete(n)
@@ -1006,10 +1046,6 @@ func (c *cache[K, V]) evictNode(n node.Node[K, V], nowNanos int64) {
 	}
 
 	c.makeDead(n)
-	cause := CauseOverflow
-	if n.HasExpired(nowNanos) {
-		cause = CauseExpiration
-	}
 
 	if deleted {
 		c.notifyDeletion(n.Key(), n.Value(), cause)

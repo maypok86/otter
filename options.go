@@ -72,6 +72,12 @@ type Options[K comparable, V any] struct {
 	// DeletionCause. The cache will invoke this handler in the background goroutine
 	// after the entry's deletion operation has completed.
 	OnDeletion func(e DeletionEvent[K, V])
+	// OnAtomicDeletion specifies a handler that caches should notify each time an entry is deleted for any
+	// DeletionCause. The cache will invoke this handler during the atomic operation to delete the entry.
+	//
+	// A OnDeletion may be preferred when the handler should be performed outside the atomic operation to
+	// delete the entry.
+	OnAtomicDeletion func(e DeletionEvent[K, V])
 	// RefreshCalculator specifies that active entries are eligible for automatic refresh once a duration has
 	// elapsed after the entry's creation, the most recent replacement of its value, or the most recent entry's reload.
 	// The semantics of refreshes are specified in Cache.Refresh,
