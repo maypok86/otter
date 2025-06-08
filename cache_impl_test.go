@@ -244,6 +244,7 @@ func TestCache_Eviction(t *testing.T) {
 		}
 		cleanup(c)
 		expected := make([]int, 0, maximum)
+		c.cache.evictionMutex.Lock()
 		h := c.cache.evictionPolicy.Window.Head()
 		for !node.Equals(h, nil) {
 			expected = append(expected, h.Key())
@@ -259,6 +260,7 @@ func TestCache_Eviction(t *testing.T) {
 			actual = append(actual, h.Key())
 			h = h.Next()
 		}
+		c.cache.evictionMutex.Unlock()
 
 		require.Equal(t, expected, actual)
 	})
@@ -287,6 +289,7 @@ func TestCache_Eviction(t *testing.T) {
 		}
 		cleanup(c)
 
+		c.cache.evictionMutex.Lock()
 		c.cache.evictionPolicy.WindowMaximum = 0
 		candidate := c.cache.evictionPolicy.EvictFromWindow()
 		require.False(t, node.Equals(candidate, nil))
@@ -302,6 +305,7 @@ func TestCache_Eviction(t *testing.T) {
 			expected = append(expected, h.Key())
 			h = h.Next()
 		}
+		c.cache.evictionMutex.Unlock()
 		c.SetMaximum(0)
 		c.CleanUp()
 
