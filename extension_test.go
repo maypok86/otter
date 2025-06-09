@@ -86,10 +86,10 @@ func TestCache_SetExpiresAfter(t *testing.T) {
 	}
 	mutex.Unlock()
 	snapshot := statsCounter.Snapshot()
-	if snapshot.Hits() != 1 ||
-		snapshot.Misses() != 1 ||
-		snapshot.Evictions() != 1 ||
-		snapshot.EvictionWeight() != 1 {
+	if snapshot.Hits != 1 ||
+		snapshot.Misses != 1 ||
+		snapshot.Evictions != 1 ||
+		snapshot.EvictionWeight != 1 {
 		t.Fatalf("statistics are not recorded correctly. snapshot: %v", snapshot)
 	}
 }
@@ -142,8 +142,8 @@ func TestCache_SetRefreshableAfter(t *testing.T) {
 	}
 
 	snapshot := statsCounter.Snapshot()
-	if snapshot.Hits() != 1 ||
-		snapshot.Misses() != 1 {
+	if snapshot.Hits != 1 ||
+		snapshot.Misses != 1 {
 		t.Fatalf("statistics are not recorded correctly. snapshot: %v", snapshot)
 	}
 }

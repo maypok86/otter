@@ -56,14 +56,13 @@ func (c *Counter) Snapshot() Stats {
 		totalLoadTime = uint64(math.MaxInt64)
 	}
 	return Stats{
-		hits:           c.hits.Value(),
-		misses:         c.misses.Value(),
-		evictions:      c.evictions.Value(),
-		evictionWeight: c.evictionWeight.Value(),
-		loadSuccesses:  c.loadSuccesses.Value(),
-		loadFailures:   c.loadFailures.Value(),
-		//nolint:gosec // overflow is handled above
-		totalLoadTime: time.Duration(totalLoadTime),
+		Hits:           c.hits.Value(),
+		Misses:         c.misses.Value(),
+		Evictions:      c.evictions.Value(),
+		EvictionWeight: c.evictionWeight.Value(),
+		LoadSuccesses:  c.loadSuccesses.Value(),
+		LoadFailures:   c.loadFailures.Value(),
+		TotalLoadTime:  time.Duration(totalLoadTime),
 	}
 }
 

@@ -479,11 +479,11 @@ func TestCache_SetWithExpiresAt(t *testing.T) {
 		mutex.Unlock()
 		t.Fatalf("cache was supposed to expire %d, but expired %d entries", size, e)
 	}
-	if statsCounter.Snapshot().Evictions() != uint64(m[CauseExpiration]) {
+	if statsCounter.Snapshot().Evictions != uint64(m[CauseExpiration]) {
 		mutex.Unlock()
 		t.Fatalf(
 			"Eviction statistics are not collected for expiration. Evictions: %d, expired entries: %d",
-			statsCounter.Snapshot().Evictions(),
+			statsCounter.Snapshot().Evictions,
 			m[CauseExpiration],
 		)
 	}
@@ -551,19 +551,19 @@ func TestCache_SetWithExpiresAt(t *testing.T) {
 	if cacheSize := cc.EstimatedSize(); cacheSize != 0 {
 		t.Fatalf("c.EstimatedSize() = %d, want = %d", cacheSize, 0)
 	}
-	if misses := statsCounter.Snapshot().Misses(); misses != uint64(size) {
-		t.Fatalf("c.Stats().Misses() = %d, want = %d", misses, size)
+	if misses := statsCounter.Snapshot().Misses; misses != uint64(size) {
+		t.Fatalf("c.Stats().Misses = %d, want = %d", misses, size)
 	}
 	mutex.Lock()
 	defer mutex.Unlock()
 	if len(m) != 2 || m[CauseExpiration] != size && m[CauseReplacement] != size/2 {
 		t.Fatalf("cache was supposed to expire %d, but expired %d entries", size, m[CauseExpiration])
 	}
-	if statsCounter.Snapshot().Evictions() != uint64(m[CauseExpiration]) {
+	if statsCounter.Snapshot().Evictions != uint64(m[CauseExpiration]) {
 		mutex.Unlock()
 		t.Fatalf(
 			"Eviction statistics are not collected for expiration. Evictions: %d, expired entries: %d",
-			statsCounter.Snapshot().Evictions(),
+			statsCounter.Snapshot().Evictions,
 			m[CauseExpiration],
 		)
 	}
@@ -627,19 +627,19 @@ func TestCache_SetWithExpiresAfterAccessing(t *testing.T) {
 	if cacheSize := c.EstimatedSize(); cacheSize == 0 {
 		t.Fatal("cacheSize should be positive")
 	}
-	if misses := statsCounter.Snapshot().Misses(); misses != uint64(size) {
-		t.Fatalf("c.Stats().Misses() = %d, want = %d", misses, size)
+	if misses := statsCounter.Snapshot().Misses; misses != uint64(size) {
+		t.Fatalf("c.Stats().Misses = %d, want = %d", misses, size)
 	}
 	mutex.Lock()
 	defer mutex.Unlock()
 	if len(m) != 2 || m[CauseExpiration] != size && m[CauseReplacement] != size/2 {
 		t.Fatalf("cache was supposed to expire %d, but expired %d entries", size, m[CauseExpiration])
 	}
-	if statsCounter.Snapshot().Evictions() != uint64(m[CauseExpiration]) {
+	if statsCounter.Snapshot().Evictions != uint64(m[CauseExpiration]) {
 		mutex.Unlock()
 		t.Fatalf(
 			"Eviction statistics are not collected for expiration. Evictions: %d, expired entries: %d",
-			statsCounter.Snapshot().Evictions(),
+			statsCounter.Snapshot().Evictions,
 			m[CauseExpiration],
 		)
 	}

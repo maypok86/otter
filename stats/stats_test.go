@@ -39,11 +39,11 @@ func testStats(
 ) {
 	t.Helper()
 
-	if s.Hits() != hits {
-		t.Fatalf("hits should be %d, but got %d", hits, s.Hits())
+	if s.Hits != hits {
+		t.Fatalf("hits should be %d, but got %d", hits, s.Hits)
 	}
-	if s.Misses() != misses {
-		t.Fatalf("misses should be %d, but got %d", misses, s.Misses())
+	if s.Misses != misses {
+		t.Fatalf("misses should be %d, but got %d", misses, s.Misses)
 	}
 	if s.Requests() != requests {
 		t.Fatalf("requests should be %d, but got %d", requests, s.Requests())
@@ -54,20 +54,20 @@ func testStats(
 	if s.MissRatio() != missRatio {
 		t.Fatalf("missRatio should be %.2f, but got %.2f", missRatio, s.MissRatio())
 	}
-	if s.Evictions() != evictions {
-		t.Fatalf("evictions should be %d, but got %d", evictions, s.Evictions())
+	if s.Evictions != evictions {
+		t.Fatalf("evictions should be %d, but got %d", evictions, s.Evictions)
 	}
-	if s.EvictionWeight() != evictionWeight {
-		t.Fatalf("evictionWeight should be %d, but got %d", evictionWeight, s.EvictionWeight())
+	if s.EvictionWeight != evictionWeight {
+		t.Fatalf("evictionWeight should be %d, but got %d", evictionWeight, s.EvictionWeight)
 	}
-	if s.LoadSuccesses() != loadSuccesses {
-		t.Fatalf("loadSuccesses should be %d, but got %d", loadSuccesses, s.LoadSuccesses())
+	if s.LoadSuccesses != loadSuccesses {
+		t.Fatalf("loadSuccesses should be %d, but got %d", loadSuccesses, s.LoadSuccesses)
 	}
-	if s.LoadFailures() != loadFailures {
-		t.Fatalf("loadFailures should be %d, but got %d", loadFailures, s.LoadFailures())
+	if s.LoadFailures != loadFailures {
+		t.Fatalf("loadFailures should be %d, but got %d", loadFailures, s.LoadFailures)
 	}
-	if s.TotalLoadTime() != totalLoadTime {
-		t.Fatalf("totalLoadTime should be %d, but got %d", totalLoadTime, s.TotalLoadTime())
+	if s.TotalLoadTime != totalLoadTime {
+		t.Fatalf("totalLoadTime should be %d, but got %d", totalLoadTime, s.TotalLoadTime)
 	}
 	if s.Loads() != loads {
 		t.Fatalf("loads should be %d, but got %d", loads, s.Loads())
@@ -107,13 +107,13 @@ func TestStats(t *testing.T) {
 		t.Parallel()
 
 		testStats(t, Stats{
-			hits:           11,
-			misses:         13,
-			evictions:      27,
-			evictionWeight: 54,
-			loadSuccesses:  17,
-			loadFailures:   19,
-			totalLoadTime:  23,
+			Hits:           11,
+			Misses:         13,
+			Evictions:      27,
+			EvictionWeight: 54,
+			LoadSuccesses:  17,
+			LoadFailures:   19,
+			TotalLoadTime:  23,
 		},
 			11,
 			13,
@@ -135,13 +135,13 @@ func TestStats(t *testing.T) {
 		t.Parallel()
 
 		testStats(t, Stats{
-			hits:           math.MaxUint64,
-			misses:         math.MaxUint64,
-			evictions:      27,
-			evictionWeight: 54,
-			loadSuccesses:  math.MaxUint64,
-			loadFailures:   math.MaxUint64,
-			totalLoadTime:  math.MaxInt64,
+			Hits:           math.MaxUint64,
+			Misses:         math.MaxUint64,
+			Evictions:      27,
+			EvictionWeight: 54,
+			LoadSuccesses:  math.MaxUint64,
+			LoadFailures:   math.MaxUint64,
+			TotalLoadTime:  math.MaxInt64,
 		},
 			math.MaxUint64,
 			math.MaxUint64,

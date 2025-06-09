@@ -34,13 +34,13 @@ func TestCounter_Basic(t *testing.T) {
 		c.RecordLoadFailure(1)
 
 		expected := Stats{
-			hits:           1,
-			misses:         1,
-			evictions:      1,
-			evictionWeight: 10,
-			loadSuccesses:  1,
-			loadFailures:   1,
-			totalLoadTime:  2,
+			Hits:           1,
+			Misses:         1,
+			Evictions:      1,
+			EvictionWeight: 10,
+			LoadSuccesses:  1,
+			LoadFailures:   1,
+			TotalLoadTime:  2,
 		}
 		if got := c.Snapshot(); got != expected {
 			t.Fatalf("got = %+v, expected = %+v", got, expected)
@@ -54,7 +54,7 @@ func TestCounter_Basic(t *testing.T) {
 		c.totalLoadTime.Add(math.MaxUint64)
 
 		expected := Stats{
-			totalLoadTime: math.MaxInt64,
+			TotalLoadTime: math.MaxInt64,
 		}
 
 		if got := c.Snapshot(); got != expected {
@@ -86,13 +86,13 @@ func TestCounter_Concurrent(t *testing.T) {
 	wg.Wait()
 
 	expected := Stats{
-		hits:           50,
-		misses:         50,
-		evictions:      50,
-		evictionWeight: 500,
-		loadSuccesses:  50,
-		loadFailures:   50,
-		totalLoadTime:  100,
+		Hits:           50,
+		Misses:         50,
+		Evictions:      50,
+		EvictionWeight: 500,
+		LoadSuccesses:  50,
+		LoadFailures:   50,
+		TotalLoadTime:  100,
 	}
 
 	if got := c.Snapshot(); got != expected {

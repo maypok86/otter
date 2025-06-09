@@ -21,23 +21,23 @@ import (
 
 // Stats are statistics about the performance of an otter.Cache.
 type Stats struct {
-	hits           uint64
-	misses         uint64
-	evictions      uint64
-	evictionWeight uint64
-	loadSuccesses  uint64
-	loadFailures   uint64
-	totalLoadTime  time.Duration
-}
-
-// Hits returns the number of times otter.Cache lookup methods returned a cached value.
-func (s Stats) Hits() uint64 {
-	return s.hits
-}
-
-// Misses returns the number of times otter.Cache lookup methods did not find a cached value.
-func (s Stats) Misses() uint64 {
-	return s.misses
+	// Hits is the number of times otter.Cache lookup methods returned a cached value.
+	Hits uint64
+	// Misses is the number of times otter.Cache lookup methods did not find a cached value.
+	Misses uint64
+	// Evictions is the number of times an entry has been evicted. This count does not include manual
+	// otter.Cache deletions.
+	Evictions uint64
+	// EvictionWeight is the sum of weights of evicted entries. This total does not include manual
+	// otter.Cache deletions.
+	EvictionWeight uint64
+	// LoadSuccesses is the number of times otter.Cache lookup methods have successfully loaded a new value.
+	LoadSuccesses uint64
+	// LoadFailures is the number of times otter.Cache lookup methods failed to load a new value, either
+	// because no value was found or an error was returned while loading.
+	LoadFailures uint64
+	// TotalLoadTime returns the time the cache has spent loading new values.
+	TotalLoadTime time.Duration
 }
 
 // Requests returns the number of times otter.Cache lookup methods were looking for a cached value.
@@ -45,7 +45,7 @@ func (s Stats) Misses() uint64 {
 // NOTE: the values of the metrics are undefined in case of overflow. If you require specific handling, we recommend
 // implementing your own Recorder.
 func (s Stats) Requests() uint64 {
-	return checkedAdd(s.hits, s.misses)
+	return checkedAdd(s.Hits, s.Misses)
 }
 
 // HitRatio returns the ratio of cache requests which were hits.
@@ -56,7 +56,7 @@ func (s Stats) HitRatio() float64 {
 	if requests == 0 {
 		return 1.0
 	}
-	return float64(s.hits) / float64(requests)
+	return float64(s.Hits) / float64(requests)
 }
 
 // MissRatio returns the ratio of cache requests which were misses.
@@ -67,30 +67,7 @@ func (s Stats) MissRatio() float64 {
 	if requests == 0 {
 		return 0.0
 	}
-	return float64(s.misses) / float64(requests)
-}
-
-// Evictions returns the number of times an entry has been evicted. This count does not include manual
-// otter.Cache deletions.
-func (s Stats) Evictions() uint64 {
-	return s.evictions
-}
-
-// EvictionWeight returns the sum of weights of evicted entries. This total does not include manual
-// otter.Cache deletions.
-func (s Stats) EvictionWeight() uint64 {
-	return s.evictionWeight
-}
-
-// LoadSuccesses returns the number of times otter.Cache lookup methods have successfully loaded a new value.
-func (s Stats) LoadSuccesses() uint64 {
-	return s.loadSuccesses
-}
-
-// LoadFailures returns the number of times otter.Cache lookup methods failed to load a new value, either
-// because no value was found or an error was returned while loading.
-func (s Stats) LoadFailures() uint64 {
-	return s.loadFailures
+	return float64(s.Misses) / float64(requests)
 }
 
 // Loads returns the total number of times that otter.Cache lookup methods attempted to load new values.
@@ -98,12 +75,7 @@ func (s Stats) LoadFailures() uint64 {
 // NOTE: the values of the metrics are undefined in case of overflow. If you require specific handling, we recommend
 // implementing your own Recorder.
 func (s Stats) Loads() uint64 {
-	return checkedAdd(s.loadSuccesses, s.loadFailures)
-}
-
-// TotalLoadTime returns the time the cache has spent loading new values.
-func (s Stats) TotalLoadTime() time.Duration {
-	return s.totalLoadTime
+	return checkedAdd(s.LoadSuccesses, s.LoadFailures)
 }
 
 // LoadFailureRatio returns the ratio of cache loading attempts which returned errors.
@@ -112,7 +84,7 @@ func (s Stats) LoadFailureRatio() float64 {
 	if loads == 0 {
 		return 0.0
 	}
-	return float64(s.loadFailures) / float64(loads)
+	return float64(s.LoadFailures) / float64(loads)
 }
 
 // AverageLoadPenalty returns the average time spent loading new values.
@@ -122,9 +94,9 @@ func (s Stats) AverageLoadPenalty() time.Duration {
 		return 0
 	}
 	if loads > uint64(math.MaxInt64) {
-		return s.totalLoadTime / time.Duration(math.MaxInt64)
+		return s.TotalLoadTime / time.Duration(math.MaxInt64)
 	}
-	return s.totalLoadTime / time.Duration(loads)
+	return s.TotalLoadTime / time.Duration(loads)
 }
 
 func checkedAdd(a, b uint64) uint64 {
