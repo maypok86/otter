@@ -44,7 +44,7 @@ func (dc DeletionCause) String() string {
 }
 
 // IsEviction returns true if there was an automatic deletion due to eviction
-// (the cause is neither DeletionCauseInvalidation nor DeletionCauseReplacement).
+// (the cause is neither CauseInvalidation nor CauseReplacement).
 func (dc DeletionCause) IsEviction() bool {
 	return !(dc == CauseInvalidation || dc == CauseReplacement)
 }
