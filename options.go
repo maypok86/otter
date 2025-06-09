@@ -17,9 +17,7 @@ package otter
 import (
 	"errors"
 
-	"github.com/maypok86/otter/v2/core/expiry"
-	"github.com/maypok86/otter/v2/core/refresh"
-	"github.com/maypok86/otter/v2/core/stats"
+	"github.com/maypok86/otter/v2/stats"
 )
 
 const (
@@ -67,7 +65,7 @@ type Options[K comparable, V any] struct {
 	// ExpiryCalculator specifies that each entry should be automatically removed from the cache once a duration has
 	// elapsed after the entry's creation, the most recent replacement of its value, or its last read.
 	// The expiration time is reset by all cache read and write operations.
-	ExpiryCalculator expiry.Calculator[K, V]
+	ExpiryCalculator ExpiryCalculator[K, V]
 	// OnDeletion specifies a handler that caches should notify each time an entry is deleted for any
 	// DeletionCause. The cache will invoke this handler in the background goroutine
 	// after the entry's deletion operation has completed.
@@ -81,14 +79,14 @@ type Options[K comparable, V any] struct {
 	// RefreshCalculator specifies that active entries are eligible for automatic refresh once a duration has
 	// elapsed after the entry's creation, the most recent replacement of its value, or the most recent entry's reload.
 	// The semantics of refreshes are specified in Cache.Refresh,
-	// and are performed by calling Reloader.Reload in a separate background goroutine.
+	// and are performed by calling Loader.Reload in a separate background goroutine.
 	//
 	// Automatic refreshes are performed when the first stale request for an entry occurs. The request
-	// triggering the refresh will make an asynchronous call to Reloader.Reload to get a new value.
+	// triggering the refresh will make an asynchronous call to Loader.Reload to get a new value.
 	// Until refresh is completed, requests will continue to return the old value.
 	//
 	// NOTE: all errors returned during refresh will be logged (using Logger) and then swallowed.
-	RefreshCalculator refresh.Calculator[K, V]
+	RefreshCalculator RefreshCalculator[K, V]
 	// Logger specifies the Logger implementation that will be used for logging warning and errors.
 	//
 	// Logging is disabled by default.

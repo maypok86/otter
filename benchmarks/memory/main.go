@@ -18,7 +18,6 @@ import (
 	"github.com/viccon/sturdyc"
 
 	"github.com/maypok86/otter/v2"
-	"github.com/maypok86/otter/v2/core/expiry"
 )
 
 var keys []string
@@ -84,7 +83,7 @@ func main() {
 func newOtter(capacity int) {
 	cache := otter.Must[string, string](&otter.Options[string, string]{
 		MaximumSize:      capacity,
-		ExpiryCalculator: expiry.Writing[string, string](time.Hour),
+		ExpiryCalculator: otter.ExpiryWriting[string, string](time.Hour),
 	})
 	for _, key := range keys {
 		cache.Set(key, key)

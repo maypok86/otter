@@ -19,10 +19,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/maypok86/otter/v2/core"
-	"github.com/maypok86/otter/v2/core/expiry"
-	"github.com/maypok86/otter/v2/core/refresh"
-	"github.com/maypok86/otter/v2/core/stats"
+	"github.com/maypok86/otter/v2/stats"
 )
 
 func TestCache_SetExpiresAfter(t *testing.T) {
@@ -34,7 +31,7 @@ func TestCache_SetExpiresAfter(t *testing.T) {
 	c := Must(&Options[int, int]{
 		MaximumSize:      size,
 		StatsRecorder:    statsCounter,
-		ExpiryCalculator: expiry.Writing[int, int](time.Second),
+		ExpiryCalculator: ExpiryWriting[int, int](time.Second),
 		OnDeletion: func(e DeletionEvent[int, int]) {
 			defer func() {
 				done <- struct{}{}
@@ -105,7 +102,7 @@ func TestCache_SetRefreshableAfter(t *testing.T) {
 	c := Must(&Options[int, int]{
 		MaximumSize:       size,
 		StatsRecorder:     statsCounter,
-		RefreshCalculator: refresh.Creating[int, int](200 * time.Millisecond),
+		RefreshCalculator: RefreshCreating[int, int](200 * time.Millisecond),
 	})
 
 	k1 := 1
@@ -157,8 +154,8 @@ func TestCache_Extension(t *testing.T) {
 	duration := time.Hour
 	c := Must(&Options[int, int]{
 		MaximumSize:       size,
-		ExpiryCalculator:  expiry.Writing[int, int](duration),
-		RefreshCalculator: refresh.Writing[int, int](duration),
+		ExpiryCalculator:  ExpiryWriting[int, int](duration),
+		RefreshCalculator: RefreshWriting[int, int](duration),
 	})
 
 	for i := 0; i < size; i++ {
@@ -179,7 +176,7 @@ func TestCache_Extension(t *testing.T) {
 
 	time.Sleep(time.Second)
 
-	isEqualEntries := func(a, b core.Entry[int, int]) bool {
+	isEqualEntries := func(a, b Entry[int, int]) bool {
 		return a.Key == b.Key &&
 			a.Value == b.Value &&
 			a.Weight == b.Weight &&

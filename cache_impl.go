@@ -24,10 +24,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/maypok86/otter/v2/core"
-	"github.com/maypok86/otter/v2/core/expiry"
-	"github.com/maypok86/otter/v2/core/refresh"
-	"github.com/maypok86/otter/v2/core/stats"
 	"github.com/maypok86/otter/v2/internal/clock"
 	"github.com/maypok86/otter/v2/internal/deque/queue"
 	"github.com/maypok86/otter/v2/internal/eviction/tinylfu"
@@ -37,6 +33,7 @@ import (
 	"github.com/maypok86/otter/v2/internal/lossy"
 	"github.com/maypok86/otter/v2/internal/xmath"
 	"github.com/maypok86/otter/v2/internal/xruntime"
+	"github.com/maypok86/otter/v2/stats"
 )
 
 const (
@@ -99,8 +96,8 @@ type cache[K comparable, V any] struct {
 	onDeletion        func(e DeletionEvent[K, V])
 	onAtomicDeletion  func(e DeletionEvent[K, V])
 	executor          func(fn func())
-	expiryCalculator  expiry.Calculator[K, V]
-	refreshCalculator refresh.Calculator[K, V]
+	expiryCalculator  ExpiryCalculator[K, V]
+	refreshCalculator RefreshCalculator[K, V]
 	taskPool          sync.Pool
 	withTime          bool
 	withExpiration    bool
@@ -201,7 +198,7 @@ func (c *cache[K, V]) newNode(key K, value V, old node.Node[K, V]) node.Node[K, 
 	return c.nodeManager.Create(key, value, expiresAt, refreshableAt, weight)
 }
 
-func (c *cache[K, V]) nodeToEntry(n node.Node[K, V], offset int64) core.Entry[K, V] {
+func (c *cache[K, V]) nodeToEntry(n node.Node[K, V], offset int64) Entry[K, V] {
 	nowNano := noTime
 	if c.withTime {
 		nowNano = offset
@@ -217,7 +214,7 @@ func (c *cache[K, V]) nodeToEntry(n node.Node[K, V], offset int64) core.Entry[K,
 		refreshableAt = n.RefreshableAt()
 	}
 
-	return core.Entry[K, V]{
+	return Entry[K, V]{
 		Key:               n.Key(),
 		Value:             n.Value(),
 		Weight:            n.Weight(),
@@ -334,11 +331,11 @@ func (c *cache[K, V]) setExpiresAfterRead(n node.Node[K, V], offset int64, expir
 }
 
 // GetEntry returns the cache entry associated with the key in this cache.
-func (c *cache[K, V]) GetEntry(key K) (core.Entry[K, V], bool) {
+func (c *cache[K, V]) GetEntry(key K) (Entry[K, V], bool) {
 	offset := c.clock.Offset()
 	n := c.getNode(key, offset)
 	if n == nil {
-		return core.Entry[K, V]{}, false
+		return Entry[K, V]{}, false
 	}
 	return c.nodeToEntry(n, offset), true
 }
@@ -347,11 +344,11 @@ func (c *cache[K, V]) GetEntry(key K) (core.Entry[K, V], bool) {
 //
 // Unlike GetEntry, this function does not produce any side effects
 // such as updating statistics or the eviction policy.
-func (c *cache[K, V]) GetEntryQuietly(key K) (core.Entry[K, V], bool) {
+func (c *cache[K, V]) GetEntryQuietly(key K) (Entry[K, V], bool) {
 	offset := c.clock.Offset()
 	n := c.getNodeQuietly(key, offset)
 	if n == nil {
-		return core.Entry[K, V]{}, false
+		return Entry[K, V]{}, false
 	}
 	return c.nodeToEntry(n, offset), true
 }

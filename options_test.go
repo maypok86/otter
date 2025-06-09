@@ -18,8 +18,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/maypok86/otter/v2/core/expiry"
-	"github.com/maypok86/otter/v2/core/stats"
+	"github.com/maypok86/otter/v2/stats"
 )
 
 func ptr[T any](t T) *T {
@@ -83,7 +82,7 @@ func TestOptions(t *testing.T) {
 				o.Weigher = func(key string, value string) uint32 {
 					return 2
 				}
-				o.ExpiryCalculator = expiry.Writing[string, string](time.Hour)
+				o.ExpiryCalculator = ExpiryWriting[string, string](time.Hour)
 			},
 			want: nil,
 		},

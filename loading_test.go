@@ -22,9 +22,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/maypok86/otter/v2/core/expiry"
-	"github.com/maypok86/otter/v2/core/refresh"
-	"github.com/maypok86/otter/v2/core/stats"
+	"github.com/maypok86/otter/v2/stats"
 )
 
 type errValue struct{}
@@ -133,7 +131,7 @@ func TestCache_GetPanic(t *testing.T) {
 			c := Must(&Options[int, int]{
 				MaximumSize:      size,
 				StatsRecorder:    statsCounter,
-				ExpiryCalculator: expiry.Writing[int, int](5 * time.Minute),
+				ExpiryCalculator: ExpiryWriting[int, int](5 * time.Minute),
 			})
 
 			k1 := 1
@@ -203,7 +201,7 @@ func TestCache_BulkGetPanic(t *testing.T) {
 			statsCounter := stats.NewCounter()
 			c := Must(&Options[int, int]{
 				MaximumSize:      size,
-				ExpiryCalculator: expiry.Writing[int, int](5 * time.Minute),
+				ExpiryCalculator: ExpiryWriting[int, int](5 * time.Minute),
 				StatsRecorder:    statsCounter,
 			})
 
@@ -252,7 +250,7 @@ func TestCache_GetWithSuccessLoad(t *testing.T) {
 	c := Must(&Options[int, int]{
 		MaximumSize:      size,
 		StatsRecorder:    statsCounter,
-		ExpiryCalculator: expiry.Writing[int, int](5 * time.Minute),
+		ExpiryCalculator: ExpiryWriting[int, int](5 * time.Minute),
 	})
 
 	k1 := 1
@@ -299,7 +297,7 @@ func TestCache_GetWithSuccessRefresh(t *testing.T) {
 	c := Must(&Options[int, int]{
 		MaximumSize:       size,
 		StatsRecorder:     statsCounter,
-		RefreshCalculator: refresh.Writing[int, int](time.Second),
+		RefreshCalculator: RefreshWriting[int, int](time.Second),
 	})
 
 	k1 := 1
@@ -363,7 +361,7 @@ func TestCache_Refresh(t *testing.T) {
 	c := Must(&Options[int, int]{
 		MaximumSize:       size,
 		StatsRecorder:     statsCounter,
-		RefreshCalculator: refresh.Writing[int, int](time.Second),
+		RefreshCalculator: RefreshWriting[int, int](time.Second),
 	})
 
 	k1 := 1
@@ -451,7 +449,7 @@ func TestCache_BulkGetWithSuccessLoad(t *testing.T) {
 	c := Must(&Options[int, int]{
 		MaximumSize:      size,
 		StatsRecorder:    statsCounter,
-		ExpiryCalculator: expiry.Writing[int, int](5 * time.Minute),
+		ExpiryCalculator: ExpiryWriting[int, int](5 * time.Minute),
 	})
 
 	for _, k := range toSet {
@@ -521,7 +519,7 @@ func TestCache_BulkGetWithSuccessRefresh(t *testing.T) {
 	c := Must(&Options[int, int]{
 		MaximumSize:       size,
 		StatsRecorder:     statsCounter,
-		RefreshCalculator: refresh.Writing[int, int](time.Second),
+		RefreshCalculator: RefreshWriting[int, int](time.Second),
 	})
 
 	for _, k := range keys {
@@ -603,7 +601,7 @@ func TestCache_BulkRefresh(t *testing.T) {
 	c := Must(&Options[int, int]{
 		MaximumSize:       size,
 		StatsRecorder:     statsCounter,
-		RefreshCalculator: refresh.Writing[int, int](time.Second),
+		RefreshCalculator: RefreshWriting[int, int](time.Second),
 	})
 
 	ks := make(map[int]bool, len(toUpdate))
@@ -688,7 +686,7 @@ func TestCache_GetWithFailedLoad(t *testing.T) {
 	c := Must(&Options[int, int]{
 		MaximumSize:      size,
 		StatsRecorder:    statsCounter,
-		ExpiryCalculator: expiry.Writing[int, int](5 * time.Minute),
+		ExpiryCalculator: ExpiryWriting[int, int](5 * time.Minute),
 	})
 
 	k1 := 1
@@ -739,7 +737,7 @@ func TestCache_GetWithFailedRefresh(t *testing.T) {
 	c := Must(&Options[int, int]{
 		MaximumSize:       size,
 		StatsRecorder:     statsCounter,
-		RefreshCalculator: refresh.Creating[int, int](time.Second),
+		RefreshCalculator: RefreshCreating[int, int](time.Second),
 		Logger:            l,
 	})
 
@@ -804,7 +802,7 @@ func TestCache_BulkGetWithFailedLoad(t *testing.T) {
 	c := Must(&Options[int, int]{
 		MaximumSize:      size,
 		StatsRecorder:    statsCounter,
-		ExpiryCalculator: expiry.Writing[int, int](5 * time.Minute),
+		ExpiryCalculator: ExpiryWriting[int, int](5 * time.Minute),
 	})
 
 	ks := []int{0, 1}
@@ -873,7 +871,7 @@ func TestCache_BulkGetWithFailedRefresh(t *testing.T) {
 	c := Must(&Options[int, int]{
 		MaximumSize:       size,
 		StatsRecorder:     statsCounter,
-		RefreshCalculator: refresh.Writing[int, int](time.Second),
+		RefreshCalculator: RefreshWriting[int, int](time.Second),
 		Logger:            l,
 	})
 
@@ -927,7 +925,7 @@ func TestCache_GetWithSuppressedLoad(t *testing.T) {
 	c := Must(&Options[int, int]{
 		MaximumSize:      size,
 		StatsRecorder:    statsCounter,
-		ExpiryCalculator: expiry.Writing[int, int](5 * time.Minute),
+		ExpiryCalculator: ExpiryWriting[int, int](5 * time.Minute),
 	})
 
 	k1 := 1
@@ -997,7 +995,7 @@ func TestCache_ConcurrentGetAndSet(t *testing.T) {
 	c := Must(&Options[int, int]{
 		MaximumSize:      size,
 		StatsRecorder:    statsCounter,
-		ExpiryCalculator: expiry.Writing[int, int](5 * time.Minute),
+		ExpiryCalculator: ExpiryWriting[int, int](5 * time.Minute),
 	})
 
 	ch := make(chan struct{})

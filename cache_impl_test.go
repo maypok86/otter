@@ -8,9 +8,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/maypok86/otter/v2/core/stats"
 	"github.com/maypok86/otter/v2/internal/eviction/tinylfu"
 	"github.com/maypok86/otter/v2/internal/generated/node"
+	"github.com/maypok86/otter/v2/stats"
 )
 
 const (

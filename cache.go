@@ -19,8 +19,6 @@ import (
 	"iter"
 	"runtime"
 	"time"
-
-	"github.com/maypok86/otter/v2/core"
 )
 
 // Cache is an in-memory cache implementation that supports full concurrency of retrievals, a high expected
@@ -64,7 +62,7 @@ func (c *Cache[K, V]) GetIfPresent(key K) (V, bool) {
 }
 
 // GetEntry returns the cache entry associated with the key in this cache.
-func (c *Cache[K, V]) GetEntry(key K) (core.Entry[K, V], bool) {
+func (c *Cache[K, V]) GetEntry(key K) (Entry[K, V], bool) {
 	return c.cache.GetEntry(key)
 }
 
@@ -72,7 +70,7 @@ func (c *Cache[K, V]) GetEntry(key K) (core.Entry[K, V], bool) {
 //
 // Unlike GetEntry, this function does not produce any side effects
 // such as updating statistics or the eviction policy.
-func (c *Cache[K, V]) GetEntryQuietly(key K) (core.Entry[K, V], bool) {
+func (c *Cache[K, V]) GetEntryQuietly(key K) (Entry[K, V], bool) {
 	return c.cache.GetEntryQuietly(key)
 }
 

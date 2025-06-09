@@ -25,11 +25,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/maypok86/otter/v2/core"
-	"github.com/maypok86/otter/v2/core/expiry"
-	"github.com/maypok86/otter/v2/core/stats"
 	"github.com/maypok86/otter/v2/internal/generated/node"
 	"github.com/maypok86/otter/v2/internal/xruntime"
+	"github.com/maypok86/otter/v2/stats"
 )
 
 func getRandomSize(t *testing.T) int {
@@ -118,7 +116,7 @@ func TestCache_PinnedWeight(t *testing.T) {
 			}
 			return 1
 		},
-		ExpiryCalculator: expiry.Writing[int, int](2 * time.Second),
+		ExpiryCalculator: ExpiryWriting[int, int](2 * time.Second),
 		OnDeletion: func(e DeletionEvent[int, int]) {
 			mutex.Lock()
 			m[e.Cause]++
@@ -201,7 +199,7 @@ func TestCache_All(t *testing.T) {
 	expiresAfter := time.Hour
 	c := Must[int, int](&Options[int, int]{
 		MaximumSize:      size,
-		ExpiryCalculator: expiry.Writing[int, int](expiresAfter),
+		ExpiryCalculator: ExpiryWriting[int, int](expiresAfter),
 	})
 
 	time.Sleep(3 * time.Second)
@@ -275,7 +273,7 @@ func TestCache_CleanUp(t *testing.T) {
 	size := 10
 	c := Must(&Options[int, int]{
 		MaximumSize:      size,
-		ExpiryCalculator: expiry.Creating[int, int](2 * time.Second),
+		ExpiryCalculator: ExpiryCreating[int, int](2 * time.Second),
 	})
 
 	for i := 0; i < size; i++ {
@@ -340,7 +338,7 @@ func TestCache_Set(t *testing.T) {
 	c := Must(&Options[int, int]{
 		MaximumSize:      size,
 		StatsRecorder:    statsCounter,
-		ExpiryCalculator: expiry.Writing[int, int](time.Minute),
+		ExpiryCalculator: ExpiryWriting[int, int](time.Minute),
 		OnDeletion: func(e DeletionEvent[int, int]) {
 			mutex.Lock()
 			count++
@@ -412,7 +410,7 @@ func TestCache_SetIfAbsent(t *testing.T) {
 	c := Must(&Options[int, int]{
 		MaximumSize:      size,
 		StatsRecorder:    statsCounter,
-		ExpiryCalculator: expiry.Writing[int, int](time.Hour),
+		ExpiryCalculator: ExpiryWriting[int, int](time.Hour),
 	})
 
 	for i := 0; i < size; i++ {
@@ -451,7 +449,7 @@ func TestCache_SetWithExpiresAt(t *testing.T) {
 		MaximumSize:      size,
 		InitialCapacity:  size,
 		StatsRecorder:    statsCounter,
-		ExpiryCalculator: expiry.Creating[int, int](time.Second),
+		ExpiryCalculator: ExpiryCreating[int, int](time.Second),
 		OnDeletion: func(e DeletionEvent[int, int]) {
 			mutex.Lock()
 			m[e.Cause]++
@@ -499,7 +497,7 @@ func TestCache_SetWithExpiresAt(t *testing.T) {
 	cc := Must(&Options[int, int]{
 		MaximumSize:   size,
 		StatsRecorder: statsCounter,
-		ExpiryCalculator: expiry.WritingFunc(func(entry core.Entry[int, int]) time.Duration {
+		ExpiryCalculator: ExpiryWritingFunc(func(entry Entry[int, int]) time.Duration {
 			if entry.Key%2 == 0 {
 				return time.Second
 			}
@@ -582,7 +580,7 @@ func TestCache_SetWithExpiresAfterAccessing(t *testing.T) {
 		MaximumSize:      size,
 		InitialCapacity:  size,
 		StatsRecorder:    statsCounter,
-		ExpiryCalculator: expiry.Accessing[int, int](2 * time.Second),
+		ExpiryCalculator: ExpiryAccessing[int, int](2 * time.Second),
 		OnDeletion: func(e DeletionEvent[int, int]) {
 			mutex.Lock()
 			m[e.Cause]++
@@ -656,7 +654,7 @@ func TestCache_Invalidate(t *testing.T) {
 	c := Must(&Options[int, int]{
 		MaximumSize:      size,
 		InitialCapacity:  size,
-		ExpiryCalculator: expiry.Writing[int, int](time.Hour),
+		ExpiryCalculator: ExpiryWriting[int, int](time.Hour),
 		OnDeletion: func(e DeletionEvent[int, int]) {
 			mutex.Lock()
 			m[e.Cause]++
@@ -698,7 +696,7 @@ func TestCache_ConcurrentInvalidateAll(t *testing.T) {
 
 	c := Must(&Options[string, string]{
 		MaximumSize:      1000,
-		ExpiryCalculator: expiry.Writing[string, string](time.Hour),
+		ExpiryCalculator: ExpiryWriting[string, string](time.Hour),
 	})
 
 	var success atomic.Bool
@@ -890,7 +888,7 @@ func Test_GetExpired(t *testing.T) {
 				t.Fatalf("err not expired: %v", e.Cause)
 			}
 		},
-		ExpiryCalculator: expiry.Writing[string, string](3 * time.Second),
+		ExpiryCalculator: ExpiryWriting[string, string](3 * time.Second),
 	})
 
 	c.Set("test1", "123456")
