@@ -225,6 +225,12 @@ func (c *Cache[K, V]) SetMaximum(maximum uint64) {
 	c.cache.SetMaximum(maximum)
 }
 
+// GetMaximum returns the maximum total weighted or unweighted size of this cache, depending on how the
+// cache was constructed.
+func (c *Cache[K, V]) GetMaximum() uint64 {
+	return c.cache.GetMaximum()
+}
+
 // EstimatedSize returns the approximate number of entries in this cache. The value returned is an estimate; the
 // actual count may differ if there are concurrent insertions or deletions, or if some entries are
 // pending deletion due to expiration. In the case of stale entries

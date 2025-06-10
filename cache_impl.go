@@ -1365,6 +1365,19 @@ func (c *cache[K, V]) SetMaximum(maximum uint64) {
 	c.rescheduleCleanUpIfIncomplete()
 }
 
+// GetMaximum returns the maximum total weighted or unweighted size of this cache, depending on how the
+// cache was constructed.
+func (c *cache[K, V]) GetMaximum() uint64 {
+	c.evictionMutex.Lock()
+	if c.drainStatus.Load() == required {
+		c.maintenance(nil)
+	}
+	result := c.evictionPolicy.Maximum
+	c.evictionMutex.Unlock()
+	c.rescheduleCleanUpIfIncomplete()
+	return result
+}
+
 // close discards all entries in the cache and stop all goroutines.
 //
 // NOTE: this operation must be performed when no requests are made to the cache otherwise the behavior is undefined.

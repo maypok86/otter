@@ -654,6 +654,7 @@ func TestCache_Eviction(t *testing.T) {
 
 		require.True(t, c.has(candidate.Key()))
 		require.Equal(t, uint64(0), c.WeightedSize())
+		require.Equal(t, uint64(0), c.GetMaximum())
 	})
 	t.Run("evict_admit", func(t *testing.T) {
 		t.Parallel()
