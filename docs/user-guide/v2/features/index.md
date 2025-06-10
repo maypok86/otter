@@ -1,12 +1,17 @@
 ---
 tags:
-  - v1
+  - v2
 ---
 
 # Features
 
 The `Features` chapter describes the core features of the Otter API. Understanding these will help you optimize the use of cache for your needs. We will cover the following topics:
 
-- [Expiration policy](expiration-policy.md)
-- [Cost-based eviction](cost.md)
-- [Statistics](stats.md)
+- [Eviction](eviction.md)
+- [Deletion](deletion.md)
+- [Loading](loading.md)
+- [Refresh](refresh.md)
+- [Bulk Operations](bulk.md)
+- [Statistics](statistics.md)
+- [Extension](extension.md)
+- [Iteration](iteration.md)

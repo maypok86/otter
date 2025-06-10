@@ -7,57 +7,60 @@ tags:
 
 This chapter is here to help you get started with Otter. It covers all the fundamental features and functionalities of the library, making it easy for new users to familiarise themselves with the basics from initial installation and setup to core functionalities.
 
-## Installing Otter
+## Installation
 
 === ":fontawesome-brands-golang: Golang"
 
 ``` bash
-go get -u github.com/maypok86/otter
+go get -u github.com/maypok86/otter/v2
 ```
 
 ## Basic Usage
 
-Otter uses an options pattern that allows you to conveniently create a cache instance with different parameters.
+Here's a simple example of how to use Otter:
 
-??? example
-    This code creates a cache with the same ttl (applied automatically) for each entry, with cache access statistics collection enabled, and demonstrates some basic operations.
+```go
+package main
 
-    ```go
-    package main
-    
-    import (
-        "fmt"
-        "time"
-    
-        "github.com/maypok86/otter"
-    )
-    
-    func main() {
-        // create a cache with capacity equal to 10000 elements
-        cache, err := otter.MustBuilder[string, string](10_000).
-            CollectStats().
-            WithTTL(time.Hour).
-            Build()
-        if err != nil {
-            panic(err)
-        }
-    
-        // set item with ttl (1 hour) 
-        cache.Set("key", "value")
-    
-        // get value from cache
-        value, ok := cache.Get("key")
-        if !ok {
-            panic("not found key")
-        }
-        fmt.Println(value)
-    
-        // delete item from cache
-        cache.Delete("key")
-    
-        // delete data and stop goroutines
-        cache.Close()
+import (
+    "fmt"
+
+    "github.com/maypok86/otter/v2"
+)
+
+func main() {
+    // Create a cache with basic configuration
+    cache := otter.Must(&otter.Options[string, string]{
+        MaximumSize:     10_000,
+        InitialCapacity: 1_000,
+    })
+
+    // Set a value
+    cache.Set("key", "value")
+
+    // Get a value
+    if value, ok := cache.GetIfPresent("key"); ok {
+        fmt.Printf("Value: %s\n", value)
     }
-    ```
+
+    // Delete a value
+    if value, invalidated := cache.Invalidate("key"); invalidated {
+        fmt.Printf("Deleted value: %s\n", value)
+    }
+}
+```
+
+## Key Features
+
+Otter provides several powerful features:
+
+1. **Size Bounds**: Multiple ways to bound the cache (by entry count or weight)
+2. **Expiration**: Flexible expiration policies with TTL support
+3. **Refresh**: Automatic refresh of cache entries
+4. **Statistics**: Comprehensive cache statistics
+5. **Bulk Operations**: Support for bulk get and refresh operations
+6. **Event Handlers**: Callbacks for cache events (deletion, atomic deletion)
+7. **Loading**: Automatic loading of missing values from external sources
+8. **Iteration**: Safe concurrent iteration over cache entries
 
 You can find more detailed examples in the following [chapters](features/index.md) of this section.
