@@ -1,11 +1,7 @@
-.PHONY: setup
-setup: deps ## Setup development environment
-	cp ./scripts/pre-push.sh .git/hooks/pre-push
+.PHONY: prepush
+prepush: ## Setup development environment
+	cp ./pre-push.sh .git/hooks/pre-push
 	chmod +x .git/hooks/pre-push
-
-.PHONY: deps
-deps: ## Install all the build and lint dependencies
-	bash scripts/deps.sh
 
 .PHONY: fmt
 fmt: ## Run format tools on all go files
