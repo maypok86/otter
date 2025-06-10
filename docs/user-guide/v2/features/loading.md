@@ -5,7 +5,7 @@ tags:
 
 # Loading
 
-Otter provides a `Loader` interface that supports loading values from external sources into the cache when they are not present. This allows you to automatically populate the cache with data as needed.
+Otter provides a `Loader` interface that supports loading values from external sources into the cache when they are not present. This allows you to automatically populate the cache with data as needed. The `Loader` implementation should always return `ErrNotFound` if the entry was not found in the data source.
 
 ```go
 // Define a loader function
