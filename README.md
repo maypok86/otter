@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./assets/logo.png" width="40%" height="auto" >
+  <img src="logo.png" width="40%" height="auto" >
   <h2 align="center">High performance in-memory cache</h2>
 </p>
 
