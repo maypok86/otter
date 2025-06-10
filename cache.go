@@ -233,6 +233,12 @@ func (c *Cache[K, V]) EstimatedSize() int {
 	return c.cache.EstimatedSize()
 }
 
+// WeightedSize returns the approximate accumulated weight of entries in this cache. If this cache does not
+// use a weighted size bound, then the method will return 0.
+func (c *Cache[K, V]) WeightedSize() uint64 {
+	return c.cache.WeightedSize()
+}
+
 func (c *Cache[K, V]) has(key K) bool {
 	return c.cache.has(key)
 }

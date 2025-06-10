@@ -103,6 +103,7 @@ type cache[K comparable, V any] struct {
 	withExpiration    bool
 	withRefresh       bool
 	withEviction      bool
+	isWeighted        bool
 	withMaintenance   bool
 	withStats         bool
 }
@@ -147,6 +148,7 @@ func newCache[K comparable, V any](o *Options[K, V]) *cache[K, V] {
 		},
 		expiryCalculator:  o.ExpiryCalculator,
 		refreshCalculator: o.RefreshCalculator,
+		isWeighted:        withWeight,
 	}
 
 	c.withEviction = withEviction
@@ -1378,6 +1380,23 @@ func (c *cache[K, V]) close() {
 // this inaccuracy can be mitigated by performing a CleanUp first.
 func (c *cache[K, V]) EstimatedSize() int {
 	return c.hashmap.Size()
+}
+
+// WeightedSize returns the approximate accumulated weight of entries in this cache. If this cache does not
+// use a weighted size bound, then the method will return 0.
+func (c *cache[K, V]) WeightedSize() uint64 {
+	if !c.isWeighted {
+		return 0
+	}
+
+	c.evictionMutex.Lock()
+	if c.drainStatus.Load() == required {
+		c.maintenance(nil)
+	}
+	result := c.evictionPolicy.WeightedSize
+	c.evictionMutex.Unlock()
+	c.rescheduleCleanUpIfIncomplete()
+	return result
 }
 
 func (c *cache[K, V]) makeRetired(n node.Node[K, V]) {

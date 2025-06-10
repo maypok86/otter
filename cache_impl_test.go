@@ -109,7 +109,7 @@ func TestCache_Eviction(t *testing.T) {
 		require.True(t, ok)
 		require.Equal(t, 1, v)
 		cleanup(c)
-		require.Equal(t, uint64(0), c.cache.evictionPolicy.WeightedSize)
+		require.Equal(t, uint64(0), c.WeightedSize())
 		require.Equal(t, 1, m[CauseOverflow])
 		require.Equal(t, 1, len(m))
 	})
@@ -138,7 +138,7 @@ func TestCache_Eviction(t *testing.T) {
 		cleanup(c)
 		mutex.Lock()
 		defer mutex.Unlock()
-		require.Equal(t, uint64(0), c.cache.evictionPolicy.WeightedSize)
+		require.Equal(t, uint64(0), c.WeightedSize())
 		require.Equal(t, 10, m[CauseOverflow])
 		require.Equal(t, 1, len(m))
 	})
@@ -175,7 +175,7 @@ func TestCache_Eviction(t *testing.T) {
 			require.Equal(t, i, v)
 		}
 		cleanup(c)
-		require.Equal(t, uint64(0), c.cache.evictionPolicy.WeightedSize)
+		require.Equal(t, uint64(0), c.WeightedSize())
 		require.Equal(t, []int{0, 1, 2, 3, 4, 5, 6, 7, 8, 9}, m[CauseOverflow])
 		require.Equal(t, []int{0, 1, 2, 3, 4, 5, 6, 7, 8, 9}, m[CauseReplacement])
 		require.Equal(t, 2, len(m))
@@ -653,7 +653,7 @@ func TestCache_Eviction(t *testing.T) {
 		c.cache.evictNodes()
 
 		require.True(t, c.has(candidate.Key()))
-		require.Equal(t, uint64(0), e.WeightedSize)
+		require.Equal(t, uint64(0), c.WeightedSize())
 	})
 	t.Run("evict_admit", func(t *testing.T) {
 		t.Parallel()
