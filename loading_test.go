@@ -68,7 +68,7 @@ func (tl *testLoader[K, V]) Load(ctx context.Context, key K) (V, error) {
 	return tl.fn(ctx, key)
 }
 
-func (tl *testLoader[K, V]) Reload(ctx context.Context, key K) (V, error) {
+func (tl *testLoader[K, V]) Reload(ctx context.Context, key K, oldValue V) (V, error) {
 	tl.calls.Add(1)
 	tl.reloads.Add(1)
 	return tl.fn(ctx, key)
@@ -91,7 +91,7 @@ func (tl *testBulkLoader[K, V]) BulkLoad(ctx context.Context, keys []K) (map[K]V
 	return tl.fn(ctx, keys)
 }
 
-func (tl *testBulkLoader[K, V]) BulkReload(ctx context.Context, keys []K) (map[K]V, error) {
+func (tl *testBulkLoader[K, V]) BulkReload(ctx context.Context, keys []K, oldValues []V) (map[K]V, error) {
 	tl.calls.Add(1)
 	tl.reloads.Add(1)
 	return tl.fn(ctx, keys)

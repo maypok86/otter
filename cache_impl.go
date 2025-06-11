@@ -39,7 +39,6 @@ import (
 const (
 	unreachableExpiresAfter     = xruntime.MaxDuration
 	unreachableRefreshableAfter = xruntime.MaxDuration
-	expireTolerance             = int64(time.Second)
 	noTime                      = int64(0)
 
 	minWriteBufferSize = 4
@@ -474,20 +473,22 @@ func (c *cache[K, V]) afterWrite(n, old node.Node[K, V], offset int64) {
 	c.afterWriteTask(c.getTask(n, old, updateReason, cause))
 }
 
-type refreshableKey[K comparable] struct {
-	key   K
-	found bool
+type refreshableKey[K comparable, V any] struct {
+	key K
+	old node.Node[K, V]
 }
 
-func (c *cache[K, V]) refreshKey(rk refreshableKey[K], loader Loader[K, V]) {
+func (c *cache[K, V]) refreshKey(rk refreshableKey[K, V], loader Loader[K, V]) {
 	if !c.withRefresh {
 		return
 	}
 
 	go func() {
 		var refresher func(ctx context.Context, key K) (V, error)
-		if rk.found {
-			refresher = loader.Reload
+		if rk.old != nil {
+			refresher = func(ctx context.Context, key K) (V, error) {
+				return loader.Reload(ctx, key, rk.old.Value())
+			}
 		} else {
 			refresher = loader.Load
 		}
@@ -536,9 +537,9 @@ func (c *cache[K, V]) Get(ctx context.Context, key K, loader Loader[K, V]) (V, e
 	n := c.getNode(key, offset)
 	if n != nil {
 		if !n.IsFresh(offset) {
-			c.refreshKey(refreshableKey[K]{
-				key:   n.Key(),
-				found: true,
+			c.refreshKey(refreshableKey[K, V]{
+				key: n.Key(),
+				old: n,
 			}, loader)
 		}
 		return n.Value(), nil
@@ -636,7 +637,7 @@ func (c *cache[K, V]) afterDeleteCall(cl *call[K, V]) {
 	}
 }
 
-func (c *cache[K, V]) bulkRefreshKeys(rks []refreshableKey[K], bulkLoader BulkLoader[K, V]) {
+func (c *cache[K, V]) bulkRefreshKeys(rks []refreshableKey[K, V], bulkLoader BulkLoader[K, V]) {
 	if !c.withRefresh || len(rks) == 0 {
 		return
 	}
@@ -650,10 +651,11 @@ func (c *cache[K, V]) bulkRefreshKeys(rks []refreshableKey[K], bulkLoader BulkLo
 		for _, rk := range rks {
 			cl, shouldLoad := c.singleflight.startCall(rk.key, true)
 			if shouldLoad {
-				if rk.found {
+				if rk.old != nil {
 					if toReloadCalls == nil {
 						toReloadCalls = make(map[K]*call[K, V], len(rks)-i)
 					}
+					cl.value = rk.old.Value()
 
 					toReloadCalls[rk.key] = cl
 				} else {
@@ -686,15 +688,24 @@ func (c *cache[K, V]) bulkRefreshKeys(rks []refreshableKey[K], bulkLoader BulkLo
 				reloadCtx, cancel := context.WithCancel(ctx)
 				defer cancel()
 
+				reload := func(ctx context.Context, keys []K) (map[K]V, error) {
+					oldValues := make([]V, 0, len(keys))
+					for _, k := range keys {
+						cl := toReloadCalls[k]
+						oldValues = append(oldValues, cl.value)
+						cl.value = zeroValue[V]()
+					}
+					return bulkLoader.BulkReload(ctx, keys, oldValues)
+				}
+
 				reloadErr := c.wrapLoad(func() error {
-					return c.singleflight.doBulkCall(reloadCtx, toReloadCalls, bulkLoader.BulkReload, c.afterDeleteCall)
+					return c.singleflight.doBulkCall(reloadCtx, toReloadCalls, reload, c.afterDeleteCall)
 				})
 				if reloadErr != nil {
 					c.logger.Error(reloadCtx, "BulkReload returned an error", reloadErr)
 				}
 			}()
 		}
-		// all calls?
 	}()
 }
 
@@ -721,7 +732,7 @@ func (c *cache[K, V]) BulkGet(ctx context.Context, keys []K, bulkLoader BulkLoad
 	result := make(map[K]V, len(keys))
 	var (
 		misses    map[K]*call[K, V]
-		toRefresh []refreshableKey[K]
+		toRefresh []refreshableKey[K, V]
 	)
 	for _, key := range keys {
 		if _, found := result[key]; found {
@@ -735,12 +746,12 @@ func (c *cache[K, V]) BulkGet(ctx context.Context, keys []K, bulkLoader BulkLoad
 		if n != nil {
 			if c.withRefresh && !n.IsFresh(offset) {
 				if toRefresh == nil {
-					toRefresh = make([]refreshableKey[K], 0, len(keys)-len(result))
+					toRefresh = make([]refreshableKey[K, V], 0, len(keys)-len(result))
 				}
 
-				toRefresh = append(toRefresh, refreshableKey[K]{
-					key:   key,
-					found: true,
+				toRefresh = append(toRefresh, refreshableKey[K, V]{
+					key: key,
+					old: n,
 				})
 			}
 
@@ -868,11 +879,10 @@ func (c *cache[K, V]) Refresh(key K, loader Loader[K, V]) {
 
 	offset := c.clock.Offset()
 	n := c.getNode(key, offset)
-	found := n != nil
 
-	c.refreshKey(refreshableKey[K]{
-		key:   key,
-		found: found,
+	c.refreshKey(refreshableKey[K, V]{
+		key: key,
+		old: n,
 	}, loader)
 }
 
@@ -905,12 +915,12 @@ func (c *cache[K, V]) BulkRefresh(keys []K, bulkLoader BulkLoader[K, V]) {
 	}
 
 	offset := c.clock.Offset()
-	toRefresh := make([]refreshableKey[K], 0, len(uniq))
+	toRefresh := make([]refreshableKey[K, V], 0, len(uniq))
 	for key := range uniq {
 		n := c.getNode(key, offset)
-		toRefresh = append(toRefresh, refreshableKey[K]{
-			key:   key,
-			found: n != nil,
+		toRefresh = append(toRefresh, refreshableKey[K, V]{
+			key: key,
+			old: n,
 		})
 	}
 

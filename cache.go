@@ -154,7 +154,7 @@ func (c *Cache[K, V]) BulkGet(ctx context.Context, keys []K, bulkLoader BulkLoad
 // and the error will be logged using Logger (if it's not ErrNotFound) and swallowed. If another goroutine is currently
 // loading the value for key, then this method does not perform an additional load.
 //
-// cache will call Loader.Reload if the cache currently contains a value for the key,
+// Cache will call Loader.Reload if the cache currently contains a value for the key,
 // and Loader.Load otherwise.
 //
 // WARNING: Loader.Load and Loader.Reload must not attempt to update any mappings of this cache directly.
@@ -175,7 +175,7 @@ func (c *Cache[K, V]) Refresh(key K, loader Loader[K, V]) {
 // and the error will be logged using Logger and swallowed. If another goroutine is currently
 // loading the value for key, then this method does not perform an additional load.
 //
-// cache will call BulkLoader.BulkReload for existing keys, and BulkLoader.BulkLoad otherwise.
+// Cache will call BulkLoader.BulkReload for existing keys, and BulkLoader.BulkLoad otherwise.
 //
 // WARNING: BulkLoader.BulkLoad and BulkLoader.BulkReload must not attempt to update any mappings of this cache directly.
 //

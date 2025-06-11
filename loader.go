@@ -32,8 +32,8 @@ type Loader[K comparable, V any] interface {
 	// WARNING: loading must not attempt to update any mappings of this cache directly
 	// or block waiting for other cache operations to complete.
 	//
-	// NOTE: all errors returned during refresh will be logged (using Logger) and then swallowed.
-	Reload(ctx context.Context, key K) (V, error)
+	// NOTE: all errors returned by this method will be logged (using Logger) and then swallowed.
+	Reload(ctx context.Context, key K, oldValue V) (V, error)
 }
 
 // LoaderFunc is an adapter to allow the use of ordinary functions as loaders.
@@ -46,7 +46,7 @@ func (lf LoaderFunc[K, V]) Load(ctx context.Context, key K) (V, error) {
 }
 
 // Reload calls f(ctx, key).
-func (lf LoaderFunc[K, V]) Reload(ctx context.Context, key K) (V, error) {
+func (lf LoaderFunc[K, V]) Reload(ctx context.Context, key K, oldValue V) (V, error) {
 	return lf(ctx, key)
 }
 
@@ -63,8 +63,8 @@ type BulkLoader[K comparable, V any] interface {
 	// WARNING: loading must not attempt to update any mappings of this cache directly
 	// or block waiting for other cache operations to complete.
 	//
-	// NOTE: all errors returned during refresh will be logged (using Logger) and then swallowed.
-	BulkReload(ctx context.Context, keys []K) (map[K]V, error)
+	// NOTE: all errors returned by this method will be logged (using Logger) and then swallowed.
+	BulkReload(ctx context.Context, keys []K, oldValues []V) (map[K]V, error)
 }
 
 // BulkLoaderFunc is an adapter to allow the use of ordinary functions as loaders.
@@ -77,6 +77,6 @@ func (blf BulkLoaderFunc[K, V]) BulkLoad(ctx context.Context, keys []K) (map[K]V
 }
 
 // BulkReload calls f(ctx, keys).
-func (blf BulkLoaderFunc[K, V]) BulkReload(ctx context.Context, keys []K) (map[K]V, error) {
+func (blf BulkLoaderFunc[K, V]) BulkReload(ctx context.Context, keys []K, oldValues []V) (map[K]V, error) {
 	return blf(ctx, keys)
 }
