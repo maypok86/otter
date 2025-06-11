@@ -146,6 +146,7 @@ func (v *Variable[K, V]) deleteExpiredFromBucket(
 	}
 }
 
+/*
 func (v *Variable[K, V]) Clear() {
 	for i := 0; i < len(v.wheel); i++ {
 		for j := 0; j < len(v.wheel[i]); j++ {
@@ -162,6 +163,7 @@ func (v *Variable[K, V]) Clear() {
 		}
 	}
 }
+*/
 
 // link adds the entry at the tail of the bucket's list.
 func link[K comparable, V any](root, n node.Node[K, V]) {

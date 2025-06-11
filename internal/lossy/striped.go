@@ -18,7 +18,6 @@
 package lossy
 
 import (
-	"runtime"
 	"sync"
 	"sync/atomic"
 
@@ -216,6 +215,7 @@ func (s *Striped[K, V]) Len() int {
 	return result
 }
 
+/*
 func (s *Striped[K, V]) Clear() {
 	bs := s.striped.Load()
 	if bs == nil {
@@ -232,3 +232,4 @@ func (s *Striped[K, V]) Clear() {
 	}
 	s.busy.Store(0)
 }
+*/

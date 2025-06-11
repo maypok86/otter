@@ -91,6 +91,7 @@ func (d *Linked[K, V]) PopFront() node.Node[K, V] {
 	return result
 }
 
+/*
 func (d *Linked[K, V]) PopBack() node.Node[K, V] {
 	if d.IsEmpty() {
 		return nil
@@ -100,6 +101,7 @@ func (d *Linked[K, V]) PopBack() node.Node[K, V] {
 	d.Delete(result)
 	return result
 }
+*/
 
 func (d *Linked[K, V]) NotContains(n node.Node[K, V]) bool {
 	return !d.Contains(n)

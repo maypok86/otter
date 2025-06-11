@@ -120,6 +120,7 @@ func (r *ring[K, V]) len() int {
 	return int(r.tail.Load() - r.head.Load())
 }
 
+/*
 func (r *ring[K, V]) clear() {
 	for i := 0; i < bufferSize; i++ {
 		atomic.StorePointer(&r.buffer[i], nil)
@@ -127,3 +128,4 @@ func (r *ring[K, V]) clear() {
 	r.head.Store(0)
 	r.tail.Store(0)
 }
+*/
