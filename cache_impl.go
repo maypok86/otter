@@ -95,7 +95,6 @@ type cache[K comparable, V any] struct {
 	weigher           func(key K, value V) uint32
 	onDeletion        func(e DeletionEvent[K, V])
 	onAtomicDeletion  func(e DeletionEvent[K, V])
-	executor          func(fn func())
 	expiryCalculator  ExpiryCalculator[K, V]
 	refreshCalculator RefreshCalculator[K, V]
 	taskPool          sync.Pool
@@ -132,20 +131,17 @@ func newCache[K comparable, V any](o *Options[K, V]) *cache[K, V] {
 	}
 
 	c := &cache[K, V]{
-		nodeManager:      nodeManager,
-		hashmap:          hashmap.NewWithSize[K, V, node.Node[K, V]](nodeManager, o.getInitialCapacity()),
-		stats:            o.StatsRecorder,
-		logger:           o.Logger,
-		readBuffer:       readBuffer,
-		singleflight:     &group[K, V]{},
-		weigher:          o.Weigher,
-		onDeletion:       o.OnDeletion,
-		onAtomicDeletion: o.OnAtomicDeletion,
-		clock:            &clock.Real{},
-		withStats:        withStats,
-		executor: func(fn func()) {
-			go fn()
-		},
+		nodeManager:       nodeManager,
+		hashmap:           hashmap.NewWithSize[K, V, node.Node[K, V]](nodeManager, o.getInitialCapacity()),
+		stats:             o.StatsRecorder,
+		logger:            o.Logger,
+		readBuffer:        readBuffer,
+		singleflight:      &group[K, V]{},
+		weigher:           o.Weigher,
+		onDeletion:        o.OnDeletion,
+		onAtomicDeletion:  o.OnAtomicDeletion,
+		clock:             &clock.Real{},
+		withStats:         withStats,
 		expiryCalculator:  o.ExpiryCalculator,
 		refreshCalculator: o.RefreshCalculator,
 		isWeighted:        withWeight,
@@ -988,6 +984,10 @@ func (c *cache[K, V]) afterDelete(deleted node.Node[K, V], offset int64, withLoc
 	} else {
 		c.afterWriteTask(c.getTask(deleted, nil, deleteReason, cause))
 	}
+}
+
+func (c *cache[K, V]) executor(fn func()) {
+	go fn()
 }
 
 func (c *cache[K, V]) notifyDeletion(key K, value V, cause DeletionCause) {
