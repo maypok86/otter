@@ -58,3 +58,9 @@ type DeletionEvent[K comparable, V any] struct {
 	// Cause is the cause for which entry was deleted.
 	Cause DeletionCause
 }
+
+// WasEvicted returns true if there was an automatic deletion due to eviction (the cause is neither
+// CauseInvalidation nor CauseReplacement).
+func (de DeletionEvent[K, V]) WasEvicted() bool {
+	return de.Cause.IsEviction()
+}
