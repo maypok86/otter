@@ -17,6 +17,7 @@ package otter
 import (
 	"container/heap"
 	"fmt"
+	"github.com/stretchr/testify/require"
 	"math/rand"
 	"reflect"
 	"runtime"
@@ -41,6 +42,16 @@ func getRandomSize(t *testing.T) int {
 	r := rand.New(rand.NewSource(time.Now().UnixNano()))
 
 	return r.Intn(maxSize-minSize) + minSize
+}
+
+func TestMust(t *testing.T) {
+	t.Parallel()
+
+	require.Panics(t, func() {
+		Must(&Options[int, int]{
+			MaximumSize: -1,
+		})
+	})
 }
 
 func TestCache_Unbounded(t *testing.T) {
