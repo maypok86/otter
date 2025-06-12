@@ -20,17 +20,18 @@ import (
 	"time"
 
 	"github.com/maypok86/otter/v2/internal/generated/node"
+	"github.com/maypok86/otter/v2/internal/xmath"
 )
 
 var (
 	buckets = []uint64{64, 64, 32, 4, 1}
 	spans   = []uint64{
-		roundUpPowerOf2(uint64((1 * time.Second).Nanoseconds())),             // 1.07s
-		roundUpPowerOf2(uint64((1 * time.Minute).Nanoseconds())),             // 1.14m
-		roundUpPowerOf2(uint64((1 * time.Hour).Nanoseconds())),               // 1.22h
-		roundUpPowerOf2(uint64((24 * time.Hour).Nanoseconds())),              // 1.63d
-		buckets[3] * roundUpPowerOf2(uint64((24 * time.Hour).Nanoseconds())), // 6.5d
-		buckets[3] * roundUpPowerOf2(uint64((24 * time.Hour).Nanoseconds())), // 6.5d
+		xmath.RoundUpPowerOf264(uint64((1 * time.Second).Nanoseconds())),             // 1.07s
+		xmath.RoundUpPowerOf264(uint64((1 * time.Minute).Nanoseconds())),             // 1.14m
+		xmath.RoundUpPowerOf264(uint64((1 * time.Hour).Nanoseconds())),               // 1.22h
+		xmath.RoundUpPowerOf264(uint64((24 * time.Hour).Nanoseconds())),              // 1.63d
+		buckets[3] * xmath.RoundUpPowerOf264(uint64((24 * time.Hour).Nanoseconds())), // 6.5d
+		buckets[3] * xmath.RoundUpPowerOf264(uint64((24 * time.Hour).Nanoseconds())), // 6.5d
 	}
 	shift = []uint64{
 		uint64(bits.TrailingZeros64(spans[0])),
@@ -182,20 +183,4 @@ func unlink[K comparable, V any](n node.Node[K, V]) {
 		next.SetPrevExp(prev)
 		prev.SetNextExp(next)
 	}
-}
-
-// roundUpPowerOf2 is based on https://graphics.stanford.edu/~seander/bithacks.html#RoundUpPowerOf2.
-func roundUpPowerOf2(v uint64) uint64 {
-	if v == 0 {
-		return 1
-	}
-	v--
-	v |= v >> 1
-	v |= v >> 2
-	v |= v >> 4
-	v |= v >> 8
-	v |= v >> 16
-	v |= v >> 32
-	v++
-	return v
 }

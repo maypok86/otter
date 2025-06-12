@@ -1,3 +1,17 @@
+// Copyright (c) 2025 Alexey Mayshev and contributors. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package otter
 
 import (
@@ -941,5 +955,173 @@ func TestCache_CornerCases(t *testing.T) {
 		require.NotPanics(t, func() {
 			c.cache.setExpiresAfterRead(nil, 0, -time.Hour)
 		})
+	})
+	t.Run("withoutMaintenance", func(t *testing.T) {
+		t.Parallel()
+
+		c := &Cache[int, int]{
+			cache: &cache[int, int]{},
+		}
+
+		require.NotPanics(t, func() {
+			c.cache.makeDead(nil)
+			require.Equal(t, uint64(0), c.WeightedSize())
+			c.SetMaximum(0)
+		})
+	})
+	t.Run("invalidTask", func(t *testing.T) {
+		t.Parallel()
+
+		c := &Cache[int, int]{
+			cache: &cache[int, int]{},
+		}
+
+		require.Panics(t, func() {
+			c.cache.runTask(&task[int, int]{
+				writeReason: unknownReason,
+			})
+		})
+	})
+	t.Run("withoutDelete", func(t *testing.T) {
+		t.Parallel()
+
+		c := &Cache[int, int]{
+			cache: &cache[int, int]{},
+		}
+
+		require.NotPanics(t, func() {
+			c.cache.afterDelete(nil, 0, false)
+		})
+	})
+}
+
+func TestCache_Scheduler(t *testing.T) {
+	t.Parallel()
+
+	t.Run("scheduleAfterWrite", func(t *testing.T) {
+		t.Parallel()
+
+		c := Must(&Options[int, int]{})
+
+		c.cache.evictionMutex.Lock()
+		defer c.cache.evictionMutex.Unlock()
+
+		transitions := map[uint32]uint32{
+			idle:                 required,
+			required:             required,
+			processingToIdle:     processingToRequired,
+			processingToRequired: processingToRequired,
+		}
+
+		for from, to := range transitions {
+			c.cache.drainStatus.Store(from)
+			c.cache.scheduleAfterWrite()
+			require.Equal(t, to, c.cache.drainStatus.Load())
+		}
+
+		require.Panics(t, func() {
+			c.cache.drainStatus.Store(10 * processingToRequired)
+			c.cache.scheduleAfterWrite()
+		})
+	})
+	t.Run("scheduleDrainBuffers", func(t *testing.T) {
+		t.Parallel()
+
+		c := Must(&Options[int, int]{
+			MaximumSize: 1,
+		})
+		c.cache.executor = func(fn func()) {
+		}
+
+		transitions := map[uint32]uint32{
+			idle:                 processingToIdle,
+			required:             processingToIdle,
+			processingToIdle:     processingToIdle,
+			processingToRequired: processingToRequired,
+		}
+
+		for from, to := range transitions {
+			c.cache.drainStatus.Store(from)
+			c.cache.scheduleDrainBuffers()
+			require.Equal(t, to, c.cache.drainStatus.Load())
+		}
+	})
+	t.Run("rescheduleDrainBuffers", func(t *testing.T) {
+		t.Parallel()
+
+		done := make(chan struct{})
+		evicting := make(chan struct{})
+		onDeletion := func(e DeletionEvent[int, int]) {
+			evicting <- struct{}{}
+			<-done
+		}
+		c := Must(&Options[int, int]{
+			MaximumSize:      1,
+			OnAtomicDeletion: onDeletion,
+		})
+
+		v1, ok := c.Set(1, 1)
+		require.True(t, ok)
+		require.Equal(t, 1, v1)
+		v1, ok = c.Set(2, 2)
+		require.True(t, ok)
+		require.Equal(t, 2, v1)
+		<-evicting
+
+		v2, ok := c.Set(3, 3)
+		require.True(t, ok)
+		require.Equal(t, 3, v2)
+		require.Equal(t, processingToRequired, c.cache.drainStatus.Load())
+
+		done <- struct{}{}
+	})
+	t.Run("shouldDrainBuffers_invalidDrainStatus", func(t *testing.T) {
+		t.Parallel()
+
+		c := Must(&Options[int, int]{})
+
+		require.Panics(t, func() {
+			c.cache.drainStatus.Store(10 * processingToRequired)
+			c.cache.shouldDrainBuffers(true)
+		})
+	})
+	t.Run("weightedSize_maintenance", func(t *testing.T) {
+		t.Parallel()
+
+		c := Must(&Options[int, int]{
+			MaximumWeight: 100,
+			Weigher: func(key int, value int) uint32 {
+				return uint32(key)
+			},
+		})
+
+		for i := 0; i < 10; i++ {
+			v, ok := c.Set(i, i)
+			require.True(t, ok)
+			require.Equal(t, i, v)
+		}
+		cleanup(c)
+
+		c.cache.drainStatus.Store(required)
+		require.Equal(t, uint64(45), c.WeightedSize())
+		require.Equal(t, idle, c.cache.drainStatus.Load())
+	})
+	t.Run("getMaximum_maintenance", func(t *testing.T) {
+		t.Parallel()
+
+		c := Must(&Options[int, int]{
+			MaximumSize: 10,
+		})
+
+		for i := 0; i < 10; i++ {
+			v, ok := c.Set(i, i)
+			require.True(t, ok)
+			require.Equal(t, i, v)
+		}
+		cleanup(c)
+
+		c.cache.drainStatus.Store(required)
+		require.Equal(t, uint64(10), c.GetMaximum())
+		require.Equal(t, idle, c.cache.drainStatus.Load())
 	})
 }

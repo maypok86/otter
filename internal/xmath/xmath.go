@@ -37,6 +37,9 @@ func RoundUpPowerOf2(v uint32) uint32 {
 }
 
 func RoundUpPowerOf264(x uint64) uint64 {
+	if x == 0 {
+		return 1
+	}
 	x--
 	x |= x >> 1
 	x |= x >> 2

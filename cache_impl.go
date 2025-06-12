@@ -876,7 +876,7 @@ func (c *cache[K, V]) BulkGet(ctx context.Context, keys []K, bulkLoader BulkLoad
 		i++
 
 		if cl.err == nil {
-			result[key] = cl.value
+			result[key] = cl.Value()
 			continue
 		}
 		if _, ok := toLoadCalls[key]; ok || cl.isNotFound {
@@ -1224,8 +1224,8 @@ func (c *cache[K, V]) afterWriteTask(t *task[K, V]) {
 }
 
 func (c *cache[K, V]) scheduleAfterWrite() {
-	drainStatus := c.drainStatus.Load()
 	for {
+		drainStatus := c.drainStatus.Load()
 		switch drainStatus {
 		case idle:
 			c.drainStatus.CompareAndSwap(idle, required)
@@ -1238,8 +1238,6 @@ func (c *cache[K, V]) scheduleAfterWrite() {
 			if c.drainStatus.CompareAndSwap(processingToIdle, processingToRequired) {
 				return
 			}
-			drainStatus = c.drainStatus.Load()
-			continue
 		case processingToRequired:
 			return
 		default:

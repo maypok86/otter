@@ -20,6 +20,8 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/maypok86/otter/v2/internal/generated/node"
 	"github.com/maypok86/otter/v2/internal/xmath"
 	"github.com/maypok86/otter/v2/internal/xruntime"
@@ -173,4 +175,20 @@ func TestStriped_AddAndDrain(t *testing.T) {
 	if l := s.striped.Load().len; l < 1 || l > maxBufferLen {
 		t.Fatalf("the striped buffer length must be in [1, %d], but got: %d", maxBufferLen, l)
 	}
+}
+
+func TestStriped_Len(t *testing.T) {
+	t.Parallel()
+
+	s := &Striped[int, int]{}
+	require.Equal(t, 0, s.Len())
+	nm := node.NewManager[int, int](node.Config{})
+	r := newRing(nm, nm.Create(1, 1, 0, 2, 3))
+	ss := &striped[int, int]{
+		buffers: make([]atomic.Pointer[ring[int, int]], 2),
+		len:     2,
+	}
+	ss.buffers[0].Store(r)
+	s.striped.Store(ss)
+	require.Equal(t, 1, s.Len())
 }

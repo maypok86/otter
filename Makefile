@@ -1,6 +1,10 @@
+SHELL := /bin/bash
+
+SCRIPTS := "./.github/workflows/scripts"
+
 .PHONY: deps
 deps: ## Install all the build and lint dependencies
-	bash ./github/workflows/scripts/deps.sh
+	bash $(SCRIPTS)/deps.sh
 
 .PHONY: fmt
 fmt: ## Run format tools on all go files
@@ -17,10 +21,7 @@ test: test.unit ## Run all the tests
 
 .PHONY: test.unit
 test.unit: ## Run all unit tests
-	@echo 'mode: atomic' > coverage.txt
-	go test -covermode=atomic -coverprofile=coverage.txt.tmp -coverpkg=./... -v -race ./...
-	cat coverage.txt.tmp | grep -v -E "/generated/|/cmd/" > coverage.txt
-	rm coverage.txt.tmp
+	bash $(SCRIPTS)/run-tests.sh
 
 .PHONY: test.32-bit
 test.32-bit: ## Run tests on 32-bit arch
