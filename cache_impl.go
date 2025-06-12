@@ -127,7 +127,7 @@ func newCache[K comparable, V any](o *Options[K, V]) *cache[K, V] {
 
 	withStats := o.StatsRecorder != nil
 	if !withStats {
-		o.StatsRecorder = stats.NoopRecorder{}
+		o.StatsRecorder = &stats.NoopRecorder{}
 	}
 
 	c := &cache[K, V]{

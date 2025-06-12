@@ -34,11 +34,11 @@ type Recorder interface {
 	RecordLoadFailure(loadTime time.Duration)
 }
 
-// NoopRecorder is a noop stats recorder.
+// NoopRecorder is a noop stats recorder. It can be useful if recording statistics is not necessary.
 type NoopRecorder struct{}
 
-func (np NoopRecorder) RecordHits(count int)                     {}
-func (np NoopRecorder) RecordMisses(count int)                   {}
-func (np NoopRecorder) RecordEviction(weight uint32)             {}
-func (np NoopRecorder) RecordLoadFailure(loadTime time.Duration) {}
-func (np NoopRecorder) RecordLoadSuccess(loadTime time.Duration) {}
+func (np *NoopRecorder) RecordHits(count int)                     {}
+func (np *NoopRecorder) RecordMisses(count int)                   {}
+func (np *NoopRecorder) RecordEviction(weight uint32)             {}
+func (np *NoopRecorder) RecordLoadFailure(loadTime time.Duration) {}
+func (np *NoopRecorder) RecordLoadSuccess(loadTime time.Duration) {}
