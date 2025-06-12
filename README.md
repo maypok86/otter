@@ -8,7 +8,7 @@
 <img src="https://github.com/maypok86/otter/actions/workflows/test.yml/badge.svg" />
 <a href="https://github.com/maypok86/otter/actions?query=branch%3Amain+workflow%3ATest" >
     <img src="https://gist.githubusercontent.com/maypok86/2aae2cd39836dc7c258df7ffec602d1c/raw/coverage.svg"/></a>
-<img src="https://goreportcard.com/badge/github.com/maypok86/otter" />
+<a href="https://github.com/maypok86/otter/releases"><img alt="GitHub Release" src="https://img.shields.io/github/v/release/maypok86/otter"></a>
 <a href="https://github.com/avelino/awesome-go"><img src="https://awesome.re/mentioned-badge.svg" alt="Mentioned in Awesome Go"></a>
 </p>
 
