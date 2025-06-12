@@ -23,13 +23,10 @@ jobs:
       - name: Unit tests
         run: make test.unit
 
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v5
+      - name: Coveralls
+        uses: coverallsapp/github-action@v2
         with:
-          fail_ci_if_error: true
-          files: ./coverage.txt
-          token: ${{ secrets.CODECOV_TOKEN }}
-          verbose: true
+          file: coverage.txt
 
       - name: Process coverage report
         run: bash ./.github/workflows/scripts/coverage-report.sh
@@ -45,9 +42,9 @@ jobs:
         with:
           gist_url: https://gist.github.com/maypok86/2aae2cd39836dc7c258df7ffec602d1c
           auth: ${{ secrets.GIST_TOKEN }}
-          gist_description: Coverage badge
+          gist_description: Otter's coverage badge
           github_file: coverage.svg
-          gist_title: Otter's coverage badge
+          gist_title: coverage.svg
 
       - name: Upload report to Gist
         uses: popsiclestick/gist-sync-action@88f8633178625914f2a01abf1a765f7272a580fa # v1.2.0
@@ -58,6 +55,6 @@ jobs:
         with:
           gist_url: https://gist.github.com/maypok86/97c79c864eb1e0fea3a7c430f39acc82
           auth: ${{ secrets.GIST_TOKEN }}
-          gist_description: Coverage Report
+          gist_description: Otter's coverage report
           github_file: coverage.html
-          gist_title: Otter's Coverage Report
+          gist_title: coverage.html
