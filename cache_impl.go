@@ -483,7 +483,7 @@ func (c *cache[K, V]) refreshKey(rk refreshableKey[K, V], loader Loader[K, V]) {
 		return
 	}
 
-	go func() {
+	c.executor(func() {
 		var refresher func(ctx context.Context, key K) (V, error)
 		if rk.old != nil {
 			refresher = func(ctx context.Context, key K) (V, error) {
@@ -508,7 +508,7 @@ func (c *cache[K, V]) refreshKey(rk refreshableKey[K, V], loader Loader[K, V]) {
 		if cl.err != nil && !cl.isNotFound {
 			c.logger.Error(loadCtx, "Returned an error during the refreshing", cl.err)
 		}
-	}()
+	})
 }
 
 // Get returns the value associated with key in this cache, obtaining that value from loader if necessary.
@@ -654,7 +654,7 @@ func (c *cache[K, V]) bulkRefreshKeys(rks []refreshableKey[K, V], bulkLoader Bul
 		return
 	}
 
-	go func() {
+	c.executor(func() {
 		var (
 			toLoadCalls   map[K]*call[K, V]
 			toReloadCalls map[K]*call[K, V]
@@ -718,7 +718,7 @@ func (c *cache[K, V]) bulkRefreshKeys(rks []refreshableKey[K, V], bulkLoader Bul
 				}
 			}()
 		}
-	}()
+	})
 }
 
 // BulkGet returns the value associated with key in this cache, obtaining that value from loader if necessary.
