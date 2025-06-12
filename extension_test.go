@@ -79,6 +79,7 @@ func TestCache_SetExpiresAfter(t *testing.T) {
 		t.Fatalf("expiresAfter should be equal to %v. expiresAfter: %v", time.Second, expiresAfter)
 	}
 
+	c.CleanUp()
 	<-done
 	mutex.Lock()
 	if len(m) != 1 || m[CauseExpiration] != 1 {

@@ -480,7 +480,9 @@ func TestCache_Refresh(t *testing.T) {
 	v1 := 100
 	v2 := 101
 
+	done := make(chan struct{})
 	tl1 := newTestLoader[int, int](func(ctx context.Context, key int) (int, error) {
+		<-done
 		if key == k1 {
 			return v1, nil
 		}
@@ -502,6 +504,7 @@ func TestCache_Refresh(t *testing.T) {
 	if v != 0 {
 		t.Fatalf("GetIfPresent value = %v; want = %v", v, 0)
 	}
+	done <- struct{}{}
 
 	<-ch
 
@@ -892,8 +895,12 @@ func TestCache_BulkRefresh(t *testing.T) {
 	}
 
 	var calls atomic.Int64
+	done := make(chan struct{})
 	tl := newTestBulkLoader[int, int](func(ctx context.Context, keys []int) (map[int]int, error) {
 		calls.Add(1)
+		if calls.Load() == 1 {
+			<-done
+		}
 
 		m := make(map[int]int, len(keys))
 		for _, k := range keys {
@@ -925,6 +932,7 @@ func TestCache_BulkRefresh(t *testing.T) {
 			t.Fatalf("value should be equal to 0. key: %v, value: %v", k, v)
 		}
 	}
+	done <- struct{}{}
 
 	<-ch
 
