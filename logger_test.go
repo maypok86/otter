@@ -42,7 +42,7 @@ func checkLogOutput(t *testing.T, got, wantRegexp string) {
 
 // clean prepares log output for comparison.
 func clean(s string) string {
-	if len(s) > 0 && s[len(s)-1] == '\n' {
+	if s != "" && s[len(s)-1] == '\n' {
 		s = s[:len(s)-1]
 	}
 	return strings.ReplaceAll(s, "\n", "~")
