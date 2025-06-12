@@ -9,6 +9,9 @@
 <a href="https://codecov.io/gh/maypok86/otter" >
     <img src="https://codecov.io/gh/maypok86/otter/graph/badge.svg?token=G0PJFOR8IF"/>
 </a>
+<a href="https://github.com/maypok86/otter/actions?query=branch%3Amain+workflow%3ATest" >
+    <img src="https://gist.githubusercontent.com/maypok86/2aae2cd39836dc7c258df7ffec602d1c/raw/coverage.svg"/>
+</a>
 <img src="https://goreportcard.com/badge/github.com/maypok86/otter" />
 <a href="https://github.com/avelino/awesome-go"><img src="https://awesome.re/mentioned-badge.svg" alt="Mentioned in Awesome Go"></a>
 </p>

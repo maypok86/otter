@@ -17,6 +17,8 @@
 /.idea/
 *.tmp
 *coverage.txt
+*coverage.svg
+*coverage.html
 *lint.txt
 **/bin/
 .DS_Store
