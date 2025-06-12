@@ -901,3 +901,45 @@ func TestCache_Eviction(t *testing.T) {
 		c.cache.evictionMutex.Unlock()
 	})
 }
+
+func TestCache_CornerCases(t *testing.T) {
+	t.Parallel()
+
+	t.Run("withoutRefresh", func(t *testing.T) {
+		t.Parallel()
+
+		c := &Cache[int, int]{
+			cache: &cache[int, int]{},
+		}
+
+		require.NotPanics(t, func() {
+			require.Nil(t, c.Refresh(1, nil))
+			require.Nil(t, c.BulkRefresh([]int{1}, nil))
+			require.Nil(t, c.cache.refreshKey(refreshableKey[int, int]{}, nil))
+			c.SetRefreshableAfter(1, time.Hour)
+			c.SetRefreshableAfter(1, -time.Hour)
+		})
+	})
+	t.Run("BulkRefresh_withEmptyKeys", func(t *testing.T) {
+		t.Parallel()
+
+		c := Must(&Options[int, int]{
+			RefreshCalculator: RefreshWriting[int, int](time.Hour),
+		})
+
+		ch := c.BulkRefresh([]int{}, nil)
+		results := <-ch
+		require.Empty(t, results)
+	})
+	t.Run("withoutExpiration", func(t *testing.T) {
+		t.Parallel()
+
+		c := &Cache[int, int]{
+			cache: &cache[int, int]{},
+		}
+
+		require.NotPanics(t, func() {
+			c.cache.setExpiresAfterRead(nil, 0, -time.Hour)
+		})
+	})
+}

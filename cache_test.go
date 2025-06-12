@@ -17,7 +17,6 @@ package otter
 import (
 	"container/heap"
 	"fmt"
-	"github.com/stretchr/testify/require"
 	"math/rand"
 	"reflect"
 	"runtime"
@@ -25,6 +24,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/maypok86/otter/v2/internal/generated/node"
 	"github.com/maypok86/otter/v2/internal/xruntime"
