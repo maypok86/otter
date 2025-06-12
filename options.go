@@ -89,7 +89,7 @@ type Options[K comparable, V any] struct {
 	RefreshCalculator RefreshCalculator[K, V]
 	// Logger specifies the Logger implementation that will be used for logging warning and errors.
 	//
-	// Logging is disabled by default.
+	// The cache will use slog.Default() by default.
 	Logger Logger
 }
 
@@ -146,6 +146,6 @@ func (o *Options[K, V]) setDefaults() {
 		}
 	}
 	if o.Logger == nil {
-		o.Logger = noopLogger{}
+		o.Logger = newDefaultLogger()
 	}
 }
