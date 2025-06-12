@@ -29,6 +29,7 @@ type call[K comparable, V any] struct {
 	isCancelled atomic.Bool
 	isRefresh   bool
 	isNotFound  bool
+	isFake      bool
 }
 
 func newCall[K comparable, V any](key K, isRefresh bool) *call[K, V] {
@@ -54,7 +55,7 @@ func (c *call[K, V]) AsPointer() unsafe.Pointer {
 }
 
 func (c *call[K, V]) cancel() {
-	if c.isCancelled.Load() {
+	if c.isFake || c.isCancelled.Load() {
 		return
 	}
 	if c.isCancelled.CompareAndSwap(false, true) {
@@ -144,8 +145,11 @@ func (g *group[K, V]) doBulkCall(
 			err = newPanicError(r)
 		}
 
-		for _, cl := range callsInBulk {
-			cl.err = err
+		if err != nil {
+			for _, cl := range callsInBulk {
+				cl.err = err
+				cl.isNotFound = false
+			}
 		}
 
 		for _, cl := range callsInBulk {
@@ -160,8 +164,33 @@ func (g *group[K, V]) doBulkCall(
 
 	res, err := bulkLoad(ctx, keys)
 
+	var (
+		isRefresh bool
+		found     bool
+	)
+	for k, cl := range callsInBulk {
+		if !found {
+			isRefresh = cl.isRefresh
+			found = true
+		}
+		v, ok := res[k]
+		if ok {
+			cl.value = v
+		} else {
+			cl.isNotFound = true
+		}
+	}
+
 	for k, v := range res {
-		callsInBulk[k].value = v
+		if _, ok := callsInBulk[k]; ok {
+			continue
+		}
+		callsInBulk[k] = &call[K, V]{
+			key:       k,
+			value:     v,
+			isFake:    true,
+			isRefresh: isRefresh,
+		}
 	}
 
 	return err

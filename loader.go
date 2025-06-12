@@ -53,12 +53,22 @@ func (lf LoaderFunc[K, V]) Reload(ctx context.Context, key K, oldValue V) (V, er
 // BulkLoader computes or retrieves values, based on the keys, for use in populating a Cache.
 type BulkLoader[K comparable, V any] interface {
 	// BulkLoad computes or retrieves the values corresponding to keys.
+	// This method is called by Cache.BulkGet.
+	//
+	// If the returned map doesn't contain all requested keys, then the entries it does
+	// contain will be cached, and Cache.BulkGet will return the partial results. If the returned map
+	// contains extra keys not present in keys then all returned entries will be cached, but
+	// only the entries for keys, will be returned from Cache.BulkGet.
 	//
 	// WARNING: loading must not attempt to update any mappings of this cache directly.
 	BulkLoad(ctx context.Context, keys []K) (map[K]V, error)
 	// BulkReload computes or retrieves replacement values corresponding to already-cached keys.
 	// If the replacement value is not found, then the mapping will be removed.
 	// This method is called when an existing cache entry is refreshed by Cache.BulkGet, or through a call to Cache.BulkRefresh.
+	//
+	// If the returned map doesn't contain all requested keys, then the entries it does
+	// contain will be cached. If the returned map
+	// contains extra keys not present in keys then all returned entries will be cached.
 	//
 	// WARNING: loading must not attempt to update any mappings of this cache directly
 	// or block waiting for other cache operations to complete.

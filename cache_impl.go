@@ -579,10 +579,11 @@ func (c *cache[K, V]) calcRefreshableAt(n, old node.Node[K, V], cl *call[K, V], 
 	currentDuration := entry.RefreshableAfter()
 	//nolint:gocritic // it's ok
 	if cl != nil && cl.isRefresh && old != nil {
+		if cl.isNotFound {
+			return
+		}
 		if cl.err != nil {
-			if !cl.isNotFound {
-				refreshableAfter = c.refreshCalculator.RefreshAfterReloadFailure(entry, cl.err)
-			}
+			refreshableAfter = c.refreshCalculator.RefreshAfterReloadFailure(entry, cl.err)
 		} else {
 			refreshableAfter = c.refreshCalculator.RefreshAfterReload(entry, old.Value())
 		}
@@ -600,24 +601,32 @@ func (c *cache[K, V]) calcRefreshableAt(n, old node.Node[K, V], cl *call[K, V], 
 func (c *cache[K, V]) afterDeleteCall(cl *call[K, V]) {
 	var (
 		inserted bool
+		deleted  bool
 		old      node.Node[K, V]
 	)
 	offset := c.clock.Offset()
 	newNode := c.hashmap.Compute(cl.key, func(oldNode node.Node[K, V]) node.Node[K, V] {
 		defer cl.cancel()
 
-		deleted := c.singleflight.deleteCall(cl)
-		if cl.err != nil {
-			c.calcRefreshableAt(oldNode, oldNode, cl, offset)
-			return oldNode
-		}
-		if !deleted {
+		isCorrectCall := cl.isFake || c.singleflight.deleteCall(cl)
+		old = oldNode
+		if isCorrectCall && cl.isNotFound {
 			if oldNode != nil {
-				cl.value = oldNode.Value()
+				deleted = true
+				c.makeRetired(oldNode)
+				c.notifyAtomicDeletion(oldNode.Key(), oldNode.Value(), CauseInvalidation)
+			}
+			return nil
+		}
+		if cl.err != nil {
+			if cl.isRefresh && oldNode != nil {
+				c.calcRefreshableAt(oldNode, oldNode, cl, offset)
 			}
 			return oldNode
 		}
-		old = oldNode
+		if !isCorrectCall {
+			return oldNode
+		}
 		inserted = true
 		n := c.newNode(cl.key, cl.value, old)
 		c.calcExpiresAtAfterWrite(n, old, offset)
@@ -632,6 +641,9 @@ func (c *cache[K, V]) afterDeleteCall(cl *call[K, V]) {
 		}
 		return n
 	})
+	if deleted {
+		c.afterDelete(old, offset, false)
+	}
 	if inserted {
 		c.afterWrite(newNode, old, offset)
 	}

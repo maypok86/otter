@@ -17,10 +17,13 @@ package otter
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/maypok86/otter/v2/stats"
 )
@@ -288,6 +291,63 @@ func TestCache_GetWithSuccessLoad(t *testing.T) {
 	}
 }
 
+func TestCache_GetWithNotFoundLoad(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	size := 100
+	statsCounter := stats.NewCounter()
+	c := Must(&Options[int, int]{
+		MaximumSize:      size,
+		StatsRecorder:    statsCounter,
+		ExpiryCalculator: ExpiryWriting[int, int](5 * time.Minute),
+	})
+
+	k1 := 1
+	v1 := 100
+	tl := newTestLoader[int, int](func(ctx context.Context, key int) (int, error) {
+		return v1, nil
+	})
+
+	v, err := c.Get(ctx, k1, tl)
+	if err != nil {
+		t.Fatalf("Get error = %v", err)
+	}
+	if v != v1 {
+		t.Fatalf("Get value = %v; want = %v", v, v1)
+	}
+
+	v, err = c.Get(ctx, k1, tl)
+	if err != nil {
+		t.Fatalf("Get error = %v", err)
+	}
+	if v != v1 {
+		t.Fatalf("Get value = %v; want = %v", v, v1)
+	}
+
+	someErr := fmt.Errorf("olololo: %w", ErrNotFound)
+	tl1 := newTestLoader[int, int](func(ctx context.Context, key int) (int, error) {
+		return 0, someErr
+	})
+
+	c.Invalidate(k1)
+	v, err = c.Get(ctx, k1, tl1)
+	require.Equal(t, someErr, err)
+	require.Zero(t, v)
+
+	if _, ok := c.GetEntryQuietly(k1); c.EstimatedSize() != 0 || ok {
+		t.Fatalf("the cache should only contain the key = %v", k1)
+	}
+
+	snapshot := statsCounter.Snapshot()
+	if snapshot.Hits != 1 ||
+		snapshot.Misses != 2 ||
+		snapshot.Loads() != 2 ||
+		snapshot.LoadSuccesses != 2 {
+		t.Fatalf("statistics are not recorded correctly. snapshot: %v", snapshot)
+	}
+}
+
 func TestCache_GetWithSuccessRefresh(t *testing.T) {
 	t.Parallel()
 
@@ -347,6 +407,58 @@ func TestCache_GetWithSuccessRefresh(t *testing.T) {
 	snapshot := statsCounter.Snapshot()
 	if snapshot.Hits != 3 ||
 		snapshot.Misses != 0 ||
+		snapshot.Loads() != 1 ||
+		snapshot.LoadSuccesses != 1 {
+		t.Fatalf("statistics are not recorded correctly. snapshot: %v", snapshot)
+	}
+}
+
+func TestCache_GetWithNotFoundRefresh(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	size := 100
+	statsCounter := stats.NewCounter()
+	c := Must(&Options[int, int]{
+		MaximumSize:       size,
+		StatsRecorder:     statsCounter,
+		RefreshCalculator: RefreshWriting[int, int](time.Second),
+	})
+
+	k1 := 1
+	v1 := 100
+	c.Set(k1, v1)
+
+	time.Sleep(time.Second)
+	someErr := fmt.Errorf("olololo: %w", ErrNotFound)
+	tl := newTestLoader[int, int](func(ctx context.Context, key int) (int, error) {
+		if key == k1 {
+			return 0, someErr
+		}
+		panic("not valid key")
+	})
+
+	v, err := c.Get(ctx, k1, tl)
+	if err != nil {
+		t.Fatalf("Get error = %v", err)
+	}
+	if v != v1 {
+		t.Fatalf("Get value = %v; want = %v", v, v1)
+	}
+
+	time.Sleep(time.Second)
+
+	v, ok := c.GetIfPresent(k1)
+	require.False(t, ok)
+	require.Zero(t, v)
+
+	if tl.reloads.Load() != 1 && tl.loads.Load() != 0 {
+		t.Fatalf("not valid loader stats. loads = %v, reloads = %v", tl.loads.Load(), tl.reloads.Load())
+	}
+
+	snapshot := statsCounter.Snapshot()
+	if snapshot.Hits != 1 ||
+		snapshot.Misses != 1 ||
 		snapshot.Loads() != 1 ||
 		snapshot.LoadSuccesses != 1 {
 		t.Fatalf("statistics are not recorded correctly. snapshot: %v", snapshot)
@@ -587,6 +699,174 @@ func TestCache_BulkGetWithSuccessRefresh(t *testing.T) {
 		snapshot.LoadSuccesses != 1 {
 		t.Fatalf("statistics are not recorded correctly. snapshot: %v", snapshot)
 	}
+}
+
+func TestCache_BulkGetWithNotFoundRefresh(t *testing.T) {
+	t.Parallel()
+
+	size := 100
+
+	notFound := 3
+	keys := append([]int{0, 1, 2}, notFound)
+
+	ctx := context.Background()
+	statsCounter := stats.NewCounter()
+	var mutex sync.Mutex
+	m := make(map[DeletionCause]int)
+	c := Must(&Options[int, int]{
+		MaximumSize:       size,
+		StatsRecorder:     statsCounter,
+		RefreshCalculator: RefreshWriting[int, int](time.Second),
+		OnDeletion: func(e DeletionEvent[int, int]) {
+			mutex.Lock()
+			m[e.Cause]++
+			mutex.Unlock()
+		},
+	})
+
+	for _, k := range keys {
+		c.Set(k, k)
+	}
+
+	time.Sleep(time.Second)
+
+	tl := newTestBulkLoader[int, int](func(ctx context.Context, keys []int) (map[int]int, error) {
+		m := make(map[int]int, len(keys))
+		for _, k := range keys {
+			if k == notFound {
+				continue
+			}
+			m[k] = k + 100
+		}
+		return m, nil
+	})
+
+	res, err := c.BulkGet(ctx, keys, tl)
+	if err != nil {
+		t.Fatalf("BulkGet error = %v", err)
+	}
+
+	for k, v := range res {
+		if v != k {
+			t.Fatalf("value should be equal to key. key: %v, value: %v", k, v)
+		}
+	}
+	time.Sleep(200 * time.Millisecond)
+	for _, k := range keys {
+		v, ok := c.GetIfPresent(k)
+		if k == notFound {
+			require.False(t, ok)
+			require.Zero(t, v)
+		} else {
+			require.True(t, ok)
+			require.Equal(t, k+100, v)
+		}
+	}
+
+	if c.EstimatedSize() != len(keys)-1 {
+		t.Fatalf("the cache should only contain unique keys")
+	}
+
+	c.CleanUp()
+
+	snapshot := statsCounter.Snapshot()
+	if snapshot.Hits != uint64(2*len(keys)-1) ||
+		snapshot.Misses != 1 ||
+		snapshot.Loads() != 1 ||
+		snapshot.LoadSuccesses != 1 {
+		t.Fatalf("statistics are not recorded correctly. snapshot: %v", snapshot)
+	}
+
+	mutex.Lock()
+	defer mutex.Unlock()
+
+	require.Len(t, m, 2)
+	require.Equal(t, m[CauseInvalidation], 1)
+	require.Equal(t, m[CauseReplacement], 3)
+}
+
+func TestCache_BulkGetWithFakeCall(t *testing.T) {
+	t.Parallel()
+
+	size := 100
+
+	fake := 3
+	keys := []int{0, 1, 2}
+
+	ctx := context.Background()
+	statsCounter := stats.NewCounter()
+	var mutex sync.Mutex
+	m := make(map[DeletionCause]int)
+	c := Must(&Options[int, int]{
+		MaximumSize:       size,
+		StatsRecorder:     statsCounter,
+		RefreshCalculator: RefreshWriting[int, int](time.Second),
+		OnDeletion: func(e DeletionEvent[int, int]) {
+			mutex.Lock()
+			m[e.Cause]++
+			mutex.Unlock()
+		},
+	})
+
+	for _, k := range keys {
+		c.Set(k, k)
+	}
+
+	v, ok := c.GetIfPresent(fake)
+	require.False(t, ok)
+	require.Zero(t, v)
+
+	time.Sleep(time.Second)
+
+	tl := newTestBulkLoader[int, int](func(ctx context.Context, keys []int) (map[int]int, error) {
+		m := make(map[int]int, len(keys))
+		for _, k := range keys {
+			m[k] = k + 100
+		}
+		m[fake] = fake + 100
+		return m, nil
+	})
+
+	res, err := c.BulkGet(ctx, keys, tl)
+	if err != nil {
+		t.Fatalf("BulkGet error = %v", err)
+	}
+
+	for k, v := range res {
+		require.NotEqual(t, fake, k)
+		if v != k {
+			t.Fatalf("value should be equal to key. key: %v, value: %v", k, v)
+		}
+	}
+	time.Sleep(200 * time.Millisecond)
+	for _, k := range keys {
+		v, ok := c.GetIfPresent(k)
+		require.True(t, ok)
+		require.Equal(t, k+100, v)
+	}
+	v, ok = c.GetIfPresent(fake)
+	require.True(t, ok)
+	require.Equal(t, fake+100, v)
+
+	if c.EstimatedSize() != len(keys)+1 {
+		t.Fatalf("the cache should only contain unique keys")
+	}
+
+	c.CleanUp()
+
+	snapshot := statsCounter.Snapshot()
+	if snapshot.Hits != uint64(2*len(keys)+1) ||
+		snapshot.Misses != 1 ||
+		snapshot.Loads() != 1 ||
+		snapshot.LoadSuccesses != 1 {
+		t.Fatalf("statistics are not recorded correctly. snapshot: %v", snapshot)
+	}
+
+	mutex.Lock()
+	defer mutex.Unlock()
+
+	require.Len(t, m, 1)
+	require.Equal(t, m[CauseReplacement], len(keys))
 }
 
 func TestCache_BulkRefresh(t *testing.T) {
@@ -1019,9 +1299,13 @@ func TestCache_ConcurrentGetAndSet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get error = %v", err)
 	}
-	if v != v1 {
-		t.Fatalf("Get is not linerazable. want = %v, got = %v", v1, v)
+	if v != v2 {
+		t.Fatalf("Get is not linerazable. want = %v, got = %v", v2, v)
 	}
+
+	e, ok := c.GetEntryQuietly(k1)
+	require.True(t, ok)
+	require.Equal(t, v1, e.Value)
 
 	wg.Wait()
 
