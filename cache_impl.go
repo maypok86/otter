@@ -88,6 +88,7 @@ type cache[K comparable, V any] struct {
 	clock             *clock.Real
 	readBuffer        *lossy.Striped[K, V]
 	writeBuffer       *queue.MPSC[task[K, V]]
+	executor          func(fn func())
 	singleflight      *group[K, V]
 	evictionMutex     sync.Mutex
 	doneClose         chan struct{}
@@ -130,12 +131,15 @@ func newCache[K comparable, V any](o *Options[K, V]) *cache[K, V] {
 	}
 
 	c := &cache[K, V]{
-		nodeManager:       nodeManager,
-		hashmap:           hashmap.NewWithSize[K, V, node.Node[K, V]](nodeManager, o.getInitialCapacity()),
-		stats:             o.StatsRecorder,
-		logger:            o.Logger,
-		readBuffer:        readBuffer,
-		singleflight:      &group[K, V]{},
+		nodeManager:  nodeManager,
+		hashmap:      hashmap.NewWithSize[K, V, node.Node[K, V]](nodeManager, o.getInitialCapacity()),
+		stats:        o.StatsRecorder,
+		logger:       o.Logger,
+		readBuffer:   readBuffer,
+		singleflight: &group[K, V]{},
+		executor: func(fn func()) {
+			go fn()
+		},
 		weigher:           o.Weigher,
 		onDeletion:        o.OnDeletion,
 		onAtomicDeletion:  o.OnAtomicDeletion,
@@ -478,10 +482,12 @@ type refreshableKey[K comparable, V any] struct {
 	old node.Node[K, V]
 }
 
-func (c *cache[K, V]) refreshKey(rk refreshableKey[K, V], loader Loader[K, V]) {
+func (c *cache[K, V]) refreshKey(rk refreshableKey[K, V], loader Loader[K, V]) <-chan RefreshResult[K, V] {
 	if !c.withRefresh {
-		return
+		return nil
 	}
+
+	ch := make(chan RefreshResult[K, V], 1)
 
 	c.executor(func() {
 		var refresher func(ctx context.Context, key K) (V, error)
@@ -508,7 +514,15 @@ func (c *cache[K, V]) refreshKey(rk refreshableKey[K, V], loader Loader[K, V]) {
 		if cl.err != nil && !cl.isNotFound {
 			c.logger.Error(loadCtx, "Returned an error during the refreshing", cl.err)
 		}
+
+		ch <- RefreshResult[K, V]{
+			Key:   cl.key,
+			Value: cl.value,
+			Err:   cl.err,
+		}
 	})
+
+	return ch
 }
 
 // Get returns the value associated with key in this cache, obtaining that value from loader if necessary.
@@ -649,16 +663,23 @@ func (c *cache[K, V]) afterDeleteCall(cl *call[K, V]) {
 	}
 }
 
-func (c *cache[K, V]) bulkRefreshKeys(rks []refreshableKey[K, V], bulkLoader BulkLoader[K, V]) {
-	if !c.withRefresh || len(rks) == 0 {
-		return
+func (c *cache[K, V]) bulkRefreshKeys(rks []refreshableKey[K, V], bulkLoader BulkLoader[K, V]) <-chan []RefreshResult[K, V] {
+	if !c.withRefresh {
+		return nil
+	}
+	ch := make(chan []RefreshResult[K, V], 1)
+	if len(rks) == 0 {
+		ch <- []RefreshResult[K, V]{}
+		return ch
 	}
 
 	c.executor(func() {
 		var (
 			toLoadCalls   map[K]*call[K, V]
 			toReloadCalls map[K]*call[K, V]
+			foundCalls    []*call[K, V]
 		)
+		results := make([]RefreshResult[K, V], 0, len(rks))
 		i := 0
 		for _, rk := range rks {
 			cl, shouldLoad := c.singleflight.startCall(rk.key, true)
@@ -677,6 +698,11 @@ func (c *cache[K, V]) bulkRefreshKeys(rks []refreshableKey[K, V], bulkLoader Bul
 
 					toLoadCalls[rk.key] = cl
 				}
+			} else {
+				if foundCalls == nil {
+					foundCalls = make([]*call[K, V], 0, len(rks)-i)
+				}
+				foundCalls = append(foundCalls, cl)
 			}
 			i++
 		}
@@ -692,6 +718,14 @@ func (c *cache[K, V]) bulkRefreshKeys(rks []refreshableKey[K, V], bulkLoader Bul
 				})
 				if loadErr != nil {
 					c.logger.Error(loadCtx, "BulkLoad returned an error", loadErr)
+				}
+
+				for _, cl := range toLoadCalls {
+					results = append(results, RefreshResult[K, V]{
+						Key:   cl.key,
+						Value: cl.value,
+						Err:   cl.err,
+					})
 				}
 			}()
 		}
@@ -716,9 +750,28 @@ func (c *cache[K, V]) bulkRefreshKeys(rks []refreshableKey[K, V], bulkLoader Bul
 				if reloadErr != nil {
 					c.logger.Error(reloadCtx, "BulkReload returned an error", reloadErr)
 				}
+
+				for _, cl := range toReloadCalls {
+					results = append(results, RefreshResult[K, V]{
+						Key:   cl.key,
+						Value: cl.value,
+						Err:   cl.err,
+					})
+				}
 			}()
 		}
+		for _, cl := range foundCalls {
+			cl.wait()
+			results = append(results, RefreshResult[K, V]{
+				Key:   cl.key,
+				Value: cl.value,
+				Err:   cl.err,
+			})
+		}
+		ch <- results
 	})
+
+	return ch
 }
 
 // BulkGet returns the value associated with key in this cache, obtaining that value from loader if necessary.
@@ -882,9 +935,9 @@ func (c *cache[K, V]) wrapLoad(fn func() error) error {
 // with a differently behaving loader. For example, a call that requests a short timeout
 // for an RPC may wait for a similar call that requests a long timeout, or a call by an
 // unprivileged user may return a resource accessible only to a privileged user making a similar call.
-func (c *cache[K, V]) Refresh(key K, loader Loader[K, V]) {
+func (c *cache[K, V]) Refresh(key K, loader Loader[K, V]) <-chan RefreshResult[K, V] {
 	if !c.withRefresh {
-		return
+		return nil
 	}
 
 	c.singleflight.init()
@@ -892,7 +945,7 @@ func (c *cache[K, V]) Refresh(key K, loader Loader[K, V]) {
 	offset := c.clock.Offset()
 	n := c.getNode(key, offset)
 
-	c.refreshKey(refreshableKey[K, V]{
+	return c.refreshKey(refreshableKey[K, V]{
 		key: key,
 		old: n,
 	}, loader)
@@ -914,9 +967,9 @@ func (c *cache[K, V]) Refresh(key K, loader Loader[K, V]) {
 // with a differently behaving loader. For example, a call that requests a short timeout
 // for an RPC may wait for a similar call that requests a long timeout, or a call by an
 // unprivileged user may return a resource accessible only to a privileged user making a similar call.
-func (c *cache[K, V]) BulkRefresh(keys []K, bulkLoader BulkLoader[K, V]) {
-	if !c.withRefresh || len(keys) == 0 {
-		return
+func (c *cache[K, V]) BulkRefresh(keys []K, bulkLoader BulkLoader[K, V]) <-chan []RefreshResult[K, V] {
+	if !c.withRefresh {
+		return nil
 	}
 
 	c.singleflight.init()
@@ -936,7 +989,7 @@ func (c *cache[K, V]) BulkRefresh(keys []K, bulkLoader BulkLoader[K, V]) {
 		})
 	}
 
-	c.bulkRefreshKeys(toRefresh, bulkLoader)
+	return c.bulkRefreshKeys(toRefresh, bulkLoader)
 }
 
 // Invalidate discards any cached value for the key.
@@ -1006,10 +1059,6 @@ func (c *cache[K, V]) afterDelete(deleted node.Node[K, V], offset int64, withLoc
 	} else {
 		c.afterWriteTask(c.getTask(deleted, nil, deleteReason, cause))
 	}
-}
-
-func (c *cache[K, V]) executor(fn func()) {
-	go fn()
 }
 
 func (c *cache[K, V]) notifyDeletion(key K, value V, cause DeletionCause) {

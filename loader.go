@@ -90,3 +90,14 @@ func (blf BulkLoaderFunc[K, V]) BulkLoad(ctx context.Context, keys []K) (map[K]V
 func (blf BulkLoaderFunc[K, V]) BulkReload(ctx context.Context, keys []K, oldValues []V) (map[K]V, error) {
 	return blf(ctx, keys)
 }
+
+// RefreshResult holds the results of Cache.Refresh/Cache.BulkRefresh, so they can be passed
+// on a channel.
+type RefreshResult[K comparable, V any] struct {
+	// Key is the key corresponding to the refreshed entry.
+	Key K
+	// Value is the value corresponding to the refreshed entry.
+	Value V
+	// Err is the error that Loader / BulkLoader returned.
+	Err error
+}

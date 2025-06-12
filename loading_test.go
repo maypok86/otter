@@ -493,7 +493,7 @@ func TestCache_Refresh(t *testing.T) {
 		panic("not valid key")
 	})
 
-	c.Refresh(k1, tl1)
+	ch := c.Refresh(k1, tl1)
 
 	v, ok := c.GetIfPresent(k1)
 	if ok {
@@ -503,7 +503,7 @@ func TestCache_Refresh(t *testing.T) {
 		t.Fatalf("GetIfPresent value = %v; want = %v", v, 0)
 	}
 
-	time.Sleep(200 * time.Millisecond)
+	<-ch
 
 	v, ok = c.GetIfPresent(k1)
 	if !ok {
@@ -513,9 +513,7 @@ func TestCache_Refresh(t *testing.T) {
 		t.Fatalf("GetIfPresent value = %v; want = %v", v, v1)
 	}
 
-	c.Refresh(k1, tl2)
-
-	time.Sleep(200 * time.Millisecond)
+	<-c.Refresh(k1, tl2)
 
 	v, ok = c.GetIfPresent(k1)
 	if !ok {
@@ -907,7 +905,7 @@ func TestCache_BulkRefresh(t *testing.T) {
 		return m, nil
 	})
 
-	c.BulkRefresh(keys, tl)
+	ch := c.BulkRefresh(keys, tl)
 
 	for _, k := range keys {
 		v, ok := c.GetIfPresent(k)
@@ -928,7 +926,7 @@ func TestCache_BulkRefresh(t *testing.T) {
 		}
 	}
 
-	time.Sleep(200 * time.Millisecond)
+	<-ch
 
 	for _, k := range keys {
 		v, ok := c.GetIfPresent(k)
@@ -951,6 +949,116 @@ func TestCache_BulkRefresh(t *testing.T) {
 	snapshot := statsCounter.Snapshot()
 	if snapshot.Hits != 18 ||
 		snapshot.Misses != 13 ||
+		snapshot.Loads() != 2 ||
+		snapshot.LoadSuccesses != 2 {
+		t.Fatalf("statistics are not recorded correctly. snapshot: %v", snapshot)
+	}
+}
+
+func TestCache_BulkRefreshResults(t *testing.T) {
+	t.Parallel()
+
+	size := 100
+
+	keys := []int{0, 1, 2}
+	keySet := make(map[int]bool, len(keys))
+	for _, k := range keys {
+		keySet[k] = true
+	}
+	toLoad := 0
+
+	statsCounter := stats.NewCounter()
+	c := Must(&Options[int, int]{
+		MaximumSize:       size,
+		StatsRecorder:     statsCounter,
+		RefreshCalculator: RefreshWriting[int, int](time.Second),
+	})
+
+	done := make(chan struct{})
+	var startRefresh atomic.Bool
+	c.cache.executor = func(fn func()) {
+		go func() {
+			if startRefresh.Load() {
+				<-done
+				startRefresh.Store(false)
+			}
+			fn()
+		}()
+	}
+
+	for _, k := range keys {
+		if k == toLoad {
+			continue
+		}
+		c.Set(k, k)
+	}
+	c.CleanUp()
+
+	time.Sleep(time.Second)
+
+	ctx := context.Background()
+	tl := newTestLoader[int, int](func(ctx context.Context, key int) (int, error) {
+		done <- struct{}{}
+		if key == toLoad {
+			time.Sleep(time.Second)
+			return key + 101, nil
+		}
+		panic("not valid key")
+	})
+	btl := newTestBulkLoader[int, int](func(ctx context.Context, keys []int) (map[int]int, error) {
+		m := make(map[int]int, len(keys))
+		for _, k := range keys {
+			m[k] = k + 100
+		}
+		return m, nil
+	})
+
+	go func() {
+		<-done
+		v, err := c.Get(ctx, toLoad, tl)
+		require.NoError(t, err)
+		require.Equal(t, toLoad+101, v)
+		done <- struct{}{}
+	}()
+
+	startRefresh.Store(true)
+	done <- struct{}{}
+	ch := c.BulkRefresh(keys, btl)
+	results := <-ch
+
+	require.Equal(t, len(keys), len(results))
+	<-done
+	for _, r := range results {
+		require.True(t, keySet[r.Key])
+		require.NoError(t, r.Err)
+		if r.Key == toLoad {
+			require.Equal(t, r.Key+101, r.Value)
+		} else {
+			require.Equal(t, r.Key+100, r.Value)
+		}
+	}
+
+	for _, k := range keys {
+		v, ok := c.GetIfPresent(k)
+		require.True(t, ok)
+		if k == toLoad {
+			require.Equal(t, k+101, v)
+		} else {
+			require.Equal(t, k+100, v)
+		}
+	}
+
+	if c.EstimatedSize() != 3 {
+		t.Fatalf("the cache should only contain unique keys")
+	}
+
+	if tl.reloads.Load() != 1 && tl.loads.Load() != 1 {
+		t.Fatalf("not valid loader stats. loads = %v, reloads = %v", tl.loads.Load(), tl.reloads.Load())
+	}
+
+	snapshot := statsCounter.Snapshot()
+	if snapshot.Hits != 5 ||
+		snapshot.Misses != 2 ||
 		snapshot.Loads() != 2 ||
 		snapshot.LoadSuccesses != 2 {
 		t.Fatalf("statistics are not recorded correctly. snapshot: %v", snapshot)

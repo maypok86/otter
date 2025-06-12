@@ -157,6 +157,10 @@ func (c *Cache[K, V]) BulkGet(ctx context.Context, keys []K, bulkLoader BulkLoad
 // Cache will call Loader.Reload if the cache currently contains a value for the key,
 // and Loader.Load otherwise.
 //
+// Refresh returns a channel that will receive the result when it is ready. The returned channel will not be closed.
+//
+// WARNING: If the cache was constructed without RefreshCalculator, then Refresh will return the nil channel.
+//
 // WARNING: Loader.Load and Loader.Reload must not attempt to update any mappings of this cache directly.
 //
 // WARNING: For any given key, every loader used with it should compute the same value.
@@ -164,8 +168,8 @@ func (c *Cache[K, V]) BulkGet(ctx context.Context, keys []K, bulkLoader BulkLoad
 // with a differently behaving loader. For example, a call that requests a short timeout
 // for an RPC may wait for a similar call that requests a long timeout, or a call by an
 // unprivileged user may return a resource accessible only to a privileged user making a similar call.
-func (c *Cache[K, V]) Refresh(key K, loader Loader[K, V]) {
-	c.cache.Refresh(key, loader)
+func (c *Cache[K, V]) Refresh(key K, loader Loader[K, V]) <-chan RefreshResult[K, V] {
+	return c.cache.Refresh(key, loader)
 }
 
 // BulkRefresh loads a new value for each key, asynchronously. While the new value is loading the
@@ -177,6 +181,10 @@ func (c *Cache[K, V]) Refresh(key K, loader Loader[K, V]) {
 //
 // Cache will call BulkLoader.BulkReload for existing keys, and BulkLoader.BulkLoad otherwise.
 //
+// BulkRefresh returns a channel that will receive the results when they are ready. The returned channel will not be closed.
+//
+// WARNING: If the cache was constructed without RefreshCalculator, then BulkRefresh will return the nil channel.
+//
 // WARNING: BulkLoader.BulkLoad and BulkLoader.BulkReload must not attempt to update any mappings of this cache directly.
 //
 // WARNING: For any given key, every bulkLoader used with it should compute the same value.
@@ -184,8 +192,8 @@ func (c *Cache[K, V]) Refresh(key K, loader Loader[K, V]) {
 // with a differently behaving loader. For example, a call that requests a short timeout
 // for an RPC may wait for a similar call that requests a long timeout, or a call by an
 // unprivileged user may return a resource accessible only to a privileged user making a similar call.
-func (c *Cache[K, V]) BulkRefresh(keys []K, bulkLoader BulkLoader[K, V]) {
-	c.cache.BulkRefresh(keys, bulkLoader)
+func (c *Cache[K, V]) BulkRefresh(keys []K, bulkLoader BulkLoader[K, V]) <-chan []RefreshResult[K, V] {
+	return c.cache.BulkRefresh(keys, bulkLoader)
 }
 
 // Invalidate discards any cached value for the key.
