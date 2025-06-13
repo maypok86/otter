@@ -15,6 +15,7 @@
 package clock
 
 import (
+	"math"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -44,5 +45,13 @@ func (c *Real) Offset() int64 {
 	if !c.isInitialized.Load() {
 		return 0
 	}
-	return c.startNanos.Load() + time.Since(c.start).Nanoseconds()
+	return saturatedAdd(c.startNanos.Load(), time.Since(c.start).Nanoseconds())
+}
+
+func saturatedAdd(a, b int64) int64 {
+	s := a + b
+	if s < a || s < b {
+		return math.MaxInt64
+	}
+	return s
 }

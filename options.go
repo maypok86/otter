@@ -24,11 +24,9 @@ const (
 	defaultInitialCapacity = 16
 )
 
-var (
-	defaultExecutor = func(fn func()) {
-		go fn()
-	}
-)
+var defaultExecutor = func(fn func()) {
+	go fn()
+}
 
 // Options should be passed to [New]/[Must] to construct a [Cache] having a combination of the following features:
 //

@@ -45,7 +45,7 @@ type Stats struct {
 // NOTE: the values of the metrics are undefined in case of overflow. If you require specific handling, we recommend
 // implementing your own [Recorder].
 func (s Stats) Requests() uint64 {
-	return checkedAdd(s.Hits, s.Misses)
+	return saturatedAdd(s.Hits, s.Misses)
 }
 
 // HitRatio returns the ratio of cache requests which were hits.
@@ -75,7 +75,7 @@ func (s Stats) MissRatio() float64 {
 // NOTE: the values of the metrics are undefined in case of overflow. If you require specific handling, we recommend
 // implementing your own [Recorder].
 func (s Stats) Loads() uint64 {
-	return checkedAdd(s.LoadSuccesses, s.LoadFailures)
+	return saturatedAdd(s.LoadSuccesses, s.LoadFailures)
 }
 
 // LoadFailureRatio returns the ratio of cache loading attempts which returned errors.
@@ -99,7 +99,7 @@ func (s Stats) AverageLoadPenalty() time.Duration {
 	return s.TotalLoadTime / time.Duration(loads)
 }
 
-func checkedAdd(a, b uint64) uint64 {
+func saturatedAdd(a, b uint64) uint64 {
 	s := a + b
 	if s < a || s < b {
 		return math.MaxUint64
