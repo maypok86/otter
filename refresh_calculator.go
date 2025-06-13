@@ -58,7 +58,7 @@ func (c *varRefreshCreating[K, V]) RefreshAfterReloadFailure(entry Entry[K, V], 
 	return entry.RefreshableAfter()
 }
 
-// RefreshCreating returns a RefreshCalculator that specifies that the entry should be automatically reloaded
+// RefreshCreating returns a [RefreshCalculator] that specifies that the entry should be automatically reloaded
 // once the duration has elapsed after the entry's creation.
 // The refresh time is not modified when the entry is updated or reloaded.
 func RefreshCreating[K comparable, V any](duration time.Duration) RefreshCalculator[K, V] {
@@ -67,7 +67,7 @@ func RefreshCreating[K comparable, V any](duration time.Duration) RefreshCalcula
 	})
 }
 
-// RefreshCreatingFunc returns a RefreshCalculator that specifies that the entry should be automatically reloaded
+// RefreshCreatingFunc returns a [RefreshCalculator] that specifies that the entry should be automatically reloaded
 // once the duration has elapsed after the entry's creation.
 // The refresh time is not modified when the entry is updated or reloaded.
 func RefreshCreatingFunc[K comparable, V any](f func(entry Entry[K, V]) time.Duration) RefreshCalculator[K, V] {
@@ -96,7 +96,7 @@ func (w *varRefreshWriting[K, V]) RefreshAfterReloadFailure(entry Entry[K, V], e
 	return entry.RefreshableAfter()
 }
 
-// RefreshWriting returns a RefreshCalculator that specifies that the entry should be automatically reloaded
+// RefreshWriting returns a [RefreshCalculator] that specifies that the entry should be automatically reloaded
 // once the duration has elapsed after the entry's creation or the most recent replacement of its value.
 // The refresh time is not modified when the reload fails.
 func RefreshWriting[K comparable, V any](duration time.Duration) RefreshCalculator[K, V] {
@@ -105,7 +105,7 @@ func RefreshWriting[K comparable, V any](duration time.Duration) RefreshCalculat
 	})
 }
 
-// RefreshWritingFunc returns a RefreshCalculator that specifies that the entry should be automatically reloaded
+// RefreshWritingFunc returns a [RefreshCalculator] that specifies that the entry should be automatically reloaded
 // once the duration has elapsed after the entry's creation or the most recent replacement of its value.
 // The refresh time is not modified when the reload fails.
 func RefreshWritingFunc[K comparable, V any](f func(entry Entry[K, V]) time.Duration) RefreshCalculator[K, V] {

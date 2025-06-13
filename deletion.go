@@ -18,9 +18,8 @@ package otter
 type DeletionCause int
 
 const (
-	causeUnknown DeletionCause = iota
 	// CauseInvalidation means that the entry was manually deleted by the user.
-	CauseInvalidation
+	CauseInvalidation DeletionCause = iota + 1
 	// CauseReplacement means that the entry itself was not actually deleted, but its value was replaced by the user.
 	CauseReplacement
 	// CauseOverflow means that the entry was evicted due to size constraints.
@@ -29,6 +28,8 @@ const (
 	CauseExpiration
 )
 
+const causeUnknown DeletionCause = 0
+
 var deletionCauseStrings = []string{
 	"Invalidation",
 	"Replacement",
@@ -36,6 +37,7 @@ var deletionCauseStrings = []string{
 	"Expiration",
 }
 
+// String implements [fmt.Stringer] interface.
 func (dc DeletionCause) String() string {
 	if dc >= 1 && int(dc) <= len(deletionCauseStrings) {
 		return deletionCauseStrings[dc-1]
@@ -44,7 +46,7 @@ func (dc DeletionCause) String() string {
 }
 
 // IsEviction returns true if there was an automatic deletion due to eviction
-// (the cause is neither CauseInvalidation nor CauseReplacement).
+// (the cause is neither [CauseInvalidation] nor [CauseReplacement]).
 func (dc DeletionCause) IsEviction() bool {
 	return !(dc == CauseInvalidation || dc == CauseReplacement)
 }
@@ -60,7 +62,7 @@ type DeletionEvent[K comparable, V any] struct {
 }
 
 // WasEvicted returns true if there was an automatic deletion due to eviction (the cause is neither
-// CauseInvalidation nor CauseReplacement).
+// [CauseInvalidation] nor [CauseReplacement]).
 func (de DeletionEvent[K, V]) WasEvicted() bool {
 	return de.Cause.IsEviction()
 }

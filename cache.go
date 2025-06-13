@@ -27,8 +27,11 @@ type Cache[K comparable, V any] struct {
 	cache *cache[K, V]
 }
 
-// Must creates a configured cache or
+// Must creates a configured [Cache] instance or
 // panics if invalid parameters were specified.
+//
+// This method does not alter the state of the [Options] instance, so it can be invoked
+// again to create multiple independent caches.
 func Must[K comparable, V any](o *Options[K, V]) *Cache[K, V] {
 	c, err := New(o)
 	if err != nil {
@@ -37,13 +40,15 @@ func Must[K comparable, V any](o *Options[K, V]) *Cache[K, V] {
 	return c
 }
 
-// New creates a configured cache or
+// New creates a configured [Cache] instance or
 // returns an error if invalid parameters were specified.
+//
+// This method does not alter the state of the [Options] instance, so it can be invoked
+// again to create multiple independent caches.
 func New[K comparable, V any](o *Options[K, V]) (*Cache[K, V], error) {
 	if err := o.validate(); err != nil {
 		return nil, err
 	}
-	o.setDefaults()
 
 	cacheImpl := newCache(o)
 	c := &Cache[K, V]{
@@ -107,7 +112,7 @@ func (c *Cache[K, V]) SetRefreshableAfter(key K, refreshableAfter time.Duration)
 // Get returns the value associated with key in this cache, obtaining that value from loader if necessary.
 // The method improves upon the conventional "if cached, return; otherwise create, cache and return" pattern.
 //
-// Get can return an ErrNotFound error if the Loader returns it.
+// Get can return an [ErrNotFound] error if the [Loader] returns it.
 // This means that the entry was not found in the data source.
 //
 // If another call to Get is currently loading the value for key,
@@ -116,7 +121,7 @@ func (c *Cache[K, V]) SetRefreshableAfter(key K, refreshableAfter time.Duration)
 //
 // No observable state associated with this cache is modified until loading completes.
 //
-// WARNING: Loader.Load must not attempt to update any mappings of this cache directly.
+// WARNING: [Loader] must not attempt to update any mappings of this cache directly.
 //
 // WARNING: For any given key, every loader used with it should compute the same value.
 // Otherwise, a call that passes one loader may return the result of another call
@@ -138,7 +143,7 @@ func (c *Cache[K, V]) Get(ctx context.Context, key K, loader Loader[K, V]) (V, e
 //
 // NOTE: duplicate elements in keys will be ignored.
 //
-// WARNING: BulkLoader.BulkLoad must not attempt to update any mappings of this cache directly.
+// WARNING: [BulkLoader] must not attempt to update any mappings of this cache directly.
 //
 // WARNING: For any given key, every bulkLoader used with it should compute the same value.
 // Otherwise, a call that passes one bulkLoader may return the result of another call
@@ -153,16 +158,16 @@ func (c *Cache[K, V]) BulkGet(ctx context.Context, keys []K, bulkLoader BulkLoad
 // previous value (if any) will continue to be returned by any Get unless it is evicted.
 // If the new value is loaded successfully, it will replace the previous value in the cache;
 // If refreshing returned an error, the previous value will remain,
-// and the error will be logged using Logger (if it's not ErrNotFound) and swallowed. If another goroutine is currently
+// and the error will be logged using [Logger] (if it's not [ErrNotFound]) and swallowed. If another goroutine is currently
 // loading the value for key, then this method does not perform an additional load.
 //
-// Cache will call Loader.Reload if the cache currently contains a value for the key,
+// [Cache] will call Loader.Reload if the cache currently contains a value for the key,
 // and Loader.Load otherwise.
-// Loading is asynchronous by delegating to the configured Options.Executor.
+// Loading is asynchronous by delegating to the configured Executor.
 //
 // Refresh returns a channel that will receive the result when it is ready. The returned channel will not be closed.
 //
-// WARNING: If the cache was constructed without RefreshCalculator, then Refresh will return the nil channel.
+// WARNING: If the cache was constructed without [RefreshCalculator], then Refresh will return the nil channel.
 //
 // WARNING: Loader.Load and Loader.Reload must not attempt to update any mappings of this cache directly.
 //
@@ -179,17 +184,17 @@ func (c *Cache[K, V]) Refresh(key K, loader Loader[K, V]) <-chan RefreshResult[K
 // previous value (if any) will continue to be returned by any Get unless it is evicted.
 // If the new value is loaded successfully, it will replace the previous value in the cache;
 // If refreshing returned an error, the previous value will remain,
-// and the error will be logged using Logger and swallowed. If another goroutine is currently
+// and the error will be logged using [Logger] and swallowed. If another goroutine is currently
 // loading the value for key, then this method does not perform an additional load.
 //
-// Cache will call BulkLoader.BulkReload for existing keys, and BulkLoader.BulkLoad otherwise.
-// Loading is asynchronous by delegating to the configured Options.Executor.
+// [Cache] will call BulkLoader.BulkReload for existing keys, and BulkLoader.BulkLoad otherwise.
+// Loading is asynchronous by delegating to the configured Executor.
 //
 // BulkRefresh returns a channel that will receive the results when they are ready. The returned channel will not be closed.
 //
 // NOTE: duplicate elements in keys will be ignored.
 //
-// WARNING: If the cache was constructed without RefreshCalculator, then BulkRefresh will return the nil channel.
+// WARNING: If the cache was constructed without [RefreshCalculator], then BulkRefresh will return the nil channel.
 //
 // WARNING: BulkLoader.BulkLoad and BulkLoader.BulkReload must not attempt to update any mappings of this cache directly.
 //

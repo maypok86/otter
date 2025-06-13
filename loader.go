@@ -16,7 +16,7 @@ package otter
 
 import "context"
 
-// Loader computes or retrieves values, based on a key, for use in populating a Cache.
+// Loader computes or retrieves values, based on a key, for use in populating a [Cache].
 type Loader[K comparable, V any] interface {
 	// Load computes or retrieves the value corresponding to key.
 	//
@@ -33,11 +33,14 @@ type Loader[K comparable, V any] interface {
 	// or block waiting for other cache operations to complete.
 	//
 	// NOTE: all errors returned by this method will be logged (using Logger) and then swallowed.
+	//
+	// NOTE: The Loader implementation should always return ErrNotFound
+	// if the entry was not found in the data source.
 	Reload(ctx context.Context, key K, oldValue V) (V, error)
 }
 
 // LoaderFunc is an adapter to allow the use of ordinary functions as loaders.
-// If f is a function with the appropriate signature, LoaderFunc(f) is a Loader that calls f.
+// If f is a function with the appropriate signature, LoaderFunc(f) is a [Loader] that calls f.
 type LoaderFunc[K comparable, V any] func(ctx context.Context, key K) (V, error)
 
 // Load calls f(ctx, key).
@@ -50,7 +53,7 @@ func (lf LoaderFunc[K, V]) Reload(ctx context.Context, key K, oldValue V) (V, er
 	return lf(ctx, key)
 }
 
-// BulkLoader computes or retrieves values, based on the keys, for use in populating a Cache.
+// BulkLoader computes or retrieves values, based on the keys, for use in populating a [Cache].
 type BulkLoader[K comparable, V any] interface {
 	// BulkLoad computes or retrieves the values corresponding to keys.
 	// This method is called by Cache.BulkGet.
@@ -78,7 +81,7 @@ type BulkLoader[K comparable, V any] interface {
 }
 
 // BulkLoaderFunc is an adapter to allow the use of ordinary functions as loaders.
-// If f is a function with the appropriate signature, BulkLoaderFunc(f) is a BulkLoader that calls f.
+// If f is a function with the appropriate signature, BulkLoaderFunc(f) is a [BulkLoader] that calls f.
 type BulkLoaderFunc[K comparable, V any] func(ctx context.Context, keys []K) (map[K]V, error)
 
 // BulkLoad calls f(ctx, keys).
@@ -91,7 +94,7 @@ func (blf BulkLoaderFunc[K, V]) BulkReload(ctx context.Context, keys []K, oldVal
 	return blf(ctx, keys)
 }
 
-// RefreshResult holds the results of Cache.Refresh/Cache.BulkRefresh, so they can be passed
+// RefreshResult holds the results of [Cache.Refresh]/[Cache.BulkRefresh], so they can be passed
 // on a channel.
 type RefreshResult[K comparable, V any] struct {
 	// Key is the key corresponding to the refreshed entry.

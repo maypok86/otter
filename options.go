@@ -30,7 +30,38 @@ var (
 	}
 )
 
-// Options should be passed to New to construct a Cache.
+// Options should be passed to [New]/[Must] to construct a [Cache] having a combination of the following features:
+//
+//   - automatic loading of entries into the cache
+//   - size-based eviction when a maximum is exceeded based on frequency and recency
+//   - time-based expiration of entries, measured since last access or last write
+//   - asynchronously refresh when the first stale request for an entry occurs
+//   - notification of deleted entries
+//   - accumulation of cache access statistics
+//
+// These features are all optional; caches can be created using all or none of them. By default,
+// cache instances created using [Options] will not perform any type of eviction.
+//
+//	cache := otter.Must(&Options[string, string]{
+//		MaximumSize:      10_000,
+//	  	ExpiryCalculator: otter.ExpiryWriting[string, string(10 * time.Minute),
+//		StatsRecorder:    stats.NewCounter(),
+//	})
+//
+// Entries are automatically evicted from the cache when any of MaximumSize, MaximumWeight,
+// ExpiryCalculator are specified.
+//
+// If MaximumSize or MaximumWeight is specified, entries may be evicted on each cache modification.
+//
+// If ExpiryCalculator is specified, then entries may be evicted on
+// each cache modification, on occasional cache accesses, or on calls to [Cache.CleanUp].
+// Expired entries may be counted by [Cache.EstimatedSize], but will never be visible to read or write operations.
+//
+// Certain cache configurations will result in the accrual of periodic maintenance tasks that
+// will be performed during write operations, or during occasional read operations in the absence of writes.
+// The [Cache.CleanUp] method of the returned cache will also perform maintenance, but
+// calling it should not be necessary with a high-throughput cache. Only caches built with
+// MaximumSize, MaximumWeight, ExpiryCalculator perform periodic maintenance.
 type Options[K comparable, V any] struct {
 	// MaximumSize specifies the maximum number of entries the cache may contain.
 	//
@@ -142,6 +173,22 @@ func (o *Options[K, V]) getExecutor() func(fn func()) {
 	return o.Executor
 }
 
+func (o *Options[K, V]) getWeigher() func(key K, value V) uint32 {
+	if o.Weigher == nil {
+		return func(key K, value V) uint32 {
+			return 1
+		}
+	}
+	return o.Weigher
+}
+
+func (o *Options[K, V]) getLogger() Logger {
+	if o.Logger == nil {
+		return newDefaultLogger()
+	}
+	return o.Logger
+}
+
 func (o *Options[K, V]) validate() error {
 	if o.MaximumSize > 0 && o.MaximumWeight > 0 {
 		return errors.New("otter: both maximumSize and maximumWeight are set")
@@ -165,15 +212,4 @@ func (o *Options[K, V]) validate() error {
 	}
 
 	return nil
-}
-
-func (o *Options[K, V]) setDefaults() {
-	if o.Weigher == nil {
-		o.Weigher = func(key K, value V) uint32 {
-			return 1
-		}
-	}
-	if o.Logger == nil {
-		o.Logger = newDefaultLogger()
-	}
 }

@@ -21,7 +21,7 @@ import (
 	"github.com/maypok86/otter/v2/internal/xsync"
 )
 
-// Counter is a goroutine-safe Recorder implementation for use by otter.Cache.
+// Counter is a goroutine-safe [Recorder] implementation for use by otter.Cache.
 type Counter struct {
 	hits           *xsync.Adder
 	misses         *xsync.Adder
@@ -32,7 +32,7 @@ type Counter struct {
 	totalLoadTime  *xsync.Adder
 }
 
-// NewCounter constructs a Counter instance with all counts initialized to zero.
+// NewCounter constructs a [Counter] instance with all counts initialized to zero.
 func NewCounter() *Counter {
 	return &Counter{
 		hits:           xsync.NewAdder(),
@@ -49,7 +49,7 @@ func NewCounter() *Counter {
 // may be interleaved with update operations.
 //
 // NOTE: the values of the metrics are undefined in case of overflow. If you require specific handling, we recommend
-// implementing your own Recorder.
+// implementing your own [Recorder].
 func (c *Counter) Snapshot() Stats {
 	totalLoadTime := c.totalLoadTime.Value()
 	if totalLoadTime > uint64(math.MaxInt64) {

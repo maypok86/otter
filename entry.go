@@ -50,7 +50,7 @@ type Entry[K comparable, V any] struct {
 
 // ExpiresAt returns the entry's expiration time.
 //
-// If the cache was not configured with an expiration policy then this value is roughly math.MaxInt64
+// If the cache was not configured with an expiration policy then this value is roughly [math.MaxInt64]
 // nanoseconds away from the SnapshotAt.
 func (e Entry[K, V]) ExpiresAt() time.Time {
 	return time.Unix(0, e.ExpiresAtNano)
@@ -60,7 +60,7 @@ func (e Entry[K, V]) ExpiresAt() time.Time {
 // to elapsing this time bound. An entry is considered fresh if its age is less than this
 // duration, and stale otherwise. The expiration policy determines when the entry's age is reset.
 //
-// If the cache was not configured with an expiration policy then this value is always math.MaxInt64.
+// If the cache was not configured with an expiration policy then this value is always [math.MaxInt64].
 func (e Entry[K, V]) ExpiresAfter() time.Duration {
 	return time.Duration(e.ExpiresAtNano - e.SnapshotAtNano)
 }
@@ -72,7 +72,7 @@ func (e Entry[K, V]) HasExpired() bool {
 
 // RefreshableAt is the time after which the entry will be reloaded.
 //
-// If the cache was not configured with a refresh policy then this value is roughly math.MaxInt64
+// If the cache was not configured with a refresh policy then this value is roughly [math.MaxInt64]
 // nanoseconds away from the SnapshotAt.
 func (e Entry[K, V]) RefreshableAt() time.Time {
 	return time.Unix(0, e.RefreshableAtNano)
@@ -82,7 +82,7 @@ func (e Entry[K, V]) RefreshableAt() time.Time {
 // to elapsing this time bound. An entry is considered fresh if its age is less than this
 // duration, and stale otherwise. The refresh policy determines when the entry's age is reset.
 //
-// If the cache was not configured with a refresh policy then this value is always math.MaxInt64.
+// If the cache was not configured with a refresh policy then this value is always [math.MaxInt64].
 func (e Entry[K, V]) RefreshableAfter() time.Duration {
 	return time.Duration(e.RefreshableAtNano - e.SnapshotAtNano)
 }

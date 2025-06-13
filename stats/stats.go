@@ -43,7 +43,7 @@ type Stats struct {
 // Requests returns the number of times otter.Cache lookup methods were looking for a cached value.
 //
 // NOTE: the values of the metrics are undefined in case of overflow. If you require specific handling, we recommend
-// implementing your own Recorder.
+// implementing your own [Recorder].
 func (s Stats) Requests() uint64 {
 	return checkedAdd(s.Hits, s.Misses)
 }
@@ -73,7 +73,7 @@ func (s Stats) MissRatio() float64 {
 // Loads returns the total number of times that otter.Cache lookup methods attempted to load new values.
 //
 // NOTE: the values of the metrics are undefined in case of overflow. If you require specific handling, we recommend
-// implementing your own Recorder.
+// implementing your own [Recorder].
 func (s Stats) Loads() uint64 {
 	return checkedAdd(s.LoadSuccesses, s.LoadFailures)
 }

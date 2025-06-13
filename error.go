@@ -7,12 +7,12 @@ import (
 )
 
 const (
-	// ErrNotFound should be returned from a Loader.Load to indicate that an entry is
+	// ErrNotFound should be returned from a Loader.Load/Loader.Reload to indicate that an entry is
 	// missing at the underlying data source. This helps the cache to determine
 	// if an entry should be deleted.
 	//
-	// NOTE: this only applies to Cache.Get/Loader.Load. For Cache.BulkGet, this works implicitly
-	// if you return a map without the key.
+	// NOTE: this only applies to Cache.Get/Cache.Refresh/Loader.Load/Loader.Reload. For Cache.BulkGet/Cache.BulkRefresh,
+	// this works implicitly if you return a map without the key.
 	ErrNotFound strError = "otter: the entry was not found in the data source"
 )
 

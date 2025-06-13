@@ -53,7 +53,7 @@ func (c *varExpiryCreating[K, V]) ExpireAfterRead(entry Entry[K, V]) time.Durati
 	return entry.ExpiresAfter()
 }
 
-// ExpiryCreating returns a ExpiryCalculator that specifies that the entry should be automatically deleted from
+// ExpiryCreating returns an [ExpiryCalculator] that specifies that the entry should be automatically deleted from
 // the cache once the duration has elapsed after the entry's creation. The expiration time is
 // not modified when the entry is updated or read.
 func ExpiryCreating[K comparable, V any](duration time.Duration) ExpiryCalculator[K, V] {
@@ -62,7 +62,7 @@ func ExpiryCreating[K comparable, V any](duration time.Duration) ExpiryCalculato
 	})
 }
 
-// ExpiryCreatingFunc returns a ExpiryCalculator that specifies that the entry should be automatically deleted from
+// ExpiryCreatingFunc returns an [ExpiryCalculator] that specifies that the entry should be automatically deleted from
 // the cache once the duration has elapsed after the entry's creation. The expiration time is
 // not modified when the entry is updated or read.
 func ExpiryCreatingFunc[K comparable, V any](f func(entry Entry[K, V]) time.Duration) ExpiryCalculator[K, V] {
@@ -87,7 +87,7 @@ func (w *varExpiryWriting[K, V]) ExpireAfterRead(entry Entry[K, V]) time.Duratio
 	return entry.ExpiresAfter()
 }
 
-// ExpiryWriting returns a ExpiryCalculator that specifies that the entry should be automatically deleted from
+// ExpiryWriting returns an [ExpiryCalculator] that specifies that the entry should be automatically deleted from
 // the cache once the duration has elapsed after the entry's creation or replacement of its value.
 // The expiration time is not modified when the entry is read.
 func ExpiryWriting[K comparable, V any](duration time.Duration) ExpiryCalculator[K, V] {
@@ -96,7 +96,7 @@ func ExpiryWriting[K comparable, V any](duration time.Duration) ExpiryCalculator
 	})
 }
 
-// ExpiryWritingFunc returns a ExpiryCalculator that specifies that the entry should be automatically deleted from
+// ExpiryWritingFunc returns an [ExpiryCalculator] that specifies that the entry should be automatically deleted from
 // the cache once the duration has elapsed after the entry's creation or replacement of its value.
 // The expiration time is not modified when the entry is read.
 func ExpiryWritingFunc[K comparable, V any](f func(entry Entry[K, V]) time.Duration) ExpiryCalculator[K, V] {
@@ -121,7 +121,7 @@ func (a *varExpiryAccessing[K, V]) ExpireAfterRead(entry Entry[K, V]) time.Durat
 	return a.f(entry)
 }
 
-// ExpiryAccessing returns a ExpiryCalculator that specifies that the entry should be automatically deleted from
+// ExpiryAccessing returns an [ExpiryCalculator] that specifies that the entry should be automatically deleted from
 // the cache once the duration has elapsed after the entry's creation, replacement of its value,
 // or after it was last read.
 func ExpiryAccessing[K comparable, V any](duration time.Duration) ExpiryCalculator[K, V] {
@@ -130,7 +130,7 @@ func ExpiryAccessing[K comparable, V any](duration time.Duration) ExpiryCalculat
 	})
 }
 
-// ExpiryAccessingFunc returns a ExpiryCalculator that specifies that the entry should be automatically deleted from
+// ExpiryAccessingFunc returns an [ExpiryCalculator] that specifies that the entry should be automatically deleted from
 // the cache once the duration has elapsed after the entry's creation, replacement of its value,
 // or after it was last read.
 func ExpiryAccessingFunc[K comparable, V any](f func(entry Entry[K, V]) time.Duration) ExpiryCalculator[K, V] {

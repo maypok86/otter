@@ -45,7 +45,7 @@ func (dl *defaultLogger) Error(ctx context.Context, msg string, err error) {
 	dl.log.ErrorContext(ctx, msg, slog.Any("err", err))
 }
 
-// NoopLogger is a stub implementation of Logger interface. It may be useful if error logging is not necessary.
+// NoopLogger is a stub implementation of [Logger] interface. It may be useful if error logging is not necessary.
 type NoopLogger struct{}
 
 func (nl *NoopLogger) Warn(ctx context.Context, msg string, err error)  {}

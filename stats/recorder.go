@@ -16,7 +16,7 @@ package stats
 
 import "time"
 
-// Recorder accumulates statistics during the operation of a Cache.
+// Recorder accumulates statistics during the operation of a otter.Cache.
 type Recorder interface {
 	// RecordHits records cache hits. This should be called when a cache request returns a cached value.
 	RecordHits(count int)
