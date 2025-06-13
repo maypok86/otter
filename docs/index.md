@@ -1,15 +1,14 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/maypok86/otter/main/assets/logo.png" width="70%" height="auto" >
+  <img src="https://raw.githubusercontent.com/maypok86/otter/main/logo.png" width="70%" height="auto" >
   <h1 align="center">High performance in-memory cache</h1>
 </p>
 
 <p align="center">
 <a href="https://pkg.go.dev/github.com/maypok86/otter"><img src="https://pkg.go.dev/badge/github.com/maypok86/otter.svg" alt="Go Reference"></a>
 <img src="https://github.com/maypok86/otter/actions/workflows/test.yml/badge.svg" />
-<a href="https://codecov.io/gh/maypok86/otter" >
-    <img src="https://codecov.io/gh/maypok86/otter/graph/badge.svg?token=G0PJFOR8IF"/>
-</a>
-<img src="https://goreportcard.com/badge/github.com/maypok86/otter" />
+<a href="https://github.com/maypok86/otter/actions?query=branch%3Amain+workflow%3ATest" >
+    <img src="https://gist.githubusercontent.com/maypok86/2aae2cd39836dc7c258df7ffec602d1c/raw/coverage.svg"/></a>
+<a href="https://github.com/maypok86/otter/releases"><img alt="GitHub Release" src="https://img.shields.io/github/v/release/maypok86/otter"></a>
 <a href="https://github.com/avelino/awesome-go"><img src="https://awesome.re/mentioned-badge.svg" alt="Mentioned in Awesome Go"></a>
 </p>
 
