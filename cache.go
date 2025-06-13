@@ -136,6 +136,8 @@ func (c *Cache[K, V]) Get(ctx context.Context, key K, loader Loader[K, V]) (V, e
 //
 // No observable state associated with this cache is modified until loading completes.
 //
+// NOTE: duplicate elements in keys will be ignored.
+//
 // WARNING: BulkLoader.BulkLoad must not attempt to update any mappings of this cache directly.
 //
 // WARNING: For any given key, every bulkLoader used with it should compute the same value.
@@ -156,6 +158,7 @@ func (c *Cache[K, V]) BulkGet(ctx context.Context, keys []K, bulkLoader BulkLoad
 //
 // Cache will call Loader.Reload if the cache currently contains a value for the key,
 // and Loader.Load otherwise.
+// Loading is asynchronous by delegating to the configured Options.Executor.
 //
 // Refresh returns a channel that will receive the result when it is ready. The returned channel will not be closed.
 //
@@ -180,8 +183,11 @@ func (c *Cache[K, V]) Refresh(key K, loader Loader[K, V]) <-chan RefreshResult[K
 // loading the value for key, then this method does not perform an additional load.
 //
 // Cache will call BulkLoader.BulkReload for existing keys, and BulkLoader.BulkLoad otherwise.
+// Loading is asynchronous by delegating to the configured Options.Executor.
 //
 // BulkRefresh returns a channel that will receive the results when they are ready. The returned channel will not be closed.
+//
+// NOTE: duplicate elements in keys will be ignored.
 //
 // WARNING: If the cache was constructed without RefreshCalculator, then BulkRefresh will return the nil channel.
 //

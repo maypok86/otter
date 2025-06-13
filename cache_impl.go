@@ -77,34 +77,35 @@ func zeroValue[V any]() V {
 // cache is a structure performs a best-effort bounding of a hash table using eviction algorithm
 // to determine which entries to evict when the capacity is exceeded.
 type cache[K comparable, V any] struct {
-	drainStatus       atomic.Uint32
-	_                 [xruntime.CacheLineSize - 4]byte
-	nodeManager       *node.Manager[K, V]
-	hashmap           *hashmap.Map[K, V, node.Node[K, V]]
-	evictionPolicy    *tinylfu.Policy[K, V]
-	expirationPolicy  *expiration.Variable[K, V]
-	stats             stats.Recorder
-	logger            Logger
-	clock             *clock.Real
-	readBuffer        *lossy.Striped[K, V]
-	writeBuffer       *queue.MPSC[task[K, V]]
-	executor          func(fn func())
-	singleflight      *group[K, V]
-	evictionMutex     sync.Mutex
-	doneClose         chan struct{}
-	weigher           func(key K, value V) uint32
-	onDeletion        func(e DeletionEvent[K, V])
-	onAtomicDeletion  func(e DeletionEvent[K, V])
-	expiryCalculator  ExpiryCalculator[K, V]
-	refreshCalculator RefreshCalculator[K, V]
-	taskPool          sync.Pool
-	withTime          bool
-	withExpiration    bool
-	withRefresh       bool
-	withEviction      bool
-	isWeighted        bool
-	withMaintenance   bool
-	withStats         bool
+	drainStatus        atomic.Uint32
+	_                  [xruntime.CacheLineSize - 4]byte
+	nodeManager        *node.Manager[K, V]
+	hashmap            *hashmap.Map[K, V, node.Node[K, V]]
+	evictionPolicy     *tinylfu.Policy[K, V]
+	expirationPolicy   *expiration.Variable[K, V]
+	stats              stats.Recorder
+	logger             Logger
+	clock              *clock.Real
+	readBuffer         *lossy.Striped[K, V]
+	writeBuffer        *queue.MPSC[task[K, V]]
+	executor           func(fn func())
+	singleflight       *group[K, V]
+	evictionMutex      sync.Mutex
+	doneClose          chan struct{}
+	weigher            func(key K, value V) uint32
+	onDeletion         func(e DeletionEvent[K, V])
+	onAtomicDeletion   func(e DeletionEvent[K, V])
+	expiryCalculator   ExpiryCalculator[K, V]
+	refreshCalculator  RefreshCalculator[K, V]
+	taskPool           sync.Pool
+	hasDefaultExecutor bool
+	withTime           bool
+	withExpiration     bool
+	withRefresh        bool
+	withEviction       bool
+	isWeighted         bool
+	withMaintenance    bool
+	withStats          bool
 }
 
 // newCache returns a new cache instance based on the settings from Options.
@@ -131,23 +132,22 @@ func newCache[K comparable, V any](o *Options[K, V]) *cache[K, V] {
 	}
 
 	c := &cache[K, V]{
-		nodeManager:  nodeManager,
-		hashmap:      hashmap.NewWithSize[K, V, node.Node[K, V]](nodeManager, o.getInitialCapacity()),
-		stats:        o.StatsRecorder,
-		logger:       o.Logger,
-		readBuffer:   readBuffer,
-		singleflight: &group[K, V]{},
-		executor: func(fn func()) {
-			go fn()
-		},
-		weigher:           o.Weigher,
-		onDeletion:        o.OnDeletion,
-		onAtomicDeletion:  o.OnAtomicDeletion,
-		clock:             &clock.Real{},
-		withStats:         withStats,
-		expiryCalculator:  o.ExpiryCalculator,
-		refreshCalculator: o.RefreshCalculator,
-		isWeighted:        withWeight,
+		nodeManager:        nodeManager,
+		hashmap:            hashmap.NewWithSize[K, V, node.Node[K, V]](nodeManager, o.getInitialCapacity()),
+		stats:              o.StatsRecorder,
+		logger:             o.Logger,
+		readBuffer:         readBuffer,
+		singleflight:       &group[K, V]{},
+		executor:           o.getExecutor(),
+		hasDefaultExecutor: o.Executor == nil,
+		weigher:            o.Weigher,
+		onDeletion:         o.OnDeletion,
+		onAtomicDeletion:   o.OnAtomicDeletion,
+		clock:              &clock.Real{},
+		withStats:          withStats,
+		expiryCalculator:   o.ExpiryCalculator,
+		refreshCalculator:  o.RefreshCalculator,
+		isWeighted:         withWeight,
 	}
 
 	c.withEviction = withEviction
@@ -1260,14 +1260,34 @@ func (c *cache[K, V]) scheduleDrainBuffers() {
 
 		c.drainStatus.Store(processingToIdle)
 
-		c.executor(c.drainBuffers)
+		var token atomic.Uint32
+		c.executor(func() {
+			c.drainBuffers(&token)
+		})
 
-		c.evictionMutex.Unlock()
+		if token.CompareAndSwap(0, 1) {
+			c.evictionMutex.Unlock()
+		}
 	}
 }
 
-func (c *cache[K, V]) drainBuffers() {
-	c.performCleanUp(nil)
+func (c *cache[K, V]) drainBuffers(token *atomic.Uint32) {
+	if c.evictionMutex.TryLock() {
+		c.maintenance(nil)
+		c.evictionMutex.Unlock()
+		c.rescheduleCleanUpIfIncomplete()
+	} else {
+		// already locked
+		if token.CompareAndSwap(0, 1) {
+			// executor is sync
+			c.maintenance(nil)
+			c.evictionMutex.Unlock()
+			c.rescheduleCleanUpIfIncomplete()
+		} else {
+			// executor is async
+			c.performCleanUp(nil)
+		}
+	}
 }
 
 func (c *cache[K, V]) performCleanUp(t *task[K, V]) {
@@ -1282,8 +1302,13 @@ func (c *cache[K, V]) rescheduleCleanUpIfIncomplete() {
 		return
 	}
 
-	// TODO: if executor
-	c.scheduleDrainBuffers()
+	// An immediate scheduling cannot be performed on a custom executor because it may use a
+	// caller-runs policy. This could cause the caller's penalty to exceed the amortized threshold,
+	// e.g. repeated concurrent writes could result in a retry loop.
+	if c.hasDefaultExecutor {
+		c.scheduleDrainBuffers()
+		return
+	}
 }
 
 func (c *cache[K, V]) maintenance(t *task[K, V]) {

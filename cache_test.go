@@ -750,6 +750,9 @@ func TestCache_Ratio(t *testing.T) {
 	c := Must(&Options[uint64, uint64]{
 		MaximumSize:   capacity,
 		StatsRecorder: statsCounter,
+		Executor: func(fn func()) {
+			fn()
+		},
 		OnDeletion: func(e DeletionEvent[uint64, uint64]) {
 			mutex.Lock()
 			m[e.Cause]++

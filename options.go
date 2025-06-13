@@ -24,6 +24,12 @@ const (
 	defaultInitialCapacity = 16
 )
 
+var (
+	defaultExecutor = func(fn func()) {
+		go fn()
+	}
+)
+
 // Options should be passed to New to construct a Cache.
 type Options[K comparable, V any] struct {
 	// MaximumSize specifies the maximum number of entries the cache may contain.
@@ -66,15 +72,18 @@ type Options[K comparable, V any] struct {
 	// elapsed after the entry's creation, the most recent replacement of its value, or its last read.
 	// The expiration time is reset by all cache read and write operations.
 	ExpiryCalculator ExpiryCalculator[K, V]
-	// OnDeletion specifies a handler that caches should notify each time an entry is deleted for any
-	// DeletionCause. The cache will invoke this handler in the background goroutine
+	// OnDeletion specifies a handler instance that caches should notify each time an entry is deleted for any
+	// DeletionCause reason. The cache will invoke this handler on the configured Executor
 	// after the entry's deletion operation has completed.
+	//
+	// An OnAtomicDeletion may be preferred when the handler should be invoked
+	// as part of the atomic operation to delete the entry.
 	OnDeletion func(e DeletionEvent[K, V])
 	// OnAtomicDeletion specifies a handler that caches should notify each time an entry is deleted for any
 	// DeletionCause. The cache will invoke this handler during the atomic operation to delete the entry.
 	//
 	// A OnDeletion may be preferred when the handler should be performed outside the atomic operation to
-	// delete the entry.
+	// delete the entry, or be delegated to the configured Executor.
 	OnAtomicDeletion func(e DeletionEvent[K, V])
 	// RefreshCalculator specifies that active entries are eligible for automatic refresh once a duration has
 	// elapsed after the entry's creation, the most recent replacement of its value, or the most recent entry's reload.
@@ -87,6 +96,18 @@ type Options[K comparable, V any] struct {
 	//
 	// NOTE: all errors returned during refresh will be logged (using Logger) and then swallowed.
 	RefreshCalculator RefreshCalculator[K, V]
+	// Executor specifies the executor to use when running asynchronous tasks. The executor is delegated to
+	// when sending deletion events, when asynchronous computations are performed by
+	// Cache.Refresh/Cache.BulkRefresh or for refreshes in Cache.Get/Cache.BulkGet, if RefreshCalculator was specified,
+	// or when performing periodic maintenance. By default, goroutines are used.
+	//
+	// The primary intent of this method is to facilitate testing of caches which have been configured
+	// with OnDeletion or utilize asynchronous computations. A test may instead prefer
+	// to configure the cache to execute tasks directly on the same goroutine.
+	//
+	// Beware that configuring a cache with an executor that discards tasks or never runs them may
+	// experience non-deterministic behavior.
+	Executor func(fn func())
 	// Logger specifies the Logger implementation that will be used for logging warning and errors.
 	//
 	// The cache will use slog.Default() by default.
@@ -112,6 +133,13 @@ func (o *Options[K, V]) getInitialCapacity() int {
 		return o.InitialCapacity
 	}
 	return defaultInitialCapacity
+}
+
+func (o *Options[K, V]) getExecutor() func(fn func()) {
+	if o.Executor == nil {
+		return defaultExecutor
+	}
+	return o.Executor
 }
 
 func (o *Options[K, V]) validate() error {
