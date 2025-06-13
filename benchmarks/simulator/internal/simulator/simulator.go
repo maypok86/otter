@@ -10,30 +10,30 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
-	"github.com/maypok86/otter/v2/benchmarks/client"
 	"github.com/maypok86/otter/v2/benchmarks/simulator/internal/config"
 	"github.com/maypok86/otter/v2/benchmarks/simulator/internal/policy"
+	"github.com/maypok86/otter/v2/benchmarks/simulator/internal/policy/product"
 	"github.com/maypok86/otter/v2/benchmarks/simulator/internal/report"
 	"github.com/maypok86/otter/v2/benchmarks/simulator/internal/report/simulation"
 )
 
-func getClients() map[string]client.Client[uint64, uint64] {
-	cl := []client.Client[uint64, uint64]{
-		&client.Otter[uint64, uint64]{},
-		&client.Theine[uint64, uint64]{},
-		&client.TinyLFU[uint64, uint64]{},
-		&client.ClockPro{},
-		&client.Ristretto[uint64, uint64]{},
-		&client.LRU[uint64, uint64]{},
-		&client.ARC[uint64, uint64]{},
-		client.Wrap[uint64](&client.Sturdyc[uint64]{}),
+func getPolicies() map[string]product.Policy[uint64, uint64] {
+	policies := []product.Policy[uint64, uint64]{
+		&product.Otter[uint64, uint64]{},
+		&product.Theine[uint64, uint64]{},
+		&product.Ristretto[uint64, uint64]{},
+		&product.Sturdyc{},
+		&product.ClockPro{},
+		&product.S3FIFO[uint64, uint64]{},
+		&product.LRU[uint64, uint64]{},
+		&product.ARC[uint64, uint64]{},
 	}
 
-	clients := make(map[string]client.Client[uint64, uint64], len(cl))
-	for _, c := range cl {
-		clients[c.Name()] = c
+	policiesSet := make(map[string]product.Policy[uint64, uint64], len(policies))
+	for _, c := range policies {
+		policiesSet[c.Name()] = c
 	}
-	return clients
+	return policiesSet
 }
 
 type Simulator struct {
@@ -49,22 +49,18 @@ func New(cfg config.Config) (Simulator, error) {
 
 func (s Simulator) Simulate() error {
 	eg, _ := errgroup.WithContext(context.Background())
-	if s.cfg.Capacities[0] < 10_000 {
-		eg.SetLimit(1)
-	} else {
-		eg.SetLimit(runtime.NumCPU())
-	}
+	eg.SetLimit(runtime.NumCPU())
 	size := 0
 	for i, capacity := range s.cfg.Capacities {
 		policies := make([]policyContract, 0, len(s.cfg.Caches))
-		clients := getClients()
-		for _, cache := range s.cfg.Caches {
-			c, ok := clients[cache]
+		ps := getPolicies()
+		for _, c := range s.cfg.Caches {
+			p, ok := ps[c]
 			if !ok {
-				return fmt.Errorf("not valid cache name: %s", cache)
+				return fmt.Errorf("not valid cache name: %s", c)
 			}
 
-			policies = append(policies, policy.NewPolicy(c))
+			policies = append(policies, policy.NewPolicy(p))
 		}
 		if i == 0 {
 			size = len(s.cfg.Capacities) * len(policies)

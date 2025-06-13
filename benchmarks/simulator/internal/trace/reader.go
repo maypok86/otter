@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 
 	"github.com/klauspost/compress/zstd"
+	"github.com/ulikunitz/xz"
 )
 
 func wrapDecoder(r io.Reader, path string) (io.Reader, error) {
@@ -26,6 +27,12 @@ func wrapDecoder(r io.Reader, path string) (io.Reader, error) {
 			return nil, fmt.Errorf("not valid .zst file")
 		}
 		return zstdReader, nil
+	case ".xz":
+		xzReader, err := xz.NewReader(r)
+		if err != nil {
+			return nil, fmt.Errorf("not valid .xz file")
+		}
+		return xzReader, nil
 	default:
 		// without decoding
 		return r, nil

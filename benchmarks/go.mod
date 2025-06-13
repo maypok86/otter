@@ -10,7 +10,6 @@ require (
 	github.com/bluele/gcache v0.0.2
 	github.com/dgraph-io/ristretto v1.0.0
 	github.com/dgryski/go-clockpro v0.0.0-20140817124034-edc6d3eeb96e
-	github.com/dgryski/go-tinylfu v0.1.0
 	github.com/go-echarts/go-echarts/v2 v2.5.4
 	github.com/go-echarts/snapshot-chromedp v0.0.5
 	github.com/hashicorp/golang-lru/arc/v2 v2.0.7
@@ -22,6 +21,8 @@ require (
 	github.com/olekukonko/tablewriter v0.0.5
 	github.com/pingcap/go-ycsb v1.0.1
 	github.com/scalalang2/golang-fifo/v2 v2.0.0-20231212012136-274aca942e14
+	github.com/ulikunitz/xz v0.5.12
+	github.com/viccon/sturdyc v1.1.5
 	golang.org/x/sync v0.14.0
 )
 
@@ -45,7 +46,6 @@ require (
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/rivo/uniseg v0.2.0 // indirect
 	github.com/stretchr/testify v1.10.0 // indirect
-	github.com/viccon/sturdyc v1.1.5 // indirect
 	github.com/zeebo/xxh3 v1.0.2 // indirect
 	go.uber.org/atomic v1.9.0 // indirect
 	golang.org/x/sys v0.33.0 // indirect

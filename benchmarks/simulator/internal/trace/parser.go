@@ -25,6 +25,10 @@ func NewParser(traceType string, reader io.Reader) (parserContract, error) {
 		return parser.NewOracleGeneral(reader), nil
 	case parser.LibcachesimCSVFormat:
 		return libcachesim.NewCSV(reader), nil
+	case parser.ScarabFormat:
+		return parser.NewScarab(reader), nil
+	case parser.CordaFormat:
+		return parser.NewCorda(reader), nil
 	default:
 		return nil, ErrUnknownTraceFormat
 	}

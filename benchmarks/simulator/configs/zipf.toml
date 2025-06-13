@@ -5,9 +5,9 @@ caches = [
     "otter",
     "theine",
     "ristretto",
-    "lru",
+    "sturdyc",
     "arc",
-    "sturdyc"
+    "lru",
 ]
 limit = 1_000_000
 

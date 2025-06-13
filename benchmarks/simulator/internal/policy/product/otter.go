@@ -1,8 +1,6 @@
-package client
+package product
 
-import (
-	"github.com/maypok86/otter/v2"
-)
+import "github.com/maypok86/otter/v2"
 
 type Otter[K comparable, V any] struct {
 	client *otter.Cache[K, V]
@@ -12,6 +10,9 @@ func (c *Otter[K, V]) Init(capacity int) {
 	c.client = otter.Must[K, V](&otter.Options[K, V]{
 		MaximumSize:     capacity,
 		InitialCapacity: capacity,
+		Executor: func(fn func()) {
+			fn()
+		},
 	})
 }
 

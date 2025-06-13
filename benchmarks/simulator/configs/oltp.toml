@@ -5,9 +5,9 @@ caches = [
     "otter",
     "theine",
     "ristretto",
-    "lru",
+    "sturdyc",
     "arc",
-    "sturdyc"
+    "lru",
 ]
 
 [file]

@@ -1,4 +1,4 @@
-package client
+package product
 
 import (
 	"strconv"
@@ -16,7 +16,7 @@ func (c *ClockPro) Init(capacity int) {
 }
 
 func (c *ClockPro) Name() string {
-	return "clockpro"
+	return "clock-pro"
 }
 
 func (c *ClockPro) Get(key uint64) (uint64, bool) {

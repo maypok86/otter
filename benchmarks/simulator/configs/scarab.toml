@@ -1,0 +1,15 @@
+type = "file"
+name = "Scarab"
+capacities = [ 1000, 5000, 10000, 25000, 50000, 75000, 100000, 125000 ]
+caches = [
+    "otter",
+    "theine",
+    "ristretto",
+    "sturdyc",
+    "arc",
+    "lru",
+]
+
+[file]
+trace_type = "scarab"
+paths = [ "trace/scarab/scarab-recs.trace.xz" ]

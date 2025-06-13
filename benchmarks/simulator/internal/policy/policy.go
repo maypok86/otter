@@ -1,42 +1,42 @@
 package policy
 
 import (
-	"github.com/maypok86/otter/v2/benchmarks/client"
 	"github.com/maypok86/otter/v2/benchmarks/simulator/internal/event"
+	"github.com/maypok86/otter/v2/benchmarks/simulator/internal/policy/product"
 )
 
 type Policy struct {
-	client client.Client[uint64, uint64]
+	policy product.Policy[uint64, uint64]
 	hits   uint64
 	misses uint64
 }
 
-func NewPolicy(c client.Client[uint64, uint64]) *Policy {
+func NewPolicy(c product.Policy[uint64, uint64]) *Policy {
 	return &Policy{
-		client: c,
+		policy: c,
 	}
 }
 
 func (p *Policy) Record(e event.AccessEvent) {
 	key := e.Key()
-	value, ok := p.client.Get(key)
+	value, ok := p.policy.Get(key)
 	if ok {
 		if key != value {
 			panic("not valid value")
 		}
 		p.hits++
 	} else {
-		p.client.Set(key, key)
+		p.policy.Set(key, key)
 		p.misses++
 	}
 }
 
 func (p *Policy) Name() string {
-	return p.client.Name()
+	return p.policy.Name()
 }
 
 func (p *Policy) Init(capacity int) {
-	p.client.Init(capacity)
+	p.policy.Init(capacity)
 }
 
 func (p *Policy) Ratio() float64 {
@@ -44,5 +44,5 @@ func (p *Policy) Ratio() float64 {
 }
 
 func (p *Policy) Close() {
-	p.client.Close()
+	p.policy.Close()
 }
