@@ -1,2 +1,8 @@
 *.txt
 *.png
+!memory.txt
+!memory_1000.png
+!memory_10000.png
+!memory_25000.png
+!memory_100000.png
+!memory_1000000.png
