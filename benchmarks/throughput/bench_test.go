@@ -23,11 +23,11 @@ var (
 		&client.Otter[string, string]{},
 		&client.Theine[string, string]{},
 		&client.Ristretto[string, string]{},
+		&client.Sturdyc[string]{},
 		&client.Ccache[string]{},
 		&client.Gcache[string, string]{},
 		&client.TTLCache[string, string]{},
 		&client.GolangLRU[string, string]{},
-		&client.Sturdyc[string]{},
 	}
 )
 

@@ -1,2 +1,6 @@
 *.txt
 *.png
+!throughput.txt
+!reads=100,writes=0.png
+!reads=75,writes=25.png
+!reads=0,writes=100.png

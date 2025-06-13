@@ -1,0 +1,30 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/maypok86/otter/v2/benchmarks/throughput
+cpu: Apple M1 Pro
+BenchmarkCache/zipf_otter_reads=100%,writes=0%-8         	122921936	         9.814 ns/op	 101892046 ops/s
+BenchmarkCache/zipf_theine_reads=100%,writes=0%-8        	79605862	        16.64 ns/op	  60093991 ops/s
+BenchmarkCache/zipf_ristretto_reads=100%,writes=0%-8     	54188916	        20.18 ns/op	  49557401 ops/s
+BenchmarkCache/zipf_sturdyc_reads=100%,writes=0%-8       	28680830	        39.92 ns/op	  25049106 ops/s
+BenchmarkCache/zipf_ccache_reads=100%,writes=0%-8        	17215149	        68.16 ns/op	  14670682 ops/s
+BenchmarkCache/zipf_gcache_reads=100%,writes=0%-8        	 3909086	       304.6 ns/op	   3282526 ops/s
+BenchmarkCache/zipf_ttlcache_reads=100%,writes=0%-8      	 3020834	       391.5 ns/op	   2554422 ops/s
+BenchmarkCache/zipf_golang-lru_reads=100%,writes=0%-8    	 3760892	       321.0 ns/op	   3114966 ops/s
+BenchmarkCache/zipf_otter_reads=75%,writes=25%-8         	93732848	        12.88 ns/op	  77653015 ops/s
+BenchmarkCache/zipf_theine_reads=75%,writes=25%-8        	37133229	        29.53 ns/op	  33864177 ops/s
+BenchmarkCache/zipf_ristretto_reads=75%,writes=25%-8     	29648815	        40.62 ns/op	  24617881 ops/s
+BenchmarkCache/zipf_sturdyc_reads=75%,writes=25%-8       	10999502	       110.1 ns/op	   9083666 ops/s
+BenchmarkCache/zipf_ccache_reads=75%,writes=25%-8        	14695136	        81.88 ns/op	  12213161 ops/s
+BenchmarkCache/zipf_gcache_reads=75%,writes=25%-8        	 3642490	       317.5 ns/op	   3149307 ops/s
+BenchmarkCache/zipf_ttlcache_reads=75%,writes=25%-8      	 2966043	       411.6 ns/op	   2429510 ops/s
+BenchmarkCache/zipf_golang-lru_reads=75%,writes=25%-8    	 3388845	       348.1 ns/op	   2872441 ops/s
+BenchmarkCache/zipf_otter_reads=0%,writes=100%-8         	 2681835	       442.4 ns/op	   2260638 ops/s
+BenchmarkCache/zipf_theine_reads=0%,writes=100%-8        	 5199037	       257.9 ns/op	   3876921 ops/s
+BenchmarkCache/zipf_ristretto_reads=0%,writes=100%-8     	 4340487	       270.0 ns/op	   3703928 ops/s
+BenchmarkCache/zipf_sturdyc_reads=0%,writes=100%-8       	 7170574	       167.3 ns/op	   5978425 ops/s
+BenchmarkCache/zipf_ccache_reads=0%,writes=100%-8        	 1367628	       857.3 ns/op	   1166419 ops/s
+BenchmarkCache/zipf_gcache_reads=0%,writes=100%-8        	 3458318	       339.7 ns/op	   2943699 ops/s
+BenchmarkCache/zipf_ttlcache_reads=0%,writes=100%-8      	 3441862	       358.1 ns/op	   2792145 ops/s
+BenchmarkCache/zipf_golang-lru_reads=0%,writes=100%-8    	 3985372	       306.7 ns/op	   3260964 ops/s
+PASS
+ok  	github.com/maypok86/otter/v2/benchmarks/throughput	40.007s
