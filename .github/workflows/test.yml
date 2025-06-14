@@ -23,12 +23,6 @@ jobs:
       - name: Unit tests
         run: make test.unit
 
-      - name: Coveralls
-        uses: coverallsapp/github-action@v2
-        with:
-          file: coverage.txt
-        continue-on-error: true
-
       - name: Process coverage report
         run: bash ./.github/workflows/scripts/coverage-report.sh
         env:
