@@ -13,3 +13,6 @@ caches = [
 [file]
 trace_type = "scarab"
 paths = [ "trace/scarab/scarab-recs.trace.xz" ]
+paths = [
+    { trace_type = "scarab", path = "trace/scarab/scarab-recs.trace.xz.gz" },
+]

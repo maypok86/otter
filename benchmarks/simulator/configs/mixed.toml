@@ -1,0 +1,18 @@
+type = "file"
+name = "Mixed"
+capacities = [ 250, 500, 750, 1000, 1250, 1500, 1750, 2000 ]
+caches = [
+    "otter",
+    "theine",
+    "ristretto",
+    "sturdyc",
+    "arc",
+    "lru",
+]
+
+[file]
+paths = [
+    { trace_type = "corda", path = "trace/corda/trace_vaultservice.gz" },
+    { trace_type = "lirs", path = "trace/lirs/loop.gz" },
+    { trace_type = "corda", path = "trace/corda/trace_vaultservice.gz" },
+]

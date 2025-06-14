@@ -11,5 +11,6 @@ caches = [
 ]
 
 [file]
-trace_type = "arc"
-paths = [ "trace/arc/s3.gz" ]
+paths = [
+    { trace_type = "arc", path = "trace/arc/s3.gz" },
+]

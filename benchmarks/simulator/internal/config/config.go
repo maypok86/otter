@@ -92,9 +92,25 @@ func (z *Zipf) validate() error {
 	return nil
 }
 
+type FilePath struct {
+	TraceType string `toml:"trace_type"`
+	Path      string `toml:"path"`
+}
+
+func (fp *FilePath) validate() error {
+	if fp == nil {
+		return nil
+	}
+
+	if !parser.IsAvailableFormat(fp.TraceType) {
+		return errors.New("not valid trace type")
+	}
+
+	return nil
+}
+
 type File struct {
-	TraceType string   `toml:"trace_type"`
-	Paths     []string `toml:"paths"`
+	Paths []FilePath `toml:"paths"`
 }
 
 func (f *File) validate() error {
@@ -106,8 +122,10 @@ func (f *File) validate() error {
 		return errors.New("paths is empty")
 	}
 
-	if !parser.IsAvailableFormat(f.TraceType) {
-		return errors.New("not valid trace type")
+	for _, p := range f.Paths {
+		if err := p.validate(); err != nil {
+			return err
+		}
 	}
 
 	return nil

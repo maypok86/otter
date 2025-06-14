@@ -12,24 +12,39 @@ type File struct {
 	base
 }
 
-func NewFile(path, traceType string, limit *uint) (*File, error) {
-	reader, err := trace.NewReader(path)
-	if err != nil {
-		return nil, fmt.Errorf("create file reader: %w", err)
-	}
+type FilePath struct {
+	TraceType string
+	Path      string
+}
 
-	parser, err := trace.NewParser(traceType, reader)
-	if err != nil {
-		return nil, fmt.Errorf("create trace parser: %w", err)
-	}
-
+func NewFile(paths []FilePath, limit *uint) (*File, error) {
 	generate := func(sender *sender[event.AccessEvent]) (stop bool) {
-		done, err := parser.Parse(sender.Send)
-		if err != nil {
-			log.Println(err)
+		for _, p := range paths {
+			reader, err := trace.NewReader(p.Path)
+			if err != nil {
+				log.Println(fmt.Errorf("create file reader: %w", err))
+				return true
+			}
+
+			parser, err := trace.NewParser(p.TraceType, reader)
+			if err != nil {
+				log.Println(fmt.Errorf("create file reader: %w", err))
+				return true
+			}
+
+			for {
+				done, err := parser.Parse(sender.Send)
+				if err != nil {
+					log.Println(err)
+					return true
+				}
+				if done {
+					break
+				}
+			}
 		}
 
-		return done || err != nil
+		return true
 	}
 
 	return &File{

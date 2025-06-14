@@ -49,7 +49,7 @@ func New(cfg config.Config) (Simulator, error) {
 
 func (s Simulator) Simulate() error {
 	eg, _ := errgroup.WithContext(context.Background())
-	eg.SetLimit(runtime.NumCPU())
+	eg.SetLimit(2 * runtime.NumCPU())
 	size := 0
 	for i, capacity := range s.cfg.Capacities {
 		policies := make([]policyContract, 0, len(s.cfg.Caches))

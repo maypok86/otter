@@ -13,7 +13,7 @@ func newGenerator(cfg config.Config) (traceGenerator, error) {
 	case generator.ZipfType:
 		return generator.NewZipf(cfg.Zipf.S, cfg.Zipf.V, cfg.Zipf.IMAX, cfg.Limit), nil
 	case generator.FileType:
-		traceGenerator, err := generator.NewFile(cfg.File.Paths[0], cfg.File.TraceType, cfg.Limit)
+		traceGenerator, err := generator.NewFile(toPaths(cfg.File.Paths), cfg.Limit)
 		if err != nil {
 			return nil, fmt.Errorf("create trace generator from file: %w", err)
 		}
@@ -21,4 +21,15 @@ func newGenerator(cfg config.Config) (traceGenerator, error) {
 	default:
 		return nil, errors.New("unknown trace type")
 	}
+}
+
+func toPaths(paths []config.FilePath) []generator.FilePath {
+	result := make([]generator.FilePath, 0, len(paths))
+	for _, p := range paths {
+		result = append(result, generator.FilePath{
+			TraceType: p.TraceType,
+			Path:      p.Path,
+		})
+	}
+	return result
 }

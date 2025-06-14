@@ -11,5 +11,6 @@ caches = [
 ]
 
 [file]
-trace_type = "lirs"
-paths = [ "trace/lirs/gli.gz" ]
+paths = [
+    { trace_type = "lirs", path = "trace/lirs/gli.gz" },
+]
