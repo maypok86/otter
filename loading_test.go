@@ -479,6 +479,7 @@ func TestCache_Refresh(t *testing.T) {
 	k1 := 1
 	v1 := 100
 	v2 := 101
+	ctx := context.Background()
 
 	done := make(chan struct{})
 	tl1 := newTestLoader[int, int](func(ctx context.Context, key int) (int, error) {
@@ -495,7 +496,7 @@ func TestCache_Refresh(t *testing.T) {
 		panic("not valid key")
 	})
 
-	ch := c.Refresh(k1, tl1)
+	ch := c.Refresh(ctx, k1, tl1)
 
 	v, ok := c.GetIfPresent(k1)
 	if ok {
@@ -516,7 +517,7 @@ func TestCache_Refresh(t *testing.T) {
 		t.Fatalf("GetIfPresent value = %v; want = %v", v, v1)
 	}
 
-	<-c.Refresh(k1, tl2)
+	<-c.Refresh(ctx, k1, tl2)
 
 	v, ok = c.GetIfPresent(k1)
 	if !ok {
@@ -877,6 +878,7 @@ func TestCache_BulkRefresh(t *testing.T) {
 
 	keys := []int{0, 1, 1, 2, 3, 5, 6, 7, 8, 3, 9}
 	toUpdate := []int{3, 7, 0}
+	ctx := context.Background()
 
 	statsCounter := stats.NewCounter()
 	c := Must(&Options[int, int]{
@@ -912,7 +914,7 @@ func TestCache_BulkRefresh(t *testing.T) {
 		return m, nil
 	})
 
-	ch := c.BulkRefresh(keys, tl)
+	ch := c.BulkRefresh(ctx, keys, tl)
 
 	for _, k := range keys {
 		v, ok := c.GetIfPresent(k)
@@ -1031,7 +1033,7 @@ func TestCache_BulkRefreshResults(t *testing.T) {
 
 	startRefresh.Store(true)
 	done <- struct{}{}
-	ch := c.BulkRefresh(keys, btl)
+	ch := c.BulkRefresh(ctx, keys, btl)
 	results := <-ch
 
 	require.Equal(t, len(keys), len(results))

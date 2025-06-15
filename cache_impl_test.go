@@ -15,6 +15,7 @@
 package otter
 
 import (
+	"context"
 	"math"
 	"sync"
 	"testing"
@@ -925,11 +926,12 @@ func TestCache_CornerCases(t *testing.T) {
 		c := &Cache[int, int]{
 			cache: &cache[int, int]{},
 		}
+		ctx := context.Background()
 
 		require.NotPanics(t, func() {
-			require.Nil(t, c.Refresh(1, nil))
-			require.Nil(t, c.BulkRefresh([]int{1}, nil))
-			require.Nil(t, c.cache.refreshKey(refreshableKey[int, int]{}, nil))
+			require.Nil(t, c.Refresh(ctx, 1, nil))
+			require.Nil(t, c.BulkRefresh(ctx, []int{1}, nil))
+			require.Nil(t, c.cache.refreshKey(ctx, refreshableKey[int, int]{}, nil))
 			c.SetRefreshableAfter(1, time.Hour)
 			c.SetRefreshableAfter(1, -time.Hour)
 		})
@@ -940,8 +942,9 @@ func TestCache_CornerCases(t *testing.T) {
 		c := Must(&Options[int, int]{
 			RefreshCalculator: RefreshWriting[int, int](time.Hour),
 		})
+		ctx := context.Background()
 
-		ch := c.BulkRefresh([]int{}, nil)
+		ch := c.BulkRefresh(ctx, []int{}, nil)
 		results := <-ch
 		require.Empty(t, results)
 	})

@@ -21,8 +21,7 @@ import (
 	"time"
 )
 
-// Cache is an in-memory cache implementation that supports full concurrency of retrievals, a high expected
-// concurrency for updates, and multiple ways to bound the cache.
+// Cache is an in-memory cache implementation that supports full concurrency of retrievals and multiple ways to bound the cache.
 type Cache[K comparable, V any] struct {
 	cache *cache[K, V]
 }
@@ -176,8 +175,8 @@ func (c *Cache[K, V]) BulkGet(ctx context.Context, keys []K, bulkLoader BulkLoad
 // with a differently behaving loader. For example, a call that requests a short timeout
 // for an RPC may wait for a similar call that requests a long timeout, or a call by an
 // unprivileged user may return a resource accessible only to a privileged user making a similar call.
-func (c *Cache[K, V]) Refresh(key K, loader Loader[K, V]) <-chan RefreshResult[K, V] {
-	return c.cache.Refresh(key, loader)
+func (c *Cache[K, V]) Refresh(ctx context.Context, key K, loader Loader[K, V]) <-chan RefreshResult[K, V] {
+	return c.cache.Refresh(ctx, key, loader)
 }
 
 // BulkRefresh loads a new value for each key, asynchronously. While the new value is loading the
@@ -203,8 +202,8 @@ func (c *Cache[K, V]) Refresh(key K, loader Loader[K, V]) <-chan RefreshResult[K
 // with a differently behaving loader. For example, a call that requests a short timeout
 // for an RPC may wait for a similar call that requests a long timeout, or a call by an
 // unprivileged user may return a resource accessible only to a privileged user making a similar call.
-func (c *Cache[K, V]) BulkRefresh(keys []K, bulkLoader BulkLoader[K, V]) <-chan []RefreshResult[K, V] {
-	return c.cache.BulkRefresh(keys, bulkLoader)
+func (c *Cache[K, V]) BulkRefresh(ctx context.Context, keys []K, bulkLoader BulkLoader[K, V]) <-chan []RefreshResult[K, V] {
+	return c.cache.BulkRefresh(ctx, keys, bulkLoader)
 }
 
 // Invalidate discards any cached value for the key.
