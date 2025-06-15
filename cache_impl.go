@@ -1000,8 +1000,8 @@ func (c *cache[K, V]) Invalidate(key K) (value V, invalidated bool) {
 	var d node.Node[K, V]
 	offset := c.clock.Offset()
 	c.hashmap.Compute(key, func(n node.Node[K, V]) node.Node[K, V] {
+		c.singleflight.delete(key)
 		if n != nil {
-			c.singleflight.delete(key)
 			d = n
 			c.makeRetired(d)
 			c.notifyAtomicDeletion(d.Key(), d.Value(), CauseInvalidation)
@@ -1018,11 +1018,11 @@ func (c *cache[K, V]) Invalidate(key K) (value V, invalidated bool) {
 func (c *cache[K, V]) deleteNodeFromMap(n node.Node[K, V], cause DeletionCause) node.Node[K, V] {
 	var deleted node.Node[K, V]
 	c.hashmap.Compute(n.Key(), func(current node.Node[K, V]) node.Node[K, V] {
+		c.singleflight.delete(n.Key())
 		if current == nil {
 			return nil
 		}
 		if n.AsPointer() == current.AsPointer() {
-			c.singleflight.delete(n.Key())
 			deleted = current
 			c.makeRetired(deleted)
 			c.notifyAtomicDeletion(deleted.Key(), deleted.Value(), cause)

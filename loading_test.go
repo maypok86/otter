@@ -1433,3 +1433,41 @@ func TestCache_ConcurrentGetAndSet(t *testing.T) {
 		t.Fatalf("statistics are not recorded correctly. snapshot: %v", snapshot)
 	}
 }
+
+func TestCache_ConcurrentLoadingAndInvalidate(t *testing.T) {
+	t.Parallel()
+
+	c := Must[int, int](&Options[int, int]{})
+
+	key := 10
+	value := key + 100
+	ctx := context.Background()
+
+	done := make(chan struct{})
+	inv := make(chan struct{})
+	loader := LoaderFunc[int, int](func(ctx context.Context, key int) (int, error) {
+		done <- struct{}{}
+		time.Sleep(200 * time.Millisecond)
+		<-inv
+		return value, nil
+	})
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+
+		v, err := c.Get(ctx, key, loader)
+		require.NoError(t, err)
+		require.Equal(t, value, v)
+	}()
+
+	<-done
+	// concurrent loading and invalidate
+	c.Invalidate(key)
+	inv <- struct{}{}
+
+	wg.Wait()
+
+	require.False(t, c.has(key))
+}
