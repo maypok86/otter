@@ -121,12 +121,26 @@ markdown_extensions:
   - pymdownx.tasklist:
       custom_checkbox: true
   - pymdownx.tilde
+  - pymdownx.snippets
 
 nav:
   - Overview:
       - Overview: index.md
       - Ask a question: https://github.com/maypok86/otter/discussions/categories/q-a
   - User guide:
+      - v2 manual:
+        - Getting started: user-guide/v2/getting-started.md
+        - Examples: user-guide/v2/examples.md
+        - Features:
+          - user-guide/v2/features/index.md
+          - Eviction: user-guide/v2/features/eviction.md
+          - Deletion: user-guide/v2/features/deletion.md
+          - Loading: user-guide/v2/features/loading.md
+          - Refresh: user-guide/v2/features/refresh.md
+          - Bulk operations: user-guide/v2/features/bulk.md
+          - Statistics: user-guide/v2/features/statistics.md
+          - Extension: user-guide/v2/features/extension.md
+          - Iteration: user-guide/v2/features/iteration.md
       - v1 manual:
         - Getting started: user-guide/v1/getting-started.md
         - Features:
@@ -134,20 +148,9 @@ nav:
             - Expiration policy: user-guide/v1/features/expiration-policy.md
             - Cost-based eviction: user-guide/v1/features/cost.md
             - Statistics: user-guide/v1/features/stats.md
-      - v2 manual:
-          - Getting started: user-guide/v2/getting-started.md
-          - Features:
-              - user-guide/v2/features/index.md
-              - Eviction: user-guide/v2/features/eviction.md
-              - Deletion: user-guide/v2/features/deletion.md
-              - Loading:  user-guide/v2/features/loading.md
-              - Refresh:  user-guide/v2/features/refresh.md
-              - Bulk operations: user-guide/v2/features/bulk.md
-              - Statistics: user-guide/v2/features/statistics.md
-              - Extension: user-guide/v2/features/extension.md
-              - Iteration: user-guide/v2/features/iteration.md
   - API: api/index.md
   - Performance:
+      - Design: performance/design.md
       - Throughput: performance/throughput.md
       - Hit ratio: performance/hit-ratio.md
       - Memory consumption: performance/memory-consumption.md

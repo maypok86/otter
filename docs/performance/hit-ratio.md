@@ -1,30 +1,24 @@
 # Hit ratio
 
+The hit rate simulation code is available [here](https://github.com/maypok86/otter/tree/main/benchmarks/simulator).
+
 ## Traditional traces
 
 ### Zipf
 
-![zipf](https://raw.githubusercontent.com/maypok86/benchmarks/main/simulator/results/zipf.png)
+![zipf](../results/hit-ratio/zipf.png)
 
 ### S3
 
 This trace is described as "disk read accesses initiated by a large commercial search engine in response to various web search requests.".
 
-![s3](https://raw.githubusercontent.com/maypok86/benchmarks/main/simulator/results/s3.png)
+![s3](../results/hit-ratio/s3.png)
 
 ### DS1
 
 This trace is described as "a database server running at a commercial site running an ERP application on top of a commercial database.".
 
-![ds1](https://raw.githubusercontent.com/maypok86/benchmarks/main/simulator/results/ds1.png)
-
-### P3
-
-The trace P3 was collected from workstations running Windows NT by using Vtrace
-which captures disk operations through the use of device
-filters.
-
-![p3](https://raw.githubusercontent.com/maypok86/benchmarks/main/simulator/results/p3.png)
+![ds1](../results/hit-ratio/ds1.png)
 
 ### P8
 
@@ -32,42 +26,38 @@ The trace P8 was collected from workstations running Windows NT by using Vtrace
 which captures disk operations through the use of device
 filters.
 
-![p8](https://raw.githubusercontent.com/maypok86/benchmarks/main/simulator/results/p8.png)
+![p8](../results/hit-ratio/p8.png)
 
-### LOOP
+### Glimpse
 
-This trace demonstrates a looping access pattern.
+This trace exhibits a looping access pattern.
 
-![loop](https://raw.githubusercontent.com/maypok86/benchmarks/main/simulator/results/loop.png)
+![glimpse](../results/hit-ratio/glimpse.png)
 
 ### OLTP
 
 This trace is described as "references to a CODASYL database for a one-hour period.".
 
-![oltp](https://raw.githubusercontent.com/maypok86/benchmarks/main/simulator/results/oltp.png)
+![oltp](../results/hit-ratio/oltp.png)
 
-## Modern traces
+### Scarab
 
-### WikiCDN
+Scarab Research 1 hour database trace. Frequency is a negative signal in this workload.
 
-This [trace](https://wikitech.wikimedia.org/wiki/Analytics/Data_Lake/Traffic/Caching) was collected from Wikimedia's CDN system in 2019.
+![scarab](../results/hit-ratio/scarab.png)
 
-![wikicdn](https://raw.githubusercontent.com/maypok86/benchmarks/main/simulator/results/wikicdn.png)
+### Mixed
 
-### AlibabaBlock
+This workload shifts between a recency-skewed trace (Corda) and a frequency-skewed trace (Lirs' LOOP).
 
-This [trace](https://github.com/alibaba/block-traces) was collected from a cluster in production of the elastic block service of Alibaba Cloud (i.e. storage for virtual disks) in 2020.
-
-![alibabablock](https://raw.githubusercontent.com/maypok86/benchmarks/main/simulator/results/alibabablock.png)
-
-### Twitter
-
-This [trace](https://github.com/twitter/cache-trace) was collected from Twitter's in-memory caching ([Twemcache](https://github.com/twitter/twemcache)/[Pelikan](https://github.com/twitter/pelikan)) clusters in 2020.
-
-![twitter](https://raw.githubusercontent.com/maypok86/benchmarks/main/simulator/results/twitter.png)
+![mixed](../results/hit-ratio/mixed.png)
 
 ## Conclusion
 
-`S3-FIFO` (otter) is inferior to `W-TinyLFU` (theine) on lfu friendly traces (databases, search, analytics) and has a greater or equal hit ratio on web traces. But it is still worth recognizing that `W-TinyLFU` is superior to `S3-FIFO` as a general-purpose eviction policy.
+Otter's `W-TinyLFU` provides a top-tier hit rate in all workloads. It does so while remaining simple, does not require non-resident entries, and has a low memory footprint. The policy provides a substantial improvement to `LRU` across a variety of workloads, making it a good choice for a general purpose cache.
 
-In summary, we have that `S3-FIFO` is competitive with `W-TinyLFU` and `ARC`. Also, it provides a substantial improvement to `LRU` across a variety of traces.
+Both Otter's and Theine's W-TinyLFU implementations demonstrate nearly identical hit rates across most workloads. However, on the Glimpse trace, Theine exhibits unexpected hit rate fluctuations while Otter maintains stable performance.
+
+Ristretto demonstrates solid performance on frequency-biased workloads (e.g., database page caches, search, and analytics). However, it may face challenges with recency-biased workloads (message brokers, financial applications, etc.).
+
+Sturdyc showed limited effectiveness in these tests, regularly trailing behind basic LRU's hit rate performance.

@@ -60,8 +60,8 @@ type benchCase struct {
 var benchCases = []benchCase{
 	{"reads=100%,writes=0%", 100, 0},
 	{"reads=75%,writes=25%", 75, 25},
-	//{"reads=50%,writes=50%", 50, 50},
-	//{"reads=25%,writes=75%", 25, 75},
+	{"reads=50%,writes=50%", 50, 50},
+	{"reads=25%,writes=75%", 25, 75},
 	{"reads=0%,writes=100%", 0, 100},
 }
 

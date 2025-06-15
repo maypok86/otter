@@ -1,6 +1,6 @@
 <p align="center">
-  <img src="logo.png" width="40%" height="auto" >
-  <h2 align="center">High performance in-memory cache</h2>
+  <img src="docs/assets/logo.png" width="40%" height="auto" >
+  <h2 align="center">In-memory caching library</h2>
 </p>
 
 <p align="center">
@@ -12,12 +12,11 @@
 <a href="https://github.com/avelino/awesome-go"><img src="https://awesome.re/mentioned-badge.svg" alt="Mentioned in Awesome Go"></a>
 </p>
 
-Otter is one of the most powerful caching libraries for Go based on researches in caching and concurrent data structures. Otter also uses the experience of designing caching libraries in other languages (for example, [caffeine](https://github.com/ben-manes/caffeine)).
+Otter is designed to provide an excellent developer experience while maintaining blazing-fast performance. It aims to address the shortcomings of its predecessors and incorporates design principles from high-performance libraries in other languages (such as [Caffeine](https://github.com/ben-manes/caffeine)).
 
 ## 📖 Contents
 
 - [Features](#features)
-- [Related works](#related-works)
 - [Usage](#usage)
   - [Requirements](#requirements)
   - [Installation](#installation)
@@ -26,134 +25,164 @@ Otter is one of the most powerful caching libraries for Go based on researches i
   - [Throughput](#throughput)
   - [Hit ratio](#hit-ratio)
   - [Memory consumption](#memory-consumption)
+- [Projects using Otter](#projects)
+- [Related works](#related-works)
 - [Contribute](#contribute)
 - [License](#license)
 
 ## ✨ Features <a id="features" />
 
-- **Simple API**: Just set the parameters you want in the builder and enjoy
-- **Autoconfiguration**: Otter is automatically configured based on the parallelism of your application
-- **Generics**: You can safely use any comparable types as keys and any types as values
-- **TTL**: Expired values will be automatically deleted from the cache
-- **Weight-based eviction**: Otter supports eviction based on the weight of each entry
-- **Deletion listener**: You can pass a callback function in the builder that will be called when an entry is deleted from the cache
-- **Stats**: You can collect various usage statistics
-- **Excellent throughput**: Otter can handle a [huge number of requests](#throughput)
-- **Great hit ratio**: New S3-FIFO algorithm is used, which shows excellent [results](#hit-ratio)
+Performance-wise, Otter provides:
 
-## 🗃 Related works <a id="related-works" />
+- **High hit rate**: [Top-tier hit rates](https://maypok86.github.io/otter/performance/hit-ratio/) across all workload types via adaptive W-TinyLFU
+- **Blazing fast**: [Excellent throughput](https://maypok86.github.io/otter/performance/throughput/) under high contention on most workload types
+- **Low memory overhead**: Among the [lowest memory overheads](https://maypok86.github.io/otter/performance/memory-consumption/) across all cache capacities
+- **Self-tuning**: Automatic data structures configuration based on contention/parallelism and workload patterns
 
-Otter is based on the following papers:
+Otter also provides a highly configurable caching API, enabling any combination of these optional features:
 
-- [BP-Wrapper: A Framework Making Any Replacement Algorithms (Almost) Lock Contention Free](https://www.researchgate.net/publication/220966845_BP-Wrapper_A_System_Framework_Making_Any_Replacement_Algorithms_Almost_Lock_Contention_Free)
-- [FIFO queues are all you need for cache eviction](https://dl.acm.org/doi/10.1145/3600006.3613147)
-- [A large scale analysis of hundreds of in-memory cache clusters at Twitter](https://www.usenix.org/system/files/osdi20-yang.pdf)
+- **Eviction**: Size-based [eviction](https://maypok86.github.io/otter/user-guide/v2/features/eviction/#size-based) when a maximum is exceeded
+- **Expiration**: Time-based [expiration](https://maypok86.github.io/otter/user-guide/v2/features/eviction/#time-based) of entries (using [Hierarchical Timing Wheel](http://www.cs.columbia.edu/~nahum/w6998/papers/ton97-timing-wheels.pdf)), measured since last access or last write
+- **Loading**: [Automatic loading](https://maypok86.github.io/otter/user-guide/v2/features/loading/) of entries into the cache
+- **Refresh**: [Asynchronously refresh](https://maypok86.github.io/otter/user-guide/v2/features/refresh/) when the first stale request for an entry occurs
+- **Stats**: Accumulation of cache access [statistics](https://maypok86.github.io/otter/user-guide/v2/features/statistics/)
 
 ## 📚 Usage <a id="usage" />
 
+For more details, see our [user's guide](https://maypok86.github.io/otter/user-guide/v2/getting-started/) and browse the [API docs](https://pkg.go.dev/github.com/maypok86/otter) for the latest release.
+
 ### 📋 Requirements <a id="requirements" />
 
-- Go 1.19+
+Otter requires [Go](https://go.dev/) version [1.24](https://go.dev/doc/devel/release#go1.24.0) or above.
 
 ### 🛠️ Installation <a id="installation" />
+
+#### With v1
 
 ```shell
 go get -u github.com/maypok86/otter
 ```
 
+#### With v2
+
+```shell
+go get -u github.com/maypok86/otter/v2
+```
+
+See the [release notes](https://github.com/maypok86/otter/releases) for details of the changes.
+
+Note that otter only supports the two most recent minor versions of Go.
+
+Otter follows semantic versioning for the documented public API on stable releases. `v2` is the latest stable major version.
+
 ### ✏️ Examples <a id="examples" />
 
-Otter uses a builder pattern that allows you to conveniently create a cache instance with different parameters.
+Otter uses a plain `Options` struct for cache configuration. Check out [otter.Options](https://pkg.go.dev/github.com/maypok86/otter/v2#Options) for more details.
 
-**Cache with const TTL**
+Note that all features are optional. You can create a cache that acts as a simple hash table wrapper, with near-zero memory overhead for unused features — thanks to [node code generation](https://github.com/maypok86/otter/blob/main/cmd/generator/main.go).
+
+**API Usage Example**
 ```go
 package main
 
 import (
-    "fmt"
+    "context"
     "time"
 
     "github.com/maypok86/otter/v2"
+    "github.com/maypok86/otter/v2/stats"
 )
 
 func main() {
-    // create a cache with capacity equal to 10000 elements
-    cache, err := otter.MustBuilder[string, string](10_000).
-        CollectStats().
-        Weigher(func(key string, value string) uint32 {
-            return 1
-        }).
-        WithTTL(time.Hour).
-        Build()
+    ctx := context.Background()
+
+    // Create statistics counter to track cache operations
+    counter := stats.NewCounter()
+
+    // Configure cache with:
+    // - Capacity: 10,000 entries
+    // - 1 second expiration after last access
+    // - 500ms refresh interval after writes
+    // - Stats collection enabled
+    cache := otter.Must(&otter.Options[string, string]{
+        MaximumSize:       10_000,
+        ExpiryCalculator:  otter.ExpiryAccessing[string, string](time.Second),  // Reset timer on reads/writes
+        RefreshCalculator: otter.RefreshWriting[string, string](500 * time.Millisecond),  // Refresh after writes
+        StatsRecorder:     counter,  // Attach stats collector
+  })
+
+    // Phase 1: Test basic expiration
+    // -----------------------------
+    cache.Set("key", "value")  // Add initial value
+
+    // Wait for expiration (1 second)
+    time.Sleep(time.Second)
+
+    // Verify entry expired
+    if _, ok := cache.GetIfPresent("key"); ok {
+        panic("key shouldn't be found")  // Should be expired
+    }
+
+    // Phase 2: Test cache stampede protection
+    // --------------------------------------
+    loader := otter.LoaderFunc[string, string](func(ctx context.Context, key string) (string, error) {
+        if key != "key" {
+            panic("incorrect key")  // Validate key
+        }
+        time.Sleep(200 * time.Millisecond)  // Simulate slow load
+        return "value1", nil  // Return new value
+    })
+
+    // Concurrent Gets would deduplicate loader calls
+    value, err := cache.Get(ctx, "key", loader)
     if err != nil {
         panic(err)
     }
-
-    // set item with ttl (1 hour) 
-    cache.Set("key", "value")
-
-    // get value from cache
-    value, ok := cache.Get("key")
-    if !ok {
-        panic("not found key")
+    if value != "value1" {
+        panic("incorrect value")  // Should get newly loaded value
     }
-    fmt.Println(value)
 
-    // delete item from cache
-    cache.Delete("key")
+    // Phase 3: Test background refresh
+    // --------------------------------
+    time.Sleep(500 * time.Millisecond)  // Wait until refresh needed
 
-    // delete data and stop goroutines
-    cache.Close()
-}
-```
+    // New loader that returns updated value
+    loader = func(ctx context.Context, key string) (string, error) {
+        if key != "key" {
+            panic("incorrect key")
+        }
+        time.Sleep(100 * time.Millisecond)  // Simulate refresh
+        return "value2", nil  // Return refreshed value
+    }
 
-**Cache with variable TTL**
-```go
-package main
-
-import (
-    "fmt"
-    "time"
-
-    "github.com/maypok86/otter/v2"
-)
-
-func main() {
-    // create a cache with capacity equal to 10000 elements
-    cache, err := otter.MustBuilder[string, string](10_000).
-        CollectStats().
-        Weigher(func(key string, value string) uint32 {
-            return 1
-        }).
-        WithVariableTTL().
-        Build()
+    // This triggers async refresh but returns current value
+    value, err = cache.Get(ctx, "key", loader)
     if err != nil {
         panic(err)
     }
-
-    // set item with ttl (1 hour)
-    cache.Set("key1", "value1", time.Hour)
-    // set item with ttl (1 minute)
-    cache.Set("key2", "value2", time.Minute)
-
-    // get value from cache
-    value, ok := cache.Get("key1")
-    if !ok {
-        panic("not found key")
+    if value != "value1" {  // Should get old value while refreshing
+        panic("loader shouldn't be called during Get")
     }
-    fmt.Println(value)
 
-    // delete item from cache
-    cache.Delete("key1")
+    // Wait for refresh to complete
+    time.Sleep(110 * time.Millisecond)
 
-    // delete data and stop goroutines
-    cache.Close()
+    // Verify refreshed value
+    v, ok := cache.GetIfPresent("key")
+    if !ok {
+        panic("key should be found")  // Should still be cached
+    }
+    if v != "value2" {  // Should now have refreshed value
+        panic("refresh should be completed")
+    }
 }
 ```
+
+You can find more usage examples [here](https://maypok86.github.io/otter/user-guide/v2/examples/).
 
 ## 📊 Performance <a id="performance" />
 
-The benchmark code can be found [here](https://github.com/maypok86/benchmarks).
+The benchmark code can be found [here](./benchmarks).
 
 ### 🚀 Throughput <a id="throughput" />
 
@@ -164,17 +193,36 @@ You can find results [here](https://maypok86.github.io/otter/performance/through
 ### 🎯 Hit ratio <a id="hit-ratio" />
 
 The hit ratio simulator tests caches on various traces:
-1. Synthetic (zipf distribution)
+1. Synthetic (Zipf distribution)
 2. Traditional (widely known and used in various projects and papers)
-3. Modern (recently collected from the production of the largest companies in the world)
 
 You can find results [here](https://maypok86.github.io/otter/performance/hit-ratio/).
 
 ### 💾 Memory consumption <a id="memory-consumption" />
 
-The memory overhead benchmark shows how much additional memory the cache will require at different capacities.
+This benchmark quantifies the additional memory consumption across varying cache capacities.
 
 You can find results [here](https://maypok86.github.io/otter/performance/memory-consumption/).
+
+## 🏗️ Projects using Otter <a id="projects" />
+
+Below is a list of known projects that use Otter:
+
+- [Grafana](https://github.com/grafana/grafana): The open and composable observability and data visualization platform.
+- [Centrifugo](https://github.com/centrifugal/centrifugo): Scalable real-time messaging server in a language-agnostic way.
+- [FrankenPHP](https://github.com/php/frankenphp): The modern PHP app server
+- [Unkey](https://github.com/unkeyed/unkey): Open source API management platform
+
+## 🗃 Related works <a id="related-works" />
+
+Otter is based on the following papers:
+
+- [BP-Wrapper: A Framework Making Any Replacement Algorithms (Almost) Lock Contention Free](https://www.researchgate.net/publication/220966845_BP-Wrapper_A_System_Framework_Making_Any_Replacement_Algorithms_Almost_Lock_Contention_Free)
+- [TinyLFU: A Highly Efficient Cache Admission Policy](https://dl.acm.org/citation.cfm?id=3149371)
+- [Adaptive Software Cache Management](https://dl.acm.org/citation.cfm?id=3274816)
+- [Denial of Service via Algorithmic Complexity Attack](https://www.usenix.org/legacy/events/sec03/tech/full_papers/crosby/crosby.pdf)
+- [Hashed and Hierarchical Timing Wheels](http://www.cs.columbia.edu/~nahum/w6998/papers/ton97-timing-wheels.pdf)
+- [A large scale analysis of hundreds of in-memory cache clusters at Twitter](https://www.usenix.org/system/files/osdi20-yang.pdf)
 
 ## 👏 Contribute <a id="contribute" />
 

@@ -35,6 +35,6 @@ cache := otter.Must(&otter.Options[string, string]{
 })
 ```
 
-You may specify a deletion handler for your cache to perform some operation when an entry is deleted, via `OnDeletion`. These operations are executed asynchronously using a goroutine.
+You may specify a deletion handler for your cache to perform some operation when an entry is deleted, via `OnDeletion`. These operations are executed asynchronously using a goroutine by default.
 
 When the operation must be performed synchronously with deletion, use `OnAtomicDeletion` instead.

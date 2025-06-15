@@ -15,6 +15,12 @@ This chapter is here to help you get started with Otter. It covers all the funda
 go get -u github.com/maypok86/otter/v2
 ```
 
+See the [release notes](https://github.com/maypok86/otter/releases) for details of the changes.
+
+Note that otter only supports the two most recent minor versions of Go.
+
+Otter follows semantic versioning for the documented public API on stable releases. `v2` is the latest stable major version.
+
 ## Basic Usage
 
 Here's a simple example of how to use Otter:

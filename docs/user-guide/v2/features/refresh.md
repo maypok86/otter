@@ -20,6 +20,6 @@ A `Loader` may specify smart behavior to use on a refresh by overriding `Loader.
 
 `Cache.Refresh` can be used to explicitly refresh an entry and will deduplicate requests while they are in-flight.
 
-Refresh operations are executed asynchronously using goroutine.
+Refresh operations are executed asynchronously using goroutine by default.
 
 If an error is returned after refresh then the old value is kept and the error is logged (using `Logger`) and swallowed.

@@ -14,34 +14,34 @@ In the end, I think this is one of the best benchmarks to compare cache speeds b
 
 ### Read (100%)
 
-In this [benchmark](https://github.com/maypok86/benchmarks/blob/main/throughput/bench_test.go) **8 threads** concurrently read from a cache configured with a maximum size.
+In this [benchmark](https://github.com/maypok86/otter/blob/main/benchmarks/throughput/bench_test.go) **8 threads** concurrently read from a cache configured with a maximum size.
 
-![reads=100%,writes=0%](https://raw.githubusercontent.com/maypok86/benchmarks/main/throughput/results/reads=100,writes=0.png)
+![reads=100%,writes=0%](../results/throughput/reads=100,writes=0.png)
 
 ### Read (75%) / Write (25%)
 
-In this [benchmark](https://github.com/maypok86/benchmarks/blob/main/throughput/bench_test.go) **6 threads** concurrently read from and **2 threads** write to a cache configured with a maximum size.
+In this [benchmark](https://github.com/maypok86/otter/blob/main/benchmarks/throughput/bench_test.go) **6 threads** concurrently read from and **2 threads** write to a cache configured with a maximum size.
 
-![reads=75%,writes=25%](https://raw.githubusercontent.com/maypok86/benchmarks/main/throughput/results/reads=75,writes=25.png)
+![reads=75%,writes=25%](../results/throughput/reads=75,writes=25.png)
 
 ### Read (50%) / Write (50%)
 
-In this [benchmark](https://github.com/maypok86/benchmarks/blob/main/throughput/bench_test.go) **4 threads** concurrently read from and **4 threads** write to a cache configured with a maximum size.
+In this [benchmark](https://github.com/maypok86/otter/blob/main/benchmarks/throughput/bench_test.go) **4 threads** concurrently read from and **4 threads** write to a cache configured with a maximum size.
 
-![reads=50%,writes=50%](https://raw.githubusercontent.com/maypok86/benchmarks/main/throughput/results/reads=50,writes=50.png)
+![reads=50%,writes=50%](../results/throughput/reads=50,writes=50.png)
 
 ### Read (25%) / Write (75%)
 
-In this [benchmark](https://github.com/maypok86/benchmarks/blob/main/throughput/bench_test.go) **2 threads** concurrently read from and **6 threads** write to a cache configured with a maximum size.
+In this [benchmark](https://github.com/maypok86/otter/blob/main/benchmarks/throughput/bench_test.go) **2 threads** concurrently read from and **6 threads** write to a cache configured with a maximum size.
 
-![reads=25%,writes=75%](https://raw.githubusercontent.com/maypok86/benchmarks/main/throughput/results/reads=25,writes=75.png)
+![reads=25%,writes=75%](../results/throughput/reads=25,writes=75.png)
 
 ### Write (100%)
 
-In this [benchmark](https://github.com/maypok86/benchmarks/blob/main/throughput/bench_test.go) **8 threads** concurrently write to a cache configured with a maximum size.
+In this [benchmark](https://github.com/maypok86/otter/blob/main/benchmarks/throughput/bench_test.go) **8 threads** concurrently write to a cache configured with a maximum size.
 
-![reads=0%,writes=100%](https://raw.githubusercontent.com/maypok86/benchmarks/main/throughput/results/reads=0,writes=100.png)
+![reads=0%,writes=100%](../results/throughput/reads=0,writes=100.png)
 
 ### Conclusion
 
-Otter shows fantastic speed under all workloads except extreme write-heavy, but such a workload is rare for caches and usually indicates that the cache has a very small hit ratio.
+Otter maintains excellent throughput under high contention across all workload types, except extreme write-heavy scenarios. However, such workloads are uncommon for caches, as they typically indicate an inherently low hit rate.

@@ -1,6 +1,6 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/maypok86/otter/main/logo.png" width="70%" height="auto" >
-  <h1 align="center">High performance in-memory cache</h1>
+  <img src="./assets/logo.png" width="70%" height="auto" >
+  <h1 align="center">In-memory caching library</h1>
 </p>
 
 <p align="center">
@@ -12,25 +12,24 @@
 <a href="https://github.com/avelino/awesome-go"><img src="https://awesome.re/mentioned-badge.svg" alt="Mentioned in Awesome Go"></a>
 </p>
 
-Otter is one of the most powerful caching libraries for Go based on researches in caching and concurrent data structures. Otter also uses the experience of designing caching libraries in other languages (for example, [caffeine](https://github.com/ben-manes/caffeine)).
+Otter is designed to provide an excellent developer experience while maintaining blazing-fast performance. It aims to address the shortcomings of its predecessors and incorporates design principles from high-performance libraries in other languages (such as [Caffeine](https://github.com/ben-manes/caffeine)).
 
 ## :material-star-shooting: Features
 
-- **Simple API**: Just set the parameters you want in the builder and enjoy
-- **Autoconfiguration**: Otter is automatically configured based on the parallelism of your application
-- **Generics**: You can safely use any comparable types as keys and any types as values
-- **TTL**: Expired values will be automatically deleted from the cache
-- **Cost-based eviction**: Otter supports eviction based on the cost of each item
-- **Excellent throughput**: Otter is currently the fastest cache library with a huge lead over the [competition](https://github.com/maypok86/otter/blob/main/README.md#throughput)
-- **Great hit ratio**: New S3-FIFO algorithm is used, which shows excellent [results](https://github.com/maypok86/otter/blob/main/README.md#hit-ratio)
+Performance-wise, Otter provides:
 
-## :material-book-open-variant: Related works
+- **High hit rate**: [Top-tier hit rates](https://maypok86.github.io/otter/performance/hit-ratio/) across all workload types via adaptive W-TinyLFU
+- **Blazing fast**: [Excellent throughput](https://maypok86.github.io/otter/performance/throughput/) under high contention on most workload types
+- **Low memory overhead**: Among the [lowest memory overheads](https://maypok86.github.io/otter/performance/memory-consumption/) across all cache capacities
+- **Self-tuning**: Automatic data structures configuration based on contention/parallelism and workload patterns
 
-Otter is based on the following papers:
+Otter also provides a highly configurable caching API, enabling any combination of these optional features:
 
-- [BP-Wrapper: A Framework Making Any Replacement Algorithms (Almost) Lock Contention Free](https://www.researchgate.net/publication/220966845_BP-Wrapper_A_System_Framework_Making_Any_Replacement_Algorithms_Almost_Lock_Contention_Free)
-- [FIFO queues are all you need for cache eviction](https://dl.acm.org/doi/10.1145/3600006.3613147)
-- [A large scale analysis of hundreds of in-memory cache clusters at Twitter](https://www.usenix.org/system/files/osdi20-yang.pdf)
+- **Eviction**: Size-based [eviction](https://maypok86.github.io/otter/user-guide/v2/features/eviction/#size-based) when a maximum is exceeded
+- **Expiration**: Time-based [expiration](https://maypok86.github.io/otter/user-guide/v2/features/eviction/#time-based) of entries (using [Hierarchical Timing Wheel](http://www.cs.columbia.edu/~nahum/w6998/papers/ton97-timing-wheels.pdf)), measured since last access or last write
+- **Loading**: [Automatic loading](https://maypok86.github.io/otter/user-guide/v2/features/loading/) of entries into the cache
+- **Refresh**: [Asynchronously refresh](https://maypok86.github.io/otter/user-guide/v2/features/refresh/) when the first stale request for an entry occurs
+- **Stats**: Accumulation of cache access [statistics](https://maypok86.github.io/otter/user-guide/v2/features/statistics/)
 
 ## :material-handshake: Contribute
 
