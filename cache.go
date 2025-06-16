@@ -45,6 +45,10 @@ func Must[K comparable, V any](o *Options[K, V]) *Cache[K, V] {
 // This method does not alter the state of the [Options] instance, so it can be invoked
 // again to create multiple independent caches.
 func New[K comparable, V any](o *Options[K, V]) (*Cache[K, V], error) {
+	if o == nil {
+		o = &Options[K, V]{}
+	}
+
 	if err := o.validate(); err != nil {
 		return nil, err
 	}

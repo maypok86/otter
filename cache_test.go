@@ -53,6 +53,10 @@ func TestMust(t *testing.T) {
 			MaximumSize: -1,
 		})
 	})
+
+	require.NotPanics(t, func() {
+		Must[int, int](nil)
+	})
 }
 
 func TestCache_Unbounded(t *testing.T) {
