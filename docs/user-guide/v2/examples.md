@@ -128,3 +128,11 @@ The same logic applies exactly to `OnDeletion` handler.
 ```go
 --8<-- "./docs/examples/extension/main.go"
 ```
+
+## "Real-world" examples
+
+### Wrapper
+
+```go
+--8<-- "./docs/examples/wrapper/main.go"
+```
