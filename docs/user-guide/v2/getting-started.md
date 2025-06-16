@@ -56,6 +56,8 @@ func main() {
 }
 ```
 
+You can find more usage examples [here](examples.md).
+
 ## Key Features
 
 Otter provides several powerful features:

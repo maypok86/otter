@@ -6,11 +6,11 @@ site_author: Alexey Mayshev
 # Repository
 repo_name: maypok86/otter
 repo_url: https://github.com/maypok86/otter
-remote_branch: gh-pages
+remote_branch: main
 edit_uri: ""
 
 # Copyright
-copyright: Copyright &copy; 2024 Alexey Mayshev
+copyright: Copyright &copy; 2024-2025 Alexey Mayshev
 
 # Configuration
 theme:

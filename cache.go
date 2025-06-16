@@ -214,7 +214,8 @@ func (c *Cache[K, V]) Invalidate(key K) (value V, invalidated bool) {
 	return c.cache.Invalidate(key)
 }
 
-// All returns an iterator over all entries in the cache.
+// All returns an iterator over all key-value pairs in the cache.
+// The iteration order is not specified and is not guaranteed to be the same from one call to the next.
 //
 // Iterator is at least weakly consistent: he is safe for concurrent use,
 // but if the cache is modified (including by eviction) after the iterator is

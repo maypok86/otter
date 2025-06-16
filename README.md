@@ -12,7 +12,7 @@
 <a href="https://github.com/avelino/awesome-go"><img src="https://awesome.re/mentioned-badge.svg" alt="Mentioned in Awesome Go"></a>
 </p>
 
-Otter is designed to provide an excellent developer experience while maintaining blazing-fast performance. It aims to address the shortcomings of its predecessors and incorporates design principles from high-performance libraries in other languages (such as [Caffeine](https://github.com/ben-manes/caffeine)).
+Otter is designed to provide an excellent developer experience while maintaining high performance. It aims to address the shortcomings of its predecessors and incorporates design principles from high-performance libraries in other languages (such as [Caffeine](https://github.com/ben-manes/caffeine)).
 
 ## 📖 Contents
 
@@ -34,18 +34,18 @@ Otter is designed to provide an excellent developer experience while maintaining
 
 Performance-wise, Otter provides:
 
-- **High hit rate**: [Top-tier hit rates](https://maypok86.github.io/otter/performance/hit-ratio/) across all workload types via adaptive W-TinyLFU
-- **Blazing fast**: [Excellent throughput](https://maypok86.github.io/otter/performance/throughput/) under high contention on most workload types
-- **Low memory overhead**: Among the [lowest memory overheads](https://maypok86.github.io/otter/performance/memory-consumption/) across all cache capacities
-- **Self-tuning**: Automatic data structures configuration based on contention/parallelism and workload patterns
+- [High hit rates](https://maypok86.github.io/otter/performance/hit-ratio/) across all workload types via adaptive W-TinyLFU
+- [Excellent throughput](https://maypok86.github.io/otter/performance/throughput/) under high contention on most workload types
+- Among the lowest [memory overheads](https://maypok86.github.io/otter/performance/memory-consumption/) across all cache capacities
+- Automatic data structures configuration based on contention/parallelism and workload patterns
 
 Otter also provides a highly configurable caching API, enabling any combination of these optional features:
 
-- **Eviction**: Size-based [eviction](https://maypok86.github.io/otter/user-guide/v2/features/eviction/#size-based) when a maximum is exceeded
-- **Expiration**: Time-based [expiration](https://maypok86.github.io/otter/user-guide/v2/features/eviction/#time-based) of entries (using [Hierarchical Timing Wheel](http://www.cs.columbia.edu/~nahum/w6998/papers/ton97-timing-wheels.pdf)), measured since last access or last write
-- **Loading**: [Automatic loading](https://maypok86.github.io/otter/user-guide/v2/features/loading/) of entries into the cache
-- **Refresh**: [Asynchronously refresh](https://maypok86.github.io/otter/user-guide/v2/features/refresh/) when the first stale request for an entry occurs
-- **Stats**: Accumulation of cache access [statistics](https://maypok86.github.io/otter/user-guide/v2/features/statistics/)
+- Size-based [eviction](https://maypok86.github.io/otter/user-guide/v2/features/eviction/#size-based) when a maximum is exceeded
+- Time-based [expiration](https://maypok86.github.io/otter/user-guide/v2/features/eviction/#time-based) of entries (using [Hierarchical Timing Wheel](http://www.cs.columbia.edu/~nahum/w6998/papers/ton97-timing-wheels.pdf)), measured since last access or last write
+- [Automatic loading](https://maypok86.github.io/otter/user-guide/v2/features/loading/) of entries into the cache
+- [Asynchronously refresh](https://maypok86.github.io/otter/user-guide/v2/features/refresh/) when the first stale request for an entry occurs
+-  Accumulation of cache access [statistics](https://maypok86.github.io/otter/user-guide/v2/features/statistics/)
 
 ## 📚 Usage <a id="usage" />
 
@@ -109,7 +109,7 @@ func main() {
         ExpiryCalculator:  otter.ExpiryAccessing[string, string](time.Second),  // Reset timer on reads/writes
         RefreshCalculator: otter.RefreshWriting[string, string](500 * time.Millisecond),  // Refresh after writes
         StatsRecorder:     counter,  // Attach stats collector
-  })
+    })
 
     // Phase 1: Test basic expiration
     // -----------------------------
