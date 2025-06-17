@@ -1,17 +1,18 @@
 package client
 
 import (
-	"time"
-
-	"github.com/hashicorp/golang-lru/v2/expirable"
+	lru "github.com/hashicorp/golang-lru/v2"
 )
 
 type GolangLRU[K comparable, V any] struct {
-	client *expirable.LRU[K, V]
+	client *lru.Cache[K, V]
 }
 
 func (c *GolangLRU[K, V]) Init(capacity int) {
-	client := expirable.NewLRU[K, V](capacity, nil, time.Hour)
+	client, err := lru.New[K, V](capacity)
+	if err != nil {
+		panic(err)
+	}
 	c.client = client
 }
 

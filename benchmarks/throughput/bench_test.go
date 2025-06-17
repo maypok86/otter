@@ -91,6 +91,7 @@ func runParallelBenchmark(b *testing.B, benchFunc func(pb *testing.PB)) {
 	b.Helper()
 
 	b.ResetTimer()
+	b.ReportAllocs()
 	start := time.Now()
 	b.RunParallel(benchFunc)
 	opsPerSec := float64(b.N) / time.Since(start).Seconds()
