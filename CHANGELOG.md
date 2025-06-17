@@ -1,3 +1,105 @@
+## 2.0.0 - 2025-06-18
+
+### 📝 Description
+
+Otter v2 has been completely redesigned for better performance and usability.
+
+Key improvements:
+- Completely rethought API for greater flexibility
+- Added [loading](https://maypok86.github.io/otter/user-guide/v2/features/loading/) and [refreshing](https://maypok86.github.io/otter/user-guide/v2/features/refresh/) features ([#26](https://github.com/maypok86/otter/issues/26))
+- Added [entry pinning](https://maypok86.github.io/otter/user-guide/v2/features/eviction/#pinning-entries)
+- Replaced eviction policy with adaptive W-TinyLFU, enabling Otter to achieve one of the highest hit rates across **all** workloads.
+- Added HashDoS protection against potential attacks
+- The task scheduling mechanism has been completely reworked, allowing users to manage it themselves when needed
+- Added more efficient write buffer
+- Added auto-configurable lossy read buffer
+- Optimized hash table
+- Test coverage increased to 97%
+
+### 🚨 Breaking Changes
+
+1. **Cache Creation**
+   - Removed `Builder` pattern in favor of canonical `Options` struct
+   - `MustBuilder` and `Builder` methods are replaced with `Must` and `New` functions
+   - `Cost` renamed to `Weight`
+   - Replaced unified `capacity` with explicit `MaximumSize` and `MaximumWeight` parameters
+   - Replaced `DeletionListener` with `OnDeletion` and `OnAtomicDeletion` handlers
+   - The ability to create a cache with any combination of features
+
+2. **Cache API Changes**
+    - `Get` method renamed to `GetIfPresent`
+    - `Set` method signature changed to return both value and bool
+    - `SetIfAbsent` method signature changed to return both value and bool
+    - `Delete` method renamed to `Invalidate`
+    - `Clear` method renamed to `InvalidateAll`
+    - `Size` method renamed to `EstimatedSize`
+    - `Capacity` method renamed to `GetMaximum`
+    - `Range` method removed in favor of `All` iterator
+    - `Has` method removed
+    - `DeleteByFunc` method removed
+    - `Stats` method removed in favor of `stats.Recorder` interface
+    - `Close` method removed
+
+3. **Expiration**
+    - Expiration API is now more flexible with `ExpiryCalculator` interface
+    - `ExpiryCreating`, `ExpiryWriting` and `ExpiryAccessing` functions introduced
+
+4. **Statistics**
+    - Moved statistics to a separate package `stats`
+    - `stats.Recorder` interface and `stats.Counter` struct introduced
+
+5. **Extension**
+    - `Extension` struct removed in favor of methods from `Cache`
+
+### ✨Features
+
+1. **Loading**
+    - Added `Get` method for obtaining values if necessary
+    - Added `Loader` interface for retrieving values from the data source
+    - Added `ErrNotFound` error for indicating missing entries
+
+2. **Refresh**
+    - Added flexible refresh API with `RefreshCalculator` interface
+   - `RefreshCreating`, `RefreshWriting` functions introduced
+   - Added `Refresh` method for refreshing values asynchronously
+
+3. **Bulk Operations**
+    - Added `BulkGet` for loading multiple values at once
+    - Added `BulkRefresh` for refreshing multiple values asynchronously
+    - Added `BulkLoader` interface for retrieving multiple values from the data source at once
+
+4. **Cache Methods**
+    - Added `All` method for iterating over all entries
+    - Added `CleanUp` method for performing pending maintenance operations
+    - Added `WeightedSize` method for weight-based caches
+
+5. **Enhanced Configuration**
+    - Added `Executor` option for customizing async operations
+    - Added `Logger` interface for custom logging
+
+6. **Entry Management**
+   - Added `SetExpiresAfter` and `SetRefreshableAfter` for per-entry time control
+   - Added `GetEntry` and `GetEntryQuietly` methods for accessing cache entries
+   - Most `Entry`'s methods replaced with public fields for direct access.
+
+7. **Deletion Notifications**
+   - Replaced `DeletionListener` with `OnDeletion` and `OnAtomicDeletion` handlers
+   - Deletion causes renamed for clarity and consistency.
+   - Added `IsEviction` method
+   - Added `DeletionEvent` struct
+
+8. **Performance Improvements**
+    - Replaced `S3-FIFO` with adaptive `W-TinyLFU`
+    - Added more efficient write buffer
+    - Added auto-configurable lossy read buffer
+    - The task scheduling mechanism has been completely reworked, allowing users to manage it themselves when needed.
+
+### 🚀 Improvements
+
+- Added [loading](https://maypok86.github.io/otter/user-guide/v2/features/loading/) and [refreshing](https://maypok86.github.io/otter/user-guide/v2/features/refresh/) features ([#26](https://github.com/maypok86/otter/issues/26))
+- You can now pass a custom implementation of the `stats.Recorder` interface ([#119](https://github.com/maypok86/otter/issues/119))
+- You can now use a TTL shorter than `time.Second` ([#115](https://github.com/maypok86/otter/issues/115))
+
 ## 1.2.4 - 2024-11-23
 
 ### 🐞 Bug Fixes
