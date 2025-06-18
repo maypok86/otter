@@ -4,7 +4,7 @@
 </p>
 
 <p align="center">
-<a href="https://pkg.go.dev/github.com/maypok86/otter"><img src="https://pkg.go.dev/badge/github.com/maypok86/otter.svg" alt="Go Reference"></a>
+<a href="https://pkg.go.dev/github.com/maypok86/otter/v2"><img src="https://pkg.go.dev/badge/github.com/maypok86/otter/v2.svg" alt="Go Reference"></a>
 <img src="https://github.com/maypok86/otter/actions/workflows/test.yml/badge.svg" />
 <a href="https://github.com/maypok86/otter/actions?query=branch%3Amain+workflow%3ATest" >
     <img src="https://gist.githubusercontent.com/maypok86/2aae2cd39836dc7c258df7ffec602d1c/raw/coverage.svg"/></a>

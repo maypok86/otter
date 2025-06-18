@@ -73,7 +73,7 @@ extra:
     - icon: fontawesome/brands/github
       link: https://github.com/maypok86
     - icon: fontawesome/brands/golang
-      link: https://pkg.go.dev/github.com/maypok86/otter/
+      link: https://pkg.go.dev/github.com/maypok86/otter/v2
 
 # Extensions
 markdown_extensions:
