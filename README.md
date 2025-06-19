@@ -34,7 +34,7 @@ Otter is designed to provide an excellent developer experience while maintaining
 
 Performance-wise, Otter provides:
 
-- [High hit rates](https://maypok86.github.io/otter/performance/hit-ratio/) across all workload types via adaptive W-TinyLFU
+- [High hit rates](https://maypok86.github.io/otter/performance/hit-ratio/) across all workload types via [adaptive W-TinyLFU](https://dl.acm.org/citation.cfm?id=3274816)
 - [Excellent throughput](https://maypok86.github.io/otter/performance/throughput/) under high contention on most workload types
 - Among the lowest [memory overheads](https://maypok86.github.io/otter/performance/memory-consumption/) across all cache capacities
 - Automatic data structures configuration based on contention/parallelism and workload patterns
@@ -42,7 +42,7 @@ Performance-wise, Otter provides:
 Otter also provides a highly configurable caching API, enabling any combination of these optional features:
 
 - Size-based [eviction](https://maypok86.github.io/otter/user-guide/v2/features/eviction/#size-based) when a maximum is exceeded
-- Time-based [expiration](https://maypok86.github.io/otter/user-guide/v2/features/eviction/#time-based) of entries (using [Hierarchical Timing Wheel](http://www.cs.columbia.edu/~nahum/w6998/papers/ton97-timing-wheels.pdf)), measured since last access or last write
+- Time-based [expiration](https://maypok86.github.io/otter/user-guide/v2/features/eviction/#time-based) of entries, measured since last access or last write
 - [Automatic loading](https://maypok86.github.io/otter/user-guide/v2/features/loading/) of entries into the cache
 - [Asynchronously refresh](https://maypok86.github.io/otter/user-guide/v2/features/refresh/) when the first stale request for an entry occurs
 -  Accumulation of cache access [statistics](https://maypok86.github.io/otter/user-guide/v2/features/statistics/)
@@ -125,16 +125,13 @@ func main() {
 
     // Phase 2: Test cache stampede protection
     // --------------------------------------
-    loader := otter.LoaderFunc[string, string](func(ctx context.Context, key string) (string, error) {
-        if key != "key" {
-            panic("incorrect key")  // Validate key
-        }
+    loader := func(ctx context.Context, key string) (string, error) {
         time.Sleep(200 * time.Millisecond)  // Simulate slow load
         return "value1", nil  // Return new value
-    })
+    }
 
     // Concurrent Gets would deduplicate loader calls
-    value, err := cache.Get(ctx, "key", loader)
+    value, err := cache.Get(ctx, "key", otter.LoaderFunc[string, string](loader))
     if err != nil {
         panic(err)
     }
@@ -148,15 +145,12 @@ func main() {
 
     // New loader that returns updated value
     loader = func(ctx context.Context, key string) (string, error) {
-        if key != "key" {
-            panic("incorrect key")
-        }
         time.Sleep(100 * time.Millisecond)  // Simulate refresh
         return "value2", nil  // Return refreshed value
     }
 
     // This triggers async refresh but returns current value
-    value, err = cache.Get(ctx, "key", loader)
+    value, err = cache.Get(ctx, "key", otter.LoaderFunc[string, string](loader))
     if err != nil {
         panic(err)
     }
