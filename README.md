@@ -215,7 +215,7 @@ Otter is based on the following papers:
 - [TinyLFU: A Highly Efficient Cache Admission Policy](https://dl.acm.org/citation.cfm?id=3149371)
 - [Adaptive Software Cache Management](https://dl.acm.org/citation.cfm?id=3274816)
 - [Denial of Service via Algorithmic Complexity Attack](https://www.usenix.org/legacy/events/sec03/tech/full_papers/crosby/crosby.pdf)
-- [Hashed and Hierarchical Timing Wheels](http://www.cs.columbia.edu/~nahum/w6998/papers/ton97-timing-wheels.pdf)
+- [Hashed and Hierarchical Timing Wheels](https://ieeexplore.ieee.org/document/650142)
 - [A large scale analysis of hundreds of in-memory cache clusters at Twitter](https://www.usenix.org/system/files/osdi20-yang.pdf)
 
 ## 👏 Contribute <a id="contribute" />
