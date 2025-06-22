@@ -269,7 +269,7 @@ func (c *Cache[K, V]) SetMaximum(maximum uint64) {
 }
 
 // GetMaximum returns the maximum total weighted or unweighted size of this cache, depending on how the
-// cache was constructed.
+// cache was constructed. If this cache does not use a (weighted) size bound, then the method will return math.MaxUint64.
 func (c *Cache[K, V]) GetMaximum() uint64 {
 	return c.cache.GetMaximum()
 }

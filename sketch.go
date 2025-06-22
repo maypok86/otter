@@ -17,6 +17,7 @@ package otter
 import (
 	"math"
 	"math/bits"
+	"sync/atomic"
 
 	"github.com/maypok86/otter/v2/internal/xmath"
 	"github.com/maypok86/otter/v2/internal/xruntime"
@@ -31,11 +32,12 @@ const (
 // maximum frequency of an element is limited to 15 (4-bits) and an aging process periodically
 // halves the popularity of all elements.
 type sketch[K comparable] struct {
-	table      []uint64
-	sampleSize uint64
-	blockMask  uint64
-	size       uint64
-	hasher     xruntime.Hasher[K]
+	table         []uint64
+	sampleSize    uint64
+	blockMask     uint64
+	size          uint64
+	hasher        xruntime.Hasher[K]
+	isInitialized atomic.Bool
 }
 
 func newSketch[K comparable]() *sketch[K] {
@@ -49,6 +51,9 @@ func (s *sketch[K]) ensureCapacity(maximumSize uint64) {
 		return
 	}
 
+	if !s.isInitialized.Load() {
+		s.isInitialized.Store(true)
+	}
 	newSize := xmath.RoundUpPowerOf264(maximumSize)
 	if newSize < 8 {
 		newSize = 8
@@ -65,7 +70,7 @@ func (s *sketch[K]) ensureCapacity(maximumSize uint64) {
 }
 
 func (s *sketch[K]) isNotInitialized() bool {
-	return s.table == nil
+	return !s.isInitialized.Load()
 }
 
 func (s *sketch[K]) frequency(k K) uint64 {

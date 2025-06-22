@@ -213,10 +213,6 @@ func (p *policy[K, V]) setMaximumSize(maximum uint64) {
 	}
 }
 
-func (p *policy[K, V]) ensureCapacity(capacity uint64) {
-	p.sketch.ensureCapacity(capacity)
-}
-
 // Promote the node from probation to protected on access.
 func (p *policy[K, V]) reorderProbation(n node.Node[K, V]) {
 	nodeWeight := uint64(n.Weight())

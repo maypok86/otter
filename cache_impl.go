@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"iter"
+	"math"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -120,11 +121,6 @@ func newCache[K comparable, V any](o *Options[K, V]) *cache[K, V] {
 	maximum := o.getMaximum()
 	withEviction := maximum > 0
 
-	var readBuffer *lossy.Striped[K, V]
-	if withEviction {
-		readBuffer = lossy.NewStriped(maxStripedBufferSize, nodeManager)
-	}
-
 	withStats := o.StatsRecorder != nil
 	if !withStats {
 		o.StatsRecorder = &stats.NoopRecorder{}
@@ -135,7 +131,6 @@ func newCache[K comparable, V any](o *Options[K, V]) *cache[K, V] {
 		hashmap:            hashmap.NewWithSize[K, V, node.Node[K, V]](nodeManager, o.getInitialCapacity()),
 		stats:              o.StatsRecorder,
 		logger:             o.getLogger(),
-		readBuffer:         readBuffer,
 		singleflight:       &group[K, V]{},
 		executor:           o.getExecutor(),
 		hasDefaultExecutor: o.Executor == nil,
@@ -154,7 +149,7 @@ func newCache[K comparable, V any](o *Options[K, V]) *cache[K, V] {
 		c.evictionPolicy = newPolicy[K, V](withWeight)
 		if o.hasInitialCapacity() {
 			//nolint:gosec // there's no overflow
-			c.evictionPolicy.ensureCapacity(min(maximum, uint64(o.getInitialCapacity())))
+			c.evictionPolicy.sketch.ensureCapacity(min(maximum, uint64(o.getInitialCapacity())))
 		}
 	}
 
@@ -168,6 +163,7 @@ func newCache[K comparable, V any](o *Options[K, V]) *cache[K, V] {
 	c.withMaintenance = c.withEviction || c.withExpiration
 
 	if c.withMaintenance {
+		c.readBuffer = lossy.NewStriped(maxStripedBufferSize, nodeManager)
 		c.writeBuffer = queue.NewMPSC[task[K, V]](minWriteBufferSize, maxWriteBufferSize)
 	}
 	if c.withTime {
@@ -1167,10 +1163,8 @@ func (c *cache[K, V]) Values() iter.Seq[V] {
 func (c *cache[K, V]) InvalidateAll() {
 	c.evictionMutex.Lock()
 
-	if !c.skipReadBuffer() {
-		c.readBuffer.DrainTo(func(n node.Node[K, V]) {})
-	}
 	if c.withMaintenance {
+		c.readBuffer.DrainTo(func(n node.Node[K, V]) {})
 		for {
 			t := c.writeBuffer.TryPop()
 			if t == nil {
@@ -1221,7 +1215,8 @@ func (c *cache[K, V]) shouldDrainBuffers(delayable bool) bool {
 }
 
 func (c *cache[K, V]) skipReadBuffer() bool {
-	return !c.withEviction
+	return !c.withMaintenance || // without read buffer
+		(!c.withExpiration && c.withEviction && c.evictionPolicy.sketch.isNotInitialized())
 }
 
 func (c *cache[K, V]) afterWriteTask(t *task[K, V]) {
@@ -1355,6 +1350,10 @@ func (c *cache[K, V]) drainReadBuffer() {
 }
 
 func (c *cache[K, V]) drainWriteBuffer() {
+	if !c.withMaintenance {
+		return
+	}
+
 	for i := uint32(0); i <= maxWriteBufferSize; i++ {
 		t := c.writeBuffer.TryPop()
 		if t == nil {
@@ -1480,8 +1479,12 @@ func (c *cache[K, V]) SetMaximum(maximum uint64) {
 }
 
 // GetMaximum returns the maximum total weighted or unweighted size of this cache, depending on how the
-// cache was constructed.
+// cache was constructed. If this cache does not use a (weighted) size bound, then the method will return math.MaxUint64.
 func (c *cache[K, V]) GetMaximum() uint64 {
+	if !c.withEviction {
+		return uint64(math.MaxUint64)
+	}
+
 	c.evictionMutex.Lock()
 	if c.drainStatus.Load() == required {
 		c.maintenance(nil)

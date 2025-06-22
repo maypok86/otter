@@ -17,6 +17,7 @@ package otter
 import (
 	"container/heap"
 	"fmt"
+	"math"
 	"math/rand"
 	"reflect"
 	"runtime"
@@ -102,6 +103,8 @@ func TestCache_Unbounded(t *testing.T) {
 	for i := replaced; i < size; i++ {
 		c.Invalidate(i)
 	}
+	c.CleanUp()
+	require.Equal(t, uint64(math.MaxUint64), c.GetMaximum())
 
 	<-done
 	mutex.Lock()
