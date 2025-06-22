@@ -25,7 +25,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/maypok86/otter/v2/internal/clock"
 	"github.com/maypok86/otter/v2/internal/deque/queue"
 	"github.com/maypok86/otter/v2/internal/expiration"
 	"github.com/maypok86/otter/v2/internal/generated/node"
@@ -85,7 +84,7 @@ type cache[K comparable, V any] struct {
 	expirationPolicy   *expiration.Variable[K, V]
 	stats              stats.Recorder
 	logger             Logger
-	clock              *clock.Real
+	clock              timeSource
 	readBuffer         *lossy.Striped[K, V]
 	writeBuffer        *queue.MPSC[task[K, V]]
 	executor           func(fn func())
@@ -137,7 +136,7 @@ func newCache[K comparable, V any](o *Options[K, V]) *cache[K, V] {
 		weigher:            o.getWeigher(),
 		onDeletion:         o.OnDeletion,
 		onAtomicDeletion:   o.OnAtomicDeletion,
-		clock:              &clock.Real{},
+		clock:              newTimeSource(nil),
 		withStats:          withStats,
 		expiryCalculator:   o.ExpiryCalculator,
 		refreshCalculator:  o.RefreshCalculator,
@@ -194,10 +193,10 @@ func (c *cache[K, V]) newNode(key K, value V, old node.Node[K, V]) node.Node[K, 
 	return c.nodeManager.Create(key, value, expiresAt, refreshableAt, weight)
 }
 
-func (c *cache[K, V]) nodeToEntry(n node.Node[K, V], offset int64) Entry[K, V] {
+func (c *cache[K, V]) nodeToEntry(n node.Node[K, V], nanos int64) Entry[K, V] {
 	nowNano := noTime
 	if c.withTime {
-		nowNano = offset
+		nowNano = nanos
 	}
 
 	expiresAt := int64(unreachableExpiresAfter)
@@ -228,8 +227,8 @@ func (c *cache[K, V]) has(key K) bool {
 
 // GetIfPresent returns the value associated with the key in this cache.
 func (c *cache[K, V]) GetIfPresent(key K) (V, bool) {
-	offset := c.clock.Offset()
-	n := c.getNode(key, offset)
+	nowNano := c.clock.NowNano()
+	n := c.getNode(key, nowNano)
 	if n == nil {
 		return zeroValue[V](), false
 	}
@@ -238,7 +237,7 @@ func (c *cache[K, V]) GetIfPresent(key K) (V, bool) {
 }
 
 // getNode returns the node associated with the key in this cache.
-func (c *cache[K, V]) getNode(key K, offset int64) node.Node[K, V] {
+func (c *cache[K, V]) getNode(key K, nowNano int64) node.Node[K, V] {
 	n := c.hashmap.Get(key)
 	if n == nil {
 		c.stats.RecordMisses(1)
@@ -247,13 +246,13 @@ func (c *cache[K, V]) getNode(key K, offset int64) node.Node[K, V] {
 		}
 		return nil
 	}
-	if n.HasExpired(offset) {
+	if n.HasExpired(nowNano) {
 		c.stats.RecordMisses(1)
 		c.scheduleDrainBuffers()
 		return nil
 	}
 
-	c.afterRead(n, offset, true, true)
+	c.afterRead(n, nowNano, true, true)
 
 	return n
 }
@@ -262,22 +261,22 @@ func (c *cache[K, V]) getNode(key K, offset int64) node.Node[K, V] {
 //
 // Unlike getNode, this function does not produce any side effects
 // such as updating statistics or the eviction policy.
-func (c *cache[K, V]) getNodeQuietly(key K, offset int64) node.Node[K, V] {
+func (c *cache[K, V]) getNodeQuietly(key K, nowNano int64) node.Node[K, V] {
 	n := c.hashmap.Get(key)
-	if n == nil || !n.IsAlive() || n.HasExpired(offset) {
+	if n == nil || !n.IsAlive() || n.HasExpired(nowNano) {
 		return nil
 	}
 
 	return n
 }
 
-func (c *cache[K, V]) afterRead(got node.Node[K, V], offset int64, recordHit, calcExpiresAt bool) {
+func (c *cache[K, V]) afterRead(got node.Node[K, V], nowNano int64, recordHit, calcExpiresAt bool) {
 	if recordHit {
 		c.stats.RecordHits(1)
 	}
 
 	if calcExpiresAt {
-		c.calcExpiresAtAfterRead(got, offset)
+		c.calcExpiresAtAfterRead(got, nowNano)
 	}
 
 	delayable := c.skipReadBuffer() || c.readBuffer.Add(got) != lossy.Full
@@ -304,36 +303,36 @@ func (c *cache[K, V]) SetIfAbsent(key K, value V) (V, bool) {
 	return c.set(key, value, true)
 }
 
-func (c *cache[K, V]) calcExpiresAtAfterRead(n node.Node[K, V], offset int64) {
+func (c *cache[K, V]) calcExpiresAtAfterRead(n node.Node[K, V], nowNano int64) {
 	if !c.withExpiration {
 		return
 	}
 
-	expiresAfter := c.expiryCalculator.ExpireAfterRead(c.nodeToEntry(n, offset))
-	c.setExpiresAfterRead(n, offset, expiresAfter)
+	expiresAfter := c.expiryCalculator.ExpireAfterRead(c.nodeToEntry(n, nowNano))
+	c.setExpiresAfterRead(n, nowNano, expiresAfter)
 }
 
-func (c *cache[K, V]) setExpiresAfterRead(n node.Node[K, V], offset int64, expiresAfter time.Duration) {
+func (c *cache[K, V]) setExpiresAfterRead(n node.Node[K, V], nowNano int64, expiresAfter time.Duration) {
 	if expiresAfter <= 0 {
 		return
 	}
 
 	expiresAt := n.ExpiresAt()
-	currentDuration := time.Duration(expiresAt - offset)
+	currentDuration := time.Duration(expiresAt - nowNano)
 	diff := xmath.Abs(int64(expiresAfter - currentDuration))
 	if diff > 0 {
-		n.CASExpiresAt(expiresAt, offset+int64(expiresAfter))
+		n.CASExpiresAt(expiresAt, nowNano+int64(expiresAfter))
 	}
 }
 
 // GetEntry returns the cache entry associated with the key in this cache.
 func (c *cache[K, V]) GetEntry(key K) (Entry[K, V], bool) {
-	offset := c.clock.Offset()
-	n := c.getNode(key, offset)
+	nowNano := c.clock.NowNano()
+	n := c.getNode(key, nowNano)
 	if n == nil {
 		return Entry[K, V]{}, false
 	}
-	return c.nodeToEntry(n, offset), true
+	return c.nodeToEntry(n, nowNano), true
 }
 
 // GetEntryQuietly returns the cache entry associated with the key in this cache.
@@ -341,12 +340,12 @@ func (c *cache[K, V]) GetEntry(key K) (Entry[K, V], bool) {
 // Unlike GetEntry, this function does not produce any side effects
 // such as updating statistics or the eviction policy.
 func (c *cache[K, V]) GetEntryQuietly(key K) (Entry[K, V], bool) {
-	offset := c.clock.Offset()
-	n := c.getNodeQuietly(key, offset)
+	nowNano := c.clock.NowNano()
+	n := c.getNodeQuietly(key, nowNano)
 	if n == nil {
 		return Entry[K, V]{}, false
 	}
-	return c.nodeToEntry(n, offset), true
+	return c.nodeToEntry(n, nowNano), true
 }
 
 // SetExpiresAfter specifies that the entry should be automatically removed from the cache once the duration has
@@ -356,14 +355,14 @@ func (c *cache[K, V]) SetExpiresAfter(key K, expiresAfter time.Duration) {
 		return
 	}
 
-	offset := c.clock.Offset()
+	nowNano := c.clock.NowNano()
 	n := c.hashmap.Get(key)
 	if n == nil {
 		return
 	}
 
-	c.setExpiresAfterRead(n, offset, expiresAfter)
-	c.afterRead(n, offset, false, false)
+	c.setExpiresAfterRead(n, nowNano, expiresAfter)
+	c.afterRead(n, nowNano, false, false)
 }
 
 // SetRefreshableAfter specifies that each entry should be eligible for reloading once a fixed duration has elapsed.
@@ -373,25 +372,25 @@ func (c *cache[K, V]) SetRefreshableAfter(key K, refreshableAfter time.Duration)
 		return
 	}
 
-	offset := c.clock.Offset()
+	nowNano := c.clock.NowNano()
 	n := c.hashmap.Get(key)
 	if n == nil {
 		return
 	}
 
-	entry := c.nodeToEntry(n, offset)
+	entry := c.nodeToEntry(n, nowNano)
 	currentDuration := entry.RefreshableAfter()
 	if refreshableAfter > 0 && currentDuration != refreshableAfter {
-		n.SetRefreshableAt(offset + int64(refreshableAfter))
+		n.SetRefreshableAt(nowNano + int64(refreshableAfter))
 	}
 }
 
-func (c *cache[K, V]) calcExpiresAtAfterWrite(n, old node.Node[K, V], offset int64) {
+func (c *cache[K, V]) calcExpiresAtAfterWrite(n, old node.Node[K, V], nowNano int64) {
 	if !c.withExpiration {
 		return
 	}
 
-	entry := c.nodeToEntry(n, offset)
+	entry := c.nodeToEntry(n, nowNano)
 	currentDuration := entry.ExpiresAfter()
 	var expiresAfter time.Duration
 	if old == nil {
@@ -401,7 +400,7 @@ func (c *cache[K, V]) calcExpiresAtAfterWrite(n, old node.Node[K, V], offset int
 	}
 
 	if expiresAfter > 0 && currentDuration != expiresAfter {
-		n.SetExpiresAt(offset + int64(expiresAfter))
+		n.SetExpiresAt(nowNano + int64(expiresAfter))
 	}
 }
 
@@ -410,23 +409,23 @@ func (c *cache[K, V]) set(key K, value V, onlyIfAbsent bool) (V, bool) {
 		old node.Node[K, V]
 		n   node.Node[K, V]
 	)
-	offset := c.clock.Offset()
+	nowNano := c.clock.NowNano()
 	c.hashmap.Compute(key, func(current node.Node[K, V]) node.Node[K, V] {
 		old = current
 		if onlyIfAbsent && current != nil {
 			// no op
-			c.calcExpiresAtAfterRead(old, offset)
+			c.calcExpiresAtAfterRead(old, nowNano)
 			return current
 		}
 		// set
 		c.singleflight.delete(key)
 		n = c.newNode(key, value, old)
-		c.calcExpiresAtAfterWrite(n, old, offset)
-		c.calcRefreshableAt(n, old, nil, offset)
+		c.calcExpiresAtAfterWrite(n, old, nowNano)
+		c.calcRefreshableAt(n, old, nil, nowNano)
 		c.makeRetired(old)
 		if old != nil {
 			cause := CauseReplacement
-			if old.HasExpired(offset) {
+			if old.HasExpired(nowNano) {
 				cause = CauseExpiration
 			}
 			c.notifyAtomicDeletion(old.Key(), old.Value(), cause)
@@ -435,21 +434,21 @@ func (c *cache[K, V]) set(key K, value V, onlyIfAbsent bool) (V, bool) {
 	})
 	if onlyIfAbsent {
 		if old == nil {
-			c.afterWrite(n, nil, offset)
+			c.afterWrite(n, nil, nowNano)
 			return value, true
 		}
-		c.afterRead(old, offset, false, false)
+		c.afterRead(old, nowNano, false, false)
 		return old.Value(), false
 	}
 
-	c.afterWrite(n, old, offset)
+	c.afterWrite(n, old, nowNano)
 	if old != nil {
 		return old.Value(), false
 	}
 	return value, true
 }
 
-func (c *cache[K, V]) afterWrite(n, old node.Node[K, V], offset int64) {
+func (c *cache[K, V]) afterWrite(n, old node.Node[K, V], nowNano int64) {
 	if !c.withMaintenance {
 		if old != nil {
 			c.notifyDeletion(old.Key(), old.Value(), CauseReplacement)
@@ -465,7 +464,7 @@ func (c *cache[K, V]) afterWrite(n, old node.Node[K, V], offset int64) {
 
 	// update
 	cause := CauseReplacement
-	if old.HasExpired(offset) {
+	if old.HasExpired(nowNano) {
 		cause = CauseExpiration
 	}
 
@@ -542,10 +541,10 @@ func (c *cache[K, V]) refreshKey(ctx context.Context, rk refreshableKey[K, V], l
 func (c *cache[K, V]) Get(ctx context.Context, key K, loader Loader[K, V]) (V, error) {
 	c.singleflight.init()
 
-	offset := c.clock.Offset()
-	n := c.getNode(key, offset)
+	nowNano := c.clock.NowNano()
+	n := c.getNode(key, nowNano)
 	if n != nil {
-		if !n.IsFresh(offset) {
+		if !n.IsFresh(nowNano) {
 			c.refreshKey(ctx, refreshableKey[K, V]{
 				key: n.Key(),
 				old: n,
@@ -578,13 +577,13 @@ func (c *cache[K, V]) Get(ctx context.Context, key K, loader Loader[K, V]) (V, e
 	return cl.value, nil
 }
 
-func (c *cache[K, V]) calcRefreshableAt(n, old node.Node[K, V], cl *call[K, V], offset int64) {
+func (c *cache[K, V]) calcRefreshableAt(n, old node.Node[K, V], cl *call[K, V], nowNano int64) {
 	if !c.withRefresh {
 		return
 	}
 
 	var refreshableAfter time.Duration
-	entry := c.nodeToEntry(n, offset)
+	entry := c.nodeToEntry(n, nowNano)
 	currentDuration := entry.RefreshableAfter()
 	//nolint:gocritic // it's ok
 	if cl != nil && cl.isRefresh && old != nil {
@@ -603,7 +602,7 @@ func (c *cache[K, V]) calcRefreshableAt(n, old node.Node[K, V], cl *call[K, V], 
 	}
 
 	if refreshableAfter > 0 && currentDuration != refreshableAfter {
-		n.SetRefreshableAt(offset + int64(refreshableAfter))
+		n.SetRefreshableAt(nowNano + int64(refreshableAfter))
 	}
 }
 
@@ -613,7 +612,7 @@ func (c *cache[K, V]) afterDeleteCall(cl *call[K, V]) {
 		deleted  bool
 		old      node.Node[K, V]
 	)
-	offset := c.clock.Offset()
+	nowNano := c.clock.NowNano()
 	newNode := c.hashmap.Compute(cl.key, func(oldNode node.Node[K, V]) node.Node[K, V] {
 		defer cl.cancel()
 
@@ -629,7 +628,7 @@ func (c *cache[K, V]) afterDeleteCall(cl *call[K, V]) {
 		}
 		if cl.err != nil {
 			if cl.isRefresh && oldNode != nil {
-				c.calcRefreshableAt(oldNode, oldNode, cl, offset)
+				c.calcRefreshableAt(oldNode, oldNode, cl, nowNano)
 			}
 			return oldNode
 		}
@@ -638,12 +637,12 @@ func (c *cache[K, V]) afterDeleteCall(cl *call[K, V]) {
 		}
 		inserted = true
 		n := c.newNode(cl.key, cl.value, old)
-		c.calcExpiresAtAfterWrite(n, old, offset)
-		c.calcRefreshableAt(n, old, cl, offset)
+		c.calcExpiresAtAfterWrite(n, old, nowNano)
+		c.calcRefreshableAt(n, old, cl, nowNano)
 		c.makeRetired(old)
 		if old != nil {
 			cause := CauseReplacement
-			if old.HasExpired(offset) {
+			if old.HasExpired(nowNano) {
 				cause = CauseExpiration
 			}
 			c.notifyAtomicDeletion(old.Key(), old.Value(), cause)
@@ -651,10 +650,10 @@ func (c *cache[K, V]) afterDeleteCall(cl *call[K, V]) {
 		return n
 	})
 	if deleted {
-		c.afterDelete(old, offset, false)
+		c.afterDelete(old, nowNano, false)
 	}
 	if inserted {
-		c.afterWrite(newNode, old, offset)
+		c.afterWrite(newNode, old, nowNano)
 	}
 }
 
@@ -777,7 +776,7 @@ func (c *cache[K, V]) bulkRefreshKeys(ctx context.Context, rks []refreshableKey[
 func (c *cache[K, V]) BulkGet(ctx context.Context, keys []K, bulkLoader BulkLoader[K, V]) (map[K]V, error) {
 	c.singleflight.init()
 
-	offset := c.clock.Offset()
+	nowNano := c.clock.NowNano()
 	result := make(map[K]V, len(keys))
 	var (
 		misses    map[K]*call[K, V]
@@ -791,9 +790,9 @@ func (c *cache[K, V]) BulkGet(ctx context.Context, keys []K, bulkLoader BulkLoad
 			continue
 		}
 
-		n := c.getNode(key, offset)
+		n := c.getNode(key, nowNano)
 		if n != nil {
-			if c.withRefresh && !n.IsFresh(offset) {
+			if c.withRefresh && !n.IsFresh(nowNano) {
 				if toRefresh == nil {
 					toRefresh = make([]refreshableKey[K, V], 0, len(keys)-len(result))
 				}
@@ -881,12 +880,12 @@ func (c *cache[K, V]) BulkGet(ctx context.Context, keys []K, bulkLoader BulkLoad
 }
 
 func (c *cache[K, V]) wrapLoad(fn func() error) error {
-	startTime := c.clock.Offset()
+	startTime := c.clock.NowNano()
 
 	err := fn()
 
 	if c.withStats {
-		loadTime := time.Duration(c.clock.Offset() - startTime)
+		loadTime := time.Duration(c.clock.NowNano() - startTime)
 		if err == nil || errors.Is(err, ErrNotFound) {
 			c.stats.RecordLoadSuccess(loadTime)
 		} else {
@@ -926,8 +925,8 @@ func (c *cache[K, V]) Refresh(ctx context.Context, key K, loader Loader[K, V]) <
 
 	c.singleflight.init()
 
-	offset := c.clock.Offset()
-	n := c.getNode(key, offset)
+	nowNano := c.clock.NowNano()
+	n := c.getNode(key, nowNano)
 
 	return c.refreshKey(ctx, refreshableKey[K, V]{
 		key: key,
@@ -963,10 +962,10 @@ func (c *cache[K, V]) BulkRefresh(ctx context.Context, keys []K, bulkLoader Bulk
 		uniq[k] = struct{}{}
 	}
 
-	offset := c.clock.Offset()
+	nowNano := c.clock.NowNano()
 	toRefresh := make([]refreshableKey[K, V], 0, len(uniq))
 	for key := range uniq {
-		n := c.getNode(key, offset)
+		n := c.getNode(key, nowNano)
 		toRefresh = append(toRefresh, refreshableKey[K, V]{
 			key: key,
 			old: n,
@@ -982,7 +981,7 @@ func (c *cache[K, V]) BulkRefresh(ctx context.Context, keys []K, bulkLoader Bulk
 // present.
 func (c *cache[K, V]) Invalidate(key K) (value V, invalidated bool) {
 	var d node.Node[K, V]
-	offset := c.clock.Offset()
+	nowNano := c.clock.NowNano()
 	c.hashmap.Compute(key, func(n node.Node[K, V]) node.Node[K, V] {
 		c.singleflight.delete(key)
 		if n != nil {
@@ -992,7 +991,7 @@ func (c *cache[K, V]) Invalidate(key K) (value V, invalidated bool) {
 		}
 		return nil
 	})
-	c.afterDelete(d, offset, false)
+	c.afterDelete(d, nowNano, false)
 	if d != nil {
 		return d.Value(), true
 	}
@@ -1017,11 +1016,11 @@ func (c *cache[K, V]) deleteNodeFromMap(n node.Node[K, V], cause DeletionCause) 
 	return deleted
 }
 
-func (c *cache[K, V]) deleteNode(n node.Node[K, V], offset int64) {
-	c.afterDelete(c.deleteNodeFromMap(n, CauseInvalidation), offset, true)
+func (c *cache[K, V]) deleteNode(n node.Node[K, V], nowNano int64) {
+	c.afterDelete(c.deleteNodeFromMap(n, CauseInvalidation), nowNano, true)
 }
 
-func (c *cache[K, V]) afterDelete(deleted node.Node[K, V], offset int64, withLock bool) {
+func (c *cache[K, V]) afterDelete(deleted node.Node[K, V], nowNano int64, withLock bool) {
 	if deleted == nil {
 		return
 	}
@@ -1033,7 +1032,7 @@ func (c *cache[K, V]) afterDelete(deleted node.Node[K, V], offset int64, withLoc
 
 	// delete
 	cause := CauseInvalidation
-	if deleted.HasExpired(offset) {
+	if deleted.HasExpired(nowNano) {
 		cause = CauseExpiration
 	}
 
@@ -1072,13 +1071,12 @@ func (c *cache[K, V]) notifyAtomicDeletion(key K, value V, cause DeletionCause) 
 }
 
 func (c *cache[K, V]) periodicCleanUp() {
-	ticker := time.NewTicker(time.Second)
-	defer ticker.Stop()
+	tick := c.clock.Tick(time.Second)
 	for {
 		select {
 		case <-c.doneClose:
 			return
-		case <-ticker.C:
+		case <-tick:
 			c.CleanUp()
 		}
 	}
@@ -1113,10 +1111,10 @@ func (c *cache[K, V]) evictNode(n node.Node[K, V], nowNanos int64) {
 // but if the cache is modified (including by eviction) after the iterator is
 // created, it is undefined which of the changes (if any) will be reflected in that iterator.
 func (c *cache[K, V]) All() iter.Seq2[K, V] {
-	offset := c.clock.Offset()
+	nowNano := c.clock.NowNano()
 	return func(yield func(K, V) bool) {
 		c.hashmap.Range(func(n node.Node[K, V]) bool {
-			if !n.IsAlive() || n.HasExpired(offset) {
+			if !n.IsAlive() || n.HasExpired(nowNano) {
 				c.scheduleDrainBuffers()
 				return true
 			}
@@ -1180,11 +1178,11 @@ func (c *cache[K, V]) InvalidateAll() {
 		nodes = append(nodes, n)
 		return true
 	})
-	offset := c.clock.Offset()
+	nowNano := c.clock.NowNano()
 	for len(nodes) > 0 && c.writeBuffer.Size() < threshold {
 		n := nodes[len(nodes)-1]
 		nodes = nodes[:len(nodes)-1]
-		c.deleteNode(n, offset)
+		c.deleteNode(n, nowNano)
 	}
 
 	c.evictionMutex.Unlock()
@@ -1419,7 +1417,7 @@ func (c *cache[K, V]) onAccess(n node.Node[K, V]) {
 
 func (c *cache[K, V]) expireNodes() {
 	if c.withExpiration {
-		c.expirationPolicy.DeleteExpired(c.clock.Offset(), c.evictNode)
+		c.expirationPolicy.DeleteExpired(c.clock.NowNano(), c.evictNode)
 	}
 }
 
