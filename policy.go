@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package tinylfu
+package otter
 
 import (
 	"github.com/maypok86/otter/v2/internal/deque"
@@ -25,83 +25,83 @@ const (
 
 	// The initial percent of the maximum weighted capacity dedicated to the main space.
 	percentMain = 0.99
-	// PercentMainProtected is the percent of the maximum weighted capacity dedicated to the main's protected space.
-	PercentMainProtected = 0.80
+	// percentMainProtected is the percent of the maximum weighted capacity dedicated to the main's protected space.
+	percentMainProtected = 0.80
 	// The difference in hit rates that restarts the climber.
 	hillClimberRestartThreshold = 0.05
 	// The percent of the total size to adapt the window by.
 	hillClimberStepPercent = 0.0625
 	// The rate to decrease the step size to adapt by.
 	hillClimberStepDecayRate = 0.98
-	// AdmitHashdosThreshold is the minimum popularity for allowing randomized admission.
-	AdmitHashdosThreshold = 6
+	// admitHashdosThreshold is the minimum popularity for allowing randomized admission.
+	admitHashdosThreshold = 6
 	// The maximum number of entries that can be transferred between queues.
 	queueTransferThreshold = 1_000
 )
 
-type Policy[K comparable, V any] struct {
-	Sketch                    *Sketch[K]
-	Window                    *deque.Linked[K, V]
-	Probation                 *deque.Linked[K, V]
-	Protected                 *deque.Linked[K, V]
-	Maximum                   uint64
-	WeightedSize              uint64
-	WindowMaximum             uint64
-	WindowWeightedSize        uint64
-	MainProtectedMaximum      uint64
-	MainProtectedWeightedSize uint64
-	StepSize                  float64
-	Adjustment                int64
-	HitsInSample              uint64
-	MissesInSample            uint64
-	PreviousSampleHitRate     float64
-	IsWeighted                bool
-	Rand                      func() uint32
+type policy[K comparable, V any] struct {
+	sketch                    *sketch[K]
+	window                    *deque.Linked[K, V]
+	probation                 *deque.Linked[K, V]
+	protected                 *deque.Linked[K, V]
+	maximum                   uint64
+	weightedSize              uint64
+	windowMaximum             uint64
+	windowWeightedSize        uint64
+	mainProtectedMaximum      uint64
+	mainProtectedWeightedSize uint64
+	stepSize                  float64
+	adjustment                int64
+	hitsInSample              uint64
+	missesInSample            uint64
+	previousSampleHitRate     float64
+	isWeighted                bool
+	rand                      func() uint32
 }
 
-func NewPolicy[K comparable, V any](isWeighted bool) *Policy[K, V] {
-	return &Policy[K, V]{
-		Sketch:     newSketch[K](),
-		Window:     deque.NewLinked[K, V](isExp),
-		Probation:  deque.NewLinked[K, V](isExp),
-		Protected:  deque.NewLinked[K, V](isExp),
-		IsWeighted: isWeighted,
-		Rand:       xruntime.Fastrand,
+func newPolicy[K comparable, V any](isWeighted bool) *policy[K, V] {
+	return &policy[K, V]{
+		sketch:     newSketch[K](),
+		window:     deque.NewLinked[K, V](isExp),
+		probation:  deque.NewLinked[K, V](isExp),
+		protected:  deque.NewLinked[K, V](isExp),
+		isWeighted: isWeighted,
+		rand:       xruntime.Fastrand,
 	}
 }
 
-// Access updates the eviction policy based on node accesses.
-func (p *Policy[K, V]) Access(n node.Node[K, V]) {
-	p.Sketch.Increment(n.Key())
+// access updates the eviction policy based on node accesses.
+func (p *policy[K, V]) access(n node.Node[K, V]) {
+	p.sketch.increment(n.Key())
 	switch {
 	case n.InWindow():
-		reorder(p.Window, n)
+		reorder(p.window, n)
 	case n.InMainProbation():
 		p.reorderProbation(n)
 	case n.InMainProtected():
-		reorder(p.Protected, n)
+		reorder(p.protected, n)
 	}
-	p.HitsInSample++
+	p.hitsInSample++
 }
 
-// Add adds node to the eviction policy.
-func (p *Policy[K, V]) Add(n node.Node[K, V], evictNode func(n node.Node[K, V], nowNanos int64)) {
+// add adds node to the eviction policy.
+func (p *policy[K, V]) add(n node.Node[K, V], evictNode func(n node.Node[K, V], nowNanos int64)) {
 	nodeWeight := uint64(n.Weight())
 
-	p.WeightedSize += nodeWeight
-	p.WindowWeightedSize += nodeWeight
-	if p.WeightedSize >= p.Maximum>>1 {
+	p.weightedSize += nodeWeight
+	p.windowWeightedSize += nodeWeight
+	if p.weightedSize >= p.maximum>>1 {
 		// Lazily initialize when close to the maximum
-		capacity := p.Maximum
-		if p.IsWeighted {
+		capacity := p.maximum
+		if p.isWeighted {
 			//nolint:gosec // there's no overflow
-			capacity = uint64(p.Window.Len()) + uint64(p.Probation.Len()) + uint64(p.Protected.Len())
+			capacity = uint64(p.window.Len()) + uint64(p.probation.Len()) + uint64(p.protected.Len())
 		}
-		p.Sketch.EnsureCapacity(capacity)
+		p.sketch.ensureCapacity(capacity)
 	}
 
-	p.Sketch.Increment(n.Key())
-	p.MissesInSample++
+	p.sketch.increment(n.Key())
+	p.missesInSample++
 
 	// ignore out-of-order write operations
 	if !n.IsAlive() {
@@ -109,144 +109,144 @@ func (p *Policy[K, V]) Add(n node.Node[K, V], evictNode func(n node.Node[K, V], 
 	}
 
 	switch {
-	case nodeWeight > p.Maximum:
+	case nodeWeight > p.maximum:
 		evictNode(n, 0)
-	case nodeWeight > p.WindowMaximum:
-		p.Window.PushFront(n)
+	case nodeWeight > p.windowMaximum:
+		p.window.PushFront(n)
 	default:
-		p.Window.PushBack(n)
+		p.window.PushBack(n)
 	}
 }
 
-func (p *Policy[K, V]) Update(n, old node.Node[K, V], evictNode func(n node.Node[K, V], nowNanos int64)) {
+func (p *policy[K, V]) update(n, old node.Node[K, V], evictNode func(n node.Node[K, V], nowNanos int64)) {
 	nodeWeight := uint64(n.Weight())
 	p.updateNode(n, old)
 	switch {
 	case n.InWindow():
-		p.WindowWeightedSize += nodeWeight
+		p.windowWeightedSize += nodeWeight
 		switch {
-		case nodeWeight > p.Maximum:
+		case nodeWeight > p.maximum:
 			evictNode(n, 0)
-		case nodeWeight <= p.WindowMaximum:
-			p.Access(n)
-		case p.Window.Contains(n):
-			p.Window.MoveToFront(n)
+		case nodeWeight <= p.windowMaximum:
+			p.access(n)
+		case p.window.Contains(n):
+			p.window.MoveToFront(n)
 		}
 	case n.InMainProbation():
-		if nodeWeight <= p.Maximum {
-			p.Access(n)
+		if nodeWeight <= p.maximum {
+			p.access(n)
 		} else {
 			evictNode(n, 0)
 		}
 	case n.InMainProtected():
-		p.MainProtectedWeightedSize += nodeWeight
-		if nodeWeight <= p.Maximum {
-			p.Access(n)
+		p.mainProtectedWeightedSize += nodeWeight
+		if nodeWeight <= p.maximum {
+			p.access(n)
 		} else {
 			evictNode(n, 0)
 		}
 	}
 
-	p.WeightedSize += nodeWeight
+	p.weightedSize += nodeWeight
 }
 
-func (p *Policy[K, V]) updateNode(n, old node.Node[K, V]) {
+func (p *policy[K, V]) updateNode(n, old node.Node[K, V]) {
 	n.SetQueueType(old.GetQueueType())
 
 	switch {
 	case n.InWindow():
-		p.Window.UpdateNode(n, old)
+		p.window.UpdateNode(n, old)
 	case n.InMainProbation():
-		p.Probation.UpdateNode(n, old)
+		p.probation.UpdateNode(n, old)
 	default:
-		p.Protected.UpdateNode(n, old)
+		p.protected.UpdateNode(n, old)
 	}
-	p.MakeDead(old)
+	p.makeDead(old)
 }
 
-// Delete deletes node from the eviction policy.
-func (p *Policy[K, V]) Delete(n node.Node[K, V]) {
+// delete deletes node from the eviction policy.
+func (p *policy[K, V]) delete(n node.Node[K, V]) {
 	// add may not have been processed yet
 	switch {
 	case n.InWindow():
-		p.Window.Delete(n)
+		p.window.Delete(n)
 	case n.InMainProbation():
-		p.Probation.Delete(n)
+		p.probation.Delete(n)
 	default:
-		p.Protected.Delete(n)
+		p.protected.Delete(n)
 	}
-	p.MakeDead(n)
+	p.makeDead(n)
 }
 
-func (p *Policy[K, V]) MakeDead(n node.Node[K, V]) {
+func (p *policy[K, V]) makeDead(n node.Node[K, V]) {
 	if !n.IsDead() {
 		nodeWeight := uint64(n.Weight())
 		if n.InWindow() {
-			p.WindowWeightedSize -= nodeWeight
+			p.windowWeightedSize -= nodeWeight
 		} else if n.InMainProtected() {
-			p.MainProtectedWeightedSize -= nodeWeight
+			p.mainProtectedWeightedSize -= nodeWeight
 		}
-		p.WeightedSize -= nodeWeight
+		p.weightedSize -= nodeWeight
 		n.Die()
 	}
 }
 
-func (p *Policy[K, V]) SetMaximumSize(maximum uint64) {
-	if maximum == p.Maximum {
+func (p *policy[K, V]) setMaximumSize(maximum uint64) {
+	if maximum == p.maximum {
 		return
 	}
 
 	window := maximum - uint64(percentMain*float64(maximum))
-	mainProtected := uint64(PercentMainProtected * float64(maximum-window))
+	mainProtected := uint64(percentMainProtected * float64(maximum-window))
 
-	p.Maximum = maximum
-	p.WindowMaximum = window
-	p.MainProtectedMaximum = mainProtected
+	p.maximum = maximum
+	p.windowMaximum = window
+	p.mainProtectedMaximum = mainProtected
 
-	p.HitsInSample = 0
-	p.MissesInSample = 0
-	p.StepSize = -hillClimberStepPercent * float64(maximum)
+	p.hitsInSample = 0
+	p.missesInSample = 0
+	p.stepSize = -hillClimberStepPercent * float64(maximum)
 
-	if p.Sketch != nil && !p.IsWeighted && p.WeightedSize >= (maximum>>1) {
-		// Lazily initialize when close to the maximum Size
-		p.Sketch.EnsureCapacity(maximum)
+	if p.sketch != nil && !p.isWeighted && p.weightedSize >= (maximum>>1) {
+		// Lazily initialize when close to the maximum size
+		p.sketch.ensureCapacity(maximum)
 	}
 }
 
-func (p *Policy[K, V]) EnsureCapacity(capacity uint64) {
-	p.Sketch.EnsureCapacity(capacity)
+func (p *policy[K, V]) ensureCapacity(capacity uint64) {
+	p.sketch.ensureCapacity(capacity)
 }
 
 // Promote the node from probation to protected on access.
-func (p *Policy[K, V]) reorderProbation(n node.Node[K, V]) {
+func (p *policy[K, V]) reorderProbation(n node.Node[K, V]) {
 	nodeWeight := uint64(n.Weight())
 
-	if p.Probation.NotContains(n) {
+	if p.probation.NotContains(n) {
 		// Ignore stale accesses for an entry that is no longer present
 		return
-	} else if nodeWeight > p.MainProtectedMaximum {
-		reorder(p.Probation, n)
+	} else if nodeWeight > p.mainProtectedMaximum {
+		reorder(p.probation, n)
 		return
 	}
 
 	// If the protected space exceeds its maximum, the LRU items are demoted to the probation space.
 	// This is deferred to the adaption phase at the end of the maintenance cycle.
-	p.MainProtectedWeightedSize += nodeWeight
-	p.Probation.Delete(n)
-	p.Protected.PushBack(n)
+	p.mainProtectedWeightedSize += nodeWeight
+	p.probation.Delete(n)
+	p.protected.PushBack(n)
 	n.MakeMainProtected()
 }
 
-func (p *Policy[K, V]) EvictNodes(evictNode func(n node.Node[K, V], nowNanos int64)) {
-	candidate := p.EvictFromWindow()
+func (p *policy[K, V]) evictNodes(evictNode func(n node.Node[K, V], nowNanos int64)) {
+	candidate := p.evictFromWindow()
 	p.evictFromMain(candidate, evictNode)
 }
 
-func (p *Policy[K, V]) EvictFromWindow() node.Node[K, V] {
+func (p *policy[K, V]) evictFromWindow() node.Node[K, V] {
 	var first node.Node[K, V]
-	n := p.Window.Head()
-	for p.WindowWeightedSize > p.WindowMaximum {
-		// The pending operations will adjust the Size to reflect the correct weight
+	n := p.window.Head()
+	for p.windowWeightedSize > p.windowMaximum {
+		// The pending operations will adjust the size to reflect the correct weight
 		if node.Equals(n, nil) {
 			break
 		}
@@ -255,43 +255,43 @@ func (p *Policy[K, V]) EvictFromWindow() node.Node[K, V] {
 		nodeWeight := uint64(n.Weight())
 		if nodeWeight != 0 {
 			n.MakeMainProbation()
-			p.Window.Delete(n)
-			p.Probation.PushBack(n)
+			p.window.Delete(n)
+			p.probation.PushBack(n)
 			if first == nil {
 				first = n
 			}
 
-			p.WindowWeightedSize -= nodeWeight
+			p.windowWeightedSize -= nodeWeight
 		}
 		n = next
 	}
 	return first
 }
 
-func (p *Policy[K, V]) evictFromMain(candidate node.Node[K, V], evictNode func(n node.Node[K, V], nowNanos int64)) {
+func (p *policy[K, V]) evictFromMain(candidate node.Node[K, V], evictNode func(n node.Node[K, V], nowNanos int64)) {
 	victimQueue := node.InMainProbationQueue
 	candidateQueue := node.InMainProbationQueue
-	victim := p.Probation.Head()
-	for p.WeightedSize > p.Maximum {
+	victim := p.probation.Head()
+	for p.weightedSize > p.maximum {
 		// Search the admission window for additional candidates
 		if node.Equals(candidate, nil) && candidateQueue == node.InMainProbationQueue {
-			candidate = p.Window.Head()
+			candidate = p.window.Head()
 			candidateQueue = node.InWindowQueue
 		}
 
 		// Try evicting from the protected and window queues
 		if node.Equals(candidate, nil) && node.Equals(victim, nil) {
 			if victimQueue == node.InMainProbationQueue {
-				victim = p.Protected.Head()
+				victim = p.protected.Head()
 				victimQueue = node.InMainProtectedQueue
 				continue
 			} else if victimQueue == node.InMainProtectedQueue {
-				victim = p.Window.Head()
+				victim = p.window.Head()
 				victimQueue = node.InWindowQueue
 				continue
 			}
 
-			// The pending operations will adjust the Size to reflect the correct weight
+			// The pending operations will adjust the size to reflect the correct weight
 			break
 		}
 
@@ -340,7 +340,7 @@ func (p *Policy[K, V]) evictFromMain(candidate node.Node[K, V], evictNode func(n
 		}
 
 		// Evict immediately if the candidate's weight exceeds the maximum
-		if uint64(candidate.Weight()) > p.Maximum {
+		if uint64(candidate.Weight()) > p.maximum {
 			evict := candidate
 			candidate = candidate.Next()
 			evictNode(evict, 0)
@@ -348,7 +348,7 @@ func (p *Policy[K, V]) evictFromMain(candidate node.Node[K, V], evictNode func(n
 		}
 
 		// Evict the entry with the lowest frequency
-		if p.Admit(candidate.Key(), victim.Key()) {
+		if p.admit(candidate.Key(), victim.Key()) {
 			evict := victim
 			victim = victim.Next()
 			evictNode(evict, 0)
@@ -361,25 +361,25 @@ func (p *Policy[K, V]) evictFromMain(candidate node.Node[K, V], evictNode func(n
 	}
 }
 
-func (p *Policy[K, V]) Admit(candidateKey, victimKey K) bool {
-	victimFreq := p.Sketch.Frequency(victimKey)
-	candidateFreq := p.Sketch.Frequency(candidateKey)
+func (p *policy[K, V]) admit(candidateKey, victimKey K) bool {
+	victimFreq := p.sketch.frequency(victimKey)
+	candidateFreq := p.sketch.frequency(candidateKey)
 	if candidateFreq > victimFreq {
 		return true
 	}
-	if candidateFreq >= AdmitHashdosThreshold {
+	if candidateFreq >= admitHashdosThreshold {
 		// The maximum frequency is 15 and halved to 7 after a reset to age the history. An attack
 		// exploits that a hot candidate is rejected in favor of a hot victim. The threshold of a warm
 		// candidate reduces the number of random acceptances to minimize the impact on the hit rate.
-		return (p.Rand() & 127) == 0
+		return (p.rand() & 127) == 0
 	}
 	return false
 }
 
-func (p *Policy[K, V]) Climb() {
+func (p *policy[K, V]) climb() {
 	p.determineAdjustment()
 	p.demoteFromMainProtected()
-	amount := p.Adjustment
+	amount := p.adjustment
 	if amount == 0 {
 		return
 	}
@@ -390,24 +390,24 @@ func (p *Policy[K, V]) Climb() {
 	}
 }
 
-func (p *Policy[K, V]) determineAdjustment() {
-	if p.Sketch.IsNotInitialized() {
-		p.PreviousSampleHitRate = 0.0
-		p.MissesInSample = 0
-		p.HitsInSample = 0
+func (p *policy[K, V]) determineAdjustment() {
+	if p.sketch.isNotInitialized() {
+		p.previousSampleHitRate = 0.0
+		p.missesInSample = 0
+		p.hitsInSample = 0
 		return
 	}
 
-	requestCount := p.HitsInSample + p.MissesInSample
-	if requestCount < p.Sketch.SampleSize {
+	requestCount := p.hitsInSample + p.missesInSample
+	if requestCount < p.sketch.sampleSize {
 		return
 	}
 
-	hitRate := float64(p.HitsInSample) / float64(requestCount)
-	hitRateChange := hitRate - p.PreviousSampleHitRate
-	amount := p.StepSize
+	hitRate := float64(p.hitsInSample) / float64(requestCount)
+	hitRateChange := hitRate - p.previousSampleHitRate
+	amount := p.stepSize
 	if hitRateChange < 0 {
-		amount = -p.StepSize
+		amount = -p.stepSize
 	}
 	var nextStepSize float64
 	if abs(hitRateChange) >= hillClimberRestartThreshold {
@@ -415,20 +415,20 @@ func (p *Policy[K, V]) determineAdjustment() {
 		if amount >= 0 {
 			k = float64(1)
 		}
-		nextStepSize = hillClimberStepPercent * float64(p.Maximum) * k
+		nextStepSize = hillClimberStepPercent * float64(p.maximum) * k
 	} else {
 		nextStepSize = hillClimberStepDecayRate * amount
 	}
-	p.PreviousSampleHitRate = hitRate
-	p.Adjustment = int64(amount)
-	p.StepSize = nextStepSize
-	p.MissesInSample = 0
-	p.HitsInSample = 0
+	p.previousSampleHitRate = hitRate
+	p.adjustment = int64(amount)
+	p.stepSize = nextStepSize
+	p.missesInSample = 0
+	p.hitsInSample = 0
 }
 
-func (p *Policy[K, V]) demoteFromMainProtected() {
-	mainProtectedMaximum := p.MainProtectedMaximum
-	mainProtectedWeightedSize := p.MainProtectedWeightedSize
+func (p *policy[K, V]) demoteFromMainProtected() {
+	mainProtectedMaximum := p.mainProtectedMaximum
+	mainProtectedWeightedSize := p.mainProtectedWeightedSize
 	if mainProtectedWeightedSize <= mainProtectedMaximum {
 		return
 	}
@@ -438,36 +438,36 @@ func (p *Policy[K, V]) demoteFromMainProtected() {
 			break
 		}
 
-		demoted := p.Protected.PopFront()
+		demoted := p.protected.PopFront()
 		if node.Equals(demoted, nil) {
 			break
 		}
 		demoted.MakeMainProbation()
-		p.Probation.PushBack(demoted)
+		p.probation.PushBack(demoted)
 		mainProtectedWeightedSize -= uint64(demoted.Weight())
 	}
 
-	p.MainProtectedWeightedSize = mainProtectedWeightedSize
+	p.mainProtectedWeightedSize = mainProtectedWeightedSize
 }
 
-func (p *Policy[K, V]) increaseWindow() {
-	if p.MainProtectedMaximum == 0 {
+func (p *policy[K, V]) increaseWindow() {
+	if p.mainProtectedMaximum == 0 {
 		return
 	}
 
-	quota := p.Adjustment
-	if p.MainProtectedMaximum < uint64(p.Adjustment) {
-		quota = int64(p.MainProtectedMaximum)
+	quota := p.adjustment
+	if p.mainProtectedMaximum < uint64(p.adjustment) {
+		quota = int64(p.mainProtectedMaximum)
 	}
-	p.MainProtectedMaximum -= uint64(quota)
-	p.WindowMaximum += uint64(quota)
+	p.mainProtectedMaximum -= uint64(quota)
+	p.windowMaximum += uint64(quota)
 	p.demoteFromMainProtected()
 
 	for i := 0; i < queueTransferThreshold; i++ {
-		candidate := p.Probation.Head()
+		candidate := p.probation.Head()
 		probation := true
 		if node.Equals(candidate, nil) || quota < int64(candidate.Weight()) {
-			candidate = p.Protected.Head()
+			candidate = p.protected.Head()
 			probation = false
 		}
 		if node.Equals(candidate, nil) {
@@ -481,36 +481,36 @@ func (p *Policy[K, V]) increaseWindow() {
 
 		quota -= int64(weight)
 		if probation {
-			p.Probation.Delete(candidate)
+			p.probation.Delete(candidate)
 		} else {
-			p.MainProtectedWeightedSize -= weight
-			p.Protected.Delete(candidate)
+			p.mainProtectedWeightedSize -= weight
+			p.protected.Delete(candidate)
 		}
-		p.WindowWeightedSize += weight
-		p.Window.PushBack(candidate)
+		p.windowWeightedSize += weight
+		p.window.PushBack(candidate)
 		candidate.MakeWindow()
 	}
 
-	p.MainProtectedMaximum += uint64(quota)
-	p.WindowMaximum -= uint64(quota)
-	p.Adjustment = quota
+	p.mainProtectedMaximum += uint64(quota)
+	p.windowMaximum -= uint64(quota)
+	p.adjustment = quota
 }
 
-func (p *Policy[K, V]) decreaseWindow() {
-	if p.WindowMaximum <= 1 {
+func (p *policy[K, V]) decreaseWindow() {
+	if p.windowMaximum <= 1 {
 		return
 	}
 
-	quota := -p.Adjustment
-	windowMaximum := max(0, p.WindowMaximum-1)
-	if windowMaximum < uint64(-p.Adjustment) {
+	quota := -p.adjustment
+	windowMaximum := max(0, p.windowMaximum-1)
+	if windowMaximum < uint64(-p.adjustment) {
 		quota = int64(windowMaximum)
 	}
-	p.MainProtectedMaximum += uint64(quota)
-	p.WindowMaximum -= uint64(quota)
+	p.mainProtectedMaximum += uint64(quota)
+	p.windowMaximum -= uint64(quota)
 
 	for i := 0; i < queueTransferThreshold; i++ {
-		candidate := p.Window.Head()
+		candidate := p.window.Head()
 		if node.Equals(candidate, nil) {
 			break
 		}
@@ -521,15 +521,15 @@ func (p *Policy[K, V]) decreaseWindow() {
 		}
 
 		quota -= weight
-		p.WindowWeightedSize -= uint64(weight)
-		p.Window.Delete(candidate)
-		p.Probation.PushBack(candidate)
+		p.windowWeightedSize -= uint64(weight)
+		p.window.Delete(candidate)
+		p.probation.PushBack(candidate)
 		candidate.MakeMainProbation()
 	}
 
-	p.MainProtectedMaximum -= uint64(quota)
-	p.WindowMaximum += uint64(quota)
-	p.Adjustment = -quota
+	p.mainProtectedMaximum -= uint64(quota)
+	p.windowMaximum += uint64(quota)
+	p.adjustment = -quota
 }
 
 func abs(a float64) float64 {

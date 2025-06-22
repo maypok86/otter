@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package tinylfu
+package otter
 
 import (
 	"testing"
@@ -23,9 +23,9 @@ import (
 func TestPolicy_SetMaximumSize(t *testing.T) {
 	t.Parallel()
 
-	p := &Policy[int, int]{}
-	p.Maximum = 10
+	p := &policy[int, int]{}
+	p.maximum = 10
 	require.NotPanics(t, func() {
-		p.SetMaximumSize(10)
+		p.setMaximumSize(10)
 	})
 }

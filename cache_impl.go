@@ -26,7 +26,6 @@ import (
 
 	"github.com/maypok86/otter/v2/internal/clock"
 	"github.com/maypok86/otter/v2/internal/deque/queue"
-	"github.com/maypok86/otter/v2/internal/eviction/tinylfu"
 	"github.com/maypok86/otter/v2/internal/expiration"
 	"github.com/maypok86/otter/v2/internal/generated/node"
 	"github.com/maypok86/otter/v2/internal/hashmap"
@@ -81,7 +80,7 @@ type cache[K comparable, V any] struct {
 	_                  [xruntime.CacheLineSize - 4]byte
 	nodeManager        *node.Manager[K, V]
 	hashmap            *hashmap.Map[K, V, node.Node[K, V]]
-	evictionPolicy     *tinylfu.Policy[K, V]
+	evictionPolicy     *policy[K, V]
 	expirationPolicy   *expiration.Variable[K, V]
 	stats              stats.Recorder
 	logger             Logger
@@ -152,10 +151,10 @@ func newCache[K comparable, V any](o *Options[K, V]) *cache[K, V] {
 
 	c.withEviction = withEviction
 	if c.withEviction {
-		c.evictionPolicy = tinylfu.NewPolicy[K, V](withWeight)
+		c.evictionPolicy = newPolicy[K, V](withWeight)
 		if o.hasInitialCapacity() {
 			//nolint:gosec // there's no overflow
-			c.evictionPolicy.EnsureCapacity(min(maximum, uint64(o.getInitialCapacity())))
+			c.evictionPolicy.ensureCapacity(min(maximum, uint64(o.getInitialCapacity())))
 		}
 	}
 
@@ -1098,7 +1097,7 @@ func (c *cache[K, V]) evictNode(n node.Node[K, V], nowNanos int64) {
 	deleted := c.deleteNodeFromMap(n, cause) != nil
 
 	if c.withEviction {
-		c.evictionPolicy.Delete(n)
+		c.evictionPolicy.delete(n)
 	}
 	if c.withExpiration {
 		c.expirationPolicy.Delete(n)
@@ -1378,7 +1377,7 @@ func (c *cache[K, V]) runTask(t *task[K, V]) {
 			c.expirationPolicy.Add(n)
 		}
 		if c.withEviction {
-			c.evictionPolicy.Add(n, c.evictNode)
+			c.evictionPolicy.add(n, c.evictNode)
 		}
 	case updateReason:
 		old := t.oldNode()
@@ -1389,7 +1388,7 @@ func (c *cache[K, V]) runTask(t *task[K, V]) {
 			}
 		}
 		if c.withEviction {
-			c.evictionPolicy.Update(n, old, c.evictNode)
+			c.evictionPolicy.update(n, old, c.evictNode)
 		}
 		c.notifyDeletion(old.Key(), old.Value(), t.deletionCause)
 	case deleteReason:
@@ -1397,7 +1396,7 @@ func (c *cache[K, V]) runTask(t *task[K, V]) {
 			c.expirationPolicy.Delete(n)
 		}
 		if c.withEviction {
-			c.evictionPolicy.Delete(n)
+			c.evictionPolicy.delete(n)
 		}
 		c.notifyDeletion(n.Key(), n.Value(), t.deletionCause)
 	default:
@@ -1409,7 +1408,7 @@ func (c *cache[K, V]) runTask(t *task[K, V]) {
 
 func (c *cache[K, V]) onAccess(n node.Node[K, V]) {
 	if c.withEviction {
-		c.evictionPolicy.Access(n)
+		c.evictionPolicy.access(n)
 	}
 	if c.withExpiration && !node.Equals(n.NextExp(), nil) {
 		c.expirationPolicy.Delete(n)
@@ -1429,14 +1428,14 @@ func (c *cache[K, V]) evictNodes() {
 	if !c.withEviction {
 		return
 	}
-	c.evictionPolicy.EvictNodes(c.evictNode)
+	c.evictionPolicy.evictNodes(c.evictNode)
 }
 
 func (c *cache[K, V]) climb() {
 	if !c.withEviction {
 		return
 	}
-	c.evictionPolicy.Climb()
+	c.evictionPolicy.climb()
 }
 
 func (c *cache[K, V]) getTask(n, old node.Node[K, V], writeReason reason, cause DeletionCause) *task[K, V] {
@@ -1474,7 +1473,7 @@ func (c *cache[K, V]) SetMaximum(maximum uint64) {
 		return
 	}
 	c.evictionMutex.Lock()
-	c.evictionPolicy.SetMaximumSize(maximum)
+	c.evictionPolicy.setMaximumSize(maximum)
 	c.maintenance(nil)
 	c.evictionMutex.Unlock()
 	c.rescheduleCleanUpIfIncomplete()
@@ -1487,7 +1486,7 @@ func (c *cache[K, V]) GetMaximum() uint64 {
 	if c.drainStatus.Load() == required {
 		c.maintenance(nil)
 	}
-	result := c.evictionPolicy.Maximum
+	result := c.evictionPolicy.maximum
 	c.evictionMutex.Unlock()
 	c.rescheduleCleanUpIfIncomplete()
 	return result
@@ -1521,7 +1520,7 @@ func (c *cache[K, V]) WeightedSize() uint64 {
 	if c.drainStatus.Load() == required {
 		c.maintenance(nil)
 	}
-	result := c.evictionPolicy.WeightedSize
+	result := c.evictionPolicy.weightedSize
 	c.evictionMutex.Unlock()
 	c.rescheduleCleanUpIfIncomplete()
 	return result
@@ -1539,7 +1538,7 @@ func (c *cache[K, V]) makeDead(n node.Node[K, V]) {
 	}
 
 	if c.withEviction {
-		c.evictionPolicy.MakeDead(n)
+		c.evictionPolicy.makeDead(n)
 	} else if !n.IsDead() {
 		n.Die()
 	}
