@@ -276,6 +276,40 @@ func TestCache_Keys(t *testing.T) {
 	}
 }
 
+func TestCache_Values(t *testing.T) {
+	t.Parallel()
+
+	size := 10
+	expiresAfter := time.Hour
+	c := Must[int, int](&Options[int, int]{
+		MaximumSize:      size,
+		ExpiryCalculator: ExpiryWriting[int, int](expiresAfter),
+	})
+
+	nm := node.NewManager[int, int](node.Config{
+		WithExpiration: true,
+		WithWeight:     true,
+	})
+
+	c.Set(1, 2)
+	c.cache.hashmap.Compute(2, func(n node.Node[int, int]) node.Node[int, int] {
+		return nm.Create(2, 3, 1, 1, 1)
+	})
+	c.Set(3, 4)
+	aliveNodes := 2
+	iters := 0
+	for value := range c.Values() {
+		if value != 2 && value != 4 {
+			t.Fatalf("got unexpected value for iteration %d: %d", iters, value)
+			break
+		}
+		iters++
+	}
+	if iters != aliveNodes {
+		t.Fatalf("got unexpected number of iterations: %d", iters)
+	}
+}
+
 func gcHelper(t *testing.T) *atomic.Bool {
 	t.Helper()
 
