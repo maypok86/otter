@@ -218,8 +218,6 @@ func TestCache_All(t *testing.T) {
 		ExpiryCalculator: ExpiryWriting[int, int](expiresAfter),
 	})
 
-	time.Sleep(3 * time.Second)
-
 	nm := node.NewManager[int, int](node.Config{
 		WithExpiration: true,
 		WithWeight:     true,
@@ -235,6 +233,40 @@ func TestCache_All(t *testing.T) {
 	for key, value := range c.All() {
 		if key != value {
 			t.Fatalf("got unexpected key/value for iteration %d: %d/%d", iters, key, value)
+			break
+		}
+		iters++
+	}
+	if iters != aliveNodes {
+		t.Fatalf("got unexpected number of iterations: %d", iters)
+	}
+}
+
+func TestCache_Keys(t *testing.T) {
+	t.Parallel()
+
+	size := 10
+	expiresAfter := time.Hour
+	c := Must[int, int](&Options[int, int]{
+		MaximumSize:      size,
+		ExpiryCalculator: ExpiryWriting[int, int](expiresAfter),
+	})
+
+	nm := node.NewManager[int, int](node.Config{
+		WithExpiration: true,
+		WithWeight:     true,
+	})
+
+	c.Set(1, 1)
+	c.cache.hashmap.Compute(2, func(n node.Node[int, int]) node.Node[int, int] {
+		return nm.Create(2, 2, 1, 1, 1)
+	})
+	c.Set(3, 3)
+	aliveNodes := 2
+	iters := 0
+	for key := range c.Keys() {
+		if key != 1 && key != 3 {
+			t.Fatalf("got unexpected key for iteration %d: %d", iters, key)
 			break
 		}
 		iters++

@@ -228,6 +228,16 @@ func (c *Cache[K, V]) All() iter.Seq2[K, V] {
 	return c.cache.All()
 }
 
+// Keys returns an iterator over all keys in the cache.
+// The iteration order is not specified and is not guaranteed to be the same from one call to the next.
+//
+// Iterator is at least weakly consistent: he is safe for concurrent use,
+// but if the cache is modified (including by eviction) after the iterator is
+// created, it is undefined which of the changes (if any) will be reflected in that iterator.
+func (c *Cache[K, V]) Keys() iter.Seq[K] {
+	return c.cache.Keys()
+}
+
 // InvalidateAll discards all entries in the cache. The behavior of this operation is undefined for an entry
 // that is being loaded (or reloaded) and is otherwise not present.
 func (c *Cache[K, V]) InvalidateAll() {
