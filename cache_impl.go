@@ -502,20 +502,17 @@ func (c *cache[K, V]) refreshKey(ctx context.Context, rk refreshableKey[K, V], l
 			refresher = loader.Load
 		}
 
-		loadCtx, cancel := context.WithCancel(ctx)
-		defer cancel()
-
 		cl, shouldLoad := c.singleflight.startCall(rk.key, true)
 		if shouldLoad {
 			//nolint:errcheck // there is no need to check error
 			_ = c.wrapLoad(func() error {
-				return c.singleflight.doCall(loadCtx, cl, refresher, c.afterDeleteCall)
+				return c.singleflight.doCall(ctx, cl, refresher, c.afterDeleteCall)
 			})
 		}
 		cl.wait()
 
 		if cl.err != nil && !cl.isNotFound {
-			c.logger.Error(loadCtx, "Returned an error during the refreshing", cl.err)
+			c.logger.Error(ctx, "Returned an error during the refreshing", cl.err)
 		}
 
 		ch <- RefreshResult[K, V]{
@@ -562,15 +559,11 @@ func (c *cache[K, V]) Get(ctx context.Context, key K, loader Loader[K, V]) (V, e
 		return n.Value(), nil
 	}
 
-	// node.Node compute?
-	loadCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
 	cl, shouldLoad := c.singleflight.startCall(key, false)
 	if shouldLoad {
 		//nolint:errcheck // there is no need to check error
 		_ = c.wrapLoad(func() error {
-			return c.singleflight.doCall(loadCtx, cl, loader.Load, c.afterDeleteCall)
+			return c.singleflight.doCall(ctx, cl, loader.Load, c.afterDeleteCall)
 		})
 	}
 	cl.wait()
