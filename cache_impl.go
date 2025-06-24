@@ -136,7 +136,7 @@ func newCache[K comparable, V any](o *Options[K, V]) *cache[K, V] {
 		weigher:            o.getWeigher(),
 		onDeletion:         o.OnDeletion,
 		onAtomicDeletion:   o.OnAtomicDeletion,
-		clock:              newTimeSource(nil),
+		clock:              newTimeSource(o.Clock),
 		withStats:          withStats,
 		expiryCalculator:   o.ExpiryCalculator,
 		refreshCalculator:  o.RefreshCalculator,
@@ -614,8 +614,6 @@ func (c *cache[K, V]) afterDeleteCall(cl *call[K, V]) {
 	)
 	nowNano := c.clock.NowNano()
 	newNode := c.hashmap.Compute(cl.key, func(oldNode node.Node[K, V]) node.Node[K, V] {
-		defer cl.cancel()
-
 		isCorrectCall := cl.isFake || c.singleflight.deleteCall(cl)
 		old = oldNode
 		if isCorrectCall && cl.isNotFound {
@@ -649,6 +647,7 @@ func (c *cache[K, V]) afterDeleteCall(cl *call[K, V]) {
 		}
 		return n
 	})
+	cl.cancel()
 	if deleted {
 		c.afterDelete(old, nowNano, false)
 	}
@@ -1078,6 +1077,7 @@ func (c *cache[K, V]) periodicCleanUp() {
 			return
 		case <-tick:
 			c.CleanUp()
+			c.clock.ProcessTick()
 		}
 	}
 }

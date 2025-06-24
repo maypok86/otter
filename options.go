@@ -137,6 +137,14 @@ type Options[K comparable, V any] struct {
 	// Beware that configuring a cache with an executor that discards tasks or never runs them may
 	// experience non-deterministic behavior.
 	Executor func(fn func())
+	// Clock specifies a nanosecond-precision time source for use in determining when entries should be
+	// expired or refreshed. By default, time.Now().UnixNano() is used.
+	//
+	// The primary intent of this option is to facilitate testing of caches which have been configured
+	// with ExpiryCalculator or RefreshCalculator.
+	//
+	// NOTE: this clock is not used when recording statistics.
+	Clock Clock
 	// Logger specifies the Logger implementation that will be used for logging warning and errors.
 	//
 	// The cache will use slog.Default() by default.

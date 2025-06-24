@@ -117,10 +117,7 @@ func (v *Variable[K, V]) deleteExpiredFromBucket(
 	expireNode func(n node.Node[K, V], nowNanos int64),
 ) {
 	mask := buckets[index] - 1
-	steps := buckets[index]
-	if delta < steps {
-		steps = delta
-	}
+	steps := min(delta+1, buckets[index])
 	start := prevTicks & mask
 	end := start + steps
 	timerWheel := v.wheel[index]
@@ -135,8 +132,7 @@ func (v *Variable[K, V]) deleteExpiredFromBucket(
 			n.SetPrevExp(nil)
 			n.SetNextExp(nil)
 
-			//nolint:gosec // there is no overflow
-			if uint64(n.ExpiresAt()) <= v.time {
+			if uint64(n.ExpiresAt()) < v.time {
 				expireNode(n, int64(v.time))
 			} else {
 				v.Add(n)

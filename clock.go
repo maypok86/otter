@@ -42,6 +42,7 @@ type timeSource interface {
 	Clock
 	Init()
 	Sleep(duration time.Duration)
+	ProcessTick()
 }
 
 func newTimeSource(clock Clock) timeSource {
@@ -50,6 +51,9 @@ func newTimeSource(clock Clock) timeSource {
 	}
 	if r, ok := clock.(*realSource); ok {
 		return r
+	}
+	if f, ok := clock.(*fakeSource); ok {
+		return f
 	}
 	return newCustomSource(clock)
 }
@@ -79,12 +83,14 @@ func (cs *customSource) NowNano() int64 {
 }
 
 func (cs *customSource) Tick(duration time.Duration) <-chan time.Time {
-	return time.Tick(duration)
+	return cs.clock.Tick(duration)
 }
 
 func (cs *customSource) Sleep(duration time.Duration) {
 	time.Sleep(duration)
 }
+
+func (cs *customSource) ProcessTick() {}
 
 type realSource struct {
 	initMutex     sync.Mutex
@@ -119,6 +125,109 @@ func (c *realSource) Tick(duration time.Duration) <-chan time.Time {
 
 func (c *realSource) Sleep(duration time.Duration) {
 	time.Sleep(duration)
+}
+
+func (c *realSource) ProcessTick() {}
+
+type fakeSource struct {
+	mutex          sync.Mutex
+	now            time.Time
+	initOnce       sync.Once
+	sleeps         chan time.Duration
+	tickWg         sync.WaitGroup
+	sleepWg        sync.WaitGroup
+	firstSleep     atomic.Bool
+	withTick       atomic.Bool
+	ticker         chan time.Time
+	enableTickOnce sync.Once
+	enableTick     chan time.Duration
+}
+
+func (f *fakeSource) Init() {
+	f.initOnce.Do(func() {
+		f.mutex.Lock()
+		defer f.mutex.Unlock()
+		f.now = time.Now()
+		f.sleeps = make(chan time.Duration)
+		f.firstSleep.Store(true)
+		f.enableTick = make(chan time.Duration)
+		f.ticker = make(chan time.Time, 1)
+
+		go func() {
+			var (
+				dur time.Duration
+				d   time.Duration
+			)
+			enabled := false
+			last := f.getNow()
+			for {
+				select {
+				case d = <-f.enableTick:
+					enabled = true
+					for d <= dur {
+						if f.firstSleep.Load() {
+							f.tickWg.Add(1)
+							f.ticker <- last
+							f.tickWg.Wait()
+							f.firstSleep.Store(false)
+						}
+						last = last.Add(d)
+						f.tickWg.Add(1)
+						f.ticker <- last
+						dur -= d
+					}
+				case s := <-f.sleeps:
+					if enabled && f.firstSleep.Load() {
+						f.tickWg.Add(1)
+						f.ticker <- last
+						f.tickWg.Wait()
+						f.firstSleep.Store(false)
+					}
+					f.mutex.Lock()
+					f.now = f.now.Add(s)
+					f.mutex.Unlock()
+					dur += s
+					if enabled {
+						for d <= dur {
+							last = last.Add(d)
+							f.tickWg.Add(1)
+							f.ticker <- last
+							dur -= d
+						}
+					}
+					f.sleepWg.Done()
+				}
+			}
+		}()
+	})
+}
+
+func (f *fakeSource) NowNano() int64 {
+	return f.getNow().UnixNano()
+}
+
+func (f *fakeSource) Tick(d time.Duration) <-chan time.Time {
+	f.enableTickOnce.Do(func() {
+		f.enableTick <- d
+	})
+	return f.ticker
+}
+
+func (f *fakeSource) Sleep(d time.Duration) {
+	f.sleepWg.Add(1)
+	f.sleeps <- d
+	f.sleepWg.Wait()
+	f.tickWg.Wait()
+}
+
+func (f *fakeSource) getNow() time.Time {
+	f.mutex.Lock()
+	defer f.mutex.Unlock()
+	return f.now
+}
+
+func (f *fakeSource) ProcessTick() {
+	f.tickWg.Done()
 }
 
 func saturatedAdd(a, b int64) int64 {

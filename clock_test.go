@@ -17,12 +17,14 @@ package otter
 import (
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestRealSource(t *testing.T) {
 	t.Parallel()
 
-	c := &realSource{}
+	c := newTimeSource(&realSource{})
 	start := time.Now().UnixNano()
 	c.Init()
 
@@ -31,10 +33,37 @@ func TestRealSource(t *testing.T) {
 		t.Fatalf("unexpected time since program start; got %d; want %d", got, 0)
 	}
 
-	time.Sleep(3 * time.Second)
+	c.Sleep(3 * time.Second)
 
 	got = (c.NowNano() - start) / 1e9
 	if got != 3 {
 		t.Fatalf("unexpected time since program start; got %d; want %d", got, 3)
 	}
+}
+
+type testClock struct{}
+
+func newTestClock() *testClock {
+	return &testClock{}
+}
+
+func (tc *testClock) NowNano() int64 {
+	return 1
+}
+
+func (tc *testClock) Tick(duration time.Duration) <-chan time.Time {
+	ticker := make(chan time.Time, 1)
+	ticker <- time.Now()
+	return ticker
+}
+
+func TestCustomSource(t *testing.T) {
+	c := newTimeSource(newTestClock())
+
+	require.Equal(t, int64(0), c.NowNano())
+	c.Init()
+	require.Equal(t, int64(1), c.NowNano())
+	require.Equal(t, 1, len(c.Tick(time.Second)))
+	c.Sleep(20 * time.Millisecond)
+	c.ProcessTick()
 }

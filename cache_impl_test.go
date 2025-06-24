@@ -17,7 +17,6 @@ package otter
 import (
 	"context"
 	"math"
-	"sync"
 	"testing"
 	"time"
 
@@ -31,14 +30,7 @@ const (
 	unreachable = math.MaxUint32
 )
 
-func cleanup(c *Cache[int, int]) {
-	c.CleanUp()
-	time.Sleep(time.Second)
-}
-
 func firstBeforeAccess(c *Cache[int, int]) node.Node[int, int] {
-	c.cache.evictionMutex.Lock()
-	defer c.cache.evictionMutex.Unlock()
 	return c.cache.evictionPolicy.probation.Head()
 }
 
@@ -46,8 +38,6 @@ func updateRecency(t *testing.T, c *Cache[int, int], isRead bool, fn func()) {
 	first := firstBeforeAccess(c)
 
 	fn()
-	c.cache.evictionMutex.Lock()
-	defer c.cache.evictionMutex.Unlock()
 	c.cache.maintenance(nil)
 
 	if isRead {
@@ -60,7 +50,6 @@ func updateRecency(t *testing.T, c *Cache[int, int], isRead bool, fn func()) {
 }
 
 func prepareAdaptation(t *testing.T, c *Cache[int, int], recencyBias bool) {
-	c.cache.evictionMutex.Lock()
 	k := -1
 	if recencyBias {
 		k = 1
@@ -69,7 +58,6 @@ func prepareAdaptation(t *testing.T, c *Cache[int, int], recencyBias bool) {
 	maximum := c.cache.evictionPolicy.maximum
 	c.cache.evictionPolicy.windowMaximum = uint64(0.5 * float64(maximum))
 	c.cache.evictionPolicy.mainProtectedMaximum = uint64(percentMainProtected * float64(maximum-c.cache.evictionPolicy.windowMaximum))
-	c.cache.evictionMutex.Unlock()
 
 	c.InvalidateAll()
 	for i := 0; i < int(maximum); i++ {
@@ -80,25 +68,20 @@ func prepareAdaptation(t *testing.T, c *Cache[int, int], recencyBias bool) {
 
 	for k := range c.All() {
 		require.True(t, c.has(k))
-		c.CleanUp()
 	}
 	for k := range c.All() {
 		require.True(t, c.has(k))
-		c.CleanUp()
 	}
 }
 
 func adapt(t *testing.T, c *Cache[int, int], sampleSize uint64) {
-	c.cache.evictionMutex.Lock()
 	c.cache.evictionPolicy.previousSampleHitRate = 0.8
 	c.cache.evictionPolicy.missesInSample = sampleSize / 2
 	c.cache.evictionPolicy.hitsInSample = sampleSize - c.cache.evictionPolicy.missesInSample
 	c.cache.climb()
-	c.cache.evictionMutex.Unlock()
 
 	for k := range c.All() {
 		require.True(t, c.has(k))
-		c.CleanUp()
 	}
 }
 
@@ -114,6 +97,9 @@ func TestCache_Eviction(t *testing.T) {
 			Weigher: func(key int, value int) uint32 {
 				return unreachable
 			},
+			Executor: func(fn func()) {
+				fn()
+			},
 			OnAtomicDeletion: func(e DeletionEvent[int, int]) {
 				m[e.Cause]++
 			},
@@ -122,7 +108,6 @@ func TestCache_Eviction(t *testing.T) {
 		v, ok := c.Set(1, 1)
 		require.True(t, ok)
 		require.Equal(t, 1, v)
-		cleanup(c)
 		require.Equal(t, uint64(0), c.WeightedSize())
 		require.Equal(t, 1, m[CauseOverflow])
 		require.Equal(t, 1, len(m))
@@ -131,16 +116,16 @@ func TestCache_Eviction(t *testing.T) {
 		t.Parallel()
 
 		m := make(map[DeletionCause]int)
-		var mutex sync.Mutex
 		c := Must(&Options[int, int]{
 			MaximumWeight: unreachable - 1,
 			Weigher: func(key int, value int) uint32 {
 				return unreachable
 			},
+			Executor: func(fn func()) {
+				fn()
+			},
 			OnDeletion: func(e DeletionEvent[int, int]) {
-				mutex.Lock()
 				m[e.Cause]++
-				mutex.Unlock()
 			},
 		})
 
@@ -149,9 +134,6 @@ func TestCache_Eviction(t *testing.T) {
 			require.True(t, ok)
 			require.Equal(t, i, v)
 		}
-		cleanup(c)
-		mutex.Lock()
-		defer mutex.Unlock()
 		require.Equal(t, uint64(0), c.WeightedSize())
 		require.Equal(t, 10, m[CauseOverflow])
 		require.Equal(t, 1, len(m))
@@ -161,7 +143,6 @@ func TestCache_Eviction(t *testing.T) {
 
 		m := make(map[DeletionCause][]int)
 		count := make(map[int]int)
-		var mutex sync.Mutex
 		c := Must(&Options[int, int]{
 			MaximumWeight: unreachable - 1,
 			Weigher: func(key int, value int) uint32 {
@@ -171,10 +152,11 @@ func TestCache_Eviction(t *testing.T) {
 				}
 				return unreachable
 			},
+			Executor: func(fn func()) {
+				fn()
+			},
 			OnAtomicDeletion: func(e DeletionEvent[int, int]) {
-				mutex.Lock()
 				m[e.Cause] = append(m[e.Cause], e.Key)
-				mutex.Unlock()
 			},
 		})
 
@@ -188,7 +170,6 @@ func TestCache_Eviction(t *testing.T) {
 			require.False(t, ok)
 			require.Equal(t, i, v)
 		}
-		cleanup(c)
 		require.Equal(t, uint64(0), c.WeightedSize())
 		require.Equal(t, []int{0, 1, 2, 3, 4, 5, 6, 7, 8, 9}, m[CauseOverflow])
 		require.Equal(t, []int{0, 1, 2, 3, 4, 5, 6, 7, 8, 9}, m[CauseReplacement])
@@ -202,6 +183,9 @@ func TestCache_Eviction(t *testing.T) {
 			MaximumSize: 1,
 			OnAtomicDeletion: func(e DeletionEvent[int, int]) {
 				m[e.Cause]++
+			},
+			Executor: func(fn func()) {
+				fn()
 			},
 		})
 
@@ -230,7 +214,7 @@ func TestCache_Eviction(t *testing.T) {
 		require.True(t, !n.IsAlive())
 		require.True(t, n.IsRetired())
 		c.cache.evictionMutex.Unlock()
-		cleanup(c)
+		c.CleanUp()
 		require.True(t, n.IsDead())
 		require.True(t, c.has(k2))
 		require.Equal(t, 1, m[CauseInvalidation])
@@ -248,6 +232,9 @@ func TestCache_Eviction(t *testing.T) {
 			OnDeletion: func(e DeletionEvent[int, int]) {
 				m[e.Cause]++
 			},
+			Executor: func(fn func()) {
+				fn()
+			},
 		})
 		c.cache.evictionPolicy.mainProtectedMaximum = 0
 		c.cache.evictionPolicy.windowMaximum = maximum
@@ -256,9 +243,7 @@ func TestCache_Eviction(t *testing.T) {
 			require.True(t, ok)
 			require.Equal(t, i, v)
 		}
-		cleanup(c)
 		expected := make([]int, 0, maximum)
-		c.cache.evictionMutex.Lock()
 		h := c.cache.evictionPolicy.window.Head()
 		for !node.Equals(h, nil) {
 			expected = append(expected, h.Key())
@@ -274,7 +259,6 @@ func TestCache_Eviction(t *testing.T) {
 			actual = append(actual, h.Key())
 			h = h.Next()
 		}
-		c.cache.evictionMutex.Unlock()
 
 		require.Equal(t, expected, actual)
 	})
@@ -282,18 +266,18 @@ func TestCache_Eviction(t *testing.T) {
 		t.Parallel()
 
 		const maximum = 50
-		var mutex sync.Mutex
 		m := make(map[DeletionCause]int)
 		actual := make([]int, 0, maximum)
 		s := stats.NewCounter()
 		c := Must(&Options[int, int]{
 			MaximumSize:   maximum,
 			StatsRecorder: s,
+			Executor: func(fn func()) {
+				fn()
+			},
 			OnAtomicDeletion: func(e DeletionEvent[int, int]) {
-				mutex.Lock()
 				m[e.Cause]++
 				actual = append(actual, e.Key)
-				mutex.Unlock()
 			},
 		})
 		for i := 0; i < maximum; i++ {
@@ -301,9 +285,7 @@ func TestCache_Eviction(t *testing.T) {
 			require.True(t, ok)
 			require.Equal(t, i, v)
 		}
-		cleanup(c)
 
-		c.cache.evictionMutex.Lock()
 		c.cache.evictionPolicy.windowMaximum = 0
 		candidate := c.cache.evictionPolicy.evictFromWindow()
 		require.False(t, node.Equals(candidate, nil))
@@ -319,9 +301,7 @@ func TestCache_Eviction(t *testing.T) {
 			expected = append(expected, h.Key())
 			h = h.Next()
 		}
-		c.cache.evictionMutex.Unlock()
 		c.SetMaximum(0)
-		c.CleanUp()
 
 		require.Equal(t, expected, actual)
 	})
@@ -332,15 +312,15 @@ func TestCache_Eviction(t *testing.T) {
 		m := make(map[DeletionCause]int)
 		actual := make([]int, 0, maximum)
 		s := stats.NewCounter()
-		var mutex sync.Mutex
 		c := Must(&Options[int, int]{
 			MaximumSize:   maximum,
 			StatsRecorder: s,
+			Executor: func(fn func()) {
+				fn()
+			},
 			OnAtomicDeletion: func(e DeletionEvent[int, int]) {
-				mutex.Lock()
 				m[e.Cause]++
 				actual = append(actual, e.Key)
-				mutex.Unlock()
 			},
 		})
 
@@ -352,7 +332,6 @@ func TestCache_Eviction(t *testing.T) {
 			require.True(t, ok)
 			require.Equal(t, i, v)
 		}
-		cleanup(c)
 
 		for i := range c.cache.evictionPolicy.sketch.table {
 			c.cache.evictionPolicy.sketch.table[i] = 0
@@ -378,15 +357,15 @@ func TestCache_Eviction(t *testing.T) {
 		m := make(map[DeletionCause]int)
 		actual := make([]int, 0, maximum)
 		s := stats.NewCounter()
-		var mutex sync.Mutex
 		c := Must(&Options[int, int]{
 			MaximumSize:   maximum,
 			StatsRecorder: s,
+			Executor: func(fn func()) {
+				fn()
+			},
 			OnAtomicDeletion: func(e DeletionEvent[int, int]) {
-				mutex.Lock()
 				m[e.Cause]++
 				actual = append(actual, e.Key)
-				mutex.Unlock()
 			},
 		})
 
@@ -398,7 +377,6 @@ func TestCache_Eviction(t *testing.T) {
 			require.True(t, ok)
 			require.Equal(t, i, v)
 		}
-		cleanup(c)
 
 		for i := range c.cache.evictionPolicy.sketch.table {
 			c.cache.evictionPolicy.sketch.table[i] = 0
@@ -423,15 +401,15 @@ func TestCache_Eviction(t *testing.T) {
 		m := make(map[DeletionCause]int)
 		actual := make([]int, 0, maximum)
 		s := stats.NewCounter()
-		var mutex sync.Mutex
 		c := Must(&Options[int, int]{
 			MaximumSize:   maximum,
 			StatsRecorder: s,
+			Executor: func(fn func()) {
+				fn()
+			},
 			OnAtomicDeletion: func(e DeletionEvent[int, int]) {
-				mutex.Lock()
 				m[e.Cause]++
 				actual = append(actual, e.Key)
-				mutex.Unlock()
 			},
 		})
 		e := c.cache.evictionPolicy
@@ -444,7 +422,6 @@ func TestCache_Eviction(t *testing.T) {
 			require.True(t, ok)
 			require.Equal(t, i, v)
 		}
-		cleanup(c)
 
 		for !e.probation.IsEmpty() {
 			n := e.probation.PopFront()
@@ -487,15 +464,15 @@ func TestCache_Eviction(t *testing.T) {
 		m := make(map[DeletionCause]int)
 		actual := make([]int, 0, maximum)
 		s := stats.NewCounter()
-		var mutex sync.Mutex
 		c := Must(&Options[int, int]{
 			MaximumSize:   maximum,
 			StatsRecorder: s,
+			Executor: func(fn func()) {
+				fn()
+			},
 			OnAtomicDeletion: func(e DeletionEvent[int, int]) {
-				mutex.Lock()
 				m[e.Cause]++
 				actual = append(actual, e.Key)
-				mutex.Unlock()
 			},
 		})
 		e := c.cache.evictionPolicy
@@ -505,7 +482,6 @@ func TestCache_Eviction(t *testing.T) {
 			require.True(t, ok)
 			require.Equal(t, i, v)
 		}
-		cleanup(c)
 
 		for i := 0; i < len(c.cache.evictionPolicy.sketch.table); i++ {
 			e.sketch.table[i] = 0
@@ -543,6 +519,9 @@ func TestCache_Eviction(t *testing.T) {
 		c := Must(&Options[int, int]{
 			MaximumSize:   maximum,
 			StatsRecorder: s,
+			Executor: func(fn func()) {
+				fn()
+			},
 			OnDeletion: func(e DeletionEvent[int, int]) {
 				m[e.Cause]++
 				actual = append(actual, e.Key)
@@ -555,7 +534,6 @@ func TestCache_Eviction(t *testing.T) {
 			require.True(t, ok)
 			require.Equal(t, i, v)
 		}
-		cleanup(c)
 
 		c.cache.evictionMutex.Lock()
 		expected := e.window.Head()
@@ -591,6 +569,9 @@ func TestCache_Eviction(t *testing.T) {
 		c := Must(&Options[int, int]{
 			MaximumSize:   maximum,
 			StatsRecorder: s,
+			Executor: func(fn func()) {
+				fn()
+			},
 			OnDeletion: func(e DeletionEvent[int, int]) {
 				m[e.Cause]++
 				actual = append(actual, e.Key)
@@ -603,7 +584,6 @@ func TestCache_Eviction(t *testing.T) {
 			require.True(t, ok)
 			require.Equal(t, i+1, v)
 		}
-		cleanup(c)
 
 		c.cache.evictionMutex.Lock()
 		expected := e.probation.Head()
@@ -636,18 +616,18 @@ func TestCache_Eviction(t *testing.T) {
 		m := make(map[DeletionCause]int)
 		actual := make([]int, 0, maximum)
 		s := stats.NewCounter()
-		var mutex sync.Mutex
 		c := Must(&Options[int, int]{
 			MaximumWeight: maximum,
 			Weigher: func(key int, value int) uint32 {
 				return uint32(value)
 			},
+			Executor: func(fn func()) {
+				fn()
+			},
 			StatsRecorder: s,
 			OnDeletion: func(e DeletionEvent[int, int]) {
-				mutex.Lock()
 				m[e.Cause]++
 				actual = append(actual, e.Key)
-				mutex.Unlock()
 			},
 		})
 		e := c.cache.evictionPolicy
@@ -660,7 +640,6 @@ func TestCache_Eviction(t *testing.T) {
 			_, ok := c.Set(i, v)
 			require.True(t, ok)
 		}
-		cleanup(c)
 
 		candidate := e.window.Head()
 		c.SetMaximum(0)
@@ -677,18 +656,18 @@ func TestCache_Eviction(t *testing.T) {
 		m := make(map[DeletionCause]int)
 		actual := make([]int, 0, maximum)
 		s := stats.NewCounter()
-		var mutex sync.Mutex
 		c := Must(&Options[int, int]{
 			MaximumWeight: maximum,
 			Weigher: func(key int, value int) uint32 {
 				return uint32(value)
 			},
+			Executor: func(fn func()) {
+				fn()
+			},
 			StatsRecorder: s,
 			OnDeletion: func(e DeletionEvent[int, int]) {
-				mutex.Lock()
 				m[e.Cause]++
 				actual = append(actual, e.Key)
-				mutex.Unlock()
 			},
 		})
 		e := c.cache.evictionPolicy
@@ -738,6 +717,9 @@ func TestCache_Eviction(t *testing.T) {
 		c := Must(&Options[int, int]{
 			MaximumSize:   maximum,
 			StatsRecorder: s,
+			Executor: func(fn func()) {
+				fn()
+			},
 			OnDeletion: func(e DeletionEvent[int, int]) {
 				m[e.Cause]++
 				actual = append(actual, e.Key)
@@ -749,7 +731,6 @@ func TestCache_Eviction(t *testing.T) {
 			require.True(t, ok)
 			require.Equal(t, i, v)
 		}
-		cleanup(c)
 
 		first := firstBeforeAccess(c)
 		updateRecency(t, c, true, func() {
@@ -766,6 +747,9 @@ func TestCache_Eviction(t *testing.T) {
 		c := Must(&Options[int, int]{
 			MaximumSize:   maximum,
 			StatsRecorder: s,
+			Executor: func(fn func()) {
+				fn()
+			},
 			OnDeletion: func(e DeletionEvent[int, int]) {
 				m[e.Cause]++
 				actual = append(actual, e.Key)
@@ -777,7 +761,6 @@ func TestCache_Eviction(t *testing.T) {
 			require.True(t, ok)
 			require.Equal(t, i, v)
 		}
-		cleanup(c)
 
 		first := firstBeforeAccess(c)
 		updateRecency(t, c, false, func() {
@@ -790,18 +773,18 @@ func TestCache_Eviction(t *testing.T) {
 		t.Parallel()
 
 		const maximum = 50
-		var mutex sync.Mutex
 		m := make(map[DeletionCause]int)
 		actual := make([]int, 0, maximum)
 		s := stats.NewCounter()
 		c := Must(&Options[int, int]{
 			MaximumSize:   maximum,
 			StatsRecorder: s,
+			Executor: func(fn func()) {
+				fn()
+			},
 			OnDeletion: func(e DeletionEvent[int, int]) {
-				mutex.Lock()
 				m[e.Cause]++
 				actual = append(actual, e.Key)
-				mutex.Unlock()
 			},
 		})
 
@@ -810,7 +793,6 @@ func TestCache_Eviction(t *testing.T) {
 			require.True(t, ok)
 			require.Equal(t, i, v)
 		}
-		cleanup(c)
 
 		first := firstBeforeAccess(c)
 		updateRecency(t, c, false, func() {
@@ -823,7 +805,6 @@ func TestCache_Eviction(t *testing.T) {
 		t.Parallel()
 
 		const maximum = 50
-		var mutex sync.Mutex
 		m := make(map[DeletionCause]int)
 		actual := make([]int, 0, maximum)
 		s := stats.NewCounter()
@@ -832,12 +813,13 @@ func TestCache_Eviction(t *testing.T) {
 			Weigher: func(key int, value int) uint32 {
 				return 10
 			},
+			Executor: func(fn func()) {
+				fn()
+			},
 			StatsRecorder: s,
 			OnDeletion: func(e DeletionEvent[int, int]) {
-				mutex.Lock()
 				m[e.Cause]++
 				actual = append(actual, e.Key)
-				mutex.Unlock()
 			},
 		})
 
@@ -846,27 +828,22 @@ func TestCache_Eviction(t *testing.T) {
 			require.True(t, ok)
 			require.Equal(t, i, v)
 		}
-		cleanup(c)
 
 		e := c.cache.evictionPolicy
 
 		prepareAdaptation(t, c, false)
-		c.cache.evictionMutex.Lock()
 		sampleSize := e.sketch.sampleSize
 		protectedSize := e.mainProtectedWeightedSize
 		protectedMaximum := e.mainProtectedMaximum
 		windowSize := e.windowWeightedSize
 		windowMaximum := e.windowMaximum
-		c.cache.evictionMutex.Unlock()
 
 		adapt(t, c, sampleSize)
 
-		c.cache.evictionMutex.Lock()
 		require.Less(t, e.mainProtectedWeightedSize, protectedSize)
 		require.Less(t, e.mainProtectedMaximum, protectedMaximum)
 		require.Greater(t, e.windowWeightedSize, windowSize)
 		require.Greater(t, e.windowMaximum, windowMaximum)
-		c.cache.evictionMutex.Unlock()
 	})
 	t.Run("adapt_decreaseWindow", func(t *testing.T) {
 		t.Parallel()
@@ -875,15 +852,15 @@ func TestCache_Eviction(t *testing.T) {
 		m := make(map[DeletionCause]int)
 		actual := make([]int, 0, maximum)
 		s := stats.NewCounter()
-		var mutex sync.Mutex
 		c := Must(&Options[int, int]{
 			MaximumSize:   maximum,
 			StatsRecorder: s,
+			Executor: func(fn func()) {
+				fn()
+			},
 			OnDeletion: func(e DeletionEvent[int, int]) {
-				mutex.Lock()
 				m[e.Cause]++
 				actual = append(actual, e.Key)
-				mutex.Unlock()
 			},
 		})
 
@@ -892,27 +869,22 @@ func TestCache_Eviction(t *testing.T) {
 			require.True(t, ok)
 			require.Equal(t, i, v)
 		}
-		cleanup(c)
 
 		e := c.cache.evictionPolicy
 
 		prepareAdaptation(t, c, true)
-		c.cache.evictionMutex.Lock()
 		sampleSize := e.sketch.sampleSize
 		protectedSize := e.mainProtectedWeightedSize
 		protectedMaximum := e.mainProtectedMaximum
 		windowSize := e.windowWeightedSize
 		windowMaximum := e.windowMaximum
-		c.cache.evictionMutex.Unlock()
 
 		adapt(t, c, sampleSize)
 
-		c.cache.evictionMutex.Lock()
 		require.Greater(t, e.mainProtectedWeightedSize, protectedSize)
 		require.Greater(t, e.mainProtectedMaximum, protectedMaximum)
 		require.Less(t, e.windowWeightedSize, windowSize)
 		require.Less(t, e.windowMaximum, windowMaximum)
-		c.cache.evictionMutex.Unlock()
 	})
 }
 
@@ -1061,18 +1033,16 @@ func TestCache_Scheduler(t *testing.T) {
 			MaximumSize:      1,
 			OnAtomicDeletion: onDeletion,
 		})
+		c.SetMaximum(0)
 
 		v1, ok := c.Set(1, 1)
 		require.True(t, ok)
 		require.Equal(t, 1, v1)
-		v1, ok = c.Set(2, 2)
-		require.True(t, ok)
-		require.Equal(t, 2, v1)
 		<-evicting
 
-		v2, ok := c.Set(3, 3)
+		v2, ok := c.Set(2, 2)
 		require.True(t, ok)
-		require.Equal(t, 3, v2)
+		require.Equal(t, 2, v2)
 		require.Equal(t, processingToRequired, c.cache.drainStatus.Load())
 
 		done <- struct{}{}
@@ -1095,6 +1065,9 @@ func TestCache_Scheduler(t *testing.T) {
 			Weigher: func(key int, value int) uint32 {
 				return uint32(key)
 			},
+			Executor: func(fn func()) {
+				fn()
+			},
 		})
 
 		for i := 0; i < 10; i++ {
@@ -1102,7 +1075,6 @@ func TestCache_Scheduler(t *testing.T) {
 			require.True(t, ok)
 			require.Equal(t, i, v)
 		}
-		cleanup(c)
 
 		c.cache.drainStatus.Store(required)
 		require.Equal(t, uint64(45), c.WeightedSize())
@@ -1113,6 +1085,9 @@ func TestCache_Scheduler(t *testing.T) {
 
 		c := Must(&Options[int, int]{
 			MaximumSize: 10,
+			Executor: func(fn func()) {
+				fn()
+			},
 		})
 
 		for i := 0; i < 10; i++ {
@@ -1120,7 +1095,6 @@ func TestCache_Scheduler(t *testing.T) {
 			require.True(t, ok)
 			require.Equal(t, i, v)
 		}
-		cleanup(c)
 
 		c.cache.drainStatus.Store(required)
 		require.Equal(t, uint64(10), c.GetMaximum())
