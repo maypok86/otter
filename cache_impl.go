@@ -85,6 +85,7 @@ type cache[K comparable, V any] struct {
 	stats              stats.Recorder
 	logger             Logger
 	clock              timeSource
+	statsClock         *realSource
 	readBuffer         *lossy.Striped[K, V]
 	writeBuffer        *queue.MPSC[task[K, V]]
 	executor           func(fn func())
@@ -104,7 +105,6 @@ type cache[K comparable, V any] struct {
 	withEviction       bool
 	isWeighted         bool
 	withMaintenance    bool
-	withStats          bool
 }
 
 // newCache returns a new cache instance based on the settings from Options.
@@ -121,14 +121,19 @@ func newCache[K comparable, V any](o *Options[K, V]) *cache[K, V] {
 	withEviction := maximum > 0
 
 	withStats := o.StatsRecorder != nil
+	if withStats {
+		_, ok := o.StatsRecorder.(*stats.NoopRecorder)
+		withStats = withStats && !ok
+	}
+	statsRecorder := o.StatsRecorder
 	if !withStats {
-		o.StatsRecorder = &stats.NoopRecorder{}
+		statsRecorder = &stats.NoopRecorder{}
 	}
 
 	c := &cache[K, V]{
 		nodeManager:        nodeManager,
 		hashmap:            hashmap.NewWithSize[K, V, node.Node[K, V]](nodeManager, o.getInitialCapacity()),
-		stats:              o.StatsRecorder,
+		stats:              statsRecorder,
 		logger:             o.getLogger(),
 		singleflight:       &group[K, V]{},
 		executor:           o.getExecutor(),
@@ -137,10 +142,14 @@ func newCache[K comparable, V any](o *Options[K, V]) *cache[K, V] {
 		onDeletion:         o.OnDeletion,
 		onAtomicDeletion:   o.OnAtomicDeletion,
 		clock:              newTimeSource(o.Clock),
-		withStats:          withStats,
+		statsClock:         &realSource{},
 		expiryCalculator:   o.ExpiryCalculator,
 		refreshCalculator:  o.RefreshCalculator,
 		isWeighted:         withWeight,
+	}
+
+	if withStats {
+		c.statsClock.Init()
 	}
 
 	c.withEviction = withEviction
@@ -553,10 +562,6 @@ func (c *cache[K, V]) Get(ctx context.Context, key K, loader Loader[K, V]) (V, e
 		return n.Value(), nil
 	}
 
-	if c.withStats {
-		c.clock.Init()
-	}
-
 	// node.Node compute?
 	loadCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -820,10 +825,6 @@ func (c *cache[K, V]) BulkGet(ctx context.Context, keys []K, bulkLoader BulkLoad
 	loadCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	if c.withStats {
-		c.clock.Init()
-	}
-
 	var toLoadCalls map[K]*call[K, V]
 	i := 0
 	for key := range misses {
@@ -879,17 +880,15 @@ func (c *cache[K, V]) BulkGet(ctx context.Context, keys []K, bulkLoader BulkLoad
 }
 
 func (c *cache[K, V]) wrapLoad(fn func() error) error {
-	startTime := c.clock.NowNano()
+	startTime := c.statsClock.NowNano()
 
 	err := fn()
 
-	if c.withStats {
-		loadTime := time.Duration(c.clock.NowNano() - startTime)
-		if err == nil || errors.Is(err, ErrNotFound) {
-			c.stats.RecordLoadSuccess(loadTime)
-		} else {
-			c.stats.RecordLoadFailure(loadTime)
-		}
+	loadTime := time.Duration(c.statsClock.NowNano() - startTime)
+	if err == nil || errors.Is(err, ErrNotFound) {
+		c.stats.RecordLoadSuccess(loadTime)
+	} else {
+		c.stats.RecordLoadFailure(loadTime)
 	}
 
 	var pe *panicError

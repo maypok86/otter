@@ -967,6 +967,15 @@ func TestCache_CornerCases(t *testing.T) {
 			c.cache.afterDelete(nil, 0, false)
 		})
 	})
+	t.Run("withNoopStatsRecorder", func(t *testing.T) {
+		t.Parallel()
+
+		c := Must(&Options[int, int]{
+			StatsRecorder: &stats.NoopRecorder{},
+		})
+
+		require.Equal(t, int64(0), c.cache.statsClock.NowNano())
+	})
 }
 
 func TestCache_Scheduler(t *testing.T) {
