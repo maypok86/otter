@@ -902,7 +902,7 @@ func TestCache_CornerCases(t *testing.T) {
 		require.NotPanics(t, func() {
 			require.Nil(t, c.Refresh(ctx, 1, nil))
 			require.Nil(t, c.BulkRefresh(ctx, []int{1}, nil))
-			require.Nil(t, c.cache.refreshKey(ctx, refreshableKey[int, int]{}, nil))
+			require.Nil(t, c.cache.refreshKey(ctx, refreshableKey[int, int]{}, nil, true))
 			c.SetRefreshableAfter(1, time.Hour)
 			c.SetRefreshableAfter(1, -time.Hour)
 		})

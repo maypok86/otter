@@ -485,12 +485,20 @@ type refreshableKey[K comparable, V any] struct {
 	old node.Node[K, V]
 }
 
-func (c *cache[K, V]) refreshKey(ctx context.Context, rk refreshableKey[K, V], loader Loader[K, V]) <-chan RefreshResult[K, V] {
+func (c *cache[K, V]) refreshKey(
+	ctx context.Context,
+	rk refreshableKey[K, V],
+	loader Loader[K, V],
+	isManual bool,
+) <-chan RefreshResult[K, V] {
 	if !c.withRefresh {
 		return nil
 	}
 
-	ch := make(chan RefreshResult[K, V], 1)
+	var ch chan RefreshResult[K, V]
+	if isManual {
+		ch = make(chan RefreshResult[K, V], 1)
+	}
 
 	c.executor(func() {
 		var refresher func(ctx context.Context, key K) (V, error)
@@ -515,10 +523,12 @@ func (c *cache[K, V]) refreshKey(ctx context.Context, rk refreshableKey[K, V], l
 			c.logger.Error(ctx, "Returned an error during the refreshing", cl.err)
 		}
 
-		ch <- RefreshResult[K, V]{
-			Key:   cl.key,
-			Value: cl.value,
-			Err:   cl.err,
+		if isManual {
+			ch <- RefreshResult[K, V]{
+				Key:   cl.key,
+				Value: cl.value,
+				Err:   cl.err,
+			}
 		}
 	})
 
@@ -554,7 +564,7 @@ func (c *cache[K, V]) Get(ctx context.Context, key K, loader Loader[K, V]) (V, e
 			c.refreshKey(ctx, refreshableKey[K, V]{
 				key: n.Key(),
 				old: n,
-			}, loader)
+			}, loader, false)
 		}
 		return n.Value(), nil
 	}
@@ -654,13 +664,23 @@ func (c *cache[K, V]) afterDeleteCall(cl *call[K, V]) {
 	}
 }
 
-func (c *cache[K, V]) bulkRefreshKeys(ctx context.Context, rks []refreshableKey[K, V], bulkLoader BulkLoader[K, V]) <-chan []RefreshResult[K, V] {
+func (c *cache[K, V]) bulkRefreshKeys(
+	ctx context.Context,
+	rks []refreshableKey[K, V],
+	bulkLoader BulkLoader[K, V],
+	isManual bool,
+) <-chan []RefreshResult[K, V] {
 	if !c.withRefresh {
 		return nil
 	}
-	ch := make(chan []RefreshResult[K, V], 1)
+	var ch chan []RefreshResult[K, V]
+	if isManual {
+		ch = make(chan []RefreshResult[K, V], 1)
+	}
 	if len(rks) == 0 {
-		ch <- []RefreshResult[K, V]{}
+		if isManual {
+			ch <- []RefreshResult[K, V]{}
+		}
 		return ch
 	}
 
@@ -669,8 +689,11 @@ func (c *cache[K, V]) bulkRefreshKeys(ctx context.Context, rks []refreshableKey[
 			toLoadCalls   map[K]*call[K, V]
 			toReloadCalls map[K]*call[K, V]
 			foundCalls    []*call[K, V]
+			results       []RefreshResult[K, V]
 		)
-		results := make([]RefreshResult[K, V], 0, len(rks))
+		if isManual {
+			results = make([]RefreshResult[K, V], 0, len(rks))
+		}
 		i := 0
 		for _, rk := range rks {
 			cl, shouldLoad := c.singleflight.startCall(rk.key, true)
@@ -680,13 +703,11 @@ func (c *cache[K, V]) bulkRefreshKeys(ctx context.Context, rks []refreshableKey[
 						toReloadCalls = make(map[K]*call[K, V], len(rks)-i)
 					}
 					cl.value = rk.old.Value()
-
 					toReloadCalls[rk.key] = cl
 				} else {
 					if toLoadCalls == nil {
 						toLoadCalls = make(map[K]*call[K, V], len(rks)-i)
 					}
-
 					toLoadCalls[rk.key] = cl
 				}
 			} else {
@@ -706,12 +727,14 @@ func (c *cache[K, V]) bulkRefreshKeys(ctx context.Context, rks []refreshableKey[
 				c.logger.Error(ctx, "BulkLoad returned an error", loadErr)
 			}
 
-			for _, cl := range toLoadCalls {
-				results = append(results, RefreshResult[K, V]{
-					Key:   cl.key,
-					Value: cl.value,
-					Err:   cl.err,
-				})
+			if isManual {
+				for _, cl := range toLoadCalls {
+					results = append(results, RefreshResult[K, V]{
+						Key:   cl.key,
+						Value: cl.value,
+						Err:   cl.err,
+					})
+				}
 			}
 		}
 		if len(toReloadCalls) > 0 {
@@ -732,7 +755,19 @@ func (c *cache[K, V]) bulkRefreshKeys(ctx context.Context, rks []refreshableKey[
 				c.logger.Error(ctx, "BulkReload returned an error", reloadErr)
 			}
 
-			for _, cl := range toReloadCalls {
+			if isManual {
+				for _, cl := range toReloadCalls {
+					results = append(results, RefreshResult[K, V]{
+						Key:   cl.key,
+						Value: cl.value,
+						Err:   cl.err,
+					})
+				}
+			}
+		}
+		for _, cl := range foundCalls {
+			cl.wait()
+			if isManual {
 				results = append(results, RefreshResult[K, V]{
 					Key:   cl.key,
 					Value: cl.value,
@@ -740,15 +775,9 @@ func (c *cache[K, V]) bulkRefreshKeys(ctx context.Context, rks []refreshableKey[
 				})
 			}
 		}
-		for _, cl := range foundCalls {
-			cl.wait()
-			results = append(results, RefreshResult[K, V]{
-				Key:   cl.key,
-				Value: cl.value,
-				Err:   cl.err,
-			})
+		if isManual {
+			ch <- results
 		}
-		ch <- results
 	})
 
 	return ch
@@ -789,7 +818,7 @@ func (c *cache[K, V]) BulkGet(ctx context.Context, keys []K, bulkLoader BulkLoad
 
 		n := c.getNode(key, nowNano)
 		if n != nil {
-			if c.withRefresh && !n.IsFresh(nowNano) {
+			if !n.IsFresh(nowNano) {
 				if toRefresh == nil {
 					toRefresh = make([]refreshableKey[K, V], 0, len(keys)-len(result))
 				}
@@ -810,24 +839,19 @@ func (c *cache[K, V]) BulkGet(ctx context.Context, keys []K, bulkLoader BulkLoad
 		misses[key] = nil
 	}
 
-	c.bulkRefreshKeys(ctx, toRefresh, bulkLoader)
+	c.bulkRefreshKeys(ctx, toRefresh, bulkLoader, false)
 	if len(misses) == 0 {
 		return result, nil
 	}
 
-	loadCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
 	var toLoadCalls map[K]*call[K, V]
 	i := 0
 	for key := range misses {
-		// node.Node compute?
 		cl, shouldLoad := c.singleflight.startCall(key, false)
 		if shouldLoad {
 			if toLoadCalls == nil {
 				toLoadCalls = make(map[K]*call[K, V], len(misses)-i)
 			}
-
 			toLoadCalls[key] = cl
 		}
 		misses[key] = cl
@@ -837,7 +861,7 @@ func (c *cache[K, V]) BulkGet(ctx context.Context, keys []K, bulkLoader BulkLoad
 	var loadErr error
 	if len(toLoadCalls) > 0 {
 		loadErr = c.wrapLoad(func() error {
-			return c.singleflight.doBulkCall(loadCtx, toLoadCalls, bulkLoader.BulkLoad, c.afterDeleteCall)
+			return c.singleflight.doBulkCall(ctx, toLoadCalls, bulkLoader.BulkLoad, c.afterDeleteCall)
 		})
 	}
 	if loadErr != nil {
@@ -922,7 +946,7 @@ func (c *cache[K, V]) Refresh(ctx context.Context, key K, loader Loader[K, V]) <
 	return c.refreshKey(ctx, refreshableKey[K, V]{
 		key: key,
 		old: n,
-	}, loader)
+	}, loader, true)
 }
 
 // BulkRefresh loads a new value for each key, asynchronously. While the new value is loading the
@@ -963,7 +987,7 @@ func (c *cache[K, V]) BulkRefresh(ctx context.Context, keys []K, bulkLoader Bulk
 		})
 	}
 
-	return c.bulkRefreshKeys(ctx, toRefresh, bulkLoader)
+	return c.bulkRefreshKeys(ctx, toRefresh, bulkLoader, true)
 }
 
 // Invalidate discards any cached value for the key.
