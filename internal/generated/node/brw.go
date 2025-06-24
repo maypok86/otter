@@ -23,7 +23,6 @@ type BRW[K comparable, V any] struct {
 	refreshableAt atomic.Int64
 	weight        uint32
 	state         atomic.Uint32
-	frequency     uint8
 	queueType     uint8
 }
 

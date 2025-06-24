@@ -27,7 +27,6 @@ type BSER[K comparable, V any] struct {
 	expiresAt     atomic.Int64
 	refreshableAt atomic.Int64
 	state         atomic.Uint32
-	frequency     uint8
 	queueType     uint8
 }
 

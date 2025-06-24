@@ -20,7 +20,6 @@ type BW[K comparable, V any] struct {
 	next      *BW[K, V]
 	weight    uint32
 	state     atomic.Uint32
-	frequency uint8
 	queueType uint8
 }
 

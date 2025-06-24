@@ -25,7 +25,6 @@ type BEW[K comparable, V any] struct {
 	expiresAt atomic.Int64
 	weight    uint32
 	state     atomic.Uint32
-	frequency uint8
 	queueType uint8
 }
 

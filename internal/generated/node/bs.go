@@ -19,7 +19,6 @@ type BS[K comparable, V any] struct {
 	prev      *BS[K, V]
 	next      *BS[K, V]
 	state     atomic.Uint32
-	frequency uint8
 	queueType uint8
 }
 

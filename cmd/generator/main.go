@@ -243,7 +243,6 @@ func (g *generator) printStruct() {
 		g.p("state      atomic.Uint32")
 	}
 	if g.isBounded() {
-		g.p("frequency  uint8")
 		g.p("queueType  uint8")
 	}
 	g.out()

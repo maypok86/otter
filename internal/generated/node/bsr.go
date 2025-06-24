@@ -22,7 +22,6 @@ type BSR[K comparable, V any] struct {
 	next          *BSR[K, V]
 	refreshableAt atomic.Int64
 	state         atomic.Uint32
-	frequency     uint8
 	queueType     uint8
 }
 
