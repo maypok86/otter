@@ -924,7 +924,7 @@ func (c *cache[K, V]) Refresh(ctx context.Context, key K, loader Loader[K, V]) <
 	c.singleflight.init()
 
 	nowNano := c.clock.NowNano()
-	n := c.getNode(key, nowNano)
+	n := c.getNodeQuietly(key, nowNano)
 
 	return c.refreshKey(ctx, refreshableKey[K, V]{
 		key: key,
@@ -963,7 +963,7 @@ func (c *cache[K, V]) BulkRefresh(ctx context.Context, keys []K, bulkLoader Bulk
 	nowNano := c.clock.NowNano()
 	toRefresh := make([]refreshableKey[K, V], 0, len(uniq))
 	for key := range uniq {
-		n := c.getNode(key, nowNano)
+		n := c.getNodeQuietly(key, nowNano)
 		toRefresh = append(toRefresh, refreshableKey[K, V]{
 			key: key,
 			old: n,

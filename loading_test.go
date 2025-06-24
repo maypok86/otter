@@ -549,8 +549,8 @@ func TestCache_Refresh(t *testing.T) {
 	}
 
 	snapshot := statsCounter.Snapshot()
-	if snapshot.Hits != 3 ||
-		snapshot.Misses != 2 ||
+	if snapshot.Hits != 2 ||
+		snapshot.Misses != 1 ||
 		snapshot.Loads() != 2 ||
 		snapshot.LoadSuccesses != 2 {
 		t.Fatalf("statistics are not recorded correctly. snapshot: %v", snapshot)
@@ -1002,8 +1002,8 @@ func TestCache_BulkRefresh(t *testing.T) {
 	}
 
 	snapshot := statsCounter.Snapshot()
-	if snapshot.Hits != 18 ||
-		snapshot.Misses != 13 ||
+	if snapshot.Hits != 15 ||
+		snapshot.Misses != 7 ||
 		snapshot.Loads() != 2 ||
 		snapshot.LoadSuccesses != 2 {
 		t.Fatalf("statistics are not recorded correctly. snapshot: %v", snapshot)
@@ -1115,8 +1115,8 @@ func TestCache_BulkRefreshResults(t *testing.T) {
 	}
 
 	snapshot := statsCounter.Snapshot()
-	if snapshot.Hits != 5 ||
-		snapshot.Misses != 2 ||
+	if snapshot.Hits != 3 ||
+		snapshot.Misses != 1 ||
 		snapshot.Loads() != 2 ||
 		snapshot.LoadSuccesses != 2 {
 		t.Fatalf("statistics are not recorded correctly. snapshot: %v", snapshot)
