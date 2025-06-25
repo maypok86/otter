@@ -217,7 +217,6 @@ func (f *fakeSource) Sleep(d time.Duration) {
 	f.sleepWg.Add(1)
 	f.sleeps <- d
 	f.sleepWg.Wait()
-	f.tickWg.Wait()
 }
 
 func (f *fakeSource) getNow() time.Time {
