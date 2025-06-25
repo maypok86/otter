@@ -976,6 +976,36 @@ func TestCache_CornerCases(t *testing.T) {
 
 		require.Equal(t, int64(0), c.cache.statsClock.NowNano())
 	})
+	t.Run("expiredNode", func(t *testing.T) {
+		t.Parallel()
+
+		nm := node.NewManager[int, int](node.Config{
+			WithExpiration: true,
+		})
+		n := nm.Create(1, 2, 5, 0, 1)
+		require.Equal(t, CauseExpiration, getCause(n, 6, CauseReplacement))
+	})
+	t.Run("getExpired", func(t *testing.T) {
+		t.Parallel()
+
+		tc := newNonTickingClock()
+		c := Must(&Options[int, int]{
+			Clock:            tc,
+			ExpiryCalculator: ExpiryCreating[int, int](time.Hour),
+		})
+
+		c.cache.evictionMutex.Lock()
+		defer c.cache.evictionMutex.Unlock()
+
+		k1 := 1
+		v1 := 2
+		c.Set(k1, v1)
+		tc.Sleep(2 * time.Hour)
+
+		v, ok := c.GetIfPresent(k1)
+		require.False(t, ok)
+		require.Zero(t, v)
+	})
 }
 
 func TestCache_Scheduler(t *testing.T) {
@@ -1028,6 +1058,25 @@ func TestCache_Scheduler(t *testing.T) {
 			c.cache.scheduleDrainBuffers()
 			require.Equal(t, to, c.cache.drainStatus.Load())
 		}
+	})
+	t.Run("drainWriteBuffer", func(t *testing.T) {
+		t.Parallel()
+
+		size := 10
+		c := Must(&Options[int, int]{
+			MaximumSize: size,
+		})
+		c.cache.withEviction = false
+
+		c.cache.drainStatus.Store(processingToIdle)
+		for i := uint32(0); i < maxWriteBufferSize; i++ {
+			c.cache.writeBuffer.TryPush(&task[int, int]{writeReason: addReason})
+		}
+
+		c.cache.afterWriteTask(nil)
+
+		require.Equal(t, idle, c.cache.drainStatus.Load())
+		require.Equal(t, uint64(0), c.cache.writeBuffer.Size())
 	})
 	t.Run("rescheduleDrainBuffers", func(t *testing.T) {
 		t.Parallel()

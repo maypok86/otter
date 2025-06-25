@@ -285,6 +285,16 @@ func TestCache_Keys(t *testing.T) {
 	if iters != aliveNodes {
 		t.Fatalf("got unexpected number of iterations: %d", iters)
 	}
+	i := 0
+	found := -1
+	for key := range c.Keys() {
+		if i == 1 {
+			found = key
+			break
+		}
+		i++
+	}
+	require.Contains(t, []int{1, 3}, found)
 }
 
 func TestCache_Values(t *testing.T) {
@@ -319,6 +329,16 @@ func TestCache_Values(t *testing.T) {
 	if iters != aliveNodes {
 		t.Fatalf("got unexpected number of iterations: %d", iters)
 	}
+	i := 0
+	found := -1
+	for value := range c.Values() {
+		if i == 1 {
+			found = value
+			break
+		}
+		i++
+	}
+	require.Contains(t, []int{2, 4}, found)
 }
 
 func gcHelper(t *testing.T) *atomic.Bool {
@@ -546,7 +566,6 @@ func TestCache_SetWithExpiresAt(t *testing.T) {
 	fs := &fakeSource{}
 	wg.Add(size)
 	c := Must(&Options[int, int]{
-		MaximumSize:      size,
 		InitialCapacity:  size,
 		StatsRecorder:    statsCounter,
 		Clock:            fs,

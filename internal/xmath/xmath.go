@@ -14,6 +14,8 @@
 
 package xmath
 
+import "math"
+
 func Abs(a int64) int64 {
 	if a < 0 {
 		return -a
@@ -49,4 +51,12 @@ func RoundUpPowerOf264(x uint64) uint64 {
 	x |= x >> 32
 	x++
 	return x
+}
+
+func SaturatedAdd(a, b int64) int64 {
+	s := a + b
+	if s < a || s < b {
+		return math.MaxInt64
+	}
+	return s
 }

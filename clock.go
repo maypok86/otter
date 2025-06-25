@@ -15,10 +15,11 @@
 package otter
 
 import (
-	"math"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/maypok86/otter/v2/internal/xmath"
 )
 
 // Clock is a time source that
@@ -116,7 +117,7 @@ func (c *realSource) NowNano() int64 {
 	if !c.isInitialized.Load() {
 		return 0
 	}
-	return saturatedAdd(c.startNanos.Load(), time.Since(c.start).Nanoseconds())
+	return xmath.SaturatedAdd(c.startNanos.Load(), time.Since(c.start).Nanoseconds())
 }
 
 func (c *realSource) Tick(duration time.Duration) <-chan time.Time {
@@ -146,12 +147,13 @@ type fakeSource struct {
 func (f *fakeSource) Init() {
 	f.initOnce.Do(func() {
 		f.mutex.Lock()
-		defer f.mutex.Unlock()
-		f.now = time.Now()
+		now := time.Now()
+		f.now = now
 		f.sleeps = make(chan time.Duration)
 		f.firstSleep.Store(true)
 		f.enableTick = make(chan time.Duration)
 		f.ticker = make(chan time.Time, 1)
+		f.mutex.Unlock()
 
 		go func() {
 			var (
@@ -159,7 +161,7 @@ func (f *fakeSource) Init() {
 				d   time.Duration
 			)
 			enabled := false
-			last := f.getNow()
+			last := now
 			for {
 				select {
 				case d = <-f.enableTick:
@@ -227,12 +229,4 @@ func (f *fakeSource) getNow() time.Time {
 
 func (f *fakeSource) ProcessTick() {
 	f.tickWg.Done()
-}
-
-func saturatedAdd(a, b int64) int64 {
-	s := a + b
-	if s < a || s < b {
-		return math.MaxInt64
-	}
-	return s
 }

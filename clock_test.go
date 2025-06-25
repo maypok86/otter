@@ -15,11 +15,33 @@
 package otter
 
 import (
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 )
+
+type nonTickingClock struct {
+	now atomic.Int64
+}
+
+func newNonTickingClock() *nonTickingClock {
+	return &nonTickingClock{}
+}
+
+func (c *nonTickingClock) NowNano() int64 {
+	return c.now.Load()
+}
+
+func (c *nonTickingClock) Tick(duration time.Duration) <-chan time.Time {
+	return nil
+}
+
+func (c *nonTickingClock) Sleep(duration time.Duration) {
+	c.now.Add(int64(duration))
+}
 
 func TestRealSource(t *testing.T) {
 	t.Parallel()
@@ -39,6 +61,27 @@ func TestRealSource(t *testing.T) {
 	if got != 3 {
 		t.Fatalf("unexpected time since program start; got %d; want %d", got, 3)
 	}
+}
+
+func TestFakeSource(t *testing.T) {
+	t.Parallel()
+
+	fs := &fakeSource{}
+	fs.Init()
+
+	fs.Sleep(3 * time.Minute)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		ch := fs.Tick(time.Second)
+		<-ch
+		fs.ProcessTick()
+		tick := <-ch
+		fs.ProcessTick()
+		require.Equal(t, fs.getNow().Add(-3*time.Minute).Add(time.Second), tick)
+	}()
+	wg.Wait()
 }
 
 type testClock struct{}

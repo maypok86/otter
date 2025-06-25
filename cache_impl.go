@@ -433,10 +433,7 @@ func (c *cache[K, V]) set(key K, value V, onlyIfAbsent bool) (V, bool) {
 		c.calcRefreshableAt(n, old, nil, nowNano)
 		c.makeRetired(old)
 		if old != nil {
-			cause := CauseReplacement
-			if old.HasExpired(nowNano) {
-				cause = CauseExpiration
-			}
+			cause := getCause(old, nowNano, CauseReplacement)
 			c.notifyAtomicDeletion(old.Key(), old.Value(), cause)
 		}
 		return n
@@ -472,11 +469,7 @@ func (c *cache[K, V]) afterWrite(n, old node.Node[K, V], nowNano int64) {
 	}
 
 	// update
-	cause := CauseReplacement
-	if old.HasExpired(nowNano) {
-		cause = CauseExpiration
-	}
-
+	cause := getCause(old, nowNano, CauseReplacement)
 	c.afterWriteTask(c.getTask(n, old, updateReason, cause))
 }
 
@@ -647,10 +640,7 @@ func (c *cache[K, V]) afterDeleteCall(cl *call[K, V]) {
 		c.calcRefreshableAt(n, old, cl, nowNano)
 		c.makeRetired(old)
 		if old != nil {
-			cause := CauseReplacement
-			if old.HasExpired(nowNano) {
-				cause = CauseExpiration
-			}
+			cause := getCause(old, nowNano, CauseReplacement)
 			c.notifyAtomicDeletion(old.Key(), old.Value(), cause)
 		}
 		return n
@@ -1046,11 +1036,7 @@ func (c *cache[K, V]) afterDelete(deleted node.Node[K, V], nowNano int64, withLo
 	}
 
 	// delete
-	cause := CauseInvalidation
-	if deleted.HasExpired(nowNano) {
-		cause = CauseExpiration
-	}
-
+	cause := getCause(deleted, nowNano, CauseInvalidation)
 	t := c.getTask(deleted, nil, deleteReason, cause)
 	if withLock {
 		c.runTask(t)
@@ -1246,10 +1232,7 @@ func (c *cache[K, V]) afterWriteTask(t *task[K, V]) {
 	// In scenarios where the writing goroutines cannot make progress then they attempt to provide
 	// assistance by performing the eviction work directly. This can resolve cases where the
 	// maintenance task is scheduled but not running.
-	c.evictionMutex.Lock()
-	c.maintenance(t)
-	c.evictionMutex.Unlock()
-	c.rescheduleCleanUpIfIncomplete()
+	c.performCleanUp(t)
 }
 
 func (c *cache[K, V]) scheduleAfterWrite() {
@@ -1559,4 +1542,11 @@ func (c *cache[K, V]) makeDead(n node.Node[K, V]) {
 	} else if !n.IsDead() {
 		n.Die()
 	}
+}
+
+func getCause[K comparable, V any](n node.Node[K, V], nowNano int64, cause DeletionCause) DeletionCause {
+	if n.HasExpired(nowNano) {
+		return CauseExpiration
+	}
+	return cause
 }

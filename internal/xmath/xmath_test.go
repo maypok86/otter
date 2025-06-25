@@ -15,6 +15,7 @@
 package xmath
 
 import (
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -41,4 +42,11 @@ func TestRoundUpPowerOf264(t *testing.T) {
 	require.Equal(t, uint64(1), RoundUpPowerOf264(0))
 	require.Equal(t, uint64(4), RoundUpPowerOf264(3))
 	require.Equal(t, uint64(4), RoundUpPowerOf264(4))
+}
+
+func TestSaturatedAdd(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(t, int64(3), SaturatedAdd(1, 2))
+	require.Equal(t, int64(math.MaxInt64), SaturatedAdd(math.MaxInt64-300_000, 1_000_000))
 }

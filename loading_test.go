@@ -356,9 +356,12 @@ func TestCache_GetWithSuccessRefresh(t *testing.T) {
 	statsCounter := stats.NewCounter()
 	fs := &fakeSource{}
 	c := Must(&Options[int, int]{
-		MaximumSize:       size,
-		StatsRecorder:     statsCounter,
-		Clock:             fs,
+		MaximumSize:   size,
+		StatsRecorder: statsCounter,
+		Clock:         fs,
+		Executor: func(fn func()) {
+			fn()
+		},
 		RefreshCalculator: RefreshWriting[int, int](10 * time.Minute),
 	})
 
@@ -368,10 +371,8 @@ func TestCache_GetWithSuccessRefresh(t *testing.T) {
 	c.Set(k1, v1)
 
 	fs.Sleep(10*time.Minute + time.Second)
-	done := make(chan struct{})
 	tl := newTestLoader[int, int](func(ctx context.Context, key int) (int, error) {
 		if key == k1 {
-			done <- struct{}{}
 			return v2, nil
 		}
 		panic("not valid key")
@@ -383,11 +384,6 @@ func TestCache_GetWithSuccessRefresh(t *testing.T) {
 	}
 	if v != v1 {
 		t.Fatalf("Get value = %v; want = %v", v, v1)
-	}
-
-	<-done
-	if cl := c.cache.singleflight.getCall(k1); cl != nil {
-		cl.wait()
 	}
 
 	v, ok := c.GetIfPresent(k1)
@@ -428,9 +424,12 @@ func TestCache_GetWithNotFoundRefresh(t *testing.T) {
 	statsCounter := stats.NewCounter()
 	fs := &fakeSource{}
 	c := Must(&Options[int, int]{
-		MaximumSize:       size,
-		StatsRecorder:     statsCounter,
-		Clock:             fs,
+		MaximumSize:   size,
+		StatsRecorder: statsCounter,
+		Clock:         fs,
+		Executor: func(fn func()) {
+			fn()
+		},
 		RefreshCalculator: RefreshWriting[int, int](time.Hour + time.Minute),
 	})
 
@@ -440,10 +439,8 @@ func TestCache_GetWithNotFoundRefresh(t *testing.T) {
 
 	fs.Sleep(time.Hour + time.Minute + time.Second)
 	someErr := fmt.Errorf("olololo: %w", ErrNotFound)
-	done := make(chan struct{})
 	tl := newTestLoader[int, int](func(ctx context.Context, key int) (int, error) {
 		if key == k1 {
-			done <- struct{}{}
 			return 0, someErr
 		}
 		panic("not valid key")
@@ -455,11 +452,6 @@ func TestCache_GetWithNotFoundRefresh(t *testing.T) {
 	}
 	if v != v1 {
 		t.Fatalf("Get value = %v; want = %v", v, v1)
-	}
-
-	<-done
-	if cl := c.cache.singleflight.getCall(k1); cl != nil {
-		cl.wait()
 	}
 
 	v, ok := c.GetIfPresent(k1)
@@ -646,9 +638,12 @@ func TestCache_BulkGetWithSuccessRefresh(t *testing.T) {
 	statsCounter := stats.NewCounter()
 	fs := &fakeSource{}
 	c := Must(&Options[int, int]{
-		MaximumSize:       size,
-		StatsRecorder:     statsCounter,
-		Clock:             fs,
+		MaximumSize:   size,
+		StatsRecorder: statsCounter,
+		Clock:         fs,
+		Executor: func(fn func()) {
+			fn()
+		},
 		RefreshCalculator: RefreshWriting[int, int](10 * time.Minute),
 	})
 
@@ -666,7 +661,6 @@ func TestCache_BulkGetWithSuccessRefresh(t *testing.T) {
 	}
 
 	var calls atomic.Int64
-	done := make(chan struct{})
 	tl := newTestBulkLoader[int, int](func(ctx context.Context, keys []int) (map[int]int, error) {
 		calls.Add(1)
 
@@ -677,7 +671,6 @@ func TestCache_BulkGetWithSuccessRefresh(t *testing.T) {
 			}
 			m[k] = k + 100
 		}
-		done <- struct{}{}
 		return m, nil
 	})
 
@@ -691,11 +684,7 @@ func TestCache_BulkGetWithSuccessRefresh(t *testing.T) {
 			t.Fatalf("value should be equal to key. key: %v, value: %v", k, v)
 		}
 	}
-	<-done
 	for _, k := range keys {
-		if cl := c.cache.singleflight.getCall(k); cl != nil {
-			cl.wait()
-		}
 		v, ok := c.GetIfPresent(k)
 		if !ok {
 			t.Fatalf("not found key = %v", k)
@@ -742,9 +731,12 @@ func TestCache_BulkGetWithNotFoundRefresh(t *testing.T) {
 	fs := &fakeSource{}
 	wg.Add(len(keys))
 	c := Must(&Options[int, int]{
-		MaximumSize:       size,
-		StatsRecorder:     statsCounter,
-		Clock:             fs,
+		MaximumSize:   size,
+		StatsRecorder: statsCounter,
+		Clock:         fs,
+		Executor: func(fn func()) {
+			fn()
+		},
 		RefreshCalculator: RefreshWriting[int, int](10 * time.Hour),
 		OnDeletion: func(e DeletionEvent[int, int]) {
 			mutex.Lock()
@@ -759,7 +751,6 @@ func TestCache_BulkGetWithNotFoundRefresh(t *testing.T) {
 	}
 
 	fs.Sleep(10*time.Hour + time.Millisecond)
-	done := make(chan struct{})
 	tl := newTestBulkLoader[int, int](func(ctx context.Context, keys []int) (map[int]int, error) {
 		m := make(map[int]int, len(keys))
 		for _, k := range keys {
@@ -768,7 +759,6 @@ func TestCache_BulkGetWithNotFoundRefresh(t *testing.T) {
 			}
 			m[k] = k + 100
 		}
-		done <- struct{}{}
 		return m, nil
 	})
 
@@ -782,11 +772,7 @@ func TestCache_BulkGetWithNotFoundRefresh(t *testing.T) {
 			t.Fatalf("value should be equal to key. key: %v, value: %v", k, v)
 		}
 	}
-	<-done
 	for _, k := range keys {
-		if cl := c.cache.singleflight.getCall(k); cl != nil {
-			cl.wait()
-		}
 		v, ok := c.GetIfPresent(k)
 		if k == notFound {
 			require.False(t, ok)
@@ -838,9 +824,12 @@ func TestCache_BulkGetWithFakeCall(t *testing.T) {
 	fs := &fakeSource{}
 	wg.Add(len(keys))
 	c := Must(&Options[int, int]{
-		MaximumSize:       size,
-		StatsRecorder:     statsCounter,
-		Clock:             fs,
+		MaximumSize:   size,
+		StatsRecorder: statsCounter,
+		Clock:         fs,
+		Executor: func(fn func()) {
+			fn()
+		},
 		RefreshCalculator: RefreshWriting[int, int](time.Minute),
 		OnDeletion: func(e DeletionEvent[int, int]) {
 			mutex.Lock()
@@ -859,14 +848,12 @@ func TestCache_BulkGetWithFakeCall(t *testing.T) {
 	require.Zero(t, v)
 
 	fs.Sleep(time.Minute + time.Microsecond)
-	done := make(chan struct{})
 	tl := newTestBulkLoader[int, int](func(ctx context.Context, keys []int) (map[int]int, error) {
 		m := make(map[int]int, len(keys))
 		for _, k := range keys {
 			m[k] = k + 100
 		}
 		m[fake] = fake + 100
-		done <- struct{}{}
 		return m, nil
 	})
 
@@ -881,11 +868,7 @@ func TestCache_BulkGetWithFakeCall(t *testing.T) {
 			t.Fatalf("value should be equal to key. key: %v, value: %v", k, v)
 		}
 	}
-	<-done
 	for _, k := range keys {
-		if cl := c.cache.singleflight.getCall(k); cl != nil {
-			cl.wait()
-		}
 		v, ok := c.GetIfPresent(k)
 		require.True(t, ok)
 		require.Equal(t, k+100, v)
@@ -1182,18 +1165,19 @@ func TestCache_GetWithFailedRefresh(t *testing.T) {
 	l := newTestLogger()
 	fs := &fakeSource{}
 	c := Must(&Options[int, int]{
-		MaximumSize:       size,
-		StatsRecorder:     statsCounter,
-		Clock:             fs,
+		MaximumSize:   size,
+		StatsRecorder: statsCounter,
+		Clock:         fs,
+		Executor: func(fn func()) {
+			fn()
+		},
 		RefreshCalculator: RefreshCreating[int, int](5 * time.Second),
 		Logger:            l,
 	})
 
 	k1 := 1
 	someErr := errors.New("some error")
-	done := make(chan struct{})
 	tl := newTestLoader[int, int](func(ctx context.Context, key int) (int, error) {
-		done <- struct{}{}
 		return 0, someErr
 	})
 
@@ -1207,17 +1191,11 @@ func TestCache_GetWithFailedRefresh(t *testing.T) {
 		t.Fatalf("Get value = %v; want = %v", v, 0)
 	}
 
-	<-done
-	if cl := c.cache.singleflight.getCall(k1); cl != nil {
-		cl.wait()
-	}
-
 	if l.calls.Load() != 1 && l.errs.Load() != 1 {
 		t.Fatalf("not valid logger stats. errs = %v, warns = %v", l.errs.Load(), l.warns.Load())
 	}
 
 	v, err = c.Get(ctx, k1, newTestLoader[int, int](func(ctx context.Context, key int) (int, error) {
-		done <- struct{}{}
 		return 0, ErrNotFound
 	}))
 	if err != nil {
@@ -1225,11 +1203,6 @@ func TestCache_GetWithFailedRefresh(t *testing.T) {
 	}
 	if v != 0 {
 		t.Fatalf("Get value = %v; want = %v", v, 0)
-	}
-
-	<-done
-	if cl := c.cache.singleflight.getCall(k1); cl != nil {
-		cl.wait()
 	}
 
 	if l.calls.Load() != 1 && l.errs.Load() != 1 {
@@ -1327,18 +1300,19 @@ func TestCache_BulkGetWithFailedRefresh(t *testing.T) {
 	l := newTestLogger()
 	fs := &fakeSource{}
 	c := Must(&Options[int, int]{
-		MaximumSize:       size,
-		StatsRecorder:     statsCounter,
-		Clock:             fs,
+		MaximumSize:   size,
+		StatsRecorder: statsCounter,
+		Clock:         fs,
+		Executor: func(fn func()) {
+			fn()
+		},
 		RefreshCalculator: RefreshWriting[int, int](time.Minute),
 		Logger:            l,
 	})
 
 	ks := []int{0, 1}
 	someErr := errors.New("some error")
-	done := make(chan struct{})
 	tbl := newTestBulkLoader[int, int](func(ctx context.Context, keys []int) (map[int]int, error) {
-		done <- struct{}{}
 		return nil, someErr
 	})
 
@@ -1354,13 +1328,6 @@ func TestCache_BulkGetWithFailedRefresh(t *testing.T) {
 	for _, v := range res {
 		if v != 0 {
 			t.Fatalf("value = %v; want = %v", v, 0)
-		}
-	}
-
-	<-done
-	for _, k := range ks {
-		if cl := c.cache.singleflight.getCall(k); cl != nil {
-			cl.wait()
 		}
 	}
 
