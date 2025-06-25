@@ -193,12 +193,16 @@ func TestCache_SetWithWeight(t *testing.T) {
 	statsCounter := stats.NewCounter()
 	size := uint64(10)
 	c := Must[uint32, int](&Options[uint32, int]{
-		MaximumWeight: size,
+		MaximumWeight:   size,
+		InitialCapacity: 10000,
 		Weigher: func(key uint32, value int) uint32 {
 			return key
 		},
 		StatsRecorder: statsCounter,
 	})
+	c.cache.evictionPolicy.rand = func() uint32 {
+		return 1
+	}
 
 	goodWeight1 := 1
 	goodWeight2 := 2
@@ -721,6 +725,9 @@ func TestCache_SetWithExpiresAfterAccessing(t *testing.T) {
 			wg.Done()
 		},
 	})
+	c.cache.evictionPolicy.rand = func() uint32 {
+		return 1
+	}
 
 	for i := 0; i < size; i++ {
 		c.Set(i, i)
