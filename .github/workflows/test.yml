@@ -1,6 +1,9 @@
 name: Test
 
-on: [push]
+on:
+  push:
+    paths-ignore:
+      - docs/**
 
 jobs:
   test:
@@ -31,9 +34,9 @@ jobs:
       - name: Upload badge to Gist
         uses: popsiclestick/gist-sync-action@88f8633178625914f2a01abf1a765f7272a580fa # v1.2.0
         if: >
-          ${{ hashFiles('coverage.svg') != '' }}
+          ${{ hashFiles('coverage.svg') != ''
           && github.event.repository.fork == false
-          && endsWith(github.ref, github.event.repository.default_branch)
+          && endsWith(github.ref, github.event.repository.default_branch) }}
         with:
           gist_url: https://gist.github.com/maypok86/2aae2cd39836dc7c258df7ffec602d1c
           auth: ${{ secrets.GIST_TOKEN }}
@@ -44,9 +47,9 @@ jobs:
       - name: Upload report to Gist
         uses: popsiclestick/gist-sync-action@88f8633178625914f2a01abf1a765f7272a580fa # v1.2.0
         if: >
-          ${{ hashFiles('coverage.html') != '' }}
+          ${{ hashFiles('coverage.html') != ''
           && github.event.repository.fork == false
-          && endsWith(github.ref, github.event.repository.default_branch)
+          && endsWith(github.ref, github.event.repository.default_branch) }}
         with:
           gist_url: https://gist.github.com/maypok86/97c79c864eb1e0fea3a7c430f39acc82
           auth: ${{ secrets.GIST_TOKEN }}
