@@ -108,43 +108,50 @@ func TestVariable_DeleteExpired(t *testing.T) {
 	nm := node.NewManager[string, string](node.Config{
 		WithExpiration: true,
 	})
+	now := time.Now().UnixNano()
 	nodes := []node.Node[string, string]{
-		nm.Create("k1", "", getTestExp(1), 0, 1),
-		nm.Create("k2", "", getTestExp(10), 0, 1),
-		nm.Create("k3", "", getTestExp(30), 0, 1),
-		nm.Create("k4", "", getTestExp(120), 0, 1),
-		nm.Create("k5", "", getTestExp(6500), 0, 1),
-		nm.Create("k6", "", getTestExp(142000), 0, 1),
-		nm.Create("k7", "", getTestExp(1420000), 0, 1),
+		nm.Create("k1", "", now+getTestExp(1), 0, 1),
+		nm.Create("k2", "", now+getTestExp(10), 0, 1),
+		nm.Create("k3", "", now+getTestExp(30), 0, 1),
+		nm.Create("k4", "", now+getTestExp(120), 0, 1),
+		nm.Create("k5", "", now+getTestExp(6500), 0, 1),
+		nm.Create("k6", "", now+getTestExp(142000), 0, 1),
+		nm.Create("k7", "", now+getTestExp(1420000), 0, 1),
 	}
 	var expired []node.Node[string, string]
 	expireNode := func(n node.Node[string, string], nowNanos int64) {
 		expired = append(expired, n)
 	}
 	v := NewVariable(nm)
+	v.time = uint64(now)
 
 	for _, n := range nodes {
 		v.Add(n)
 	}
 
 	var keys []string
-	v.DeleteExpired(getTestExp(64), expireNode)
-	keys = append(keys, "k1", "k2", "k3")
+
+	v.DeleteExpired(now+getTestExp(2), expireNode)
+	keys = append(keys, "k1")
 	match(t, expired, keys)
 
-	v.DeleteExpired(getTestExp(200), expireNode)
+	v.DeleteExpired(now+getTestExp(64), expireNode)
+	keys = append(keys, "k2", "k3")
+	match(t, expired, keys)
+
+	v.DeleteExpired(now+getTestExp(121), expireNode)
 	keys = append(keys, "k4")
 	match(t, expired, keys)
 
-	v.DeleteExpired(getTestExp(12000), expireNode)
+	v.DeleteExpired(now+getTestExp(12000), expireNode)
 	keys = append(keys, "k5")
 	match(t, expired, keys)
 
-	v.DeleteExpired(getTestExp(350000), expireNode)
+	v.DeleteExpired(now+getTestExp(350000), expireNode)
 	keys = append(keys, "k6")
 	match(t, expired, keys)
 
-	v.DeleteExpired(getTestExp(1520000), expireNode)
+	v.DeleteExpired(now+getTestExp(1520000), expireNode)
 	keys = append(keys, "k7")
 	match(t, expired, keys)
 }

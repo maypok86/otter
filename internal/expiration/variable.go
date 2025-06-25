@@ -54,7 +54,7 @@ func NewVariable[K comparable, V any](nodeManager *node.Manager[K, V]) *Variable
 		for j := 0; j < len(wheel[i]); j++ {
 			var k K
 			var v V
-			fn := nodeManager.Create(k, v, math.MaxUint32, math.MaxUint32, 1)
+			fn := nodeManager.Create(k, v, math.MaxInt64, math.MaxInt64, 1)
 			fn.SetPrevExp(fn)
 			fn.SetNextExp(fn)
 			wheel[i][j] = fn
@@ -94,7 +94,6 @@ func (v *Variable[K, V]) Delete(n node.Node[K, V]) {
 }
 
 func (v *Variable[K, V]) DeleteExpired(nowNanos int64, expireNode func(n node.Node[K, V], nowNanos int64)) {
-	//nolint:gosec // there is no overflow
 	currentTime := uint64(nowNanos)
 	prevTime := v.time
 	v.time = currentTime
@@ -142,25 +141,6 @@ func (v *Variable[K, V]) deleteExpiredFromBucket(
 		}
 	}
 }
-
-/*
-func (v *Variable[K, V]) Clear() {
-	for i := 0; i < len(v.wheel); i++ {
-		for j := 0; j < len(v.wheel[i]); j++ {
-			root := v.wheel[i][j]
-			n := root.NextExp()
-			// NOTE(maypok86): Maybe we should use the same approach as in DeleteExpired?
-
-			for !node.Equals(n, root) {
-				next := n.NextExp()
-				v.Delete(n)
-
-				n = next
-			}
-		}
-	}
-}
-*/
 
 // link adds the entry at the tail of the bucket's list.
 func link[K comparable, V any](root, n node.Node[K, V]) {
