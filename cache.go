@@ -288,6 +288,30 @@ func (c *Cache[K, V]) WeightedSize() uint64 {
 	return c.cache.WeightedSize()
 }
 
+// Hottest returns an iterator for ordered traversal of the cache entries. The order of
+// iteration is from the entries most likely to be retained (hottest) to the entries least
+// likely to be retained (coldest). This order is determined by the eviction policy's best guess
+// at the start of the iteration.
+//
+// WARNING: Beware that this iteration is performed within the eviction policy's exclusive lock, so the
+// iteration should be short and simple. While the iteration is in progress further eviction
+// maintenance will be halted.
+func (c *Cache[K, V]) Hottest() iter.Seq[Entry[K, V]] {
+	return c.cache.Hottest()
+}
+
+// Coldest returns an iterator for ordered traversal of the cache entries. The order of
+// iteration is from the entries least likely to be retained (coldest) to the entries most
+// likely to be retained (hottest). This order is determined by the eviction policy's best guess
+// at the start of the iteration.
+//
+// WARNING: Beware that this iteration is performed within the eviction policy's exclusive lock, so the
+// iteration should be short and simple. While the iteration is in progress further eviction
+// maintenance will be halted.
+func (c *Cache[K, V]) Coldest() iter.Seq[Entry[K, V]] {
+	return c.cache.Coldest()
+}
+
 func (c *Cache[K, V]) has(key K) bool {
 	return c.cache.has(key)
 }

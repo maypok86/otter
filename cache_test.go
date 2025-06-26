@@ -255,6 +255,19 @@ func TestCache_All(t *testing.T) {
 	if iters != aliveNodes {
 		t.Fatalf("got unexpected number of iterations: %d", iters)
 	}
+	i := 0
+	foundKey := -1
+	foundValue := -1
+	for key, value := range c.All() {
+		if i == 1 {
+			foundKey = key
+			foundValue = value
+			break
+		}
+		i++
+	}
+	require.Contains(t, []int{1, 3}, foundKey)
+	require.Contains(t, []int{1, 3}, foundValue)
 }
 
 func TestCache_Keys(t *testing.T) {
@@ -905,8 +918,6 @@ func TestCache_Ratio(t *testing.T) {
 
 	t.Logf("actual size: %d, capacity: %d", c.EstimatedSize(), capacity)
 	t.Logf("actual: %.2f, optimal: %.2f", statsCounter.Snapshot().HitRatio(), o.Ratio())
-
-	time.Sleep(2 * time.Second)
 
 	if size := c.EstimatedSize(); size != capacity {
 		t.Fatalf("not valid cache size. expected %d, but got %d", capacity, size)

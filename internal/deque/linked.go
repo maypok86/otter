@@ -15,6 +15,8 @@
 package deque
 
 import (
+	"iter"
+
 	"github.com/maypok86/otter/v2/internal/generated/node"
 )
 
@@ -170,6 +172,30 @@ func (d *Linked[K, V]) Head() node.Node[K, V] {
 
 func (d *Linked[K, V]) Tail() node.Node[K, V] {
 	return d.tail
+}
+
+func (d *Linked[K, V]) All() iter.Seq[node.Node[K, V]] {
+	return func(yield func(node.Node[K, V]) bool) {
+		cursor := d.head
+		for !node.Equals(cursor, nil) {
+			if !yield(cursor) {
+				return
+			}
+			cursor = d.getNext(cursor)
+		}
+	}
+}
+
+func (d *Linked[K, V]) Backward() iter.Seq[node.Node[K, V]] {
+	return func(yield func(node.Node[K, V]) bool) {
+		cursor := d.tail
+		for !node.Equals(cursor, nil) {
+			if !yield(cursor) {
+				return
+			}
+			cursor = d.getPrev(cursor)
+		}
+	}
 }
 
 func (d *Linked[K, V]) setPrev(to, n node.Node[K, V]) {

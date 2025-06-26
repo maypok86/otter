@@ -15,9 +15,12 @@
 package otter
 
 import (
+	"slices"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/maypok86/otter/v2/stats"
 )
@@ -202,4 +205,184 @@ func TestCache_Extension(t *testing.T) {
 	if _, ok := c.GetEntry(size); ok {
 		t.Fatalf("found not valid key: %d", size)
 	}
+}
+
+func TestCache_Coldest(t *testing.T) {
+	t.Parallel()
+
+	t.Run("coldest_order", func(t *testing.T) {
+		t.Parallel()
+
+		const (
+			maximum = 50
+			weight  = 10
+			entries = maximum / weight
+		)
+
+		c := Must(&Options[int, int]{
+			MaximumWeight: maximum,
+			Weigher: func(key int, value int) uint32 {
+				return weight
+			},
+			InitialCapacity: 100,
+			Executor: func(fn func()) {
+				fn()
+			},
+		})
+		keys := make([]int, 0, entries)
+		for i := 0; i < entries; i++ {
+			v, ok := c.Set(i, i)
+			require.True(t, ok)
+			require.Equal(t, i, v)
+			keys = append(keys, i)
+		}
+		keys = keys[:len(keys)-1]
+
+		coldest := make([]int, 0, entries)
+		for e := range c.Coldest() {
+			coldest = append(coldest, e.Key)
+		}
+		coldest = coldest[:len(coldest)-1]
+
+		require.Equal(t, keys, coldest)
+	})
+	t.Run("coldest_partial", func(t *testing.T) {
+		t.Parallel()
+
+		const (
+			maximum = 50
+			entries = maximum
+		)
+
+		c := Must(&Options[int, int]{
+			MaximumSize:     maximum,
+			InitialCapacity: 100,
+			Executor: func(fn func()) {
+				fn()
+			},
+		})
+		keys := make([]int, 0, entries)
+		for i := 0; i < entries; i++ {
+			v, ok := c.Set(i, i)
+			require.True(t, ok)
+			require.Equal(t, i, v)
+			keys = append(keys, i)
+		}
+
+		coldest := make([]int, 0, entries)
+		i := 0
+		for e := range c.Coldest() {
+			if i >= maximum/2 {
+				break
+			}
+			coldest = append(coldest, e.Key)
+			i++
+		}
+
+		require.Subset(t, keys, coldest)
+		require.ElementsMatch(t, slices.Collect(c.Keys()), keys)
+	})
+	t.Run("coldest_full", func(t *testing.T) {
+		t.Parallel()
+
+		const (
+			maximum = 50
+			entries = maximum
+		)
+
+		c := Must(&Options[int, int]{
+			MaximumSize:     maximum,
+			InitialCapacity: 100,
+			Executor: func(fn func()) {
+				fn()
+			},
+		})
+		keys := make([]int, 0, entries)
+		for i := 0; i < entries; i++ {
+			v, ok := c.Set(i, i)
+			require.True(t, ok)
+			require.Equal(t, i, v)
+			keys = append(keys, i)
+		}
+
+		coldest := make([]int, 0, maximum)
+		for e := range c.Coldest() {
+			coldest = append(coldest, e.Key)
+		}
+
+		require.ElementsMatch(t, slices.Collect(c.Keys()), coldest)
+	})
+}
+
+func TestCache_Hottest(t *testing.T) {
+	t.Parallel()
+
+	t.Run("hottest_order", func(t *testing.T) {
+		t.Parallel()
+
+		const (
+			maximum = 50
+			entries = maximum
+		)
+
+		c := Must(&Options[int, int]{
+			MaximumSize:     maximum,
+			InitialCapacity: 100,
+			Executor: func(fn func()) {
+				fn()
+			},
+		})
+		keys := make([]int, 0, entries)
+		for i := 0; i < entries; i++ {
+			v, ok := c.Set(i, i)
+			require.True(t, ok)
+			require.Equal(t, i, v)
+			keys = append(keys, i)
+		}
+		keys = keys[:len(keys)-1]
+
+		coldest := make([]int, 0, maximum)
+		for _, e := range slices.Backward(slices.Collect(c.Hottest())) {
+			coldest = append(coldest, e.Key)
+		}
+		coldest = coldest[1:]
+
+		require.Equal(t, keys, coldest)
+	})
+	t.Run("hottest_partial", func(t *testing.T) {
+		t.Parallel()
+
+		const (
+			maximum = 50
+			entries = maximum
+		)
+
+		c := Must(&Options[int, int]{
+			MaximumSize:     maximum,
+			InitialCapacity: 100,
+			Executor: func(fn func()) {
+				fn()
+			},
+		})
+		keys := make([]int, 0, entries)
+		for i := 0; i < entries; i++ {
+			v, ok := c.Set(i, i)
+			require.True(t, ok)
+			require.Equal(t, i, v)
+			keys = append(keys, i)
+		}
+
+		hottest := make([]int, 0, entries)
+		i := 0
+		for e := range c.Hottest() {
+			if i >= maximum/2 {
+				break
+			}
+			hottest = append(hottest, e.Key)
+			i++
+		}
+
+		require.Subset(t, keys, hottest)
+		require.ElementsMatch(t, slices.Collect(c.Keys()), keys)
+	})
 }

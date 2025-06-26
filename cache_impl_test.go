@@ -17,6 +17,7 @@ package otter
 import (
 	"context"
 	"math"
+	"slices"
 	"testing"
 	"time"
 
@@ -885,6 +886,65 @@ func TestCache_Eviction(t *testing.T) {
 		require.Greater(t, e.mainProtectedMaximum, protectedMaximum)
 		require.Less(t, e.windowWeightedSize, windowSize)
 		require.Less(t, e.windowMaximum, windowMaximum)
+	})
+	t.Run("evict_wtinylfu", func(t *testing.T) {
+		t.Parallel()
+
+		const maximum = 10
+		counter := stats.NewCounter()
+		c := Must(&Options[int, int]{
+			MaximumSize:     maximum,
+			InitialCapacity: maximum,
+			StatsRecorder:   counter,
+			Executor: func(fn func()) {
+				fn()
+			},
+		})
+
+		checkContainsInOrder := func(expected []int) {
+			evictionOrder := make([]int, 0, maximum)
+			for e := range c.Coldest() {
+				evictionOrder = append(evictionOrder, e.Key)
+			}
+			reversedHottest := make([]int, 0, maximum)
+			for _, e := range slices.Backward(slices.Collect(c.Hottest())) {
+				reversedHottest = append(reversedHottest, e.Key)
+			}
+
+			require.ElementsMatch(t, slices.Collect(c.Keys()), expected)
+			require.Equal(t, expected, evictionOrder)
+			require.Equal(t, evictionOrder, reversedHottest)
+		}
+
+		checkReorder := func(keys, expected []int) {
+			for _, key := range keys {
+				require.True(t, c.has(key))
+			}
+			checkContainsInOrder(expected)
+		}
+
+		checkEvict := func(keys, expected []int) {
+			for _, key := range keys {
+				c.Set(key, key)
+			}
+			checkContainsInOrder(expected)
+		}
+
+		for i := 0; i < maximum; i++ {
+			c.Set(i, -i)
+		}
+
+		checkContainsInOrder([]int{9, 0, 1, 2, 3, 4, 5, 6, 7, 8})
+
+		checkReorder([]int{0, 1, 2}, []int{9, 3, 4, 5, 6, 7, 8, 0, 1, 2})
+
+		checkEvict([]int{10, 11, 12}, []int{12, 3, 4, 5, 6, 7, 8, 0, 1, 2})
+
+		checkReorder([]int{6, 7, 8}, []int{12, 3, 4, 5, 0, 1, 2, 6, 7, 8})
+
+		checkEvict([]int{13, 14, 15}, []int{15, 3, 4, 5, 0, 1, 2, 6, 7, 8})
+
+		require.Equal(t, uint64(6), counter.Snapshot().Evictions)
 	})
 }
 

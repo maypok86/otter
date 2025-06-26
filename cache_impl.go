@@ -15,6 +15,7 @@
 package otter
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -30,6 +31,7 @@ import (
 	"github.com/maypok86/otter/v2/internal/generated/node"
 	"github.com/maypok86/otter/v2/internal/hashmap"
 	"github.com/maypok86/otter/v2/internal/lossy"
+	"github.com/maypok86/otter/v2/internal/xiter"
 	"github.com/maypok86/otter/v2/internal/xmath"
 	"github.com/maypok86/otter/v2/internal/xruntime"
 	"github.com/maypok86/otter/v2/stats"
@@ -1107,22 +1109,42 @@ func (c *cache[K, V]) evictNode(n node.Node[K, V], nowNanos int64) {
 	}
 }
 
+func (c *cache[K, V]) nodes() iter.Seq[node.Node[K, V]] {
+	return func(yield func(node.Node[K, V]) bool) {
+		c.hashmap.Range(func(n node.Node[K, V]) bool {
+			nowNano := c.clock.NowNano()
+			if !n.IsAlive() || n.HasExpired(nowNano) {
+				c.scheduleDrainBuffers()
+				return true
+			}
+
+			return yield(n)
+		})
+	}
+}
+
+func (c *cache[K, V]) entries() iter.Seq[Entry[K, V]] {
+	return func(yield func(Entry[K, V]) bool) {
+		for n := range c.nodes() {
+			if !yield(c.nodeToEntry(n, c.clock.NowNano())) {
+				return
+			}
+		}
+	}
+}
+
 // All returns an iterator over all entries in the cache.
 //
 // Iterator is at least weakly consistent: he is safe for concurrent use,
 // but if the cache is modified (including by eviction) after the iterator is
 // created, it is undefined which of the changes (if any) will be reflected in that iterator.
 func (c *cache[K, V]) All() iter.Seq2[K, V] {
-	nowNano := c.clock.NowNano()
 	return func(yield func(K, V) bool) {
-		c.hashmap.Range(func(n node.Node[K, V]) bool {
-			if !n.IsAlive() || n.HasExpired(nowNano) {
-				c.scheduleDrainBuffers()
-				return true
+		for n := range c.nodes() {
+			if !yield(n.Key(), n.Value()) {
+				return
 			}
-
-			return yield(n.Key(), n.Value())
-		})
+		}
 	}
 }
 
@@ -1134,8 +1156,8 @@ func (c *cache[K, V]) All() iter.Seq2[K, V] {
 // created, it is undefined which of the changes (if any) will be reflected in that iterator.
 func (c *cache[K, V]) Keys() iter.Seq[K] {
 	return func(yield func(K) bool) {
-		for k := range c.All() {
-			if !yield(k) {
+		for n := range c.nodes() {
+			if !yield(n.Key()) {
 				return
 			}
 		}
@@ -1150,8 +1172,8 @@ func (c *cache[K, V]) Keys() iter.Seq[K] {
 // created, it is undefined which of the changes (if any) will be reflected in that iterator.
 func (c *cache[K, V]) Values() iter.Seq[V] {
 	return func(yield func(V) bool) {
-		for _, v := range c.All() {
-			if !yield(v) {
+		for n := range c.nodes() {
+			if !yield(n.Value()) {
 				return
 			}
 		}
@@ -1524,6 +1546,85 @@ func (c *cache[K, V]) WeightedSize() uint64 {
 	c.evictionMutex.Unlock()
 	c.rescheduleCleanUpIfIncomplete()
 	return result
+}
+
+// Hottest returns an iterator for ordered traversal of the cache entries. The order of
+// iteration is from the entries most likely to be retained (hottest) to the entries least
+// likely to be retained (coldest). This order is determined by the eviction policy's best guess
+// at the start of the iteration.
+//
+// WARNING: Beware that this iteration is performed within the eviction policy's exclusive lock, so the
+// iteration should be short and simple. While the iteration is in progress further eviction
+// maintenance will be halted.
+func (c *cache[K, V]) Hottest() iter.Seq[Entry[K, V]] {
+	return c.evictionOrder(true)
+}
+
+// Coldest returns an iterator for ordered traversal of the cache entries. The order of
+// iteration is from the entries least likely to be retained (coldest) to the entries most
+// likely to be retained (hottest). This order is determined by the eviction policy's best guess
+// at the start of the iteration.
+//
+// WARNING: Beware that this iteration is performed within the eviction policy's exclusive lock, so the
+// iteration should be short and simple. While the iteration is in progress further eviction
+// maintenance will be halted.
+func (c *cache[K, V]) Coldest() iter.Seq[Entry[K, V]] {
+	return c.evictionOrder(false)
+}
+
+func (c *cache[K, V]) evictionOrder(hottest bool) iter.Seq[Entry[K, V]] {
+	if !c.withEviction {
+		return c.entries()
+	}
+
+	return func(yield func(Entry[K, V]) bool) {
+		comparator := func(a node.Node[K, V], b node.Node[K, V]) int {
+			return cmp.Compare(
+				c.evictionPolicy.sketch.frequency(a.Key()),
+				c.evictionPolicy.sketch.frequency(b.Key()),
+			)
+		}
+
+		var seq iter.Seq[node.Node[K, V]]
+		if hottest {
+			secondary := xiter.MergeFunc(
+				c.evictionPolicy.probation.Backward(),
+				c.evictionPolicy.window.Backward(),
+				comparator,
+			)
+			seq = xiter.Concat(
+				c.evictionPolicy.protected.Backward(),
+				secondary,
+			)
+		} else {
+			primary := xiter.MergeFunc(
+				c.evictionPolicy.window.All(),
+				c.evictionPolicy.probation.All(),
+				func(a node.Node[K, V], b node.Node[K, V]) int {
+					return -comparator(a, b)
+				},
+			)
+
+			seq = xiter.Concat(
+				primary,
+				c.evictionPolicy.protected.All(),
+			)
+		}
+
+		c.evictionMutex.Lock()
+		defer c.evictionMutex.Unlock()
+		c.maintenance(nil)
+
+		for n := range seq {
+			nowNano := c.clock.NowNano()
+			if !n.IsAlive() || n.HasExpired(nowNano) {
+				continue
+			}
+			if !yield(c.nodeToEntry(n, nowNano)) {
+				return
+			}
+		}
+	}
 }
 
 func (c *cache[K, V]) makeRetired(n node.Node[K, V]) {
