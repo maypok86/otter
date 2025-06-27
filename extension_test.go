@@ -240,9 +240,11 @@ func TestCache_Coldest(t *testing.T) {
 
 		coldest := make([]int, 0, entries)
 		for e := range c.Coldest() {
+			if e.Key == entries-1 {
+				continue
+			}
 			coldest = append(coldest, e.Key)
 		}
-		coldest = coldest[:len(coldest)-1]
 
 		require.Equal(t, keys, coldest)
 	})
@@ -341,9 +343,11 @@ func TestCache_Hottest(t *testing.T) {
 
 		coldest := make([]int, 0, maximum)
 		for _, e := range slices.Backward(slices.Collect(c.Hottest())) {
+			if e.Key == maximum-1 {
+				continue
+			}
 			coldest = append(coldest, e.Key)
 		}
-		coldest = coldest[1:]
 
 		require.Equal(t, keys, coldest)
 	})

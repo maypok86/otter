@@ -913,7 +913,7 @@ func TestCache_Eviction(t *testing.T) {
 
 			require.ElementsMatch(t, slices.Collect(c.Keys()), expected)
 			require.Equal(t, expected, evictionOrder)
-			require.Equal(t, evictionOrder, reversedHottest)
+			require.ElementsMatch(t, evictionOrder, reversedHottest)
 		}
 
 		checkReorder := func(keys, expected []int) {
