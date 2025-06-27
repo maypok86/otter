@@ -509,7 +509,8 @@ func (c *cache[K, V]) refreshKey(
 		if shouldLoad {
 			//nolint:errcheck // there is no need to check error
 			_ = c.wrapLoad(func() error {
-				return c.singleflight.doCall(ctx, cl, refresher, c.afterDeleteCall)
+				loadCtx := context.WithoutCancel(ctx)
+				return c.singleflight.doCall(loadCtx, cl, refresher, c.afterDeleteCall)
 			})
 		}
 		cl.wait()
@@ -711,9 +712,10 @@ func (c *cache[K, V]) bulkRefreshKeys(
 			i++
 		}
 
+		loadCtx := context.WithoutCancel(ctx)
 		if len(toLoadCalls) > 0 {
 			loadErr := c.wrapLoad(func() error {
-				return c.singleflight.doBulkCall(ctx, toLoadCalls, bulkLoader.BulkLoad, c.afterDeleteCall)
+				return c.singleflight.doBulkCall(loadCtx, toLoadCalls, bulkLoader.BulkLoad, c.afterDeleteCall)
 			})
 			if loadErr != nil {
 				c.logger.Error(ctx, "BulkLoad returned an error", loadErr)
@@ -741,7 +743,7 @@ func (c *cache[K, V]) bulkRefreshKeys(
 			}
 
 			reloadErr := c.wrapLoad(func() error {
-				return c.singleflight.doBulkCall(ctx, toReloadCalls, reload, c.afterDeleteCall)
+				return c.singleflight.doBulkCall(loadCtx, toReloadCalls, reload, c.afterDeleteCall)
 			})
 			if reloadErr != nil {
 				c.logger.Error(ctx, "BulkReload returned an error", reloadErr)
