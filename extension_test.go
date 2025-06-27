@@ -297,12 +297,10 @@ func TestCache_Coldest(t *testing.T) {
 				fn()
 			},
 		})
-		keys := make([]int, 0, entries)
 		for i := 0; i < entries; i++ {
 			v, ok := c.Set(i, i)
 			require.True(t, ok)
 			require.Equal(t, i, v)
-			keys = append(keys, i)
 		}
 
 		coldest := make([]int, 0, maximum)
