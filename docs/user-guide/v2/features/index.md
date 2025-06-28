@@ -12,6 +12,7 @@ The `Features` chapter describes the core features of the Otter API. Understandi
 - [Loading](loading.md)
 - [Refresh](refresh.md)
 - [Bulk Operations](bulk.md)
+- [Compute](compute.md)
 - [Statistics](statistics.md)
 - [Extension](extension.md)
 - [Iteration](iteration.md)
