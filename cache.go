@@ -100,6 +100,72 @@ func (c *Cache[K, V]) SetIfAbsent(key K, value V) (V, bool) {
 	return c.cache.SetIfAbsent(key, value)
 }
 
+// Compute either sets the computed new value for the key or deletes
+// the value for the key. When the invalidate result of the remappingFunc function
+// is set to true, the value will be deleted, if it exists. When invalidate
+// is set to false, the value is updated to the newValue.
+//
+// The ok result indicates whether the entry is present in the cache after the compute operation.
+// The actualValue result contains the value of the cache
+// if a corresponding entry is present, or the zero value
+// otherwise. You can think of these results as equivalent to regular key-value lookups in a map.
+//
+// This call locks a hash table bucket while the compute function
+// is executed. It means that modifications on other entries in
+// the bucket will be blocked until the remappingFunc executes. Consider
+// this when the function includes long-running operations.
+func (c *Cache[K, V]) Compute(
+	key K,
+	remappingFunc func(oldValue V, found bool) (newValue V, invalidate bool),
+) (actualValue V, ok bool) {
+	return c.cache.Compute(key, remappingFunc)
+}
+
+// ComputeIfAbsent returns the existing value for the key if
+// present. Otherwise, it tries to compute the value using the
+// provided function. If mappingFunc returns true as the cancel value, the computation is cancelled and the zero value
+// for type V is returned.
+//
+// The ok result indicates whether the entry is present in the cache after the compute operation.
+// The actualValue result contains the value of the cache
+// if a corresponding entry is present, or the zero value
+// otherwise. You can think of these results as equivalent to regular key-value lookups in a map.
+//
+// This call locks a hash table bucket while the compute function
+// is executed. It means that modifications on other entries in
+// the bucket will be blocked until the valueFn executes. Consider
+// this when the function includes long-running operations.
+func (c *Cache[K, V]) ComputeIfAbsent(
+	key K,
+	mappingFunc func() (newValue V, cancel bool),
+) (actualValue V, ok bool) {
+	return c.cache.ComputeIfAbsent(key, mappingFunc)
+}
+
+// ComputeIfPresent returns the zero value for type V if the key is not found.
+// Otherwise, it tries to compute the value using the provided function.
+//
+// ComputeIfPresent either sets the computed new value for the key or deletes
+// the value for the key. When the invalidate result of the remappingFunc function
+// is set to true, the value will be deleted, if it exists. When invalidate
+// is set to false, the value is updated to the newValue.
+//
+// The ok result indicates whether the entry is present in the cache after the compute operation.
+// The actualValue result contains the value of the cache
+// if a corresponding entry is present, or the zero value
+// otherwise. You can think of these results as equivalent to regular key-value lookups in a map.
+//
+// This call locks a hash table bucket while the compute function
+// is executed. It means that modifications on other entries in
+// the bucket will be blocked until the valueFn executes. Consider
+// this when the function includes long-running operations.
+func (c *Cache[K, V]) ComputeIfPresent(
+	key K,
+	remappingFunc func(oldValue V) (newValue V, invalidate bool),
+) (actualValue V, ok bool) {
+	return c.cache.ComputeIfPresent(key, remappingFunc)
+}
+
 // SetExpiresAfter specifies that the entry should be automatically removed from the cache once the duration has
 // elapsed. The expiration policy determines when the entry's age is reset.
 func (c *Cache[K, V]) SetExpiresAfter(key K, expiresAfter time.Duration) {

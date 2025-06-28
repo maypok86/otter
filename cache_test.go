@@ -570,6 +570,301 @@ func TestCache_SetIfAbsent(t *testing.T) {
 	}
 }
 
+func TestCache_ComputeIfAbsent(t *testing.T) {
+	t.Parallel()
+
+	t.Run("functionCalledOnce", func(t *testing.T) {
+		t.Parallel()
+
+		const iters = 100
+		c := Must(&Options[int, int]{})
+		for i := 0; i < iters; i++ {
+			actualValue, ok := c.ComputeIfAbsent(i, func() (newValue int, cancel bool) {
+				newValue, i = i, i+1
+				return newValue, false
+			})
+			require.True(t, ok)
+			require.Equal(t, i-1, actualValue)
+		}
+		require.Equal(t, iters/2, c.EstimatedSize())
+		for k, v := range c.All() {
+			require.Equal(t, k, v)
+		}
+	})
+	t.Run("general", func(t *testing.T) {
+		t.Parallel()
+
+		const entries = 1000
+		counter := stats.NewCounter()
+		deletions := uint64(0)
+		c := Must(&Options[int, int]{
+			StatsRecorder: counter,
+			OnAtomicDeletion: func(e DeletionEvent[int, int]) {
+				deletions++
+			},
+		})
+		for i := 0; i < entries; i++ {
+			v, ok := c.ComputeIfAbsent(i, func() (newValue int, cancel bool) {
+				return i, true
+			})
+			require.False(t, ok)
+			require.Equal(t, 0, v)
+		}
+		require.Equal(t, 0, c.EstimatedSize())
+
+		for i := 0; i < entries; i++ {
+			v, ok := c.ComputeIfAbsent(i, func() (newValue int, cancel bool) {
+				return i, false
+			})
+			require.True(t, ok)
+			require.Equal(t, i, v)
+		}
+		for i := 0; i < entries; i++ {
+			v, ok := c.ComputeIfAbsent(i, func() (newValue int, cancel bool) {
+				return i + 1, false
+			})
+			require.True(t, ok)
+			require.Equal(t, i, v)
+		}
+		snapshot := counter.Snapshot()
+		require.Equal(t, uint64(entries), snapshot.Hits)
+		require.Equal(t, uint64(2*entries), snapshot.Misses)
+		require.Equal(t, uint64(0), deletions)
+	})
+	t.Run("failedRead", func(t *testing.T) {
+		t.Parallel()
+
+		counter := stats.NewCounter()
+		deletions := uint64(0)
+		c := Must(&Options[int, int]{
+			StatsRecorder: counter,
+			OnAtomicDeletion: func(e DeletionEvent[int, int]) {
+				deletions++
+			},
+		})
+		key := 15
+
+		start := make(chan struct{})
+
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			<-start
+			v, ok := c.ComputeIfAbsent(key, func() (newValue int, cancel bool) {
+				panic("incorrect call")
+			})
+			require.True(t, ok)
+			require.Equal(t, key+1, v)
+		}()
+
+		v, ok := c.Compute(key, func(oldValue int, found bool) (newValue int, invalidate bool) {
+			start <- struct{}{}
+			return key + 1, false
+		})
+		require.True(t, ok)
+		require.Equal(t, key+1, v)
+
+		wg.Wait()
+
+		snapshot := counter.Snapshot()
+		require.Contains(t, []uint64{0, 1}, snapshot.Hits)
+		require.Contains(t, []uint64{1, 2}, snapshot.Misses)
+		require.Equal(t, uint64(0), deletions)
+	})
+}
+
+func TestCache_ComputeIfPresent(t *testing.T) {
+	t.Parallel()
+
+	t.Run("general", func(t *testing.T) {
+		t.Parallel()
+
+		counter := stats.NewCounter()
+		deletions := uint64(0)
+		c := Must(&Options[string, int]{
+			StatsRecorder: counter,
+			OnAtomicDeletion: func(e DeletionEvent[string, int]) {
+				deletions++
+			},
+		})
+
+		// Store a new value.
+		v, ok := c.Compute("foobar", func(oldValue int, found bool) (newValue int, invalidate bool) {
+			require.Equal(t, 0, oldValue)
+			require.False(t, found)
+
+			return 42, false
+		})
+		require.True(t, ok)
+		require.Equal(t, 42, v)
+
+		// Update an existing value.
+		v, ok = c.ComputeIfPresent("foobar", func(oldValue int) (newValue int, invalidate bool) {
+			require.Equal(t, 42, oldValue)
+
+			return oldValue + 42, false
+		})
+		require.True(t, ok)
+		require.Equal(t, 84, v)
+
+		// noop
+		v, ok = c.ComputeIfPresent("fizz", func(oldValue int) (newValue int, invalidate bool) {
+			panic("incorrect call")
+		})
+		require.False(t, ok)
+		require.Equal(t, 0, v)
+
+		// Delete an existing value.
+		v, ok = c.ComputeIfPresent("foobar", func(oldValue int) (newValue int, invalidate bool) {
+			require.Equal(t, 84, oldValue)
+
+			return 57, true
+		})
+		require.False(t, ok)
+		require.Equal(t, 0, v)
+
+		snapshot := counter.Snapshot()
+		require.Equal(t, uint64(2), snapshot.Hits)
+		require.Equal(t, uint64(2), snapshot.Misses)
+		require.Equal(t, uint64(2), deletions)
+	})
+	t.Run("failedRead", func(t *testing.T) {
+		t.Parallel()
+
+		counter := stats.NewCounter()
+		deletions := uint64(0)
+		c := Must(&Options[int, int]{
+			StatsRecorder: counter,
+			OnAtomicDeletion: func(e DeletionEvent[int, int]) {
+				deletions++
+			},
+		})
+		key := 15
+
+		start := make(chan struct{})
+
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			<-start
+			v, ok := c.ComputeIfPresent(key, func(oldValue int) (newValue int, cancel bool) {
+				panic("incorrect call")
+			})
+			require.False(t, ok)
+			require.Equal(t, 0, v)
+		}()
+
+		c.Set(key, key)
+
+		v, ok := c.Compute(key, func(oldValue int, found bool) (newValue int, invalidate bool) {
+			start <- struct{}{}
+			return 0, true
+		})
+		require.False(t, ok)
+		require.Equal(t, 0, v)
+
+		wg.Wait()
+
+		snapshot := counter.Snapshot()
+		require.Contains(t, []uint64{1, 2}, snapshot.Hits)
+		require.Contains(t, []uint64{0, 1}, snapshot.Misses)
+		require.Equal(t, uint64(1), deletions)
+	})
+}
+
+func TestCache_Compute(t *testing.T) {
+	t.Parallel()
+
+	t.Run("general", func(t *testing.T) {
+		t.Parallel()
+
+		counter := stats.NewCounter()
+		deletions := uint64(0)
+		c := Must(&Options[string, int]{
+			StatsRecorder: counter,
+			OnAtomicDeletion: func(e DeletionEvent[string, int]) {
+				deletions++
+			},
+		})
+
+		// Store a new value.
+		v, ok := c.Compute("foobar", func(oldValue int, found bool) (newValue int, invalidate bool) {
+			require.Equal(t, 0, oldValue)
+			require.False(t, found)
+
+			return 42, false
+		})
+		require.True(t, ok)
+		require.Equal(t, 42, v)
+
+		// Update an existing value.
+		v, ok = c.Compute("foobar", func(oldValue int, found bool) (newValue int, invalidate bool) {
+			require.Equal(t, 42, oldValue)
+			require.True(t, found)
+
+			return oldValue + 42, false
+		})
+		require.True(t, ok)
+		require.Equal(t, 84, v)
+
+		// Delete an existing value.
+		v, ok = c.Compute("foobar", func(oldValue int, found bool) (newValue int, invalidate bool) {
+			require.Equal(t, 84, oldValue)
+			require.True(t, found)
+
+			return 0, true
+		})
+		require.False(t, ok)
+		require.Equal(t, 0, v)
+
+		// Try to delete a non-existing value. Notice different key.
+		v, ok = c.Compute("barbaz", func(oldValue int, found bool) (newValue int, invalidate bool) {
+			require.Equal(t, 0, oldValue)
+			require.False(t, found)
+
+			// We're returning a non-zero value, but the map should ignore it.
+			return 42, true
+		})
+		require.False(t, ok)
+		require.Equal(t, 0, v)
+
+		snapshot := counter.Snapshot()
+		require.Equal(t, uint64(2), snapshot.Hits)
+		require.Equal(t, uint64(2), snapshot.Misses)
+		require.Equal(t, uint64(2), deletions)
+	})
+	t.Run("panic", func(t *testing.T) {
+		t.Parallel()
+
+		c := Must(&Options[int, int]{})
+
+		require.Panics(t, func() {
+			c.Compute(0, func(oldValue int, found bool) (newValue int, invalidate bool) {
+				panic("olololololo")
+			})
+		})
+		_, ok := c.GetIfPresent(0)
+		require.False(t, ok)
+	})
+	t.Run("incorrectComputeOp", func(t *testing.T) {
+		t.Parallel()
+
+		c := Must(&Options[int, int]{})
+
+		require.Panics(t, func() {
+			c.Compute(0, func(oldValue int, found bool) (newValue int, invalidate bool) {
+				panic("olololololo")
+			})
+		})
+		_, ok := c.GetIfPresent(0)
+		require.False(t, ok)
+	})
+}
+
 func TestCache_SetWithExpiresAt(t *testing.T) {
 	t.Parallel()
 
