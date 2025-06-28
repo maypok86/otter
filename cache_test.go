@@ -46,6 +46,36 @@ func getRandomSize(t *testing.T) int {
 	return r.Intn(maxSize-minSize) + minSize
 }
 
+func TestComputeOp_String(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		op   ComputeOp
+		want string
+	}{
+		{
+			op:   CancelOp,
+			want: "CancelOp",
+		},
+		{
+			op:   WriteOp,
+			want: "WriteOp",
+		},
+		{
+			op:   InvalidateOp,
+			want: "InvalidateOp",
+		},
+		{
+			op:   -1,
+			want: "<unknown otter.ComputeOp>",
+		},
+	}
+
+	for _, tt := range tests {
+		require.Equal(t, tt.want, tt.op.String())
+	}
+}
+
 func TestMust(t *testing.T) {
 	t.Parallel()
 

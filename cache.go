@@ -38,6 +38,20 @@ const (
 	InvalidateOp
 )
 
+var computeOpStrings = []string{
+	"CancelOp",
+	"WriteOp",
+	"InvalidateOp",
+}
+
+// String implements [fmt.Stringer] interface.
+func (co ComputeOp) String() string {
+	if co >= 0 && int(co) < len(computeOpStrings) {
+		return computeOpStrings[co]
+	}
+	return "<unknown otter.ComputeOp>"
+}
+
 // Cache is an in-memory cache implementation that supports full concurrency of retrievals and multiple ways to bound the cache.
 type Cache[K comparable, V any] struct {
 	cache *cache[K, V]
