@@ -21,6 +21,23 @@ import (
 	"time"
 )
 
+// ComputeOp tells the Compute methods what to do.
+type ComputeOp int
+
+const (
+	// CancelOp signals to Compute to not do anything as a result
+	// of executing the lambda. If the entry was not present in
+	// the map, nothing happens, and if it was present, the
+	// returned value is ignored.
+	CancelOp ComputeOp = iota
+	// WriteOp signals to Compute to update the entry to the
+	// value returned by the lambda, creating it if necessary.
+	WriteOp
+	// InvalidateOp signals to Compute to always discard the entry
+	// from the cache.
+	InvalidateOp
+)
+
 // Cache is an in-memory cache implementation that supports full concurrency of retrievals and multiple ways to bound the cache.
 type Cache[K comparable, V any] struct {
 	cache *cache[K, V]
@@ -100,10 +117,17 @@ func (c *Cache[K, V]) SetIfAbsent(key K, value V) (V, bool) {
 	return c.cache.SetIfAbsent(key, value)
 }
 
-// Compute either sets the computed new value for the key or deletes
-// the value for the key. When the invalidate result of the remappingFunc function
-// is set to true, the value will be deleted, if it exists. When invalidate
-// is set to false, the value is updated to the newValue.
+// Compute either sets the computed new value for the key,
+// invalidates the value for the key, or does nothing, based on
+// the returned [ComputeOp]. When the op returned by remappingFunc
+// is [WriteOp], the value is updated to the new value. If
+// it is [InvalidateOp], the entry is removed from the cache
+// altogether. And finally, if the op is [CancelOp] then the
+// entry is left as-is. In other words, if it did not already
+// exist, it is not created, and if it did exist, it is not
+// updated. This is useful to synchronously execute some
+// operation on the value without incurring the cost of
+// updating the cache every time.
 //
 // The ok result indicates whether the entry is present in the cache after the compute operation.
 // The actualValue result contains the value of the cache
@@ -116,7 +140,7 @@ func (c *Cache[K, V]) SetIfAbsent(key K, value V) (V, bool) {
 // this when the function includes long-running operations.
 func (c *Cache[K, V]) Compute(
 	key K,
-	remappingFunc func(oldValue V, found bool) (newValue V, invalidate bool),
+	remappingFunc func(oldValue V, found bool) (newValue V, op ComputeOp),
 ) (actualValue V, ok bool) {
 	return c.cache.Compute(key, remappingFunc)
 }
@@ -145,10 +169,17 @@ func (c *Cache[K, V]) ComputeIfAbsent(
 // ComputeIfPresent returns the zero value for type V if the key is not found.
 // Otherwise, it tries to compute the value using the provided function.
 //
-// ComputeIfPresent either sets the computed new value for the key or deletes
-// the value for the key. When the invalidate result of the remappingFunc function
-// is set to true, the value will be deleted, if it exists. When invalidate
-// is set to false, the value is updated to the newValue.
+// ComputeIfPresent either sets the computed new value for the key,
+// invalidates the value for the key, or does nothing, based on
+// the returned [ComputeOp]. When the op returned by remappingFunc
+// is [WriteOp], the value is updated to the new value. If
+// it is [InvalidateOp], the entry is removed from the cache
+// altogether. And finally, if the op is [CancelOp] then the
+// entry is left as-is. In other words, if it did not already
+// exist, it is not created, and if it did exist, it is not
+// updated. This is useful to synchronously execute some
+// operation on the value without incurring the cost of
+// updating the cache every time.
 //
 // The ok result indicates whether the entry is present in the cache after the compute operation.
 // The actualValue result contains the value of the cache
@@ -161,7 +192,7 @@ func (c *Cache[K, V]) ComputeIfAbsent(
 // this when the function includes long-running operations.
 func (c *Cache[K, V]) ComputeIfPresent(
 	key K,
-	remappingFunc func(oldValue V) (newValue V, invalidate bool),
+	remappingFunc func(oldValue V) (newValue V, op ComputeOp),
 ) (actualValue V, ok bool) {
 	return c.cache.ComputeIfPresent(key, remappingFunc)
 }

@@ -659,9 +659,9 @@ func TestCache_ComputeIfAbsent(t *testing.T) {
 			require.Equal(t, key+1, v)
 		}()
 
-		v, ok := c.Compute(key, func(oldValue int, found bool) (newValue int, invalidate bool) {
+		v, ok := c.Compute(key, func(oldValue int, found bool) (newValue int, op ComputeOp) {
 			start <- struct{}{}
-			return key + 1, false
+			return key + 1, WriteOp
 		})
 		require.True(t, ok)
 		require.Equal(t, key+1, v)
@@ -691,42 +691,51 @@ func TestCache_ComputeIfPresent(t *testing.T) {
 		})
 
 		// Store a new value.
-		v, ok := c.Compute("foobar", func(oldValue int, found bool) (newValue int, invalidate bool) {
+		v, ok := c.Compute("foobar", func(oldValue int, found bool) (newValue int, op ComputeOp) {
 			require.Equal(t, 0, oldValue)
 			require.False(t, found)
 
-			return 42, false
+			return 42, WriteOp
 		})
 		require.True(t, ok)
 		require.Equal(t, 42, v)
 
 		// Update an existing value.
-		v, ok = c.ComputeIfPresent("foobar", func(oldValue int) (newValue int, invalidate bool) {
+		v, ok = c.ComputeIfPresent("foobar", func(oldValue int) (newValue int, op ComputeOp) {
 			require.Equal(t, 42, oldValue)
 
-			return oldValue + 42, false
+			return oldValue + 42, WriteOp
 		})
 		require.True(t, ok)
 		require.Equal(t, 84, v)
 
 		// noop
-		v, ok = c.ComputeIfPresent("fizz", func(oldValue int) (newValue int, invalidate bool) {
+		v, ok = c.ComputeIfPresent("foobar", func(oldValue int) (newValue int, op ComputeOp) {
+			require.Equal(t, 84, oldValue)
+
+			return 1, CancelOp
+		})
+		require.True(t, ok)
+		require.Equal(t, 84, v)
+
+		// noop
+		v, ok = c.ComputeIfPresent("fizz", func(oldValue int) (newValue int, op ComputeOp) {
 			panic("incorrect call")
 		})
 		require.False(t, ok)
 		require.Equal(t, 0, v)
 
 		// Delete an existing value.
-		v, ok = c.ComputeIfPresent("foobar", func(oldValue int) (newValue int, invalidate bool) {
+		v, ok = c.ComputeIfPresent("foobar", func(oldValue int) (newValue int, op ComputeOp) {
 			require.Equal(t, 84, oldValue)
 
-			return 57, true
+			return 57, InvalidateOp
 		})
 		require.False(t, ok)
 		require.Equal(t, 0, v)
 
 		snapshot := counter.Snapshot()
-		require.Equal(t, uint64(2), snapshot.Hits)
+		require.Equal(t, uint64(3), snapshot.Hits)
 		require.Equal(t, uint64(2), snapshot.Misses)
 		require.Equal(t, uint64(2), deletions)
 	})
@@ -751,7 +760,7 @@ func TestCache_ComputeIfPresent(t *testing.T) {
 			defer wg.Done()
 
 			<-start
-			v, ok := c.ComputeIfPresent(key, func(oldValue int) (newValue int, cancel bool) {
+			v, ok := c.ComputeIfPresent(key, func(oldValue int) (newValue int, op ComputeOp) {
 				panic("incorrect call")
 			})
 			require.False(t, ok)
@@ -760,9 +769,9 @@ func TestCache_ComputeIfPresent(t *testing.T) {
 
 		c.Set(key, key)
 
-		v, ok := c.Compute(key, func(oldValue int, found bool) (newValue int, invalidate bool) {
+		v, ok := c.Compute(key, func(oldValue int, found bool) (newValue int, op ComputeOp) {
 			start <- struct{}{}
-			return 0, true
+			return 0, InvalidateOp
 		})
 		require.False(t, ok)
 		require.Equal(t, 0, v)
@@ -792,48 +801,58 @@ func TestCache_Compute(t *testing.T) {
 		})
 
 		// Store a new value.
-		v, ok := c.Compute("foobar", func(oldValue int, found bool) (newValue int, invalidate bool) {
+		v, ok := c.Compute("foobar", func(oldValue int, found bool) (newValue int, op ComputeOp) {
 			require.Equal(t, 0, oldValue)
 			require.False(t, found)
 
-			return 42, false
+			return 42, WriteOp
 		})
 		require.True(t, ok)
 		require.Equal(t, 42, v)
 
 		// Update an existing value.
-		v, ok = c.Compute("foobar", func(oldValue int, found bool) (newValue int, invalidate bool) {
+		v, ok = c.Compute("foobar", func(oldValue int, found bool) (newValue int, op ComputeOp) {
 			require.Equal(t, 42, oldValue)
 			require.True(t, found)
 
-			return oldValue + 42, false
+			return oldValue + 42, WriteOp
+		})
+		require.True(t, ok)
+		require.Equal(t, 84, v)
+
+		// noop
+		v, ok = c.Compute("foobar", func(oldValue int, found bool) (newValue int, op ComputeOp) {
+			require.Equal(t, 84, oldValue)
+			require.True(t, found)
+
+			return 1, CancelOp
 		})
 		require.True(t, ok)
 		require.Equal(t, 84, v)
 
 		// Delete an existing value.
-		v, ok = c.Compute("foobar", func(oldValue int, found bool) (newValue int, invalidate bool) {
+		v, ok = c.Compute("foobar", func(oldValue int, found bool) (newValue int, op ComputeOp) {
 			require.Equal(t, 84, oldValue)
 			require.True(t, found)
 
-			return 0, true
+			return 0, InvalidateOp
 		})
 		require.False(t, ok)
 		require.Equal(t, 0, v)
 
 		// Try to delete a non-existing value. Notice different key.
-		v, ok = c.Compute("barbaz", func(oldValue int, found bool) (newValue int, invalidate bool) {
+		v, ok = c.Compute("barbaz", func(oldValue int, found bool) (newValue int, op ComputeOp) {
 			require.Equal(t, 0, oldValue)
 			require.False(t, found)
 
-			// We're returning a non-zero value, but the map should ignore it.
-			return 42, true
+			// We're returning a non-zero value, but the cache should ignore it.
+			return 42, InvalidateOp
 		})
 		require.False(t, ok)
 		require.Equal(t, 0, v)
 
 		snapshot := counter.Snapshot()
-		require.Equal(t, uint64(2), snapshot.Hits)
+		require.Equal(t, uint64(3), snapshot.Hits)
 		require.Equal(t, uint64(2), snapshot.Misses)
 		require.Equal(t, uint64(2), deletions)
 	})
@@ -843,7 +862,7 @@ func TestCache_Compute(t *testing.T) {
 		c := Must(&Options[int, int]{})
 
 		require.Panics(t, func() {
-			c.Compute(0, func(oldValue int, found bool) (newValue int, invalidate bool) {
+			c.Compute(0, func(oldValue int, found bool) (newValue int, op ComputeOp) {
 				panic("olololololo")
 			})
 		})
@@ -856,8 +875,8 @@ func TestCache_Compute(t *testing.T) {
 		c := Must(&Options[int, int]{})
 
 		require.Panics(t, func() {
-			c.Compute(0, func(oldValue int, found bool) (newValue int, invalidate bool) {
-				panic("olololololo")
+			c.Compute(0, func(oldValue int, found bool) (newValue int, op ComputeOp) {
+				return -100, -1
 			})
 		})
 		_, ok := c.GetIfPresent(0)

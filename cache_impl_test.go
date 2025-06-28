@@ -1066,19 +1066,6 @@ func TestCache_CornerCases(t *testing.T) {
 		require.False(t, ok)
 		require.Zero(t, v)
 	})
-	t.Run("incorrectComputeOp", func(t *testing.T) {
-		t.Parallel()
-
-		c := Must(&Options[int, int]{})
-
-		require.Panics(t, func() {
-			c.cache.doCompute(0, func(oldValue int, found bool) (newValue int, op computeOp) {
-				return 5, -1
-			}, 14, true)
-		})
-		_, ok := c.GetIfPresent(0)
-		require.False(t, ok)
-	})
 	t.Run("cancelComputeWithExpired", func(t *testing.T) {
 		t.Parallel()
 
@@ -1099,8 +1086,8 @@ func TestCache_CornerCases(t *testing.T) {
 
 		cl.Sleep(2 * time.Minute)
 
-		v, ok := c.cache.doCompute(key, func(oldValue int, found bool) (newValue int, op computeOp) {
-			return 2 * key, cancelOp
+		v, ok := c.cache.doCompute(key, func(oldValue int, found bool) (newValue int, op ComputeOp) {
+			return 2 * key, CancelOp
 		}, cl.NowNano(), true)
 		require.False(t, ok)
 		require.Equal(t, 0, v)
