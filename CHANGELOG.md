@@ -1,3 +1,24 @@
+## 2.1.0 - 2025-06-29
+
+### ✨Features
+
+- Added `Compute`, `ComputeIfAbsent` and `ComputeIfPresent` methods
+- Added `LoadCacheFrom`, `LoadCacheFromFile`, `SaveCacheTo` and `SaveCacheToFile` functions
+- Added `Clock` interface and option for time mocking
+- Added `Keys` and `Values` iterators
+- Added `Hottest` and `Coldest` iterators
+
+### 🚀 Improvements
+
+- Slightly reduced memory consumption
+- Cache became significantly faster in cases when it's lightly populated
+- Reduced number of allocations during refresh
+
+### 🐞 Bug Fixes
+
+- Fixed a bug in timer wheel ([#64](https://github.com/Yiling-J/theine-go/issues/64))
+- Added usage of `context.WithoutCancel` during refresh execution ([#124](https://github.com/maypok86/otter/issues/124))
+
 ## 2.0.0 - 2025-06-18
 
 ### 📝 Description
