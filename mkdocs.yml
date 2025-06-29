@@ -56,7 +56,9 @@ theme:
 
 # Plugins
 plugins:
-  #- blog
+  - blog:
+      post_url_format: "{slug}"
+      archive: false
   - glightbox
   - search:
       separator: '[\s\u200b\-_,:!=\[\]()"`/]+|\.(?!\d)|&[lg]t;|(?!\b)(?=[A-Z][a-z])'
@@ -156,3 +158,5 @@ nav:
       - Throughput: performance/throughput.md
       - Hit ratio: performance/hit-ratio.md
       - Memory consumption: performance/memory-consumption.md
+  - Blog:
+      - blog/index.md
