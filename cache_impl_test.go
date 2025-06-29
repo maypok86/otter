@@ -1066,6 +1066,37 @@ func TestCache_CornerCases(t *testing.T) {
 		require.False(t, ok)
 		require.Zero(t, v)
 	})
+	t.Run("cancelComputeWithExpired", func(t *testing.T) {
+		t.Parallel()
+
+		cl := newNonTickingClock()
+		counter := stats.NewCounter()
+		deletions := uint64(0)
+		c := Must(&Options[int, int]{
+			Clock:         cl,
+			StatsRecorder: counter,
+			OnAtomicDeletion: func(e DeletionEvent[int, int]) {
+				deletions++
+			},
+			ExpiryCalculator: ExpiryWriting[int, int](time.Minute),
+		})
+		key := 13
+
+		c.Set(key, key+1)
+
+		cl.Sleep(2 * time.Minute)
+
+		v, ok := c.cache.doCompute(key, func(oldValue int, found bool) (newValue int, op ComputeOp) {
+			return 2 * key, CancelOp
+		}, cl.NowNano(), true)
+		require.False(t, ok)
+		require.Equal(t, 0, v)
+
+		snapshot := counter.Snapshot()
+		require.Equal(t, uint64(0), snapshot.Hits)
+		require.Equal(t, uint64(1), snapshot.Misses)
+		require.Equal(t, uint64(1), deletions)
+	})
 }
 
 func TestCache_Scheduler(t *testing.T) {

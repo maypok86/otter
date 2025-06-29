@@ -416,33 +416,21 @@ func (c *cache[K, V]) calcExpiresAtAfterWrite(n, old node.Node[K, V], nowNano in
 }
 
 func (c *cache[K, V]) set(key K, value V, onlyIfAbsent bool) (V, bool) {
-	var (
-		old node.Node[K, V]
-		n   node.Node[K, V]
-	)
+	var old node.Node[K, V]
 	nowNano := c.clock.NowNano()
-	c.hashmap.Compute(key, func(current node.Node[K, V]) node.Node[K, V] {
+	n := c.hashmap.Compute(key, func(current node.Node[K, V]) node.Node[K, V] {
 		old = current
-		if onlyIfAbsent && current != nil {
+		if onlyIfAbsent && current != nil && !current.HasExpired(nowNano) {
 			// no op
 			c.calcExpiresAtAfterRead(old, nowNano)
 			return current
 		}
 		// set
-		c.singleflight.delete(key)
-		n = c.newNode(key, value, old)
-		c.calcExpiresAtAfterWrite(n, old, nowNano)
-		c.calcRefreshableAt(n, old, nil, nowNano)
-		c.makeRetired(old)
-		if old != nil {
-			cause := getCause(old, nowNano, CauseReplacement)
-			c.notifyAtomicDeletion(old.Key(), old.Value(), cause)
-		}
-		return n
+		return c.atomicSet(key, value, old, nil, nowNano)
 	})
 	if onlyIfAbsent {
-		if old == nil {
-			c.afterWrite(n, nil, nowNano)
+		if old == nil || old.HasExpired(nowNano) {
+			c.afterWrite(n, old, nowNano)
 			return value, true
 		}
 		c.afterRead(old, nowNano, false, false)
@@ -454,6 +442,220 @@ func (c *cache[K, V]) set(key K, value V, onlyIfAbsent bool) (V, bool) {
 		return old.Value(), false
 	}
 	return value, true
+}
+
+func (c *cache[K, V]) atomicSet(key K, value V, old node.Node[K, V], cl *call[K, V], nowNano int64) node.Node[K, V] {
+	if cl == nil {
+		c.singleflight.delete(key)
+	}
+	n := c.newNode(key, value, old)
+	c.calcExpiresAtAfterWrite(n, old, nowNano)
+	c.calcRefreshableAt(n, old, cl, nowNano)
+	c.makeRetired(old)
+	if old != nil {
+		cause := getCause(old, nowNano, CauseReplacement)
+		c.notifyAtomicDeletion(old.Key(), old.Value(), cause)
+	}
+	return n
+}
+
+//nolint:unparam // it's ok
+func (c *cache[K, V]) atomicDelete(key K, old node.Node[K, V], cl *call[K, V], nowNano int64) node.Node[K, V] {
+	if cl == nil {
+		c.singleflight.delete(key)
+	}
+	if old != nil {
+		cause := getCause(old, nowNano, CauseInvalidation)
+		c.makeRetired(old)
+		c.notifyAtomicDeletion(old.Key(), old.Value(), cause)
+	}
+	return nil
+}
+
+// Compute either sets the computed new value for the key,
+// invalidates the value for the key, or does nothing, based on
+// the returned [ComputeOp]. When the op returned by remappingFunc
+// is [WriteOp], the value is updated to the new value. If
+// it is [InvalidateOp], the entry is removed from the cache
+// altogether. And finally, if the op is [CancelOp] then the
+// entry is left as-is. In other words, if it did not already
+// exist, it is not created, and if it did exist, it is not
+// updated. This is useful to synchronously execute some
+// operation on the value without incurring the cost of
+// updating the cache every time.
+//
+// The ok result indicates whether the entry is present in the cache after the compute operation.
+// The actualValue result contains the value of the cache
+// if a corresponding entry is present, or the zero value otherwise.
+// You can think of these results as equivalent to regular key-value lookups in a map.
+//
+// This call locks a hash table bucket while the compute function
+// is executed. It means that modifications on other entries in
+// the bucket will be blocked until the remappingFunc executes. Consider
+// this when the function includes long-running operations.
+func (c *cache[K, V]) Compute(
+	key K,
+	remappingFunc func(oldValue V, found bool) (newValue V, op ComputeOp),
+) (V, bool) {
+	return c.doCompute(key, remappingFunc, c.clock.NowNano(), true)
+}
+
+// ComputeIfAbsent returns the existing value for the key if
+// present. Otherwise, it tries to compute the value using the
+// provided function. If mappingFunc returns true as the cancel value, the computation is cancelled and the zero value
+// for type V is returned.
+//
+// The ok result indicates whether the entry is present in the cache after the compute operation.
+// The actualValue result contains the value of the cache
+// if a corresponding entry is present, or the zero value
+// otherwise. You can think of these results as equivalent to regular key-value lookups in a map.
+//
+// This call locks a hash table bucket while the compute function
+// is executed. It means that modifications on other entries in
+// the bucket will be blocked until the valueFn executes. Consider
+// this when the function includes long-running operations.
+func (c *cache[K, V]) ComputeIfAbsent(
+	key K,
+	mappingFunc func() (newValue V, cancel bool),
+) (V, bool) {
+	nowNano := c.clock.NowNano()
+	if n := c.getNode(key, nowNano); n != nil {
+		return n.Value(), true
+	}
+
+	return c.doCompute(key, func(oldValue V, found bool) (newValue V, op ComputeOp) {
+		if found {
+			return oldValue, CancelOp
+		}
+		newValue, cancel := mappingFunc()
+		if cancel {
+			return zeroValue[V](), CancelOp
+		}
+		return newValue, WriteOp
+	}, nowNano, false)
+}
+
+// ComputeIfPresent returns the zero value for type V if the key is not found.
+// Otherwise, it tries to compute the value using the provided function.
+//
+// ComputeIfPresent either sets the computed new value for the key,
+// invalidates the value for the key, or does nothing, based on
+// the returned [ComputeOp]. When the op returned by remappingFunc
+// is [WriteOp], the value is updated to the new value. If
+// it is [InvalidateOp], the entry is removed from the cache
+// altogether. And finally, if the op is [CancelOp] then the
+// entry is left as-is. In other words, if it did not already
+// exist, it is not created, and if it did exist, it is not
+// updated. This is useful to synchronously execute some
+// operation on the value without incurring the cost of
+// updating the cache every time.
+//
+// The ok result indicates whether the entry is present in the cache after the compute operation.
+// The actualValue result contains the value of the cache
+// if a corresponding entry is present, or the zero value
+// otherwise. You can think of these results as equivalent to regular key-value lookups in a map.
+//
+// This call locks a hash table bucket while the compute function
+// is executed. It means that modifications on other entries in
+// the bucket will be blocked until the valueFn executes. Consider
+// this when the function includes long-running operations.
+func (c *cache[K, V]) ComputeIfPresent(
+	key K,
+	remappingFunc func(oldValue V) (newValue V, op ComputeOp),
+) (V, bool) {
+	nowNano := c.clock.NowNano()
+	if n := c.getNode(key, nowNano); n == nil {
+		return zeroValue[V](), false
+	}
+
+	return c.doCompute(key, func(oldValue V, found bool) (newValue V, op ComputeOp) {
+		if found {
+			return remappingFunc(oldValue)
+		}
+		return zeroValue[V](), CancelOp
+	}, nowNano, false)
+}
+
+func (c *cache[K, V]) doCompute(
+	key K,
+	remappingFunc func(oldValue V, found bool) (newValue V, op ComputeOp),
+	nowNano int64,
+	recordStats bool,
+) (V, bool) {
+	var (
+		old        node.Node[K, V]
+		op         ComputeOp
+		notValidOp bool
+		panicErr   error
+	)
+	computedNode := c.hashmap.Compute(key, func(oldNode node.Node[K, V]) node.Node[K, V] {
+		var (
+			oldValue    V
+			actualValue V
+			found       bool
+		)
+		if oldNode != nil && !oldNode.HasExpired(nowNano) {
+			oldValue = oldNode.Value()
+			found = true
+		}
+		old = oldNode
+
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					panicErr = newPanicError(r)
+				}
+			}()
+
+			actualValue, op = remappingFunc(oldValue, found)
+		}()
+		if panicErr != nil {
+			return oldNode
+		}
+		if op == CancelOp {
+			if oldNode != nil && oldNode.HasExpired(nowNano) {
+				return c.atomicDelete(key, oldNode, nil, nowNano)
+			}
+			return oldNode
+		}
+		if op == WriteOp {
+			return c.atomicSet(key, actualValue, old, nil, nowNano)
+		}
+		if op == InvalidateOp {
+			return c.atomicDelete(key, old, nil, nowNano)
+		}
+		notValidOp = true
+		return oldNode
+	})
+	if panicErr != nil {
+		panic(panicErr)
+	}
+	if notValidOp {
+		panic(fmt.Sprintf("otter: invalid ComputeOp: %d", op))
+	}
+	if recordStats {
+		if old != nil && !old.HasExpired(nowNano) {
+			c.stats.RecordHits(1)
+		} else {
+			c.stats.RecordMisses(1)
+		}
+	}
+	switch op {
+	case CancelOp:
+		if computedNode == nil {
+			c.afterDelete(old, nowNano, false)
+			return zeroValue[V](), false
+		}
+		return computedNode.Value(), true
+	case WriteOp:
+		c.afterWrite(computedNode, old, nowNano)
+	case InvalidateOp:
+		c.afterDelete(old, nowNano, false)
+	}
+	if computedNode == nil {
+		return zeroValue[V](), false
+	}
+	return computedNode.Value(), true
 }
 
 func (c *cache[K, V]) afterWrite(n, old node.Node[K, V], nowNano int64) {
@@ -621,12 +823,8 @@ func (c *cache[K, V]) afterDeleteCall(cl *call[K, V]) {
 		isCorrectCall := cl.isFake || c.singleflight.deleteCall(cl)
 		old = oldNode
 		if isCorrectCall && cl.isNotFound {
-			if oldNode != nil {
-				deleted = true
-				c.makeRetired(oldNode)
-				c.notifyAtomicDeletion(oldNode.Key(), oldNode.Value(), CauseInvalidation)
-			}
-			return nil
+			deleted = oldNode != nil
+			return c.atomicDelete(cl.key, oldNode, cl, nowNano)
 		}
 		if cl.err != nil {
 			if cl.isRefresh && oldNode != nil {
@@ -638,15 +836,7 @@ func (c *cache[K, V]) afterDeleteCall(cl *call[K, V]) {
 			return oldNode
 		}
 		inserted = true
-		n := c.newNode(cl.key, cl.value, old)
-		c.calcExpiresAtAfterWrite(n, old, nowNano)
-		c.calcRefreshableAt(n, old, cl, nowNano)
-		c.makeRetired(old)
-		if old != nil {
-			cause := getCause(old, nowNano, CauseReplacement)
-			c.notifyAtomicDeletion(old.Key(), old.Value(), cause)
-		}
-		return n
+		return c.atomicSet(cl.key, cl.value, old, cl, nowNano)
 	})
 	cl.cancel()
 	if deleted {
@@ -992,13 +1182,8 @@ func (c *cache[K, V]) Invalidate(key K) (value V, invalidated bool) {
 	var d node.Node[K, V]
 	nowNano := c.clock.NowNano()
 	c.hashmap.Compute(key, func(n node.Node[K, V]) node.Node[K, V] {
-		c.singleflight.delete(key)
-		if n != nil {
-			d = n
-			c.makeRetired(d)
-			c.notifyAtomicDeletion(d.Key(), d.Value(), CauseInvalidation)
-		}
-		return nil
+		d = n
+		return c.atomicDelete(key, d, nil, nowNano)
 	})
 	c.afterDelete(d, nowNano, false)
 	if d != nil {
@@ -1007,7 +1192,7 @@ func (c *cache[K, V]) Invalidate(key K) (value V, invalidated bool) {
 	return zeroValue[V](), false
 }
 
-func (c *cache[K, V]) deleteNodeFromMap(n node.Node[K, V], cause DeletionCause) node.Node[K, V] {
+func (c *cache[K, V]) deleteNodeFromMap(n node.Node[K, V], nowNano int64, cause DeletionCause) node.Node[K, V] {
 	var deleted node.Node[K, V]
 	c.hashmap.Compute(n.Key(), func(current node.Node[K, V]) node.Node[K, V] {
 		c.singleflight.delete(n.Key())
@@ -1016,6 +1201,7 @@ func (c *cache[K, V]) deleteNodeFromMap(n node.Node[K, V], cause DeletionCause) 
 		}
 		if n.AsPointer() == current.AsPointer() {
 			deleted = current
+			cause := getCause(deleted, nowNano, cause)
 			c.makeRetired(deleted)
 			c.notifyAtomicDeletion(deleted.Key(), deleted.Value(), cause)
 			return nil
@@ -1026,10 +1212,10 @@ func (c *cache[K, V]) deleteNodeFromMap(n node.Node[K, V], cause DeletionCause) 
 }
 
 func (c *cache[K, V]) deleteNode(n node.Node[K, V], nowNano int64) {
-	c.afterDelete(c.deleteNodeFromMap(n, CauseInvalidation), nowNano, true)
+	c.afterDelete(c.deleteNodeFromMap(n, nowNano, CauseInvalidation), nowNano, true)
 }
 
-func (c *cache[K, V]) afterDelete(deleted node.Node[K, V], nowNano int64, withLock bool) {
+func (c *cache[K, V]) afterDelete(deleted node.Node[K, V], nowNano int64, alreadyLocked bool) {
 	if deleted == nil {
 		return
 	}
@@ -1042,10 +1228,10 @@ func (c *cache[K, V]) afterDelete(deleted node.Node[K, V], nowNano int64, withLo
 	// delete
 	cause := getCause(deleted, nowNano, CauseInvalidation)
 	t := c.getTask(deleted, nil, deleteReason, cause)
-	if withLock {
+	if alreadyLocked {
 		c.runTask(t)
 	} else {
-		c.afterWriteTask(c.getTask(deleted, nil, deleteReason, cause))
+		c.afterWriteTask(t)
 	}
 }
 
@@ -1094,7 +1280,7 @@ func (c *cache[K, V]) evictNode(n node.Node[K, V], nowNanos int64) {
 		cause = CauseExpiration
 	}
 
-	deleted := c.deleteNodeFromMap(n, cause) != nil
+	deleted := c.deleteNodeFromMap(n, nowNanos, cause) != nil
 
 	if c.withEviction {
 		c.evictionPolicy.delete(n)

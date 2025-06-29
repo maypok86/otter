@@ -21,6 +21,37 @@ import (
 	"time"
 )
 
+// ComputeOp tells the Compute methods what to do.
+type ComputeOp int
+
+const (
+	// CancelOp signals to Compute to not do anything as a result
+	// of executing the lambda. If the entry was not present in
+	// the map, nothing happens, and if it was present, the
+	// returned value is ignored.
+	CancelOp ComputeOp = iota
+	// WriteOp signals to Compute to update the entry to the
+	// value returned by the lambda, creating it if necessary.
+	WriteOp
+	// InvalidateOp signals to Compute to always discard the entry
+	// from the cache.
+	InvalidateOp
+)
+
+var computeOpStrings = []string{
+	"CancelOp",
+	"WriteOp",
+	"InvalidateOp",
+}
+
+// String implements [fmt.Stringer] interface.
+func (co ComputeOp) String() string {
+	if co >= 0 && int(co) < len(computeOpStrings) {
+		return computeOpStrings[co]
+	}
+	return "<unknown otter.ComputeOp>"
+}
+
 // Cache is an in-memory cache implementation that supports full concurrency of retrievals and multiple ways to bound the cache.
 type Cache[K comparable, V any] struct {
 	cache *cache[K, V]
@@ -98,6 +129,86 @@ func (c *Cache[K, V]) Set(key K, value V) (V, bool) {
 // If the specified key is already associated with a value, then it returns existing value and false.
 func (c *Cache[K, V]) SetIfAbsent(key K, value V) (V, bool) {
 	return c.cache.SetIfAbsent(key, value)
+}
+
+// Compute either sets the computed new value for the key,
+// invalidates the value for the key, or does nothing, based on
+// the returned [ComputeOp]. When the op returned by remappingFunc
+// is [WriteOp], the value is updated to the new value. If
+// it is [InvalidateOp], the entry is removed from the cache
+// altogether. And finally, if the op is [CancelOp] then the
+// entry is left as-is. In other words, if it did not already
+// exist, it is not created, and if it did exist, it is not
+// updated. This is useful to synchronously execute some
+// operation on the value without incurring the cost of
+// updating the cache every time.
+//
+// The ok result indicates whether the entry is present in the cache after the compute operation.
+// The actualValue result contains the value of the cache
+// if a corresponding entry is present, or the zero value
+// otherwise. You can think of these results as equivalent to regular key-value lookups in a map.
+//
+// This call locks a hash table bucket while the compute function
+// is executed. It means that modifications on other entries in
+// the bucket will be blocked until the remappingFunc executes. Consider
+// this when the function includes long-running operations.
+func (c *Cache[K, V]) Compute(
+	key K,
+	remappingFunc func(oldValue V, found bool) (newValue V, op ComputeOp),
+) (actualValue V, ok bool) {
+	return c.cache.Compute(key, remappingFunc)
+}
+
+// ComputeIfAbsent returns the existing value for the key if
+// present. Otherwise, it tries to compute the value using the
+// provided function. If mappingFunc returns true as the cancel value, the computation is cancelled and the zero value
+// for type V is returned.
+//
+// The ok result indicates whether the entry is present in the cache after the compute operation.
+// The actualValue result contains the value of the cache
+// if a corresponding entry is present, or the zero value
+// otherwise. You can think of these results as equivalent to regular key-value lookups in a map.
+//
+// This call locks a hash table bucket while the compute function
+// is executed. It means that modifications on other entries in
+// the bucket will be blocked until the valueFn executes. Consider
+// this when the function includes long-running operations.
+func (c *Cache[K, V]) ComputeIfAbsent(
+	key K,
+	mappingFunc func() (newValue V, cancel bool),
+) (actualValue V, ok bool) {
+	return c.cache.ComputeIfAbsent(key, mappingFunc)
+}
+
+// ComputeIfPresent returns the zero value for type V if the key is not found.
+// Otherwise, it tries to compute the value using the provided function.
+//
+// ComputeIfPresent either sets the computed new value for the key,
+// invalidates the value for the key, or does nothing, based on
+// the returned [ComputeOp]. When the op returned by remappingFunc
+// is [WriteOp], the value is updated to the new value. If
+// it is [InvalidateOp], the entry is removed from the cache
+// altogether. And finally, if the op is [CancelOp] then the
+// entry is left as-is. In other words, if it did not already
+// exist, it is not created, and if it did exist, it is not
+// updated. This is useful to synchronously execute some
+// operation on the value without incurring the cost of
+// updating the cache every time.
+//
+// The ok result indicates whether the entry is present in the cache after the compute operation.
+// The actualValue result contains the value of the cache
+// if a corresponding entry is present, or the zero value
+// otherwise. You can think of these results as equivalent to regular key-value lookups in a map.
+//
+// This call locks a hash table bucket while the compute function
+// is executed. It means that modifications on other entries in
+// the bucket will be blocked until the valueFn executes. Consider
+// this when the function includes long-running operations.
+func (c *Cache[K, V]) ComputeIfPresent(
+	key K,
+	remappingFunc func(oldValue V) (newValue V, op ComputeOp),
+) (actualValue V, ok bool) {
+	return c.cache.ComputeIfPresent(key, remappingFunc)
 }
 
 // SetExpiresAfter specifies that the entry should be automatically removed from the cache once the duration has

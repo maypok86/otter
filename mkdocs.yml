@@ -138,6 +138,7 @@ nav:
           - Loading: user-guide/v2/features/loading.md
           - Refresh: user-guide/v2/features/refresh.md
           - Bulk operations: user-guide/v2/features/bulk.md
+          - Compute: user-guide/v2/features/compute.md
           - Statistics: user-guide/v2/features/statistics.md
           - Extension: user-guide/v2/features/extension.md
           - Iteration: user-guide/v2/features/iteration.md

@@ -60,15 +60,4 @@ You can find more usage examples [here](examples.md).
 
 ## Key Features
 
-Otter provides several powerful features:
-
-1. **Size Bounds**: Multiple ways to bound the cache (by entry count or weight)
-2. **Expiration**: Flexible expiration policies with TTL support
-3. **Refresh**: Automatic refresh of cache entries
-4. **Statistics**: Comprehensive cache statistics
-5. **Bulk Operations**: Support for bulk get and refresh operations
-6. **Event Handlers**: Callbacks for cache events (deletion, atomic deletion)
-7. **Loading**: Automatic loading of missing values from external sources
-8. **Iteration**: Safe concurrent iteration over cache entries
-
-You can find more detailed examples in the following [chapters](features/index.md) of this section.
+You can find detailed info the following [chapter](features/index.md) of this section.

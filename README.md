@@ -45,6 +45,7 @@ Otter also provides a highly configurable caching API, enabling any combination 
 - Time-based [expiration](https://maypok86.github.io/otter/user-guide/v2/features/eviction/#time-based) of entries, measured since last access or last write
 - [Automatic loading](https://maypok86.github.io/otter/user-guide/v2/features/loading/) of entries into the cache
 - [Asynchronously refresh](https://maypok86.github.io/otter/user-guide/v2/features/refresh/) when the first stale request for an entry occurs
+- [Writes propagated](https://maypok86.github.io/otter/user-guide/v2/features/compute/) to an external resource
 -  Accumulation of cache access [statistics](https://maypok86.github.io/otter/user-guide/v2/features/statistics/)
 
 ## 📚 Usage <a id="usage" />
