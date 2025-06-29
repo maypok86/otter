@@ -140,6 +140,7 @@ nav:
           - Bulk operations: user-guide/v2/features/bulk.md
           - Compute: user-guide/v2/features/compute.md
           - Statistics: user-guide/v2/features/statistics.md
+          - Persistence: user-guide/v2/features/persistence.md
           - Extension: user-guide/v2/features/extension.md
           - Iteration: user-guide/v2/features/iteration.md
       - v1 manual:

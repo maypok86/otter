@@ -38,9 +38,9 @@ import (
 )
 
 const (
-	unreachableExpiresAfter     = xruntime.MaxDuration
-	unreachableRefreshableAfter = xruntime.MaxDuration
-	noTime                      = int64(0)
+	unreachableExpiresAt     = int64(xruntime.MaxDuration)
+	unreachableRefreshableAt = int64(xruntime.MaxDuration)
+	noTime                   = int64(0)
 
 	minWriteBufferSize = 4
 	writeBufferRetries = 100
@@ -193,11 +193,11 @@ func newCache[K comparable, V any](o *Options[K, V]) *cache[K, V] {
 
 func (c *cache[K, V]) newNode(key K, value V, old node.Node[K, V]) node.Node[K, V] {
 	weight := c.weigher(key, value)
-	expiresAt := int64(unreachableExpiresAfter)
+	expiresAt := unreachableExpiresAt
 	if c.withExpiration && old != nil {
 		expiresAt = old.ExpiresAt()
 	}
-	refreshableAt := int64(unreachableRefreshableAfter)
+	refreshableAt := unreachableRefreshableAt
 	if c.withRefresh && old != nil {
 		refreshableAt = old.RefreshableAt()
 	}
@@ -210,12 +210,12 @@ func (c *cache[K, V]) nodeToEntry(n node.Node[K, V], nanos int64) Entry[K, V] {
 		nowNano = nanos
 	}
 
-	expiresAt := int64(unreachableExpiresAfter)
+	expiresAt := unreachableExpiresAt
 	if c.withExpiration {
 		expiresAt = n.ExpiresAt()
 	}
 
-	refreshableAt := int64(unreachableRefreshableAfter)
+	refreshableAt := unreachableRefreshableAt
 	if c.withRefresh {
 		refreshableAt = n.RefreshableAt()
 	}

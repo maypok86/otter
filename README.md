@@ -47,6 +47,7 @@ Otter also provides a highly configurable caching API, enabling any combination 
 - [Asynchronously refresh](https://maypok86.github.io/otter/user-guide/v2/features/refresh/) when the first stale request for an entry occurs
 - [Writes propagated](https://maypok86.github.io/otter/user-guide/v2/features/compute/) to an external resource
 -  Accumulation of cache access [statistics](https://maypok86.github.io/otter/user-guide/v2/features/statistics/)
+- [Saving cache](https://maypok86.github.io/otter/user-guide/v2/features/persistence/) to a file and loading cache from a file
 
 ## 📚 Usage <a id="usage" />
 
