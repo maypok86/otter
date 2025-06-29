@@ -124,6 +124,10 @@ func (c *Cache[K, V]) SetRefreshableAfter(key K, refreshableAfter time.Duration)
 //
 // No observable state associated with this cache is modified until loading completes.
 //
+// WARNING: When performing a refresh (see [RefreshCalculator]),
+// the [Loader] will receive a context wrapped in [context.WithoutCancel].
+// If you need to control refresh cancellation, you can use closures or values stored in the context.
+//
 // WARNING: [Loader] must not attempt to update any mappings of this cache directly.
 //
 // WARNING: For any given key, every loader used with it should compute the same value.
@@ -145,6 +149,10 @@ func (c *Cache[K, V]) Get(ctx context.Context, key K, loader Loader[K, V]) (V, e
 // No observable state associated with this cache is modified until loading completes.
 //
 // NOTE: duplicate elements in keys will be ignored.
+//
+// WARNING: When performing a refresh (see [RefreshCalculator]),
+// the [BulkLoader] will receive a context wrapped in [context.WithoutCancel].
+// If you need to control refresh cancellation, you can use closures or values stored in the context.
 //
 // WARNING: [BulkLoader] must not attempt to update any mappings of this cache directly.
 //
@@ -169,6 +177,10 @@ func (c *Cache[K, V]) BulkGet(ctx context.Context, keys []K, bulkLoader BulkLoad
 // Loading is asynchronous by delegating to the configured Executor.
 //
 // Refresh returns a channel that will receive the result when it is ready. The returned channel will not be closed.
+//
+// WARNING: When performing a refresh (see [RefreshCalculator]),
+// the [Loader] will receive a context wrapped in [context.WithoutCancel].
+// If you need to control refresh cancellation, you can use closures or values stored in the context.
 //
 // WARNING: If the cache was constructed without [RefreshCalculator], then Refresh will return the nil channel.
 //
@@ -196,6 +208,10 @@ func (c *Cache[K, V]) Refresh(ctx context.Context, key K, loader Loader[K, V]) <
 // BulkRefresh returns a channel that will receive the results when they are ready. The returned channel will not be closed.
 //
 // NOTE: duplicate elements in keys will be ignored.
+//
+// WARNING: When performing a refresh (see [RefreshCalculator]),
+// the [BulkLoader] will receive a context wrapped in [context.WithoutCancel].
+// If you need to control refresh cancellation, you can use closures or values stored in the context.
 //
 // WARNING: If the cache was constructed without [RefreshCalculator], then BulkRefresh will return the nil channel.
 //

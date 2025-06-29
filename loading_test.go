@@ -351,7 +351,7 @@ func TestCache_GetWithNotFoundLoad(t *testing.T) {
 func TestCache_GetWithSuccessRefresh(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
 	size := 100
 	statsCounter := stats.NewCounter()
 	fs := &fakeSource{}
@@ -373,11 +373,12 @@ func TestCache_GetWithSuccessRefresh(t *testing.T) {
 	fs.Sleep(10*time.Minute + time.Second)
 	tl := newTestLoader[int, int](func(ctx context.Context, key int) (int, error) {
 		if key == k1 {
-			return v2, nil
+			return v2, ctx.Err()
 		}
 		panic("not valid key")
 	})
 
+	cancel()
 	v, err := c.Get(ctx, k1, tl)
 	if err != nil {
 		t.Fatalf("Get error = %v", err)
@@ -485,24 +486,25 @@ func TestCache_Refresh(t *testing.T) {
 	k1 := 1
 	v1 := 100
 	v2 := 101
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
 
 	done := make(chan struct{})
 	tl1 := newTestLoader[int, int](func(ctx context.Context, key int) (int, error) {
 		<-done
 		if key == k1 {
-			return v1, nil
+			return v1, ctx.Err()
 		}
 		panic("not valid key")
 	})
 	tl2 := newTestLoader[int, int](func(ctx context.Context, key int) (int, error) {
 		if key == k1 {
-			return v2, nil
+			return v2, ctx.Err()
 		}
 		panic("not valid key")
 	})
 
 	ch := c.Refresh(ctx, k1, tl1)
+	cancel()
 
 	v, ok := c.GetIfPresent(k1)
 	if ok {
@@ -634,7 +636,7 @@ func TestCache_BulkGetWithSuccessRefresh(t *testing.T) {
 	keys := []int{0, 1, 1, 2, 3, 5, 6, 7, 8, 3, 9}
 	toUpdate := []int{3, 7, 0}
 
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
 	statsCounter := stats.NewCounter()
 	fs := &fakeSource{}
 	c := Must(&Options[int, int]{
@@ -671,9 +673,10 @@ func TestCache_BulkGetWithSuccessRefresh(t *testing.T) {
 			}
 			m[k] = k + 100
 		}
-		return m, nil
+		return m, ctx.Err()
 	})
 
+	cancel()
 	res, err := c.BulkGet(ctx, keys, tl)
 	if err != nil {
 		t.Fatalf("BulkGet error = %v", err)
@@ -906,7 +909,7 @@ func TestCache_BulkRefresh(t *testing.T) {
 
 	keys := []int{0, 1, 1, 2, 3, 5, 6, 7, 8, 3, 9}
 	toUpdate := []int{3, 7, 0}
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
 
 	statsCounter := stats.NewCounter()
 	c := Must(&Options[int, int]{
@@ -939,9 +942,10 @@ func TestCache_BulkRefresh(t *testing.T) {
 			}
 			m[k] = k + 100
 		}
-		return m, nil
+		return m, ctx.Err()
 	})
 
+	cancel()
 	ch := c.BulkRefresh(ctx, keys, tl)
 
 	for _, k := range keys {
