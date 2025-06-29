@@ -26,7 +26,7 @@ import (
 
 // LoadCacheFromFile loads cache data from the given filePath.
 //
-// See SaveCacheToFile* for saving cache data to file.
+// See SaveCacheToFile for saving cache data to file.
 func LoadCacheFromFile[K comparable, V any](c *Cache[K, V], filePath string) error {
 	file, err := os.Open(filePath)
 	if err != nil {
@@ -40,7 +40,7 @@ func LoadCacheFromFile[K comparable, V any](c *Cache[K, V], filePath string) err
 
 // LoadCacheFrom loads cache data from the given [io.Reader].
 //
-// See SaveCacheToFile* for saving cache data to file.
+// See SaveCacheToFile for saving cache data to file.
 func LoadCacheFrom[K comparable, V any](c *Cache[K, V], r io.Reader) error {
 	dec := gob.NewDecoder(r)
 
@@ -96,7 +96,7 @@ func LoadCacheFrom[K comparable, V any](c *Cache[K, V], r io.Reader) error {
 //
 // SaveCacheToFile may be called concurrently with other operations on the cache.
 //
-// The saved data may be loaded with LoadCacheFrom*.
+// The saved data may be loaded with LoadCacheFromFile.
 //
 // WARNING: Beware that this operation is performed within the eviction policy's exclusive lock.
 // While the operation is in progress further eviction maintenance will be halted.
@@ -126,7 +126,7 @@ func SaveCacheToFile[K comparable, V any](c *Cache[K, V], filePath string) error
 //
 // SaveCacheToFile may be called concurrently with other operations on the cache.
 //
-// The saved data may be loaded with LoadCacheFrom*.
+// The saved data may be loaded with LoadCacheFrom.
 //
 // WARNING: Beware that this operation is performed within the eviction policy's exclusive lock.
 // While the operation is in progress further eviction maintenance will be halted.
