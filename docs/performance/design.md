@@ -46,7 +46,7 @@ In scenarios where the writing goroutines cannot make progress then they attempt
 
 ## Expiration (Time-based eviction)
 
-Expiration is implemented in O(1) time complexity (using [hierarchical timer wheel](http://www.cs.columbia.edu/~nahum/w6998/papers/ton97-timing-wheels.pdf)).
+Expiration is implemented in O(1) time complexity (using [Hierarchical Timing Wheel](https://dl.acm.org/doi/pdf/10.1145/41457.37504)).
 The expiration policy uses hashing and cascading in a manner that amortizes the penalty of sorting to achieve a similar algorithmic cost.
 
 The expiration updates are applied in a best effort fashion.
