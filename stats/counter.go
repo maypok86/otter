@@ -87,7 +87,7 @@ func (c *Counter) RecordEviction(weight uint32) {
 }
 
 // RecordLoadSuccess records the successful load of a new entry. This method should be called when a cache request
-// causes an entry to be loaded and the loading completes successfully.
+// causes an entry to be loaded and the loading completes successfully (either no error or otter.ErrNotFound).
 func (c *Counter) RecordLoadSuccess(loadTime time.Duration) {
 	c.loadSuccesses.Add(1)
 	//nolint:gosec // there is no overflow
@@ -95,7 +95,7 @@ func (c *Counter) RecordLoadSuccess(loadTime time.Duration) {
 }
 
 // RecordLoadFailure records the failed load of a new entry. This method should be called when a cache request
-// causes an entry to be loaded, but the loading function returns an error.
+// causes an entry to be loaded, but the loading function returns an error that is not otter.ErrNotFound.
 func (c *Counter) RecordLoadFailure(loadTime time.Duration) {
 	c.loadFailures.Add(1)
 	//nolint:gosec // there is no overflow

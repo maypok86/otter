@@ -27,10 +27,10 @@ type Recorder interface {
 	// evicted due to the cache's eviction strategy, and not as a result of manual deletions.
 	RecordEviction(weight uint32)
 	// RecordLoadSuccess records the successful load of a new entry. This method should be called when a cache request
-	// causes an entry to be loaded and the loading completes successfully.
+	// causes an entry to be loaded and the loading completes successfully (either no error or otter.ErrNotFound).
 	RecordLoadSuccess(loadTime time.Duration)
 	// RecordLoadFailure records the failed load of a new entry. This method should be called when a cache request
-	// causes an entry to be loaded, but the loading function returns an error.
+	// causes an entry to be loaded, but the loading function returns an error that is not otter.ErrNotFound.
 	RecordLoadFailure(loadTime time.Duration)
 }
 
