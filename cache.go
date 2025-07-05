@@ -420,6 +420,11 @@ func (c *Cache[K, V]) WeightedSize() uint64 {
 	return c.cache.WeightedSize()
 }
 
+// IsRecordingStats returns whether the cache statistics are being accumulated.
+func (c *Cache[K, V]) IsRecordingStats() bool {
+	return c.cache.IsRecordingStats()
+}
+
 // Hottest returns an iterator for ordered traversal of the cache entries. The order of
 // iteration is from the entries most likely to be retained (hottest) to the entries least
 // likely to be retained (coldest). This order is determined by the eviction policy's best guess

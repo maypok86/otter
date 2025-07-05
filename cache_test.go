@@ -1247,6 +1247,22 @@ func TestCache_IsWeighted(t *testing.T) {
 	require.True(t, cache.IsWeighted())
 }
 
+func TestCache_IsRecordingStats(t *testing.T) {
+	t.Parallel()
+
+	cache := Must(&Options[int, int]{
+		StatsRecorder: stats.NewCounter(),
+	})
+
+	require.True(t, cache.IsRecordingStats())
+
+	cache = Must(&Options[int, int]{
+		StatsRecorder: &stats.NoopRecorder{},
+	})
+
+	require.False(t, cache.IsRecordingStats())
+}
+
 func TestCache_Ratio(t *testing.T) {
 	t.Parallel()
 
