@@ -776,11 +776,7 @@ func (c *cache[K, V]) Get(ctx context.Context, key K, loader Loader[K, V]) (V, e
 	}
 	cl.wait()
 
-	if cl.err != nil {
-		return zeroValue[V](), cl.err
-	}
-
-	return cl.value, nil
+	return cl.value, cl.err
 }
 
 func (c *cache[K, V]) calcRefreshableAt(n, old node.Node[K, V], cl *call[K, V], nowNano int64) {
