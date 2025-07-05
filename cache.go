@@ -16,10 +16,11 @@ package otter
 
 import (
 	"context"
-	"github.com/maypok86/otter/v2/stats"
 	"iter"
 	"runtime"
 	"time"
+
+	"github.com/maypok86/otter/v2/stats"
 )
 
 // ComputeOp tells the Compute methods what to do.

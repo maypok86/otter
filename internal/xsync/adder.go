@@ -12,7 +12,6 @@ package xsync
 import (
 	"sync"
 	"sync/atomic"
-	"unsafe"
 
 	"github.com/maypok86/otter/v2/internal/xmath"
 	"github.com/maypok86/otter/v2/internal/xruntime"
@@ -43,9 +42,11 @@ type Adder struct {
 	mask    uint32
 }
 
+const cacheLineSize = 64
+
 type astripe struct {
 	adder   atomic.Uint64
-	padding [xruntime.CacheLineSize - unsafe.Sizeof(atomic.Uint64{})]byte
+	padding [cacheLineSize - 8]byte
 }
 
 // NewAdder creates a new Adder instance.

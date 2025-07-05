@@ -15,9 +15,10 @@
 package stats
 
 import (
-	"github.com/maypok86/otter/v2/internal/xmath"
 	"math"
 	"time"
+
+	"github.com/maypok86/otter/v2/internal/xmath"
 )
 
 // Stats are statistics about the performance of an otter.Cache.
