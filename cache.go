@@ -409,6 +409,11 @@ func (c *Cache[K, V]) EstimatedSize() int {
 	return c.cache.EstimatedSize()
 }
 
+// IsWeighted returns whether the cache is bounded by a maximum size or maximum weight.
+func (c *Cache[K, V]) IsWeighted() bool {
+	return c.cache.IsWeighted()
+}
+
 // WeightedSize returns the approximate accumulated weight of entries in this cache. If this cache does not
 // use a weighted size bound, then the method will return 0.
 func (c *Cache[K, V]) WeightedSize() uint64 {

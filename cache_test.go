@@ -1228,6 +1228,25 @@ func TestCache_ConcurrentInvalidateAll(t *testing.T) {
 	<-done
 }
 
+func TestCache_IsWeighted(t *testing.T) {
+	t.Parallel()
+
+	cache := Must(&Options[int, int]{
+		MaximumSize: 1000,
+	})
+
+	require.False(t, cache.IsWeighted())
+
+	cache = Must(&Options[int, int]{
+		MaximumWeight: 1000,
+		Weigher: func(key int, value int) uint32 {
+			return uint32(value)
+		},
+	})
+
+	require.True(t, cache.IsWeighted())
+}
+
 func TestCache_Ratio(t *testing.T) {
 	t.Parallel()
 

@@ -1715,6 +1715,11 @@ func (c *cache[K, V]) EstimatedSize() int {
 	return c.hashmap.Size()
 }
 
+// IsWeighted returns whether the cache is bounded by a maximum size or maximum weight.
+func (c *cache[K, V]) IsWeighted() bool {
+	return c.isWeighted
+}
+
 // WeightedSize returns the approximate accumulated weight of entries in this cache. If this cache does not
 // use a weighted size bound, then the method will return 0.
 func (c *cache[K, V]) WeightedSize() uint64 {
