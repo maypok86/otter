@@ -34,6 +34,18 @@ type Recorder interface {
 	RecordLoadFailure(loadTime time.Duration)
 }
 
+// Snapshoter allows getting a stats snapshot from a recorder that implements it.
+type Snapshoter interface {
+	// Snapshot returns a snapshot of this recorder's values.
+	Snapshot() Stats
+}
+
+// RecorderSnapshoter is the interface that groups the [Recorder] and [Snapshoter] interfaces.
+type RecorderSnapshoter interface {
+	Recorder
+	Snapshoter
+}
+
 // NoopRecorder is a noop stats recorder. It can be useful if recording statistics is not necessary.
 type NoopRecorder struct{}
 
@@ -42,3 +54,6 @@ func (np *NoopRecorder) RecordMisses(count int)                   {}
 func (np *NoopRecorder) RecordEviction(weight uint32)             {}
 func (np *NoopRecorder) RecordLoadFailure(loadTime time.Duration) {}
 func (np *NoopRecorder) RecordLoadSuccess(loadTime time.Duration) {}
+func (np *NoopRecorder) Snapshot() Stats {
+	return Stats{}
+}

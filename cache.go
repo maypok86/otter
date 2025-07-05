@@ -16,6 +16,7 @@ package otter
 
 import (
 	"context"
+	"github.com/maypok86/otter/v2/stats"
 	"iter"
 	"runtime"
 	"time"
@@ -423,6 +424,17 @@ func (c *Cache[K, V]) WeightedSize() uint64 {
 // IsRecordingStats returns whether the cache statistics are being accumulated.
 func (c *Cache[K, V]) IsRecordingStats() bool {
 	return c.cache.IsRecordingStats()
+}
+
+// Stats returns a current snapshot of this cache's cumulative statistics.
+// All statistics are initialized to zero and are monotonically increasing over the lifetime of the cache.
+// Due to the performance penalty of maintaining statistics,
+// some implementations may not record the usage history immediately or at all.
+//
+// NOTE: If your [stats.Recorder] implementation doesn't also implement [stats.Snapshoter],
+// this method will always return a zero-value snapshot.
+func (c *Cache[K, V]) Stats() stats.Stats {
+	return c.cache.Stats()
 }
 
 // Hottest returns an iterator for ordered traversal of the cache entries. The order of

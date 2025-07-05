@@ -85,6 +85,7 @@ type cache[K comparable, V any] struct {
 	evictionPolicy     *policy[K, V]
 	expirationPolicy   *expiration.Variable[K, V]
 	stats              stats.Recorder
+	statsSnapshoter    stats.Snapshoter
 	logger             Logger
 	clock              timeSource
 	statsClock         *realSource
@@ -132,11 +133,18 @@ func newCache[K comparable, V any](o *Options[K, V]) *cache[K, V] {
 	if !withStats {
 		statsRecorder = &stats.NoopRecorder{}
 	}
+	var statsSnapshoter stats.Snapshoter
+	if snapshoter, ok := statsRecorder.(stats.Snapshoter); ok {
+		statsSnapshoter = snapshoter
+	} else {
+		statsSnapshoter = &stats.NoopRecorder{}
+	}
 
 	c := &cache[K, V]{
 		nodeManager:        nodeManager,
 		hashmap:            hashmap.NewWithSize[K, V, node.Node[K, V]](nodeManager, o.getInitialCapacity()),
 		stats:              statsRecorder,
+		statsSnapshoter:    statsSnapshoter,
 		logger:             o.getLogger(),
 		singleflight:       &group[K, V]{},
 		executor:           o.getExecutor(),
@@ -1725,6 +1733,17 @@ func (c *cache[K, V]) IsWeighted() bool {
 // IsRecordingStats returns whether the cache statistics are being accumulated.
 func (c *cache[K, V]) IsRecordingStats() bool {
 	return c.withStats
+}
+
+// Stats returns a current snapshot of this cache's cumulative statistics.
+// All statistics are initialized to zero and are monotonically increasing over the lifetime of the cache.
+// Due to the performance penalty of maintaining statistics,
+// some implementations may not record the usage history immediately or at all.
+//
+// NOTE: If your [stats.Recorder] implementation doesn't also implement [stats.Snapshoter],
+// this method will always return a zero-value snapshot.
+func (c *cache[K, V]) Stats() stats.Stats {
+	return c.statsSnapshoter.Snapshot()
 }
 
 // WeightedSize returns the approximate accumulated weight of entries in this cache. If this cache does not
