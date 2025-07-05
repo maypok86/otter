@@ -1,3 +1,9 @@
+## 2.1.1 - 2025-07-05
+
+### 🚀 Improvements
+
+- `Get` now returns the value from the loader even when an error is returned. ([#132](https://github.com/maypok86/otter/issues/132))
+
 ## 2.1.0 - 2025-06-29
 
 ### ✨Features
