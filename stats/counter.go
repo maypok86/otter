@@ -16,8 +16,10 @@ package stats
 
 import (
 	"math"
+	"sync/atomic"
 	"time"
 
+	"github.com/maypok86/otter/v2/internal/xruntime"
 	"github.com/maypok86/otter/v2/internal/xsync"
 )
 
@@ -25,23 +27,20 @@ import (
 type Counter struct {
 	hits           *xsync.Adder
 	misses         *xsync.Adder
-	evictions      *xsync.Adder
-	evictionWeight *xsync.Adder
-	loadSuccesses  *xsync.Adder
-	loadFailures   *xsync.Adder
-	totalLoadTime  *xsync.Adder
+	_              [xruntime.CacheLineSize - 16]byte
+	evictions      atomic.Uint64
+	evictionWeight atomic.Uint64
+	_              [xruntime.CacheLineSize - 16]byte
+	loadSuccesses  atomic.Uint64
+	loadFailures   atomic.Uint64
+	totalLoadTime  atomic.Uint64
 }
 
 // NewCounter constructs a [Counter] instance with all counts initialized to zero.
 func NewCounter() *Counter {
 	return &Counter{
-		hits:           xsync.NewAdder(),
-		misses:         xsync.NewAdder(),
-		evictions:      xsync.NewAdder(),
-		evictionWeight: xsync.NewAdder(),
-		loadSuccesses:  xsync.NewAdder(),
-		loadFailures:   xsync.NewAdder(),
-		totalLoadTime:  xsync.NewAdder(),
+		hits:   xsync.NewAdder(),
+		misses: xsync.NewAdder(),
 	}
 }
 
@@ -51,17 +50,17 @@ func NewCounter() *Counter {
 // NOTE: the values of the metrics are undefined in case of overflow. If you require specific handling, we recommend
 // implementing your own [Recorder].
 func (c *Counter) Snapshot() Stats {
-	totalLoadTime := c.totalLoadTime.Value()
+	totalLoadTime := c.totalLoadTime.Load()
 	if totalLoadTime > uint64(math.MaxInt64) {
 		totalLoadTime = uint64(math.MaxInt64)
 	}
 	return Stats{
 		Hits:           c.hits.Value(),
 		Misses:         c.misses.Value(),
-		Evictions:      c.evictions.Value(),
-		EvictionWeight: c.evictionWeight.Value(),
-		LoadSuccesses:  c.loadSuccesses.Value(),
-		LoadFailures:   c.loadFailures.Value(),
+		Evictions:      c.evictions.Load(),
+		EvictionWeight: c.evictionWeight.Load(),
+		LoadSuccesses:  c.loadSuccesses.Load(),
+		LoadFailures:   c.loadFailures.Load(),
 		TotalLoadTime:  time.Duration(totalLoadTime),
 	}
 }
@@ -87,7 +86,7 @@ func (c *Counter) RecordEviction(weight uint32) {
 }
 
 // RecordLoadSuccess records the successful load of a new entry. This method should be called when a cache request
-// causes an entry to be loaded and the loading completes successfully.
+// causes an entry to be loaded and the loading completes successfully (either no error or otter.ErrNotFound).
 func (c *Counter) RecordLoadSuccess(loadTime time.Duration) {
 	c.loadSuccesses.Add(1)
 	//nolint:gosec // there is no overflow
@@ -95,7 +94,7 @@ func (c *Counter) RecordLoadSuccess(loadTime time.Duration) {
 }
 
 // RecordLoadFailure records the failed load of a new entry. This method should be called when a cache request
-// causes an entry to be loaded, but the loading function returns an error.
+// causes an entry to be loaded, but the loading function returns an error that is not otter.ErrNotFound.
 func (c *Counter) RecordLoadFailure(loadTime time.Duration) {
 	c.loadFailures.Add(1)
 	//nolint:gosec // there is no overflow

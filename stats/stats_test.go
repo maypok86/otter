@@ -158,4 +158,76 @@ func TestStats(t *testing.T) {
 			1,
 		)
 	})
+
+	t.Run("minus", func(t *testing.T) {
+		t.Parallel()
+
+		testStats(t, Stats{
+			Hits:           11,
+			Misses:         13,
+			Evictions:      27,
+			EvictionWeight: 54,
+			LoadSuccesses:  17,
+			LoadFailures:   19,
+			TotalLoadTime:  23,
+		}.Minus(Stats{
+			Hits:           1,
+			Misses:         14,
+			Evictions:      27,
+			EvictionWeight: 10,
+			LoadSuccesses:  0,
+			LoadFailures:   5,
+			TotalLoadTime:  4,
+		}),
+			10,
+			0,
+			10,
+			10.0/10,
+			0.0/10,
+			0,
+			44,
+			17,
+			14,
+			19,
+			31,
+			14.0/31,
+			0,
+		)
+	})
+
+	t.Run("plus", func(t *testing.T) {
+		t.Parallel()
+
+		testStats(t, Stats{
+			Hits:           11,
+			Misses:         13,
+			Evictions:      27,
+			EvictionWeight: 54,
+			LoadSuccesses:  17,
+			LoadFailures:   19,
+			TotalLoadTime:  23,
+		}.Plus(Stats{
+			Hits:           1,
+			Misses:         math.MaxUint64 - 10,
+			Evictions:      27,
+			EvictionWeight: 10,
+			LoadSuccesses:  0,
+			LoadFailures:   5,
+			TotalLoadTime:  4,
+		}),
+			12,
+			math.MaxUint64,
+			math.MaxUint64,
+			12.0/math.MaxUint64,
+			float64(math.MaxUint64)/math.MaxUint64,
+			54,
+			64,
+			17,
+			24,
+			27,
+			41,
+			24.0/41,
+			0,
+		)
+	})
 }
