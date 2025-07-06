@@ -83,6 +83,9 @@ type Options[K comparable, V any] struct {
 	// on selecting which entry should be evicted next.
 	MaximumWeight uint64
 	// StatsRecorder accumulates statistics during the operation of a Cache.
+	//
+	// NOTE: If your stats.Recorder implementation doesn't also implement stats.Snapshoter,
+	// Cache.Stats method will always return a zero-value snapshot.
 	StatsRecorder stats.Recorder
 	// InitialCapacity specifies the minimum total size for the internal data structures. Providing a large enough estimate
 	// at construction time avoids the need for expensive resizing operations later, but setting this

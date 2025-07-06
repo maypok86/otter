@@ -40,10 +40,10 @@ type Snapshoter interface {
 	Snapshot() Stats
 }
 
-// RecorderSnapshoter is the interface that groups the [Recorder] and [Snapshoter] interfaces.
-type RecorderSnapshoter interface {
-	Recorder
+// SnapshotRecorder is the interface that groups the [Snapshoter] and [Recorder] interfaces.
+type SnapshotRecorder interface {
 	Snapshoter
+	Recorder
 }
 
 // NoopRecorder is a noop stats recorder. It can be useful if recording statistics is not necessary.
