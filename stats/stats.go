@@ -17,6 +17,8 @@ package stats
 import (
 	"math"
 	"time"
+
+	"github.com/maypok86/otter/v2/internal/xmath"
 )
 
 // Stats are statistics about the performance of an otter.Cache.
@@ -97,6 +99,49 @@ func (s Stats) AverageLoadPenalty() time.Duration {
 		return s.TotalLoadTime / time.Duration(math.MaxInt64)
 	}
 	return s.TotalLoadTime / time.Duration(loads)
+}
+
+// Minus returns a new [Stats] representing the difference between this [Stats] and other.
+// Negative values, which aren't supported by [Stats} will be rounded up to zero.
+func (s Stats) Minus(other Stats) Stats {
+	return Stats{
+		Hits:           subtract(s.Hits, other.Hits),
+		Misses:         subtract(s.Misses, other.Misses),
+		Evictions:      subtract(s.Evictions, other.Evictions),
+		EvictionWeight: subtract(s.EvictionWeight, other.EvictionWeight),
+		LoadSuccesses:  subtract(s.LoadSuccesses, other.LoadSuccesses),
+		LoadFailures:   subtract(s.LoadFailures, other.LoadFailures),
+		TotalLoadTime:  subtract(s.TotalLoadTime, other.TotalLoadTime),
+	}
+}
+
+// Plus returns a new [Stats] representing the sum of this [Stats] and other.
+//
+// NOTE: the values of the metrics are undefined in case of overflow (though it is
+// guaranteed not to throw an exception). If you require specific handling, we recommend
+// implementing your own stats' recorder.
+func (s Stats) Plus(other Stats) Stats {
+	totalLoadTime := xmath.SaturatedAdd(int64(s.TotalLoadTime), int64(other.TotalLoadTime))
+	return Stats{
+		Hits:           saturatedAdd(s.Hits, other.Hits),
+		Misses:         saturatedAdd(s.Misses, other.Misses),
+		Evictions:      saturatedAdd(s.Evictions, other.Evictions),
+		EvictionWeight: saturatedAdd(s.EvictionWeight, other.EvictionWeight),
+		LoadSuccesses:  saturatedAdd(s.LoadSuccesses, other.LoadSuccesses),
+		LoadFailures:   saturatedAdd(s.LoadFailures, other.LoadFailures),
+		TotalLoadTime:  time.Duration(totalLoadTime),
+	}
+}
+
+type counterType interface {
+	~uint64 | ~int64
+}
+
+func subtract[T counterType](a, b T) T {
+	if a < b {
+		return 0
+	}
+	return a - b
 }
 
 func saturatedAdd(a, b uint64) uint64 {

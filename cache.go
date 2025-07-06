@@ -19,6 +19,8 @@ import (
 	"iter"
 	"runtime"
 	"time"
+
+	"github.com/maypok86/otter/v2/stats"
 )
 
 // ComputeOp tells the Compute methods what to do.
@@ -409,10 +411,31 @@ func (c *Cache[K, V]) EstimatedSize() int {
 	return c.cache.EstimatedSize()
 }
 
+// IsWeighted returns whether the cache is bounded by a maximum size or maximum weight.
+func (c *Cache[K, V]) IsWeighted() bool {
+	return c.cache.IsWeighted()
+}
+
 // WeightedSize returns the approximate accumulated weight of entries in this cache. If this cache does not
 // use a weighted size bound, then the method will return 0.
 func (c *Cache[K, V]) WeightedSize() uint64 {
 	return c.cache.WeightedSize()
+}
+
+// IsRecordingStats returns whether the cache statistics are being accumulated.
+func (c *Cache[K, V]) IsRecordingStats() bool {
+	return c.cache.IsRecordingStats()
+}
+
+// Stats returns a current snapshot of this cache's cumulative statistics.
+// All statistics are initialized to zero and are monotonically increasing over the lifetime of the cache.
+// Due to the performance penalty of maintaining statistics,
+// some implementations may not record the usage history immediately or at all.
+//
+// NOTE: If your [stats.Recorder] implementation doesn't also implement [stats.Snapshoter],
+// this method will always return a zero-value snapshot.
+func (c *Cache[K, V]) Stats() stats.Stats {
+	return c.cache.Stats()
 }
 
 // Hottest returns an iterator for ordered traversal of the cache entries. The order of

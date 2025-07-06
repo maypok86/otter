@@ -1228,6 +1228,99 @@ func TestCache_ConcurrentInvalidateAll(t *testing.T) {
 	<-done
 }
 
+func TestCache_IsWeighted(t *testing.T) {
+	t.Parallel()
+
+	cache := Must(&Options[int, int]{
+		MaximumSize: 1000,
+	})
+
+	require.False(t, cache.IsWeighted())
+
+	cache = Must(&Options[int, int]{
+		MaximumWeight: 1000,
+		Weigher: func(key int, value int) uint32 {
+			return uint32(value)
+		},
+	})
+
+	require.True(t, cache.IsWeighted())
+}
+
+func TestCache_IsRecordingStats(t *testing.T) {
+	t.Parallel()
+
+	cache := Must(&Options[int, int]{
+		StatsRecorder: stats.NewCounter(),
+	})
+
+	require.True(t, cache.IsRecordingStats())
+
+	cache = Must(&Options[int, int]{
+		StatsRecorder: &stats.NoopRecorder{},
+	})
+
+	require.False(t, cache.IsRecordingStats())
+}
+
+type fakeRecorder struct {
+	hits   atomic.Uint64
+	misses atomic.Uint64
+}
+
+func (f *fakeRecorder) RecordHits(count int) {
+	f.hits.Add(uint64(count))
+}
+
+func (f *fakeRecorder) RecordMisses(count int) {
+	f.misses.Add(uint64(count))
+}
+
+func (f *fakeRecorder) RecordEviction(weight uint32) {
+	panic("implement me")
+}
+
+func (f *fakeRecorder) RecordLoadSuccess(loadTime time.Duration) {
+	panic("implement me")
+}
+
+func (f *fakeRecorder) RecordLoadFailure(loadTime time.Duration) {
+	panic("implement me")
+}
+
+func TestCache_Stats(t *testing.T) {
+	t.Parallel()
+
+	counter := stats.NewCounter()
+	cache := Must(&Options[int, int]{
+		StatsRecorder: counter,
+	})
+
+	for i := 0; i < 100; i++ {
+		cache.Set(i, i)
+		cache.GetIfPresent(i)
+	}
+
+	snapshot := counter.Snapshot()
+	require.Equal(t, uint64(100), snapshot.Hits)
+	require.Equal(t, uint64(0), snapshot.Misses)
+	require.Equal(t, snapshot, cache.Stats())
+
+	fr := &fakeRecorder{}
+	cache = Must(&Options[int, int]{
+		StatsRecorder: fr,
+	})
+
+	for i := 0; i < 100; i++ {
+		cache.Set(i, i)
+		cache.GetIfPresent(i)
+	}
+
+	require.Equal(t, uint64(100), fr.hits.Load())
+	require.Equal(t, uint64(0), fr.misses.Load())
+	require.Equal(t, stats.Stats{}, cache.Stats())
+}
+
 func TestCache_Ratio(t *testing.T) {
 	t.Parallel()
 
