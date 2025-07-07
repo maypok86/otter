@@ -1,3 +1,17 @@
+## 2.2.0 - 2025-07-07
+
+This release focuses on improving the integration experience with pull-based metric collectors.
+
+### ✨Features
+
+- Added `IsWeighted`, `IsRecordingStats` and `Stats` methods for cache ([#131](https://github.com/maypok86/otter/issues/131))
+- Added `Minus` and `Plus` methods for `stats.Stats`
+- Added `stats.Snapshoter` and `stats.SnapshotRecorder` interfaces
+
+### 🚀 Improvements
+
+- Reduced memory consumption of `stats.Counter` by 4 times
+
 ## 2.1.1 - 2025-07-05
 
 ### 🚀 Improvements
