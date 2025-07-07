@@ -102,7 +102,7 @@ func (s Stats) AverageLoadPenalty() time.Duration {
 }
 
 // Minus returns a new [Stats] representing the difference between this [Stats] and other.
-// Negative values, which aren't supported by [Stats} will be rounded up to zero.
+// Negative values, which aren't supported by [Stats] will be rounded up to zero.
 func (s Stats) Minus(other Stats) Stats {
 	return Stats{
 		Hits:           subtract(s.Hits, other.Hits),
