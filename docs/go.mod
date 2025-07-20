@@ -9,4 +9,4 @@ require (
 	github.com/maypok86/otter/v2 v2.0.0-00010101000000-000000000000
 )
 
-require golang.org/x/sys v0.33.0 // indirect
+require golang.org/x/sys v0.34.0 // indirect
