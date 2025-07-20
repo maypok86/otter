@@ -22,14 +22,13 @@ import (
 )
 
 type call[K comparable, V any] struct {
-	key         K
-	value       V
-	err         error
-	wg          sync.WaitGroup
-	isCancelled atomic.Bool
-	isRefresh   bool
-	isNotFound  bool
-	isFake      bool
+	key        K
+	value      V
+	err        error
+	wg         sync.WaitGroup
+	isRefresh  bool
+	isNotFound bool
+	isFake     bool
 }
 
 func newCall[K comparable, V any](key K, isRefresh bool) *call[K, V] {
@@ -55,12 +54,10 @@ func (c *call[K, V]) AsPointer() unsafe.Pointer {
 }
 
 func (c *call[K, V]) cancel() {
-	if c.isFake || c.isCancelled.Load() {
+	if c.isFake {
 		return
 	}
-	if c.isCancelled.CompareAndSwap(false, true) {
-		c.wg.Done()
-	}
+	c.wg.Done()
 }
 
 func (c *call[K, V]) wait() {
@@ -218,12 +215,7 @@ func (g *group[K, V]) delete(key K) {
 		return
 	}
 
-	var prev *call[K, V]
 	g.calls.Compute(key, func(prevCall *call[K, V]) *call[K, V] {
-		prev = prevCall
 		return nil
 	})
-	if prev != nil {
-		prev.cancel()
-	}
 }
