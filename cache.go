@@ -230,6 +230,9 @@ func (c *Cache[K, V]) SetRefreshableAfter(key K, refreshableAfter time.Duration)
 //
 // Get can return an [ErrNotFound] error if the [Loader] returns it.
 // This means that the entry was not found in the data source.
+// This allows the cache to recognize when a record is missing from the data source
+// and subsequently delete the cached entry.
+// It also enables proper metric collection, as the cache doesn't classify [ErrNotFound] as a load error.
 //
 // If another call to Get is currently loading the value for key,
 // simply waits for that goroutine to finish and returns its loaded value. Note that
