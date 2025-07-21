@@ -1486,21 +1486,31 @@ func TestCache_ConcurrentLoadingAndInvalidate(t *testing.T) {
 
 	done := make(chan struct{})
 	inv := make(chan struct{})
+	var calls atomic.Uint64
 	loader := LoaderFunc[int, int](func(ctx context.Context, key int) (int, error) {
-		done <- struct{}{}
-		<-inv
+		firstCall := calls.Add(1) == 1
+		if firstCall {
+			done <- struct{}{}
+		}
+		time.Sleep(10 * time.Millisecond) // let more goroutines enter Load
+		if firstCall {
+			<-inv
+		}
 		return value, nil
 	})
 
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	goroutines := 10
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
 
-		v, err := c.Get(ctx, key, loader)
-		require.NoError(t, err)
-		require.Equal(t, value, v)
-	}()
+			v, err := c.Get(ctx, key, loader)
+			require.NoError(t, err)
+			require.Equal(t, value, v)
+		}()
+	}
 
 	<-done
 	// concurrent loading and invalidate
@@ -1509,5 +1519,10 @@ func TestCache_ConcurrentLoadingAndInvalidate(t *testing.T) {
 
 	wg.Wait()
 
-	require.False(t, c.has(key))
+	hasKey := c.has(key)
+	if calls.Load() == 1 {
+		require.False(t, hasKey)
+	} else {
+		require.True(t, hasKey)
+	}
 }
