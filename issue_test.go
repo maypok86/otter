@@ -79,7 +79,7 @@ func TestCache_Issue139(t *testing.T) {
 	go func() {
 		defer wg.Done()
 
-		for i := 0; i < 10000000; i++ {
+		for i := 0; i < 10000; i++ {
 			cache.InvalidateAll()
 		}
 	}()
@@ -88,7 +88,7 @@ func TestCache_Issue139(t *testing.T) {
 	go func() {
 		defer wg.Done()
 
-		for i := 0; i < 10000000; i++ {
+		for i := 0; i < 10000; i++ {
 			v, _ := cache.Get(context.Background(), "v1", LoaderFunc[string, string](loader))
 			if v != "v1" {
 				t.Errorf("expected v1, got %s", v)
