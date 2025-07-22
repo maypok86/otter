@@ -17,6 +17,7 @@ package otter
 import (
 	"context"
 	"fmt"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -60,4 +61,40 @@ func TestCache_Issue132(t *testing.T) {
 	require.Equal(t, 3, value3.a)
 	require.Equal(t, 4, value3.b)
 	require.Equal(t, 2, accessCounter)
+}
+
+// https://github.com/maypok86/otter/issues/139
+func TestCache_Issue139(t *testing.T) {
+	t.Parallel()
+
+	cache := Must(&Options[string, string]{})
+
+	loader := func(ctx context.Context, key string) (string, error) {
+		return "v1", nil
+	}
+
+	wg := sync.WaitGroup{}
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+
+		for i := 0; i < 10000; i++ {
+			cache.InvalidateAll()
+		}
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+
+		for i := 0; i < 10000; i++ {
+			v, _ := cache.Get(context.Background(), "v1", LoaderFunc[string, string](loader))
+			if v != "v1" {
+				t.Errorf("expected v1, got %s", v)
+			}
+		}
+	}()
+
+	wg.Wait()
 }

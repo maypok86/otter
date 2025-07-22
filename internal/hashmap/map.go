@@ -599,7 +599,7 @@ func (table *mapTable[K]) sumSize() int64 {
 	for i := range table.size {
 		sum += atomic.LoadInt64(&table.size[i].c)
 	}
-	return sum
+	return max(sum, 0)
 }
 
 func h1(h uint64) uint64 {

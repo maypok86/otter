@@ -215,6 +215,9 @@ func (m *MPSC[T]) TryPop() *T {
 }
 
 func (m *MPSC[T]) Size() uint64 {
+	if m == nil {
+		return 0
+	}
 	// NOTE: because indices are on even numbers we cannot use the size util.
 
 	// It is possible for a thread to be interrupted or reschedule between the read of the producer
