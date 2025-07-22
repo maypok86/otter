@@ -1,3 +1,14 @@
+## 2.2.1 - 2025-07-22
+
+### 🚀 Improvements
+
+- Added more detailed explanations of the mechanics related to returning `ErrNotFound` ([#136](https://github.com/maypok86/otter/issues/136))
+
+### 🐞 Bug Fixes
+
+- Fix inconsistent singleflight results if the key is invalidated on the way ([#137](https://github.com/maypok86/otter/issues/137))
+- Fix panic during concurrent execution of `InvalidateAll` and `Get` under high contention ([#139](https://github.com/maypok86/otter/issues/139))
+
 ## 2.2.0 - 2025-07-07
 
 This release focuses on improving the integration experience with pull-based metric collectors.
