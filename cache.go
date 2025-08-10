@@ -117,18 +117,18 @@ func (c *Cache[K, V]) GetEntryQuietly(key K) (Entry[K, V], bool) {
 
 // Set associates the value with the key in this cache.
 //
-// If the specified key is not already associated with a value, then it returns new value and true.
+// If the specified key is not already associated with a value, then it returns the new value and true.
 //
-// If the specified key is already associated with a value, then it returns existing value and false.
+// If the specified key is already associated with a value, then it returns the previous value and false.
 func (c *Cache[K, V]) Set(key K, value V) (V, bool) {
 	return c.cache.Set(key, value)
 }
 
-// SetIfAbsent if the specified key is not already associated with a value associates it with the given value.
+// SetIfAbsent associates the given value with the key only if the key is not already associated with a value.
 //
-// If the specified key is not already associated with a value, then it returns new value and true.
+// If the specified key is not already associated with a value, then it returns the new value and true.
 //
-// If the specified key is already associated with a value, then it returns existing value and false.
+// If the specified key is already associated with a value, then it returns the previous value and false.
 func (c *Cache[K, V]) SetIfAbsent(key K, value V) (V, bool) {
 	return c.cache.SetIfAbsent(key, value)
 }

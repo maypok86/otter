@@ -308,18 +308,18 @@ func (c *cache[K, V]) afterRead(got node.Node[K, V], nowNano int64, recordHit, c
 
 // Set associates the value with the key in this cache.
 //
-// If the specified key is not already associated with a value, then it returns new value and true.
+// If the specified key is not already associated with a value, then it returns the new value and true.
 //
-// If the specified key is already associated with a value, then it returns existing value and false.
+// If the specified key is already associated with a value, then it returns the previous value and false.
 func (c *cache[K, V]) Set(key K, value V) (V, bool) {
 	return c.set(key, value, false)
 }
 
-// SetIfAbsent if the specified key is not already associated with a value associates it with the given value.
+// SetIfAbsent associates the given value with the key only if the key is not already associated with a value.
 //
-// If the specified key is not already associated with a value, then it returns new value and true.
+// If the specified key is not already associated with a value, then it returns the new value and true.
 //
-// If the specified key is already associated with a value, then it returns existing value and false.
+// If the specified key is already associated with a value, then it returns the previous value and false.
 func (c *cache[K, V]) SetIfAbsent(key K, value V) (V, bool) {
 	return c.set(key, value, true)
 }
