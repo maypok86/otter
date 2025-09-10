@@ -1072,9 +1072,8 @@ func TestCache_CornerCases(t *testing.T) {
 		tc := newNonTickingClock()
 		loaderCallCount := 0
 		c := Must(&Options[int, int]{
-			Clock:             tc,
-			ExpiryCalculator:  ExpiryCreating[int, int](time.Hour),
-			RefreshCalculator: RefreshWriting[int, int](time.Hour),
+			Clock:            tc,
+			ExpiryCalculator: ExpiryCreating[int, int](time.Hour),
 		})
 
 		k1 := 1
