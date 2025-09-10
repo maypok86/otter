@@ -414,7 +414,7 @@ func (c *cache[K, V]) calcExpiresAtAfterWrite(n, old node.Node[K, V], nowNano in
 	entry := c.nodeToEntry(n, nowNano)
 	currentDuration := entry.ExpiresAfter()
 	var expiresAfter time.Duration
-	if old == nil {
+	if old == nil || old.HasExpired(nowNano) {
 		expiresAfter = c.expiryCalculator.ExpireAfterCreate(entry)
 	} else {
 		expiresAfter = c.expiryCalculator.ExpireAfterUpdate(entry, old.Value())
