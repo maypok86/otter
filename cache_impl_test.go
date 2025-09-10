@@ -1066,6 +1066,49 @@ func TestCache_CornerCases(t *testing.T) {
 		require.False(t, ok)
 		require.Zero(t, v)
 	})
+	t.Run("refreshExpiredWithExpiryCreating", func(t *testing.T) {
+		t.Parallel()
+
+		tc := newNonTickingClock()
+		loaderCallCount := 0
+		c := Must(&Options[int, int]{
+			Clock:             tc,
+			ExpiryCalculator:  ExpiryCreating[int, int](time.Hour),
+			RefreshCalculator: RefreshWriting[int, int](time.Hour),
+		})
+
+		k1 := 1
+		v1 := 100
+		v2 := 200
+
+		c.Set(k1, v1)
+
+		tc.Sleep(2 * time.Hour)
+
+		loader := LoaderFunc[int, int](func(_ context.Context, key int) (int, error) {
+			loaderCallCount++
+			if key == k1 {
+				return v2, nil
+			}
+			return 0, ErrNotFound
+		})
+
+		ctx := context.Background()
+		v, err := c.Get(ctx, k1, loader)
+		require.NoError(t, err)
+		require.Equal(t, v2, v)
+
+		require.Equal(t, 1, loaderCallCount)
+
+		tc.Sleep(time.Minute)
+		loaderCallCount = 0
+
+		v, err = c.Get(ctx, k1, loader)
+		require.NoError(t, err)
+		require.Equal(t, v2, v)
+
+		require.Equal(t, 0, loaderCallCount)
+	})
 	t.Run("cancelComputeWithExpired", func(t *testing.T) {
 		t.Parallel()
 
