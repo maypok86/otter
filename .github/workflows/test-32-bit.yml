@@ -21,7 +21,7 @@ jobs:
         id: go
 
       - name: Check out code into the Go module directory
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Test 32-bit arch
         run: make test.32-bit
