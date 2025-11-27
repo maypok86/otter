@@ -24,8 +24,8 @@ func main() {
 	}))
 
 	// Validate the returned value and error
-	if value != 0 {
-		panic("incorrect value") // Should return zero value on error
+	if value != 256 {
+		panic("incorrect value") // Should return 256 on error
 	}
 	if err == nil || !errors.Is(err, otter.ErrNotFound) {
 		panic("incorrect err") // Should preserve the ErrNotFound
