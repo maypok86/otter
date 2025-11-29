@@ -32,8 +32,13 @@ type defaultLogger struct {
 }
 
 func newDefaultLogger() *defaultLogger {
+	return NewDefaultLogger(slog.Default())
+}
+
+// NewDefaultLogger creates a default logger with slog.Logger instance.
+func NewDefaultLogger(logger *slog.Logger) *defaultLogger {
 	return &defaultLogger{
-		log: slog.Default(),
+		log: logger,
 	}
 }
 
