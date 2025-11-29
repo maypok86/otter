@@ -1,4 +1,4 @@
-module github.com/maypok86/otter/v2/plugin/pslog
+module github.com/maypok86/otter/plugin/pslog
 
 go 1.24.0
 
