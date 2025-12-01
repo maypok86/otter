@@ -35,8 +35,7 @@ var _ otter.Logger = (*Logger)(nil)
 // Option applies options to the logger.
 type Option func(*options)
 
-type options struct {
-}
+type options struct{}
 
 // Logger that wraps the slog.Logger.
 type Logger struct {
