@@ -25,6 +25,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unsafe"
 
 	"github.com/maypok86/otter/v2/internal/deque/queue"
 	"github.com/maypok86/otter/v2/internal/expiration"
@@ -78,21 +79,28 @@ func zeroValue[V any]() V {
 // cache is a structure performs a best-effort bounding of a hash table using eviction algorithm
 // to determine which entries to evict when the capacity is exceeded.
 type cache[K comparable, V any] struct {
-	drainStatus        atomic.Uint32
-	_                  [xruntime.CacheLineSize - 4]byte
-	nodeManager        *node.Manager[K, V]
-	hashmap            *hashmap.Map[K, V, node.Node[K, V]]
-	evictionPolicy     *policy[K, V]
-	expirationPolicy   *expiration.Variable[K, V]
-	stats              stats.Recorder
-	statsSnapshoter    stats.Snapshoter
-	logger             Logger
-	clock              timeSource
-	statsClock         *realSource
-	readBuffer         *lossy.Striped[K, V]
-	writeBuffer        *queue.MPSC[task[K, V]]
-	executor           func(fn func())
-	singleflight       *group[K, V]
+	drainStatus      atomic.Uint32
+	_                [xruntime.CacheLineSize - 4]byte
+	nodeManager      *node.Manager[K, V]
+	hashmap          *hashmap.Map[K, V, node.Node[K, V]]
+	evictionPolicy   *policy[K, V]
+	expirationPolicy *expiration.Variable[K, V]
+	stats            stats.Recorder
+	statsSnapshoter  stats.Snapshoter
+	logger           Logger
+	clock            timeSource
+	statsClock       *realSource
+	readBuffer       *lossy.Striped[K, V]
+	writeBuffer      *queue.MPSC[task[K, V]]
+	executor         func(fn func())
+	singleflight     *group[K, V]
+	// retireCall retires a single-flight call once its loaded value has been
+	// published, used as the commit-time finalizer for hashmap.ComputeAndFinalize.
+	// It is allocated once (here) so the load-completion path passes a stored
+	// func value plus the call pointer rather than a per-call closure. The
+	// argument is a *call[K, V] as an unsafe.Pointer (via call.AsPointer), which
+	// keeps the generic hashmap decoupled from the single-flight call type.
+	retireCall         func(callPtr unsafe.Pointer)
 	evictionMutex      sync.Mutex
 	doneStop           chan struct{}
 	stopOnce           sync.Once
@@ -163,6 +171,10 @@ func newCache[K comparable, V any](o *Options[K, V]) *cache[K, V] {
 
 	if withStats {
 		c.statsClock.Init()
+	}
+
+	c.retireCall = func(callPtr unsafe.Pointer) {
+		c.singleflight.deleteCall((*call[K, V])(callPtr))
 	}
 
 	c.withEviction = withEviction
@@ -780,6 +792,18 @@ func (c *cache[K, V]) Get(ctx context.Context, key K, loader Loader[K, V]) (V, e
 
 	cl, shouldLoad := c.singleflight.startCall(key, false)
 	if shouldLoad {
+		// Winning the call means any value a just-completed load published is
+		// already visible: afterDeleteCall frees the slot only after publishing
+		// (see ComputeAndFinalize), so a freed slot implies a stored value.
+		// Re-check before loading so we adopt that value instead of starting a
+		// redundant load for it. Quiet lookup: the initial getNode already
+		// recorded the miss for this request.
+		if n := c.getNodeQuietly(key, nowNano); n != nil {
+			cl.value = n.Value()
+			c.singleflight.deleteCall(cl)
+			cl.cancel()
+			return n.Value(), nil
+		}
 		//nolint:errcheck // there is no need to check error
 		_ = c.wrapLoad(func() error {
 			return c.singleflight.doCall(ctx, cl, loader.Load, c.afterDeleteCall)
@@ -826,8 +850,16 @@ func (c *cache[K, V]) afterDeleteCall(cl *call[K, V]) {
 		old      node.Node[K, V]
 	)
 	nowNano := c.clock.NowNano()
-	newNode := c.hashmap.Compute(cl.key, func(oldNode node.Node[K, V]) node.Node[K, V] {
-		isCorrectCall := cl.isFake || c.singleflight.deleteCall(cl)
+	// Retire the single-flight call as the commit-time finalizer rather than at
+	// the top of the compute closure, so the slot is freed only after the value
+	// is published into the map (both under the bucket lock). Otherwise the slot
+	// is freed first and a concurrent caller can win it, miss the not-yet-stored
+	// value, and start a redundant second load. The closure uses a read-only
+	// isCurrentCall check for the same authoritativeness decision deleteCall's
+	// return previously provided; under the bucket lock the result cannot change
+	// before the finalizer runs.
+	newNode := c.hashmap.ComputeAndFinalize(cl.key, func(oldNode node.Node[K, V]) node.Node[K, V] {
+		isCorrectCall := cl.isFake || c.singleflight.isCurrentCall(cl)
 		old = oldNode
 		if isCorrectCall && cl.isNotFound {
 			deleted = oldNode != nil
@@ -844,7 +876,7 @@ func (c *cache[K, V]) afterDeleteCall(cl *call[K, V]) {
 		}
 		inserted = true
 		return c.atomicSet(cl.key, cl.value, old, cl, nowNano)
-	})
+	}, c.retireCall, cl.AsPointer())
 	cl.cancel()
 	if deleted {
 		c.afterDelete(old, nowNano, false)
