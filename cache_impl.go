@@ -1091,7 +1091,6 @@ func (c *cache[K, V]) BulkGet(ctx context.Context, keys []K, bulkLoader BulkLoad
 		return result, loadErr
 	}
 
-	//nolint:prealloc // it's ok
 	var errsFromCalls []error
 	i = 0
 	for key, cl := range misses {
