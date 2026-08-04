@@ -223,30 +223,6 @@ func (m *Map[K, V, N]) Get(key K) N {
 // the bucket will be blocked until the computeFn executes. Consider
 // this when the function includes long-running operations.
 func (m *Map[K, V, N]) Compute(key K, computeFunc func(n N) N) N {
-	return m.compute(key, computeFunc, nil, nil)
-}
-
-// ComputeAndFinalize behaves like Compute, but invokes finalize(finalizeArg)
-// while the bucket lock is still held and after the computed node mutation has
-// been published. This lets a caller pair a commit-time side effect with the
-// node write atomically, so a concurrent reader can never observe the side
-// effect before the write it belongs to. finalize is not called on internal
-// resize retries; a nil finalize is equivalent to Compute.
-func (m *Map[K, V, N]) ComputeAndFinalize(
-	key K,
-	computeFunc func(n N) N,
-	finalize func(finalizeArg unsafe.Pointer),
-	finalizeArg unsafe.Pointer,
-) N {
-	return m.compute(key, computeFunc, finalize, finalizeArg)
-}
-
-func (m *Map[K, V, N]) compute(
-	key K,
-	computeFunc func(n N) N,
-	finalize func(finalizeArg unsafe.Pointer),
-	finalizeArg unsafe.Pointer,
-) N {
 	for {
 	compute_attempt:
 		var (
@@ -295,9 +271,6 @@ func (m *Map[K, V, N]) compute(
 							newmetaw := setByte(metaw, emptyMetaSlot, idx)
 							b.meta.Store(newmetaw)
 							atomic.StorePointer(&b.nodes[idx], nil)
-							if finalize != nil {
-								finalize(finalizeArg)
-							}
 							rootb.mu.Unlock()
 							table.addSize(bidx, -1)
 							// Might need to shrink the table if we left bucket empty.
@@ -308,9 +281,6 @@ func (m *Map[K, V, N]) compute(
 						}
 						if oldNode.AsPointer() != newNode.AsPointer() {
 							atomic.StorePointer(&b.nodes[idx], newNode.AsPointer())
-						}
-						if finalize != nil {
-							finalize(finalizeArg)
 						}
 						rootb.mu.Unlock()
 						return newNode
@@ -335,18 +305,12 @@ func (m *Map[K, V, N]) compute(
 					newNode := computeFunc(zeroNode)
 					if m.nodeManager.IsNil(newNode) {
 						// no op.
-						if finalize != nil {
-							finalize(finalizeArg)
-						}
 						rootb.mu.Unlock()
 						return newNode
 					}
 					// First we update meta, then the node.
 					emptyb.meta.Store(setByte(emptyb.meta.Load(), h2, emptyidx))
 					atomic.StorePointer(&emptyb.nodes[emptyidx], newNode.AsPointer())
-					if finalize != nil {
-						finalize(finalizeArg)
-					}
 					rootb.mu.Unlock()
 					table.addSize(bidx, 1)
 					return newNode
@@ -363,9 +327,6 @@ func (m *Map[K, V, N]) compute(
 				// oldNode == nil
 				newNode := computeFunc(zeroNode)
 				if m.nodeManager.IsNil(newNode) {
-					if finalize != nil {
-						finalize(finalizeArg)
-					}
 					rootb.mu.Unlock()
 					return newNode
 				}
@@ -374,9 +335,6 @@ func (m *Map[K, V, N]) compute(
 				newb.meta.Store(setByte(defaultMeta, h2, 0))
 				newb.nodes[0] = newNode.AsPointer()
 				b.next.Store(newb)
-				if finalize != nil {
-					finalize(finalizeArg)
-				}
 				rootb.mu.Unlock()
 				table.addSize(bidx, 1)
 				return newNode
