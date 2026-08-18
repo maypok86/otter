@@ -34,6 +34,27 @@ type Recorder interface {
 	RecordLoadFailure(loadTime time.Duration)
 }
 
+// EvictionCauseRecorder is an optional interface that a [Recorder] may also implement to
+// record evictions broken down by their cause.
+//
+// When the recorder supplied to a cache implements EvictionCauseRecorder, the cache reports
+// each eviction through the matching cause-specific method below instead of calling
+// [Recorder.RecordEviction]. This lets a recorder distinguish evictions caused by the cache
+// exceeding its size or weight bound from those caused by entry expiration, without having to
+// attach a deletion listener. Recorders that don't need the breakdown can simply not implement
+// this interface and keep using RecordEviction.
+//
+// As with RecordEviction, these methods are only called for evictions performed automatically by
+// the cache's eviction strategy, and never as a result of manual deletions.
+type EvictionCauseRecorder interface {
+	// RecordOverflow records the eviction of an entry that was removed because the cache exceeded
+	// its maximum size or weight.
+	RecordOverflow(weight uint32)
+	// RecordExpiration records the eviction of an entry that was removed because its expiration
+	// time had passed.
+	RecordExpiration(weight uint32)
+}
+
 // Snapshoter allows getting a stats snapshot from a recorder that implements it.
 type Snapshoter interface {
 	// Snapshot returns a snapshot of this recorder's values.
