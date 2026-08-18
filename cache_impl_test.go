@@ -18,6 +18,7 @@ import (
 	"context"
 	"math"
 	"slices"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1290,5 +1291,114 @@ func TestCache_Scheduler(t *testing.T) {
 		c.cache.drainStatus.Store(required)
 		require.Equal(t, uint64(10), c.GetMaximum())
 		require.Equal(t, idle, c.cache.drainStatus.Load())
+	})
+}
+
+// evictionCauseCounter is a stats.Recorder that also implements
+// stats.EvictionCauseRecorder, tracking evictions per cause. It is used to
+// verify that the cache routes automatic evictions to the cause-specific
+// methods instead of RecordEviction.
+type evictionCauseCounter struct {
+	evictions        atomic.Uint64
+	overflow         atomic.Uint64
+	overflowWeight   atomic.Uint64
+	expiration       atomic.Uint64
+	expirationWeight atomic.Uint64
+}
+
+func (c *evictionCauseCounter) RecordHits(count int)                     {}
+func (c *evictionCauseCounter) RecordMisses(count int)                   {}
+func (c *evictionCauseCounter) RecordLoadSuccess(loadTime time.Duration) {}
+func (c *evictionCauseCounter) RecordLoadFailure(loadTime time.Duration) {}
+func (c *evictionCauseCounter) RecordEviction(weight uint32)             { c.evictions.Add(1) }
+func (c *evictionCauseCounter) RecordOverflow(weight uint32) {
+	c.overflow.Add(1)
+	c.overflowWeight.Add(uint64(weight))
+}
+func (c *evictionCauseCounter) RecordExpiration(weight uint32) {
+	c.expiration.Add(1)
+	c.expirationWeight.Add(uint64(weight))
+}
+
+func TestCache_EvictionCauseRecorder(t *testing.T) {
+	t.Parallel()
+
+	t.Run("overflow", func(t *testing.T) {
+		t.Parallel()
+
+		const (
+			maximum  = 10
+			inserted = 100
+		)
+		rec := &evictionCauseCounter{}
+		c := Must(&Options[int, int]{
+			MaximumSize:   maximum,
+			StatsRecorder: rec,
+			Executor: func(fn func()) {
+				fn()
+			},
+		})
+		for i := 0; i < inserted; i++ {
+			c.Set(i, i)
+		}
+		c.CleanUp()
+
+		want := uint64(inserted) - uint64(c.EstimatedSize())
+		require.Equal(t, want, rec.overflow.Load())
+		require.Equal(t, want, rec.overflowWeight.Load())
+		require.Zero(t, rec.expiration.Load())
+		// RecordEviction must not be called when the recorder distinguishes causes.
+		require.Zero(t, rec.evictions.Load())
+	})
+
+	t.Run("expiration", func(t *testing.T) {
+		t.Parallel()
+
+		const size = 25
+		rec := &evictionCauseCounter{}
+		fs := &fakeSource{}
+		c := Must(&Options[int, int]{
+			StatsRecorder:    rec,
+			Clock:            fs,
+			ExpiryCalculator: ExpiryCreating[int, int](time.Hour),
+			Executor: func(fn func()) {
+				fn()
+			},
+		})
+		for i := 0; i < size; i++ {
+			c.Set(i, i)
+		}
+		fs.Sleep(time.Hour + time.Second)
+		c.CleanUp()
+
+		require.Equal(t, uint64(size), rec.expiration.Load())
+		require.Equal(t, uint64(size), rec.expirationWeight.Load())
+		require.Zero(t, rec.overflow.Load())
+		require.Zero(t, rec.evictions.Load())
+	})
+
+	t.Run("fallback_to_record_eviction", func(t *testing.T) {
+		t.Parallel()
+
+		const (
+			maximum  = 10
+			inserted = 100
+		)
+		// A plain Counter does not implement EvictionCauseRecorder, so the cache
+		// must keep reporting evictions through RecordEviction.
+		counter := stats.NewCounter()
+		c := Must(&Options[int, int]{
+			MaximumSize:   maximum,
+			StatsRecorder: counter,
+			Executor: func(fn func()) {
+				fn()
+			},
+		})
+		for i := 0; i < inserted; i++ {
+			c.Set(i, i)
+		}
+		c.CleanUp()
+
+		require.Equal(t, uint64(inserted)-uint64(c.EstimatedSize()), counter.Snapshot().Evictions)
 	})
 }

@@ -86,6 +86,7 @@ type cache[K comparable, V any] struct {
 	expirationPolicy   *expiration.Variable[K, V]
 	stats              stats.Recorder
 	statsSnapshoter    stats.Snapshoter
+	statsEviction      stats.EvictionCauseRecorder
 	logger             Logger
 	clock              timeSource
 	statsClock         *realSource
@@ -140,12 +141,17 @@ func newCache[K comparable, V any](o *Options[K, V]) *cache[K, V] {
 	} else {
 		statsSnapshoter = &stats.NoopRecorder{}
 	}
+	var statsEviction stats.EvictionCauseRecorder
+	if evictionRecorder, ok := statsRecorder.(stats.EvictionCauseRecorder); ok {
+		statsEviction = evictionRecorder
+	}
 
 	c := &cache[K, V]{
 		nodeManager:        nodeManager,
 		hashmap:            hashmap.NewWithSize[K, V, node.Node[K, V]](nodeManager, o.getInitialCapacity()),
 		stats:              statsRecorder,
 		statsSnapshoter:    statsSnapshoter,
+		statsEviction:      statsEviction,
 		logger:             o.getLogger(),
 		singleflight:       &group[K, V]{},
 		executor:           o.getExecutor(),
@@ -1300,8 +1306,25 @@ func (c *cache[K, V]) evictNode(n node.Node[K, V], nowNanos int64) {
 
 	if deleted {
 		c.notifyDeletion(n.Key(), n.Value(), cause)
-		c.stats.RecordEviction(n.Weight())
+		c.recordEviction(n.Weight(), cause)
 	}
+}
+
+// recordEviction reports an automatic eviction to the stats recorder. If the recorder implements
+// [stats.EvictionCauseRecorder], the eviction is reported through the matching cause-specific
+// method; otherwise it falls back to [stats.Recorder.RecordEviction].
+func (c *cache[K, V]) recordEviction(weight uint32, cause DeletionCause) {
+	if c.statsEviction != nil {
+		switch cause {
+		case CauseOverflow:
+			c.statsEviction.RecordOverflow(weight)
+			return
+		case CauseExpiration:
+			c.statsEviction.RecordExpiration(weight)
+			return
+		}
+	}
+	c.stats.RecordEviction(weight)
 }
 
 func (c *cache[K, V]) nodes() iter.Seq[node.Node[K, V]] {
