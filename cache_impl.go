@@ -1221,7 +1221,14 @@ func (c *cache[K, V]) Invalidate(key K) (value V, invalidated bool) {
 func (c *cache[K, V]) deleteNodeFromMap(n node.Node[K, V], nowNano int64, cause DeletionCause) node.Node[K, V] {
 	var deleted node.Node[K, V]
 	c.hashmap.Compute(n.Key(), func(current node.Node[K, V]) node.Node[K, V] {
-		c.singleflight.delete(n.Key())
+		if cause == CauseInvalidation {
+			c.singleflight.delete(n.Key())
+		} else {
+			// An eviction must not cancel an in-flight load: it was most likely started
+			// because this very node has expired, and dropping it would make the loaded
+			// value silently disappear. Only a pending refresh of the evicted value is discarded.
+			c.singleflight.deleteRefresh(n.Key())
+		}
 		if current == nil {
 			return nil
 		}

@@ -226,3 +226,16 @@ func (g *group[K, V]) delete(key K) {
 		return nil
 	})
 }
+
+func (g *group[K, V]) deleteRefresh(key K) {
+	if !g.isInitialized.Load() {
+		return
+	}
+
+	g.calls.Compute(key, func(prevCall *call[K, V]) *call[K, V] {
+		if prevCall != nil && prevCall.isRefresh {
+			return nil
+		}
+		return prevCall
+	})
+}
