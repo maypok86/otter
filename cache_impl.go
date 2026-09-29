@@ -1361,9 +1361,20 @@ func (c *cache[K, V]) Invalidate(key K) (value V, invalidated bool) {
 	return zeroValue[V](), false
 }
 
-func (c *cache[K, V]) deleteNodeFromMap(n node.Node[K, V], nowNano int64, cause DeletionCause) node.Node[K, V] {
-	var deleted node.Node[K, V]
+// deleteNodeFromMap removes n from the hash table if it is still there. With onlyIfExpired,
+// n stays if it is no longer expired, and extended reports that.
+func (c *cache[K, V]) deleteNodeFromMap(
+	n node.Node[K, V],
+	nowNano int64,
+	cause DeletionCause,
+	onlyIfExpired bool,
+) (deleted node.Node[K, V], extended bool) {
 	c.hashmap.Compute(n.Key(), func(current node.Node[K, V]) node.Node[K, V] {
+		if onlyIfExpired && current != nil && n.AsPointer() == current.AsPointer() && !current.HasExpired(nowNano) {
+			// updated in place, extending its lifetime, after it was found expired
+			extended = true
+			return current
+		}
 		if cause == CauseInvalidation {
 			c.singleflight.delete(n.Key())
 		} else {
@@ -1384,11 +1395,12 @@ func (c *cache[K, V]) deleteNodeFromMap(n node.Node[K, V], nowNano int64, cause 
 		}
 		return current
 	})
-	return deleted
+	return deleted, extended
 }
 
 func (c *cache[K, V]) deleteNode(n node.Node[K, V], nowNano int64) {
-	c.afterDelete(c.deleteNodeFromMap(n, nowNano, CauseInvalidation), nowNano, true)
+	deleted, _ := c.deleteNodeFromMap(n, nowNano, CauseInvalidation, false)
+	c.afterDelete(deleted, nowNano, true)
 }
 
 func (c *cache[K, V]) afterDelete(deleted node.Node[K, V], nowNano int64, alreadyLocked bool) {
@@ -1457,13 +1469,31 @@ func (c *cache[K, V]) periodicCleanUp() {
 	}
 }
 
+// evictNode removes n from the cache and the policies.
 func (c *cache[K, V]) evictNode(n node.Node[K, V], nowNanos int64) {
+	c.removeNode(n, nowNanos, false)
+}
+
+// expireNode is called by the timer wheel for a node whose expiration time has passed. The
+// wheel reads that time before the hash table's lock is taken, and a writer can update the
+// node in place in between, extending its lifetime. Such a node stays in the cache and is
+// scheduled again; the wheel has already unlinked it.
+func (c *cache[K, V]) expireNode(n node.Node[K, V], nowNanos int64) {
+	c.removeNode(n, nowNanos, true)
+}
+
+func (c *cache[K, V]) removeNode(n node.Node[K, V], nowNanos int64, onlyIfExpired bool) {
 	cause := CauseOverflow
-	if n.HasExpired(nowNanos) {
+	if onlyIfExpired || n.HasExpired(nowNanos) {
 		cause = CauseExpiration
 	}
 
-	deleted := c.deleteNodeFromMap(n, nowNanos, cause) != nil
+	d, extended := c.deleteNodeFromMap(n, nowNanos, cause, onlyIfExpired)
+	if extended {
+		c.expirationPolicy.Add(n)
+		return
+	}
+	deleted := d != nil
 
 	if c.withEviction {
 		c.evictionPolicy.delete(n)
@@ -1841,7 +1871,7 @@ func (c *cache[K, V]) onAccess(n node.Node[K, V]) {
 
 func (c *cache[K, V]) expireNodes() {
 	if c.withExpiration {
-		c.expirationPolicy.DeleteExpired(c.clock.NowNano(), c.evictNode)
+		c.expirationPolicy.DeleteExpired(c.clock.NowNano(), c.expireNode)
 	}
 }
 

@@ -134,6 +134,48 @@ func TestCache_InPlaceUpdateConcurrentReads(t *testing.T) {
 	}
 }
 
+// The timer wheel reads a node's expiration time before the hash table's lock is taken. A
+// writer that extends the node in place in between must keep it in the cache.
+func TestCache_ExpireNodeRechecksExpiration(t *testing.T) {
+	t.Parallel()
+
+	for _, extended := range []bool{true, false} {
+		clk := newNonTickingClock()
+		c := Must(&Options[int, int]{
+			MaximumSize:      10,
+			Clock:            clk,
+			ExpiryCalculator: ExpiryWriting[int, int](time.Minute),
+			Executor: func(fn func()) {
+				fn()
+			},
+		})
+		c.Set(1, 1)
+		c.Set(1, 2) // boxes the node, so that later writes are applied in place
+		n := c.cache.hashmap.Get(1)
+
+		clk.Sleep(2 * time.Minute)
+		now := clk.NowNano()
+
+		ci := c.cache
+		ci.evictionMutex.Lock()
+		// what the wheel does before calling expireNode: it found n expired and unlinked it
+		ci.expirationPolicy.Delete(n)
+		if extended {
+			// a writer extends n in place before expireNode takes the hash table's lock
+			n.SetExpiresAt(now + int64(time.Minute))
+		}
+		ci.expireNode(n, now)
+		ci.evictionMutex.Unlock()
+
+		v, ok := c.GetIfPresent(1)
+		require.Equal(t, extended, ok, "extended=%v", extended)
+		if extended {
+			require.Equal(t, 2, v)
+		}
+		validateCache(t, c)
+	}
+}
+
 // Once the bucket lock is released, a concurrent writer can update the node in place, so
 // Compute must return the value it computed rather than read the node again.
 func TestCache_ComputeReturnsItsOwnValue(t *testing.T) {
