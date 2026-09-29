@@ -777,6 +777,46 @@ func TestCache_InPlaceWeightAndExpirationChange(t *testing.T) {
 	validateCache(t, c)
 }
 
+// Both deletion listeners report the cause decided under the lock, even if the deadline of the
+// replaced node is changed after the lock is released by a reader that still holds it.
+func TestCache_DeletionListenersAgreeOnCause(t *testing.T) {
+	t.Parallel()
+
+	clk := newNonTickingClock()
+	deleted := &deletionRecorder{}
+	atomicDeleted := &deletionRecorder{}
+	var c *Cache[int, int]
+	c = Must(&Options[int, int]{
+		MaximumSize:      10,
+		Clock:            clk,
+		ExpiryCalculator: &countingExpiry{}, // the value is the TTL in seconds
+		OnDeletion:       deleted.record,
+		OnAtomicDeletion: func(e DeletionEvent[int, int]) {
+			atomicDeleted.record(e)
+			// the hash table still returns the old node, whose deadline is extended
+			c.SetExpiresAfter(e.Key, time.Hour)
+		},
+		Executor: func(fn func()) {
+			fn()
+		},
+	})
+
+	c.Set(1, 10) // an inline node, so the next write replaces it
+	clk.Sleep(20 * time.Second)
+	c.Set(1, 20)
+	c.CleanUp()
+
+	c.Set(2, 10)
+	c.Invalidate(2)
+	c.CleanUp()
+
+	require.Equal(t, atomicDeleted.get(), deleted.get())
+	require.Equal(t, []DeletionEvent[int, int]{
+		{Key: 1, Value: 10, Cause: CauseExpiration},
+		{Key: 2, Value: 10, Cause: CauseInvalidation},
+	}, deleted.get())
+}
+
 // An entry whose weight a writer changes to zero in place, after a maintenance pass replayed the
 // write buffer and before it evicts, must not be evicted for size on its stale accounted weight.
 func TestCache_InPlaceZeroWeightIsNotEvicted(t *testing.T) {
