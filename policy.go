@@ -85,11 +85,19 @@ func (p *policy[K, V]) access(n node.Node[K, V]) {
 }
 
 // add adds node to the eviction policy.
+//
+// A node's weight is accounted in the weighted sizes if and only if the node is linked into
+// one of the queues, so that removing it subtracts exactly what was added.
 func (p *policy[K, V]) add(n node.Node[K, V], evictNode func(n node.Node[K, V], nowNanos int64)) {
 	nodeWeight := uint64(n.Weight())
+	// An out-of-order write: the node was replaced or removed before its insertion was
+	// replayed. The task that replaced or removed it accounts for it.
+	isAlive := n.IsAlive()
 
-	p.weightedSize += nodeWeight
-	p.windowWeightedSize += nodeWeight
+	if isAlive && nodeWeight <= p.maximum {
+		p.weightedSize += nodeWeight
+		p.windowWeightedSize += nodeWeight
+	}
 	if p.weightedSize >= p.maximum>>1 {
 		// Lazily initialize when close to the maximum
 		capacity := p.maximum
@@ -103,13 +111,13 @@ func (p *policy[K, V]) add(n node.Node[K, V], evictNode func(n node.Node[K, V], 
 	p.sketch.increment(n.Key())
 	p.missesInSample++
 
-	// ignore out-of-order write operations
-	if !n.IsAlive() {
+	if !isAlive {
 		return
 	}
 
 	switch {
 	case nodeWeight > p.maximum:
+		// never linked and never accounted
 		evictNode(n, 0)
 	case nodeWeight > p.windowMaximum:
 		p.window.PushFront(n)
@@ -119,9 +127,18 @@ func (p *policy[K, V]) add(n node.Node[K, V], evictNode func(n node.Node[K, V], 
 }
 
 func (p *policy[K, V]) update(n, old node.Node[K, V], evictNode func(n node.Node[K, V], nowNanos int64)) {
+	if !n.IsAlive() {
+		// n was replaced or removed before this update was replayed. The task that replaced or
+		// removed it accounts for n, so only old, which n replaced, leaves the policy. Linking n
+		// here would leave a node that is no longer in the map in a queue.
+		p.makeDead(old)
+		return
+	}
 	if !p.contains(old) {
-		// old was never linked (its add was ignored as out-of-order) or was already evicted,
-		// so n has nothing to replace and must be added like a new node.
+		// The replaced node is not in the policy: its insertion was replayed after it had already
+		// been replaced (add skips linking non-alive nodes), or it was evicted before this update
+		// was replayed. There is nothing to swap n into, so track it as a new entry. Otherwise n
+		// would stay in the map and in weightedSize while being unreachable for eviction.
 		p.makeDead(old)
 		p.add(n, evictNode)
 		return
@@ -158,18 +175,23 @@ func (p *policy[K, V]) update(n, old node.Node[K, V], evictNode func(n node.Node
 	p.weightedSize += nodeWeight
 }
 
+// updateNode puts n in the place of old, which must be linked, and stops accounting old.
 func (p *policy[K, V]) updateNode(n, old node.Node[K, V]) {
+	oldWeight := uint64(old.Weight())
 	n.SetQueueType(old.GetQueueType())
 
 	switch {
 	case n.InWindow():
 		p.window.UpdateNode(n, old)
+		p.windowWeightedSize -= oldWeight
 	case n.InMainProbation():
 		p.probation.UpdateNode(n, old)
 	default:
 		p.protected.UpdateNode(n, old)
+		p.mainProtectedWeightedSize -= oldWeight
 	}
-	p.makeDead(old)
+	p.weightedSize -= oldWeight
+	old.Die()
 }
 
 func (p *policy[K, V]) contains(n node.Node[K, V]) bool {
@@ -185,29 +207,30 @@ func (p *policy[K, V]) contains(n node.Node[K, V]) bool {
 
 // delete deletes node from the eviction policy.
 func (p *policy[K, V]) delete(n node.Node[K, V]) {
-	// add may not have been processed yet
-	switch {
-	case n.InWindow():
-		p.window.Delete(n)
-	case n.InMainProbation():
-		p.probation.Delete(n)
-	default:
-		p.protected.Delete(n)
-	}
 	p.makeDead(n)
 }
 
+// makeDead removes n from its queue and from the weighted sizes if it is linked (its add or
+// update may not have been replayed yet, in which case it was never accounted) and marks it dead.
 func (p *policy[K, V]) makeDead(n node.Node[K, V]) {
-	if !n.IsDead() {
+	if n.IsDead() {
+		return
+	}
+	if p.contains(n) {
 		nodeWeight := uint64(n.Weight())
-		if n.InWindow() {
+		switch {
+		case n.InWindow():
+			p.window.Delete(n)
 			p.windowWeightedSize -= nodeWeight
-		} else if n.InMainProtected() {
+		case n.InMainProbation():
+			p.probation.Delete(n)
+		default:
+			p.protected.Delete(n)
 			p.mainProtectedWeightedSize -= nodeWeight
 		}
 		p.weightedSize -= nodeWeight
-		n.Die()
 	}
+	n.Die()
 }
 
 func (p *policy[K, V]) setMaximumSize(maximum uint64) {
