@@ -157,6 +157,27 @@ func TestVariable_DeleteExpired(t *testing.T) {
 	match(t, expired, keys)
 }
 
+func TestVariable_AddPassedDeadline(t *testing.T) {
+	t.Parallel()
+
+	nm := node.NewManager[string, string](node.Config{
+		WithExpiration: true,
+	})
+	now := time.Now().UnixNano()
+	var expired []node.Node[string, string]
+	expireNode := func(n node.Node[string, string], nowNanos int64) {
+		expired = append(expired, n)
+	}
+	v := NewVariable(nm)
+	v.time = uint64(now)
+
+	// the deadline is behind the wheel's clock when the node is scheduled
+	v.Add(nm.Create("k1", "", now-getTestExp(10), 0, 1))
+
+	v.DeleteExpired(now+getTestExp(2), expireNode)
+	match(t, expired, []string{"k1"})
+}
+
 func TestVariable_All(t *testing.T) {
 	t.Parallel()
 

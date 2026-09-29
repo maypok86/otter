@@ -68,7 +68,15 @@ func NewVariable[K comparable, V any](nodeManager *node.Manager[K, V]) *Variable
 
 // findBucket determines the bucket that the timer event should be added to.
 func (v *Variable[K, V]) findBucket(expiration uint64) node.Node[K, V] {
-	duration := expiration - v.time
+	var duration uint64
+	if expiration > v.time {
+		duration = expiration - v.time
+	} else {
+		// A deadline that the wheel has already passed (e.g. moved earlier while its task was
+		// pending) goes to the current bucket, which the next advance sweeps. Without this the
+		// unsigned difference wraps and the node lands in the last, ~6.5 day, bucket.
+		expiration = v.time
+	}
 	length := len(v.wheel) - 1
 	for i := 0; i < length; i++ {
 		if duration < spans[i+1] {
