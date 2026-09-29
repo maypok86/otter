@@ -247,7 +247,7 @@ func TestCache_FailedInPlaceUpdateCallsCallbacksOnce(t *testing.T) {
 		c.Set(1, 5) // boxes the node
 
 		weighs.Store(0)
-		c.Set(1, 7) // weight changes: the in-place attempt fails
+		c.Set(1, 7) // the weight changes
 		require.Equal(t, int64(1), weighs.Load())
 		v, ok := c.GetIfPresent(1)
 		require.True(t, ok)
@@ -461,4 +461,47 @@ func TestCache_ReadDoesNotRevertConcurrentDeadline(t *testing.T) {
 			require.Equal(t, tt.want, entry.ExpiresAfter())
 		})
 	}
+}
+
+// A changed weight is applied in place and reaches the eviction policy.
+func TestCache_InPlaceWeightChange(t *testing.T) {
+	t.Parallel()
+
+	c := Must(&Options[int, int]{
+		MaximumWeight: 100,
+		Weigher: func(key, value int) uint32 {
+			return uint32(value)
+		},
+		Executor: func(fn func()) {
+			fn()
+		},
+	})
+	for k := 1; k <= 5; k++ {
+		c.Set(k, 10)
+		c.Set(k, 10) // boxes the node
+	}
+	n := c.cache.hashmap.Get(1)
+
+	c.Set(1, 30) // heavier, still within the maximum
+	c.CleanUp()
+	require.True(t, n.AsPointer() == c.cache.hashmap.Get(1).AsPointer(), "the node was replaced")
+	require.Equal(t, uint64(70), c.WeightedSize())
+	validateCache(t, c)
+
+	c.Set(1, 5) // lighter
+	c.CleanUp()
+	require.Equal(t, uint64(45), c.WeightedSize())
+	validateCache(t, c)
+
+	c.Set(1, 90) // the cache now exceeds its maximum and must evict
+	c.CleanUp()
+	require.LessOrEqual(t, c.WeightedSize(), uint64(100))
+	validateCache(t, c)
+
+	c.Set(2, 1000) // heavier than the maximum: the entry itself is evicted
+	c.CleanUp()
+	_, ok := c.GetIfPresent(2)
+	require.False(t, ok)
+	require.LessOrEqual(t, c.WeightedSize(), uint64(100))
+	validateCache(t, c)
 }

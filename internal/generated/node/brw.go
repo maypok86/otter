@@ -22,7 +22,8 @@ type BRW[K comparable, V any] struct {
 	prev          *BRW[K, V]
 	next          *BRW[K, V]
 	refreshableAt atomic.Int64
-	weight        uint32
+	weight        atomic.Uint32
+	policyWeight  uint32
 	state         atomic.Uint32
 	queueType     uint8
 }
@@ -30,10 +31,11 @@ type BRW[K comparable, V any] struct {
 // NewBRW creates a new BRW.
 func NewBRW[K comparable, V any](key K, value V, expiresAt, refreshableAt int64, weight uint32) Node[K, V] {
 	n := &BRW[K, V]{
-		key:    key,
-		value:  value,
-		weight: weight,
+		key:          key,
+		value:        value,
+		policyWeight: weight,
 	}
+	n.weight.Store(weight)
 	n.refreshableAt.Store(refreshableAt)
 	n.state.Store(aliveState)
 
@@ -141,7 +143,19 @@ func (n *BRW[K, V]) IsFresh(now int64) bool {
 }
 
 func (n *BRW[K, V]) Weight() uint32 {
-	return n.weight
+	return n.weight.Load()
+}
+
+func (n *BRW[K, V]) SetWeight(weight uint32) {
+	n.weight.Store(weight)
+}
+
+func (n *BRW[K, V]) PolicyWeight() uint32 {
+	return n.policyWeight
+}
+
+func (n *BRW[K, V]) SetPolicyWeight(weight uint32) {
+	n.policyWeight = weight
 }
 
 func (n *BRW[K, V]) IsAlive() bool {

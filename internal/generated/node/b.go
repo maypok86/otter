@@ -118,6 +118,17 @@ func (n *B[K, V]) Weight() uint32 {
 	return 1
 }
 
+func (n *B[K, V]) SetWeight(weight uint32) {
+	panic("not implemented")
+}
+
+func (n *B[K, V]) PolicyWeight() uint32 {
+	return 1
+}
+
+func (n *B[K, V]) SetPolicyWeight(weight uint32) {
+}
+
 func (n *B[K, V]) IsAlive() bool {
 	return true
 }

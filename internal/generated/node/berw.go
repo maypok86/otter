@@ -27,7 +27,8 @@ type BERW[K comparable, V any] struct {
 	nextExp       *BERW[K, V]
 	expiresAt     atomic.Int64
 	refreshableAt atomic.Int64
-	weight        uint32
+	weight        atomic.Uint32
+	policyWeight  uint32
 	state         atomic.Uint32
 	queueType     uint8
 }
@@ -35,10 +36,11 @@ type BERW[K comparable, V any] struct {
 // NewBERW creates a new BERW.
 func NewBERW[K comparable, V any](key K, value V, expiresAt, refreshableAt int64, weight uint32) Node[K, V] {
 	n := &BERW[K, V]{
-		key:    key,
-		value:  value,
-		weight: weight,
+		key:          key,
+		value:        value,
+		policyWeight: weight,
 	}
+	n.weight.Store(weight)
 	n.expiresAt.Store(expiresAt)
 	n.refreshableAt.Store(refreshableAt)
 	n.state.Store(aliveState)
@@ -155,7 +157,19 @@ func (n *BERW[K, V]) IsFresh(now int64) bool {
 }
 
 func (n *BERW[K, V]) Weight() uint32 {
-	return n.weight
+	return n.weight.Load()
+}
+
+func (n *BERW[K, V]) SetWeight(weight uint32) {
+	n.weight.Store(weight)
+}
+
+func (n *BERW[K, V]) PolicyWeight() uint32 {
+	return n.policyWeight
+}
+
+func (n *BERW[K, V]) SetPolicyWeight(weight uint32) {
+	n.policyWeight = weight
 }
 
 func (n *BERW[K, V]) IsAlive() bool {

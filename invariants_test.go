@@ -78,7 +78,10 @@ func validateCache[K comparable, V any](t testing.TB, c *Cache[K, V]) {
 				if _, ok := inMap[n.AsPointer()]; !ok {
 					report("key %v: the node is in %s, but not in the hash table", n.Key(), name)
 				}
-				w := uint64(n.Weight())
+				if n.PolicyWeight() != n.Weight() {
+					report("key %v: the policy accounts weight %d, but the node weighs %d", n.Key(), n.PolicyWeight(), n.Weight())
+				}
+				w := uint64(n.PolicyWeight())
 				weighted += w
 				if size != nil {
 					*size += w

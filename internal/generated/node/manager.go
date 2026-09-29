@@ -65,6 +65,12 @@ type Node[K comparable, V any] interface {
 	IsFresh(now int64) bool
 	// Weight returns the weight of the node.
 	Weight() uint32
+	// SetWeight atomically replaces the weight (used for in-place updates).
+	SetWeight(weight uint32)
+	// PolicyWeight returns the weight the eviction policy has accounted for the node.
+	PolicyWeight() uint32
+	// SetPolicyWeight sets the weight the eviction policy has accounted for the node.
+	SetPolicyWeight(weight uint32)
 	// IsAlive returns true if the entry is available in the hash-table and page replacement policy.
 	IsAlive() bool
 	// IsRetired returns true if the entry was removed from the hash-table and is awaiting removal from the page

@@ -143,6 +143,17 @@ func (n *BER[K, V]) Weight() uint32 {
 	return 1
 }
 
+func (n *BER[K, V]) SetWeight(weight uint32) {
+	panic("not implemented")
+}
+
+func (n *BER[K, V]) PolicyWeight() uint32 {
+	return 1
+}
+
+func (n *BER[K, V]) SetPolicyWeight(weight uint32) {
+}
+
 func (n *BER[K, V]) IsAlive() bool {
 	return n.state.Load() == aliveState
 }
