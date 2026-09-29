@@ -20,6 +20,7 @@ import (
 type BSER[K comparable, V any] struct {
 	key           K
 	value         V
+	valuePtr      atomic.Pointer[V]
 	prev          *BSER[K, V]
 	next          *BSER[K, V]
 	prevExp       *BSER[K, V]
@@ -53,7 +54,18 @@ func (n *BSER[K, V]) Key() K {
 }
 
 func (n *BSER[K, V]) Value() V {
+	if p := n.valuePtr.Load(); p != nil {
+		return *p
+	}
 	return n.value
+}
+
+func (n *BSER[K, V]) SetValue(v V) {
+	n.valuePtr.Store(&v)
+}
+
+func (n *BSER[K, V]) IsBoxed() bool {
+	return n.valuePtr.Load() != nil
 }
 
 func (n *BSER[K, V]) AsPointer() unsafe.Pointer {

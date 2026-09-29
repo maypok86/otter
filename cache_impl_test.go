@@ -798,10 +798,12 @@ func TestCache_Eviction(t *testing.T) {
 		}
 
 		first := firstBeforeAccess(c)
+		// capture before Set: the node may be updated in place
+		firstValue := first.Value()
 		updateRecency(t, c, false, func() {
-			v, ok := c.Set(first.Key(), first.Value()+1)
+			v, ok := c.Set(first.Key(), firstValue+1)
 			require.False(t, ok)
-			require.Equal(t, first.Value(), v)
+			require.Equal(t, firstValue, v)
 		})
 	})
 	t.Run("adapt_increaseWindow", func(t *testing.T) {

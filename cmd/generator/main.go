@@ -222,6 +222,14 @@ func (g *generator) printStruct() {
 	g.in()
 	g.p("key        K")
 	g.p("value      V")
+	if g.withState() {
+		// value is immutable once the node is published. A node that has been updated is
+		// replaced (RCU) by a boxed node, whose current value lives behind valuePtr and can be
+		// swapped in place; valuePtr never goes back to nil. Readers therefore never observe a
+		// write to value. Nodes without state belong to caches without maintenance, which never
+		// update in place, so they do not pay for the pointer.
+		g.p("valuePtr   atomic.Pointer[V]")
+	}
 
 	if g.isBounded() {
 		g.p("prev       *%s[K, V]", g.structName)
@@ -297,7 +305,36 @@ func (g *generator) printFunctions() {
 
 	g.p("func (n *%s[K, V]) Value() V {", g.structName)
 	g.in()
+	if g.withState() {
+		g.p("if p := n.valuePtr.Load(); p != nil {")
+		g.in()
+		g.p("return *p")
+		g.out()
+		g.p("}")
+	}
 	g.p("return n.value")
+	g.out()
+	g.p("}")
+	g.p("")
+
+	g.p("func (n *%s[K, V]) SetValue(v V) {", g.structName)
+	g.in()
+	if g.withState() {
+		g.p("n.valuePtr.Store(&v)")
+	} else {
+		g.p("panic(\"not implemented\")")
+	}
+	g.out()
+	g.p("}")
+	g.p("")
+
+	g.p("func (n *%s[K, V]) IsBoxed() bool {", g.structName)
+	g.in()
+	if g.withState() {
+		g.p("return n.valuePtr.Load() != nil")
+	} else {
+		g.p("return false")
+	}
 	g.out()
 	g.p("}")
 	g.p("")
@@ -700,6 +737,10 @@ type Node[K comparable, V any] interface {
 	Key() K
 	// Value returns the value.
 	Value() V
+	// SetValue atomically replaces the value (used for in-place updates).
+	SetValue(v V)
+	// IsBoxed returns true if the value is stored behind a pointer and can be updated in place.
+	IsBoxed() bool
 	// AsPointer returns the node as a pointer.
 	AsPointer() unsafe.Pointer
 	// Prev returns the previous node in the eviction policy.

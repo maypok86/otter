@@ -26,6 +26,10 @@ type Node[K comparable, V any] interface {
 	Key() K
 	// Value returns the value.
 	Value() V
+	// SetValue atomically replaces the value (used for in-place updates).
+	SetValue(v V)
+	// IsBoxed returns true if the value is stored behind a pointer and can be updated in place.
+	IsBoxed() bool
 	// AsPointer returns the node as a pointer.
 	AsPointer() unsafe.Pointer
 	// Prev returns the previous node in the eviction policy.

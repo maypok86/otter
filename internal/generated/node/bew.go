@@ -18,6 +18,7 @@ import (
 type BEW[K comparable, V any] struct {
 	key       K
 	value     V
+	valuePtr  atomic.Pointer[V]
 	prev      *BEW[K, V]
 	next      *BEW[K, V]
 	prevExp   *BEW[K, V]
@@ -51,7 +52,18 @@ func (n *BEW[K, V]) Key() K {
 }
 
 func (n *BEW[K, V]) Value() V {
+	if p := n.valuePtr.Load(); p != nil {
+		return *p
+	}
 	return n.value
+}
+
+func (n *BEW[K, V]) SetValue(v V) {
+	n.valuePtr.Store(&v)
+}
+
+func (n *BEW[K, V]) IsBoxed() bool {
+	return n.valuePtr.Load() != nil
 }
 
 func (n *BEW[K, V]) AsPointer() unsafe.Pointer {

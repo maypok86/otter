@@ -18,6 +18,7 @@ import (
 type BER[K comparable, V any] struct {
 	key           K
 	value         V
+	valuePtr      atomic.Pointer[V]
 	prevExp       *BER[K, V]
 	nextExp       *BER[K, V]
 	expiresAt     atomic.Int64
@@ -48,7 +49,18 @@ func (n *BER[K, V]) Key() K {
 }
 
 func (n *BER[K, V]) Value() V {
+	if p := n.valuePtr.Load(); p != nil {
+		return *p
+	}
 	return n.value
+}
+
+func (n *BER[K, V]) SetValue(v V) {
+	n.valuePtr.Store(&v)
+}
+
+func (n *BER[K, V]) IsBoxed() bool {
+	return n.valuePtr.Load() != nil
 }
 
 func (n *BER[K, V]) AsPointer() unsafe.Pointer {

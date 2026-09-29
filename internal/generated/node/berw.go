@@ -20,6 +20,7 @@ import (
 type BERW[K comparable, V any] struct {
 	key           K
 	value         V
+	valuePtr      atomic.Pointer[V]
 	prev          *BERW[K, V]
 	next          *BERW[K, V]
 	prevExp       *BERW[K, V]
@@ -55,7 +56,18 @@ func (n *BERW[K, V]) Key() K {
 }
 
 func (n *BERW[K, V]) Value() V {
+	if p := n.valuePtr.Load(); p != nil {
+		return *p
+	}
 	return n.value
+}
+
+func (n *BERW[K, V]) SetValue(v V) {
+	n.valuePtr.Store(&v)
+}
+
+func (n *BERW[K, V]) IsBoxed() bool {
+	return n.valuePtr.Load() != nil
 }
 
 func (n *BERW[K, V]) AsPointer() unsafe.Pointer {
