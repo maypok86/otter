@@ -13,24 +13,67 @@ import (
 // 1. Base
 //
 // 2. Size
+//
+// It is the header of the layouts that store the value (BSInline...): a node is allocated
+// as one of them, whose first field is the header, so that a pointer to the header is a
+// pointer to the whole node. The layouts do not embed the header: they have no methods,
+// which keeps the code of one node type per feature set.
 type BS[K comparable, V any] struct {
 	key       K
-	value     V
-	valuePtr  atomic.Pointer[V]
 	prev      *BS[K, V]
 	next      *BS[K, V]
 	state     atomic.Uint32
 	queueType uint8
+	variant   uint8
 }
 
-// NewBS creates a new BS.
-func NewBS[K comparable, V any](key K, value V, expiresAt, refreshableAt int64, weight uint32) Node[K, V] {
-	n := &BS[K, V]{
-		key:   key,
-		value: value,
-	}
-	n.state.Store(aliveState)
+// BSInline is the layout of a BS whose value is kept inline and never changed. The first
+// update of a live entry replaces the node with a BSBoxed.
+type BSInline[K comparable, V any] struct {
+	header BS[K, V]
+	value  V
+}
 
+// BSBoxed is the layout of a BS whose value lives behind an atomic pointer and is
+// replaced in place.
+type BSBoxed[K comparable, V any] struct {
+	header BS[K, V]
+	value  atomic.Pointer[V]
+}
+
+// BSP is the layout of a BS whose pointer-shaped value is kept in an atomic pointer.
+type BSP[K comparable, V any] struct {
+	header BS[K, V]
+	value  unsafe.Pointer
+}
+
+// BSU64 is the layout of a BS whose value, without pointers and of at most 8 bytes,
+// is kept in an atomic.Uint64.
+type BSU64[K comparable, V any] struct {
+	header BS[K, V]
+	value  atomic.Uint64
+}
+
+// NewBS creates a new BS allocated as the given variant's layout (see variantsOf in the
+// generator); nodes without state have a single layout and ignore it.
+func NewBS[K comparable, V any](key K, value V, expiresAt, refreshableAt int64, weight uint32, variant uint8) Node[K, V] {
+	var n *BS[K, V]
+	switch variant {
+	case boxedVariant:
+		n = &(&BSBoxed[K, V]{}).header
+	case pointerVariant:
+		n = &(&BSP[K, V]{}).header
+	case wordVariant:
+		n = &(&BSU64[K, V]{}).header
+	case emptyVariant:
+		n = &BS[K, V]{}
+	default:
+		n = &(&BSInline[K, V]{}).header
+	}
+	n.key = key
+	n.variant = variant
+	n.SetValue(value)
+	n.state.Store(aliveState)
 	return n
 }
 
@@ -41,21 +84,6 @@ func CastPointerToBS[K comparable, V any](ptr unsafe.Pointer) Node[K, V] {
 
 func (n *BS[K, V]) Key() K {
 	return n.key
-}
-
-func (n *BS[K, V]) Value() V {
-	if p := n.valuePtr.Load(); p != nil {
-		return *p
-	}
-	return n.value
-}
-
-func (n *BS[K, V]) SetValue(v V) {
-	n.valuePtr.Store(&v)
-}
-
-func (n *BS[K, V]) CanSetValue() bool {
-	return n.valuePtr.Load() != nil
 }
 
 func (n *BS[K, V]) AsPointer() unsafe.Pointer {
@@ -199,4 +227,47 @@ func (n *BS[K, V]) InMainProtected() bool {
 
 func (n *BS[K, V]) MakeMainProtected() {
 	n.SetQueueType(InMainProtectedQueue)
+}
+
+func (n *BS[K, V]) Value() V {
+	switch n.variant {
+	case boxedVariant:
+		return *(*BSBoxed[K, V])(unsafe.Pointer(n)).value.Load()
+	case pointerVariant:
+		p := atomic.LoadPointer(&(*BSP[K, V])(unsafe.Pointer(n)).value)
+		return *(*V)(unsafe.Pointer(&p))
+	case wordVariant:
+		w := (*BSU64[K, V])(unsafe.Pointer(n)).value.Load()
+		return *(*V)(unsafe.Pointer(&w))
+	case emptyVariant:
+		var zero V
+		return zero
+	default:
+		return (*BSInline[K, V])(unsafe.Pointer(n)).value
+	}
+}
+
+func (n *BS[K, V]) SetValue(v V) {
+	switch n.variant {
+	case boxedVariant:
+		n.setBoxedValue(v)
+	case pointerVariant:
+		atomic.StorePointer(&(*BSP[K, V])(unsafe.Pointer(n)).value, *(*unsafe.Pointer)(unsafe.Pointer(&v)))
+	case wordVariant:
+		var w uint64
+		*(*V)(unsafe.Pointer(&w)) = v
+		(*BSU64[K, V])(unsafe.Pointer(n)).value.Store(w)
+	case emptyVariant:
+		// a value of zero size has nothing to store
+	default:
+		(*BSInline[K, V])(unsafe.Pointer(n)).value = v
+	}
+}
+
+func (n *BS[K, V]) setBoxedValue(v V) {
+	(*BSBoxed[K, V])(unsafe.Pointer(n)).value.Store(&v)
+}
+
+func (n *BS[K, V]) CanSetValue() bool {
+	return n.variant != inlineVariant
 }

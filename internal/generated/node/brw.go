@@ -15,10 +15,13 @@ import (
 // 2. Refresh
 //
 // 3. Weight
+//
+// It is the header of the layouts that store the value (BRWInline...): a node is allocated
+// as one of them, whose first field is the header, so that a pointer to the header is a
+// pointer to the whole node. The layouts do not embed the header: they have no methods,
+// which keeps the code of one node type per feature set.
 type BRW[K comparable, V any] struct {
 	key           K
-	value         V
-	valuePtr      atomic.Pointer[V]
 	prev          *BRW[K, V]
 	next          *BRW[K, V]
 	refreshableAt atomic.Int64
@@ -26,19 +29,59 @@ type BRW[K comparable, V any] struct {
 	policyWeight  uint32
 	state         atomic.Uint32
 	queueType     uint8
+	variant       uint8
 }
 
-// NewBRW creates a new BRW.
-func NewBRW[K comparable, V any](key K, value V, expiresAt, refreshableAt int64, weight uint32) Node[K, V] {
-	n := &BRW[K, V]{
-		key:          key,
-		value:        value,
-		policyWeight: weight,
+// BRWInline is the layout of a BRW whose value is kept inline and never changed. The first
+// update of a live entry replaces the node with a BRWBoxed.
+type BRWInline[K comparable, V any] struct {
+	header BRW[K, V]
+	value  V
+}
+
+// BRWBoxed is the layout of a BRW whose value lives behind an atomic pointer and is
+// replaced in place.
+type BRWBoxed[K comparable, V any] struct {
+	header BRW[K, V]
+	value  atomic.Pointer[V]
+}
+
+// BRWP is the layout of a BRW whose pointer-shaped value is kept in an atomic pointer.
+type BRWP[K comparable, V any] struct {
+	header BRW[K, V]
+	value  unsafe.Pointer
+}
+
+// BRWU64 is the layout of a BRW whose value, without pointers and of at most 8 bytes,
+// is kept in an atomic.Uint64.
+type BRWU64[K comparable, V any] struct {
+	header BRW[K, V]
+	value  atomic.Uint64
+}
+
+// NewBRW creates a new BRW allocated as the given variant's layout (see variantsOf in the
+// generator); nodes without state have a single layout and ignore it.
+func NewBRW[K comparable, V any](key K, value V, expiresAt, refreshableAt int64, weight uint32, variant uint8) Node[K, V] {
+	var n *BRW[K, V]
+	switch variant {
+	case boxedVariant:
+		n = &(&BRWBoxed[K, V]{}).header
+	case pointerVariant:
+		n = &(&BRWP[K, V]{}).header
+	case wordVariant:
+		n = &(&BRWU64[K, V]{}).header
+	case emptyVariant:
+		n = &BRW[K, V]{}
+	default:
+		n = &(&BRWInline[K, V]{}).header
 	}
+	n.key = key
+	n.variant = variant
+	n.SetValue(value)
+	n.policyWeight = weight
 	n.weight.Store(weight)
 	n.refreshableAt.Store(refreshableAt)
 	n.state.Store(aliveState)
-
 	return n
 }
 
@@ -49,21 +92,6 @@ func CastPointerToBRW[K comparable, V any](ptr unsafe.Pointer) Node[K, V] {
 
 func (n *BRW[K, V]) Key() K {
 	return n.key
-}
-
-func (n *BRW[K, V]) Value() V {
-	if p := n.valuePtr.Load(); p != nil {
-		return *p
-	}
-	return n.value
-}
-
-func (n *BRW[K, V]) SetValue(v V) {
-	n.valuePtr.Store(&v)
-}
-
-func (n *BRW[K, V]) CanSetValue() bool {
-	return n.valuePtr.Load() != nil
 }
 
 func (n *BRW[K, V]) AsPointer() unsafe.Pointer {
@@ -208,4 +236,47 @@ func (n *BRW[K, V]) InMainProtected() bool {
 
 func (n *BRW[K, V]) MakeMainProtected() {
 	n.SetQueueType(InMainProtectedQueue)
+}
+
+func (n *BRW[K, V]) Value() V {
+	switch n.variant {
+	case boxedVariant:
+		return *(*BRWBoxed[K, V])(unsafe.Pointer(n)).value.Load()
+	case pointerVariant:
+		p := atomic.LoadPointer(&(*BRWP[K, V])(unsafe.Pointer(n)).value)
+		return *(*V)(unsafe.Pointer(&p))
+	case wordVariant:
+		w := (*BRWU64[K, V])(unsafe.Pointer(n)).value.Load()
+		return *(*V)(unsafe.Pointer(&w))
+	case emptyVariant:
+		var zero V
+		return zero
+	default:
+		return (*BRWInline[K, V])(unsafe.Pointer(n)).value
+	}
+}
+
+func (n *BRW[K, V]) SetValue(v V) {
+	switch n.variant {
+	case boxedVariant:
+		n.setBoxedValue(v)
+	case pointerVariant:
+		atomic.StorePointer(&(*BRWP[K, V])(unsafe.Pointer(n)).value, *(*unsafe.Pointer)(unsafe.Pointer(&v)))
+	case wordVariant:
+		var w uint64
+		*(*V)(unsafe.Pointer(&w)) = v
+		(*BRWU64[K, V])(unsafe.Pointer(n)).value.Store(w)
+	case emptyVariant:
+		// a value of zero size has nothing to store
+	default:
+		(*BRWInline[K, V])(unsafe.Pointer(n)).value = v
+	}
+}
+
+func (n *BRW[K, V]) setBoxedValue(v V) {
+	(*BRWBoxed[K, V])(unsafe.Pointer(n)).value.Store(&v)
+}
+
+func (n *BRW[K, V]) CanSetValue() bool {
+	return n.variant != inlineVariant
 }

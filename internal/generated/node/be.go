@@ -13,25 +13,68 @@ import (
 // 1. Base
 //
 // 2. Expiration
+//
+// It is the header of the layouts that store the value (BEInline...): a node is allocated
+// as one of them, whose first field is the header, so that a pointer to the header is a
+// pointer to the whole node. The layouts do not embed the header: they have no methods,
+// which keeps the code of one node type per feature set.
 type BE[K comparable, V any] struct {
 	key       K
-	value     V
-	valuePtr  atomic.Pointer[V]
 	prevExp   *BE[K, V]
 	nextExp   *BE[K, V]
 	expiresAt atomic.Int64
 	state     atomic.Uint32
+	variant   uint8
 }
 
-// NewBE creates a new BE.
-func NewBE[K comparable, V any](key K, value V, expiresAt, refreshableAt int64, weight uint32) Node[K, V] {
-	n := &BE[K, V]{
-		key:   key,
-		value: value,
+// BEInline is the layout of a BE whose value is kept inline and never changed. The first
+// update of a live entry replaces the node with a BEBoxed.
+type BEInline[K comparable, V any] struct {
+	header BE[K, V]
+	value  V
+}
+
+// BEBoxed is the layout of a BE whose value lives behind an atomic pointer and is
+// replaced in place.
+type BEBoxed[K comparable, V any] struct {
+	header BE[K, V]
+	value  atomic.Pointer[V]
+}
+
+// BEP is the layout of a BE whose pointer-shaped value is kept in an atomic pointer.
+type BEP[K comparable, V any] struct {
+	header BE[K, V]
+	value  unsafe.Pointer
+}
+
+// BEU64 is the layout of a BE whose value, without pointers and of at most 8 bytes,
+// is kept in an atomic.Uint64.
+type BEU64[K comparable, V any] struct {
+	header BE[K, V]
+	value  atomic.Uint64
+}
+
+// NewBE creates a new BE allocated as the given variant's layout (see variantsOf in the
+// generator); nodes without state have a single layout and ignore it.
+func NewBE[K comparable, V any](key K, value V, expiresAt, refreshableAt int64, weight uint32, variant uint8) Node[K, V] {
+	var n *BE[K, V]
+	switch variant {
+	case boxedVariant:
+		n = &(&BEBoxed[K, V]{}).header
+	case pointerVariant:
+		n = &(&BEP[K, V]{}).header
+	case wordVariant:
+		n = &(&BEU64[K, V]{}).header
+	case emptyVariant:
+		n = &BE[K, V]{}
+	default:
+		n = &(&BEInline[K, V]{}).header
 	}
+	n.key = key
+	n.variant = variant
+	n.SetValue(value)
 	n.expiresAt.Store(expiresAt)
 	n.state.Store(aliveState)
-
 	return n
 }
 
@@ -42,21 +85,6 @@ func CastPointerToBE[K comparable, V any](ptr unsafe.Pointer) Node[K, V] {
 
 func (n *BE[K, V]) Key() K {
 	return n.key
-}
-
-func (n *BE[K, V]) Value() V {
-	if p := n.valuePtr.Load(); p != nil {
-		return *p
-	}
-	return n.value
-}
-
-func (n *BE[K, V]) SetValue(v V) {
-	n.valuePtr.Store(&v)
-}
-
-func (n *BE[K, V]) CanSetValue() bool {
-	return n.valuePtr.Load() != nil
 }
 
 func (n *BE[K, V]) AsPointer() unsafe.Pointer {
@@ -200,4 +228,47 @@ func (n *BE[K, V]) InMainProtected() bool {
 
 func (n *BE[K, V]) MakeMainProtected() {
 	n.SetQueueType(InMainProtectedQueue)
+}
+
+func (n *BE[K, V]) Value() V {
+	switch n.variant {
+	case boxedVariant:
+		return *(*BEBoxed[K, V])(unsafe.Pointer(n)).value.Load()
+	case pointerVariant:
+		p := atomic.LoadPointer(&(*BEP[K, V])(unsafe.Pointer(n)).value)
+		return *(*V)(unsafe.Pointer(&p))
+	case wordVariant:
+		w := (*BEU64[K, V])(unsafe.Pointer(n)).value.Load()
+		return *(*V)(unsafe.Pointer(&w))
+	case emptyVariant:
+		var zero V
+		return zero
+	default:
+		return (*BEInline[K, V])(unsafe.Pointer(n)).value
+	}
+}
+
+func (n *BE[K, V]) SetValue(v V) {
+	switch n.variant {
+	case boxedVariant:
+		n.setBoxedValue(v)
+	case pointerVariant:
+		atomic.StorePointer(&(*BEP[K, V])(unsafe.Pointer(n)).value, *(*unsafe.Pointer)(unsafe.Pointer(&v)))
+	case wordVariant:
+		var w uint64
+		*(*V)(unsafe.Pointer(&w)) = v
+		(*BEU64[K, V])(unsafe.Pointer(n)).value.Store(w)
+	case emptyVariant:
+		// a value of zero size has nothing to store
+	default:
+		(*BEInline[K, V])(unsafe.Pointer(n)).value = v
+	}
+}
+
+func (n *BE[K, V]) setBoxedValue(v V) {
+	(*BEBoxed[K, V])(unsafe.Pointer(n)).value.Store(&v)
+}
+
+func (n *BE[K, V]) CanSetValue() bool {
+	return n.variant != inlineVariant
 }

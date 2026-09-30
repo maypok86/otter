@@ -19,7 +19,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 )
@@ -68,9 +67,9 @@ const (
 	// (only next to a key of at most 4 bytes), but would add node types, each of which every
 	// program instantiates for every cache type it uses.
 	wordStorage = "u64"
+	// emptyStorage keeps nothing: a value of zero size (struct{}, [0]T) has a single value.
+	emptyStorage = "empty"
 )
-
-var storages = []string{inlineStorage, pointerStorage, wordStorage}
 
 // stateFeatures are the features that give a node state, i.e. the cache maintenance: only such
 // nodes are updated in place and get the other value storages.
@@ -85,17 +84,46 @@ func hasState(features map[feature]bool) bool {
 	return false
 }
 
-// storagesOf returns the value storages generated for nodeType.
-func storagesOf(nodeType string) []string {
-	if !hasState(getFeatures(nodeType)) {
-		// no state: the cache has no maintenance and never updates a node in place
-		return []string{inlineStorage}
-	}
-	return storages
+// A node of a feature set is allocated as one of the layouts below: the node type, which is the
+// header and implements Node, followed by the value. The header of a node with state records its
+// layout, so that the value accessors can find the value, while everything else only deals with
+// the header: one node type per feature set, whatever the value storage.
+type variant struct {
+	// name is the suffix of the node type's name.
+	name string
+	// constant is the variant constant stored in the header.
+	constant string
 }
 
-func structNameOf(nodeType, storage string) string {
-	return strings.ToUpper(nodeType + storage)
+var (
+	// inlineVariant keeps the value inline; the value is never changed.
+	inlineVariant = variant{name: "Inline", constant: "inlineVariant"}
+	// boxedVariant keeps the value behind an atomic pointer and replaces it in place. A node
+	// with an inline value becomes one on its first update.
+	boxedVariant = variant{name: "Boxed", constant: "boxedVariant"}
+	// pointerVariant keeps a pointer-shaped value in an atomic pointer.
+	pointerVariant = variant{name: "P", constant: "pointerVariant"}
+	// wordVariant keeps a value without pointers of up to 8 bytes in an atomic.Uint64.
+	wordVariant = variant{name: "U64", constant: "wordVariant"}
+	// emptyVariant is a node without a value field, for values of zero size: the node is its
+	// header alone, as large as a node of a cache that never updates in place.
+	emptyVariant = variant{name: "Empty", constant: "emptyVariant"}
+)
+
+// allVariants lists the variants in the order of their constants.
+var allVariants = []variant{inlineVariant, boxedVariant, pointerVariant, wordVariant, emptyVariant}
+
+// variantsOf returns the layouts generated for nodeType: nodes without state are never updated in
+// place and keep their value in the node type itself.
+func variantsOf(nodeType string) []variant {
+	if !hasState(getFeatures(nodeType)) {
+		return []variant{inlineVariant}
+	}
+	return allVariants
+}
+
+func typeNameOf(nodeType string) string {
+	return strings.ToUpper(nodeType)
 }
 
 func init() {
@@ -206,637 +234,6 @@ func (w *writer) output() []byte {
 	return w.buf.Bytes()
 }
 
-type generator struct {
-	*writer
-
-	structName string
-	storage    string
-	features   map[feature]bool
-}
-
-func newGenerator(nodeType, storage string) *generator {
-	return &generator{
-		writer:     newWriter(),
-		structName: structNameOf(nodeType, storage),
-		storage:    storage,
-		features:   getFeatures(nodeType),
-	}
-}
-
-// inWord reports whether the value is kept in one atomic word and can be replaced in place
-// from the start.
-func (g *generator) inWord() bool {
-	return g.storage != inlineStorage
-}
-
-func (g *generator) isBounded() bool {
-	return g.features[size] || g.features[weight]
-}
-
-func (g *generator) withState() bool {
-	return hasState(g.features)
-}
-
-func (g *generator) printImports() {
-	g.p("import (")
-	g.in()
-	if g.withState() || g.features[refresh] {
-		g.p("\"sync/atomic\"")
-	}
-	g.p("\"unsafe\"")
-	g.out()
-	g.p(")")
-	g.p("")
-}
-
-func (g *generator) printStructComment() {
-	g.p("// %s is a cache entry that provide the following features:", g.structName)
-	g.p("//")
-	g.p("// 1. Base")
-	i := 2
-	for _, f := range declaredFeatures {
-		if g.features[f] {
-			//nolint:staticcheck // used only for unicode
-			featureTitle := strings.Title(strings.ToLower(f.name))
-			g.p("//")
-			g.p("// %d. %s", i, featureTitle)
-			i++
-		}
-	}
-	switch g.storage {
-	case pointerStorage:
-		g.p("//")
-		g.p("// The value is pointer-shaped and kept in an atomic pointer.")
-	case wordStorage:
-		g.p("//")
-		g.p("// The value has no pointers, takes at most 8 bytes and is kept in an atomic.Uint64.")
-	}
-}
-
-func (g *generator) printStruct() {
-	g.printStructComment()
-
-	// print struct definition
-	g.p("type %s[K comparable, V any] struct {", g.structName)
-	g.in()
-	g.p("key        K")
-	switch g.storage {
-	case pointerStorage:
-		// accessed only atomically; holds the value's pointer word, so the GC sees it
-		g.p("value      unsafe.Pointer")
-	case wordStorage:
-		g.p("value      atomic.Uint64")
-	default:
-		g.p("value      V")
-	}
-	if g.withState() && !g.inWord() {
-		// value is immutable once the node is published. A node that has been updated is
-		// replaced (RCU) by a boxed node, whose current value lives behind valuePtr and can be
-		// swapped in place; valuePtr never goes back to nil. Readers therefore never observe a
-		// write to value. Nodes without state belong to caches without maintenance, which never
-		// update in place, so they do not pay for the pointer.
-		g.p("valuePtr   atomic.Pointer[V]")
-	}
-
-	if g.isBounded() {
-		g.p("prev       *%s[K, V]", g.structName)
-		g.p("next       *%s[K, V]", g.structName)
-	}
-	if g.features[expiration] {
-		g.p("prevExp    *%s[K, V]", g.structName)
-		g.p("nextExp    *%s[K, V]", g.structName)
-		g.p("expiresAt  atomic.Int64")
-	}
-	if g.features[refresh] {
-		g.p("refreshableAt atomic.Int64")
-	}
-	if g.features[weight] {
-		// weight is the writer's view, updated in place under the hash table's lock and read
-		// by lock-free readers; policyWeight is the weight the eviction policy has accounted
-		// for, accessed only under the eviction lock.
-		g.p("weight     atomic.Uint32")
-		g.p("policyWeight uint32")
-	}
-
-	if g.withState() {
-		g.p("state      atomic.Uint32")
-	}
-	if g.isBounded() {
-		g.p("queueType  uint8")
-	}
-	g.out()
-	g.p("}")
-	g.p("")
-}
-
-func (g *generator) printConstructors() {
-	g.p("// New%s creates a new %s.", g.structName, g.structName)
-	g.p("func New%s[K comparable, V any](key K, value V, expiresAt, refreshableAt int64, weight uint32) Node[K, V] {", g.structName)
-	g.in()
-	g.p("n := &%s[K, V]{", g.structName)
-	g.in()
-	g.p("key:        key,")
-	if !g.inWord() {
-		g.p("value:      value,")
-	}
-	if g.features[weight] {
-		g.p("policyWeight: weight,")
-	}
-	g.out()
-	g.p("}")
-	if g.inWord() {
-		g.p("n.SetValue(value)")
-	}
-	if g.features[weight] {
-		g.p("n.weight.Store(weight)")
-	}
-	if g.features[expiration] {
-		g.p("n.expiresAt.Store(expiresAt)")
-	}
-	if g.features[refresh] {
-		g.p("n.refreshableAt.Store(refreshableAt)")
-	}
-	if g.withState() {
-		g.p("n.state.Store(aliveState)")
-	}
-	g.p("")
-	g.p("return n")
-	g.out()
-	g.p("}")
-	g.p("")
-
-	g.p("// CastPointerTo%s casts a pointer to %s.", g.structName, g.structName)
-	g.p("func CastPointerTo%s[K comparable, V any](ptr unsafe.Pointer) Node[K, V] {", g.structName)
-	g.in()
-	g.p("return (*%s[K, V])(ptr)", g.structName)
-	g.out()
-	g.p("}")
-	g.p("")
-}
-
-func (g *generator) printFunctions() {
-	g.p("func (n *%s[K, V]) Key() K {", g.structName)
-	g.in()
-	g.p("return n.key")
-	g.out()
-	g.p("}")
-	g.p("")
-
-	g.p("func (n *%s[K, V]) Value() V {", g.structName)
-	g.in()
-	switch {
-	case g.storage == pointerStorage:
-		g.p("p := atomic.LoadPointer(&n.value)")
-		g.p("return *(*V)(unsafe.Pointer(&p))")
-	case g.inWord():
-		g.p("w := n.value.Load()")
-		g.p("return *(*V)(unsafe.Pointer(&w))")
-	case g.withState():
-		g.p("if p := n.valuePtr.Load(); p != nil {")
-		g.in()
-		g.p("return *p")
-		g.out()
-		g.p("}")
-		g.p("return n.value")
-	default:
-		g.p("return n.value")
-	}
-	g.out()
-	g.p("}")
-	g.p("")
-
-	g.p("func (n *%s[K, V]) SetValue(v V) {", g.structName)
-	g.in()
-	switch {
-	case g.storage == pointerStorage:
-		g.p("atomic.StorePointer(&n.value, *(*unsafe.Pointer)(unsafe.Pointer(&v)))")
-	case g.storage == wordStorage:
-		g.p("var w uint64")
-		g.p("*(*V)(unsafe.Pointer(&w)) = v")
-		g.p("n.value.Store(w)")
-	case g.withState():
-		g.p("n.valuePtr.Store(&v)")
-	default:
-		g.p("panic(\"not implemented\")")
-	}
-	g.out()
-	g.p("}")
-	g.p("")
-
-	g.p("func (n *%s[K, V]) CanSetValue() bool {", g.structName)
-	g.in()
-	switch {
-	case g.inWord():
-		g.p("return true")
-	case g.withState():
-		g.p("return n.valuePtr.Load() != nil")
-	default:
-		g.p("return false")
-	}
-	g.out()
-	g.p("}")
-	g.p("")
-
-	g.p("func (n *%s[K, V]) AsPointer() unsafe.Pointer {", g.structName)
-	g.in()
-	g.p("return unsafe.Pointer(n)")
-	g.out()
-	g.p("}")
-	g.p("")
-
-	g.p("func (n *%s[K, V]) Prev() Node[K, V] {", g.structName)
-	g.in()
-	if g.isBounded() {
-		g.p("return n.prev")
-	} else {
-		g.p("panic(\"not implemented\")")
-	}
-	g.out()
-	g.p("}")
-	g.p("")
-
-	g.p("func (n *%s[K, V]) SetPrev(v Node[K, V]) {", g.structName)
-	g.in()
-	if g.isBounded() {
-		g.p("if v == nil {")
-		g.in()
-		g.p("n.prev = nil")
-		g.p("return")
-		g.out()
-		g.p("}")
-		g.p("n.prev = (*%s[K, V])(v.AsPointer())", g.structName)
-	} else {
-		g.p("panic(\"not implemented\")")
-	}
-	g.out()
-	g.p("}")
-	g.p("")
-
-	g.p("func (n *%s[K, V]) Next() Node[K, V] {", g.structName)
-	g.in()
-	if g.isBounded() {
-		g.p("return n.next")
-	} else {
-		g.p("panic(\"not implemented\")")
-	}
-	g.out()
-	g.p("}")
-	g.p("")
-
-	g.p("func (n *%s[K, V]) SetNext(v Node[K, V]) {", g.structName)
-	g.in()
-	if g.isBounded() {
-		g.p("if v == nil {")
-		g.in()
-		g.p("n.next = nil")
-		g.p("return")
-		g.out()
-		g.p("}")
-		g.p("n.next = (*%s[K, V])(v.AsPointer())", g.structName)
-	} else {
-		g.p("panic(\"not implemented\")")
-	}
-	g.out()
-	g.p("}")
-	g.p("")
-
-	g.p("func (n *%s[K, V]) PrevExp() Node[K, V] {", g.structName)
-	g.in()
-	if g.features[expiration] {
-		g.p("return n.prevExp")
-	} else {
-		g.p("panic(\"not implemented\")")
-	}
-	g.out()
-	g.p("}")
-	g.p("")
-
-	g.p("func (n *%s[K, V]) SetPrevExp(v Node[K, V]) {", g.structName)
-	g.in()
-	if g.features[expiration] {
-		g.p("if v == nil {")
-		g.in()
-		g.p("n.prevExp = nil")
-		g.p("return")
-		g.out()
-		g.p("}")
-		g.p("n.prevExp = (*%s[K, V])(v.AsPointer())", g.structName)
-	} else {
-		g.p("panic(\"not implemented\")")
-	}
-	g.out()
-	g.p("}")
-	g.p("")
-
-	g.p("func (n *%s[K, V]) NextExp() Node[K, V] {", g.structName)
-	g.in()
-	if g.features[expiration] {
-		g.p("return n.nextExp")
-	} else {
-		g.p("panic(\"not implemented\")")
-	}
-	g.out()
-	g.p("}")
-	g.p("")
-
-	g.p("func (n *%s[K, V]) SetNextExp(v Node[K, V]) {", g.structName)
-	g.in()
-	if g.features[expiration] {
-		g.p("if v == nil {")
-		g.in()
-		g.p("n.nextExp = nil")
-		g.p("return")
-		g.out()
-		g.p("}")
-		g.p("n.nextExp = (*%s[K, V])(v.AsPointer())", g.structName)
-	} else {
-		g.p("panic(\"not implemented\")")
-	}
-	g.out()
-	g.p("}")
-	g.p("")
-
-	g.p("func (n *%s[K, V]) HasExpired(now int64) bool {", g.structName)
-	g.in()
-	if g.features[expiration] {
-		g.p("return n.ExpiresAt() <= now")
-	} else {
-		g.p("return false")
-	}
-	g.out()
-	g.p("}")
-	g.p("")
-
-	g.p("func (n *%s[K, V]) ExpiresAt() int64 {", g.structName)
-	g.in()
-	if g.features[expiration] {
-		g.p("return n.expiresAt.Load()")
-	} else {
-		g.p("panic(\"not implemented\")")
-	}
-	g.out()
-	g.p("}")
-	g.p("")
-
-	g.p("func (n *%s[K, V]) CASExpiresAt(old, new int64) bool {", g.structName)
-	g.in()
-	if g.features[expiration] {
-		g.p("return n.expiresAt.CompareAndSwap(old, new)")
-	} else {
-		g.p("panic(\"not implemented\")")
-	}
-	g.out()
-	g.p("}")
-	g.p("")
-
-	g.p("func (n *%s[K, V]) SetExpiresAt(new int64) {", g.structName)
-	g.in()
-	if g.features[expiration] {
-		g.p("n.expiresAt.Store(new)")
-	} else {
-		g.p("panic(\"not implemented\")")
-	}
-	g.out()
-	g.p("}")
-	g.p("")
-
-	g.p("func (n *%s[K, V]) RefreshableAt() int64 {", g.structName)
-	g.in()
-	if g.features[refresh] {
-		g.p("return n.refreshableAt.Load()")
-	} else {
-		g.p("panic(\"not implemented\")")
-	}
-	g.out()
-	g.p("}")
-	g.p("")
-
-	g.p("func (n *%s[K, V]) CASRefreshableAt(old, new int64) bool {", g.structName)
-	g.in()
-	if g.features[refresh] {
-		g.p("return n.refreshableAt.CompareAndSwap(old, new)")
-	} else {
-		g.p("panic(\"not implemented\")")
-	}
-	g.out()
-	g.p("}")
-	g.p("")
-
-	g.p("func (n *%s[K, V]) SetRefreshableAt(new int64) {", g.structName)
-	g.in()
-	if g.features[refresh] {
-		g.p("n.refreshableAt.Store(new)")
-	} else {
-		g.p("panic(\"not implemented\")")
-	}
-	g.out()
-	g.p("}")
-	g.p("")
-
-	g.p("func (n *%s[K, V]) IsFresh(now int64) bool {", g.structName)
-	g.in()
-	if g.features[refresh] {
-		g.p("return n.IsAlive() && n.RefreshableAt() > now")
-	} else {
-		g.p("return true")
-	}
-	g.out()
-	g.p("}")
-	g.p("")
-
-	g.p("func (n *%s[K, V]) Weight() uint32 {", g.structName)
-	g.in()
-	if g.features[weight] {
-		g.p("return n.weight.Load()")
-	} else {
-		g.p("return 1")
-	}
-	g.out()
-	g.p("}")
-	g.p("")
-
-	g.p("func (n *%s[K, V]) SetWeight(weight uint32) {", g.structName)
-	g.in()
-	if g.features[weight] {
-		g.p("n.weight.Store(weight)")
-	} else {
-		g.p("panic(\"not implemented\")")
-	}
-	g.out()
-	g.p("}")
-	g.p("")
-
-	g.p("func (n *%s[K, V]) PolicyWeight() uint32 {", g.structName)
-	g.in()
-	if g.features[weight] {
-		g.p("return n.policyWeight")
-	} else {
-		g.p("return 1")
-	}
-	g.out()
-	g.p("}")
-	g.p("")
-
-	g.p("func (n *%s[K, V]) SetPolicyWeight(weight uint32) {", g.structName)
-	g.in()
-	if g.features[weight] {
-		g.p("n.policyWeight = weight")
-	}
-	g.out()
-	g.p("}")
-	g.p("")
-
-	g.p("func (n *%s[K, V]) IsAlive() bool {", g.structName)
-	g.in()
-	if g.withState() {
-		g.p("return n.state.Load() == aliveState")
-	} else {
-		g.p("return true")
-	}
-	g.out()
-	g.p("}")
-	g.p("")
-
-	g.p("func (n *%s[K, V]) IsRetired() bool {", g.structName)
-	g.in()
-	if g.withState() {
-		g.p("return n.state.Load() == retiredState")
-	} else {
-		g.p("panic(\"not implemented\")")
-	}
-	g.out()
-	g.p("}")
-	g.p("")
-
-	g.p("func (n *%s[K, V]) Retire() {", g.structName)
-	g.in()
-	if g.withState() {
-		g.p("n.state.Store(retiredState)")
-	} else {
-		g.p("panic(\"not implemented\")")
-	}
-	g.out()
-	g.p("}")
-	g.p("")
-
-	g.p("func (n *%s[K, V]) IsDead() bool {", g.structName)
-	g.in()
-	if g.withState() {
-		g.p("return n.state.Load() == deadState")
-	} else {
-		g.p("panic(\"not implemented\")")
-	}
-	g.out()
-	g.p("}")
-	g.p("")
-
-	g.p("func (n *%s[K, V]) Die() {", g.structName)
-	g.in()
-	if g.withState() {
-		g.p("n.state.Store(deadState)")
-	} else {
-		g.p("panic(\"not implemented\")")
-	}
-	g.out()
-	g.p("}")
-	g.p("")
-
-	g.p("func (n *%s[K, V]) GetQueueType() uint8 {", g.structName)
-	g.in()
-	if g.isBounded() {
-		g.p("return n.queueType")
-	} else {
-		g.p("panic(\"not implemented\")")
-	}
-	g.out()
-	g.p("}")
-	g.p("")
-
-	g.p("func (n *%s[K, V]) SetQueueType(queueType uint8) {", g.structName)
-	g.in()
-	if g.isBounded() {
-		g.p("n.queueType = queueType")
-	} else {
-		g.p("panic(\"not implemented\")")
-	}
-	g.out()
-	g.p("}")
-	g.p("")
-
-	g.p("func (n *%s[K, V]) InWindow() bool {", g.structName)
-	g.in()
-	g.p("return n.GetQueueType() == InWindowQueue")
-	g.out()
-	g.p("}")
-	g.p("")
-
-	g.p("func (n *%s[K, V]) MakeWindow() {", g.structName)
-	g.in()
-	g.p("n.SetQueueType(InWindowQueue)")
-	g.out()
-	g.p("}")
-	g.p("")
-
-	g.p("func (n *%s[K, V]) InMainProbation() bool {", g.structName)
-	g.in()
-	g.p("return n.GetQueueType() == InMainProbationQueue")
-	g.out()
-	g.p("}")
-	g.p("")
-
-	g.p("func (n *%s[K, V]) MakeMainProbation() {", g.structName)
-	g.in()
-	g.p("n.SetQueueType(InMainProbationQueue)")
-	g.out()
-	g.p("}")
-	g.p("")
-
-	g.p("func (n *%s[K, V]) InMainProtected() bool {", g.structName)
-	g.in()
-	g.p("return n.GetQueueType() == InMainProtectedQueue")
-	g.out()
-	g.p("}")
-	g.p("")
-
-	g.p("func (n *%s[K, V]) MakeMainProtected() {", g.structName)
-	g.in()
-	g.p("n.SetQueueType(InMainProtectedQueue)")
-	g.out()
-	g.p("}")
-	g.p("")
-}
-
-func run(nodeType, storage, dir string) error {
-	g := newGenerator(nodeType, storage)
-	g.p("// Code generated by NodeGenerator. DO NOT EDIT.")
-	g.p("")
-	g.p("// Package node is a generated by the generator.")
-	g.p("package node")
-	g.p("")
-
-	g.printImports()
-
-	g.printStruct()
-	g.printConstructors()
-
-	g.printFunctions()
-
-	fileName := fmt.Sprintf("%s.go", nodeType+storage)
-	filePath := filepath.Join(dir, fileName)
-
-	f, err := os.Create(filePath)
-	if err != nil {
-		return fmt.Errorf("create file %s: %w", filePath, err)
-	}
-	defer f.Close()
-
-	if _, err := f.Write(g.output()); err != nil {
-		return fmt.Errorf("write output: %w", err)
-	}
-
-	return nil
-}
-
 func main() {
 	dir := os.Args[1]
 
@@ -849,10 +246,8 @@ func main() {
 	}
 
 	for _, nodeType := range nodeTypes {
-		for _, storage := range storagesOf(nodeType) {
-			if err := run(nodeType, storage, dir); err != nil {
-				log.Fatal(err)
-			}
+		if err := run(nodeType, dir); err != nil {
+			log.Fatal(err)
 		}
 	}
 

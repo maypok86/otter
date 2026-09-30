@@ -15,27 +15,70 @@ import (
 // 2. Expiration
 //
 // 3. Refresh
+//
+// It is the header of the layouts that store the value (BERInline...): a node is allocated
+// as one of them, whose first field is the header, so that a pointer to the header is a
+// pointer to the whole node. The layouts do not embed the header: they have no methods,
+// which keeps the code of one node type per feature set.
 type BER[K comparable, V any] struct {
 	key           K
-	value         V
-	valuePtr      atomic.Pointer[V]
 	prevExp       *BER[K, V]
 	nextExp       *BER[K, V]
 	expiresAt     atomic.Int64
 	refreshableAt atomic.Int64
 	state         atomic.Uint32
+	variant       uint8
 }
 
-// NewBER creates a new BER.
-func NewBER[K comparable, V any](key K, value V, expiresAt, refreshableAt int64, weight uint32) Node[K, V] {
-	n := &BER[K, V]{
-		key:   key,
-		value: value,
+// BERInline is the layout of a BER whose value is kept inline and never changed. The first
+// update of a live entry replaces the node with a BERBoxed.
+type BERInline[K comparable, V any] struct {
+	header BER[K, V]
+	value  V
+}
+
+// BERBoxed is the layout of a BER whose value lives behind an atomic pointer and is
+// replaced in place.
+type BERBoxed[K comparable, V any] struct {
+	header BER[K, V]
+	value  atomic.Pointer[V]
+}
+
+// BERP is the layout of a BER whose pointer-shaped value is kept in an atomic pointer.
+type BERP[K comparable, V any] struct {
+	header BER[K, V]
+	value  unsafe.Pointer
+}
+
+// BERU64 is the layout of a BER whose value, without pointers and of at most 8 bytes,
+// is kept in an atomic.Uint64.
+type BERU64[K comparable, V any] struct {
+	header BER[K, V]
+	value  atomic.Uint64
+}
+
+// NewBER creates a new BER allocated as the given variant's layout (see variantsOf in the
+// generator); nodes without state have a single layout and ignore it.
+func NewBER[K comparable, V any](key K, value V, expiresAt, refreshableAt int64, weight uint32, variant uint8) Node[K, V] {
+	var n *BER[K, V]
+	switch variant {
+	case boxedVariant:
+		n = &(&BERBoxed[K, V]{}).header
+	case pointerVariant:
+		n = &(&BERP[K, V]{}).header
+	case wordVariant:
+		n = &(&BERU64[K, V]{}).header
+	case emptyVariant:
+		n = &BER[K, V]{}
+	default:
+		n = &(&BERInline[K, V]{}).header
 	}
+	n.key = key
+	n.variant = variant
+	n.SetValue(value)
 	n.expiresAt.Store(expiresAt)
 	n.refreshableAt.Store(refreshableAt)
 	n.state.Store(aliveState)
-
 	return n
 }
 
@@ -46,21 +89,6 @@ func CastPointerToBER[K comparable, V any](ptr unsafe.Pointer) Node[K, V] {
 
 func (n *BER[K, V]) Key() K {
 	return n.key
-}
-
-func (n *BER[K, V]) Value() V {
-	if p := n.valuePtr.Load(); p != nil {
-		return *p
-	}
-	return n.value
-}
-
-func (n *BER[K, V]) SetValue(v V) {
-	n.valuePtr.Store(&v)
-}
-
-func (n *BER[K, V]) CanSetValue() bool {
-	return n.valuePtr.Load() != nil
 }
 
 func (n *BER[K, V]) AsPointer() unsafe.Pointer {
@@ -204,4 +232,47 @@ func (n *BER[K, V]) InMainProtected() bool {
 
 func (n *BER[K, V]) MakeMainProtected() {
 	n.SetQueueType(InMainProtectedQueue)
+}
+
+func (n *BER[K, V]) Value() V {
+	switch n.variant {
+	case boxedVariant:
+		return *(*BERBoxed[K, V])(unsafe.Pointer(n)).value.Load()
+	case pointerVariant:
+		p := atomic.LoadPointer(&(*BERP[K, V])(unsafe.Pointer(n)).value)
+		return *(*V)(unsafe.Pointer(&p))
+	case wordVariant:
+		w := (*BERU64[K, V])(unsafe.Pointer(n)).value.Load()
+		return *(*V)(unsafe.Pointer(&w))
+	case emptyVariant:
+		var zero V
+		return zero
+	default:
+		return (*BERInline[K, V])(unsafe.Pointer(n)).value
+	}
+}
+
+func (n *BER[K, V]) SetValue(v V) {
+	switch n.variant {
+	case boxedVariant:
+		n.setBoxedValue(v)
+	case pointerVariant:
+		atomic.StorePointer(&(*BERP[K, V])(unsafe.Pointer(n)).value, *(*unsafe.Pointer)(unsafe.Pointer(&v)))
+	case wordVariant:
+		var w uint64
+		*(*V)(unsafe.Pointer(&w)) = v
+		(*BERU64[K, V])(unsafe.Pointer(n)).value.Store(w)
+	case emptyVariant:
+		// a value of zero size has nothing to store
+	default:
+		(*BERInline[K, V])(unsafe.Pointer(n)).value = v
+	}
+}
+
+func (n *BER[K, V]) setBoxedValue(v V) {
+	(*BERBoxed[K, V])(unsafe.Pointer(n)).value.Store(&v)
+}
+
+func (n *BER[K, V]) CanSetValue() bool {
+	return n.variant != inlineVariant
 }

@@ -202,17 +202,13 @@ func newCache[K comparable, V any](o *Options[K, V]) *cache[K, V] {
 }
 
 // newNode creates a node for a write whose weight and timestamps have already been computed.
-// With boxed, a node whose value is kept inline gets it behind a pointer instead, so that it can
-// be updated in place; a node that keeps its value in one atomic word always can.
-func (c *cache[K, V]) newNode(key K, value V, weight uint32, expiresAt, refreshableAt int64, boxed bool) node.Node[K, V] {
-	if !boxed {
-		return c.nodeManager.Create(key, value, expiresAt, refreshableAt, weight)
+// With updatable, the node can have its value replaced in place: a value that would be kept
+// inline is kept behind an atomic pointer instead.
+func (c *cache[K, V]) newNode(key K, value V, weight uint32, expiresAt, refreshableAt int64, updatable bool) node.Node[K, V] {
+	if updatable {
+		return c.nodeManager.CreateUpdatable(key, value, expiresAt, refreshableAt, weight)
 	}
-	// The inline value stays zero: a boxed node keeps its value only behind the pointer, so
-	// replacing it later does not retain the previous value.
-	n := c.nodeManager.Create(key, zeroValue[V](), expiresAt, refreshableAt, weight)
-	n.SetValue(value)
-	return n
+	return c.nodeManager.Create(key, value, expiresAt, refreshableAt, weight)
 }
 
 // writeEntry describes a write before it is applied: the new value and weight with the
