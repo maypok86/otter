@@ -202,6 +202,8 @@ func newCache[K comparable, V any](o *Options[K, V]) *cache[K, V] {
 }
 
 // newNode creates a node for a write whose weight and timestamps have already been computed.
+// With boxed, a node whose value is kept inline gets it behind a pointer instead, so that it can
+// be updated in place; a node that keeps its value in one atomic word always can.
 func (c *cache[K, V]) newNode(key K, value V, weight uint32, expiresAt, refreshableAt int64, boxed bool) node.Node[K, V] {
 	if !boxed {
 		return c.nodeManager.Create(key, value, expiresAt, refreshableAt, weight)
@@ -503,7 +505,8 @@ func (c *cache[K, V]) set(key K, value V, onlyIfAbsent bool) (V, bool) {
 // atomicSet applies a write of value to the key whose current node is old (nil if absent).
 // The user's weigher, expiry and refresh calculators are called once per write.
 //
-// A write over a boxed node that is still in the table is applied in place, keeping the node:
+// A write over a node that can set its value and is still in the table is applied in place,
+// keeping the node:
 // plain updates, loads and refreshes, and writes over an expired entry that has not been
 // removed yet (it is reused for the new value, and the old one is reported as expired).
 // Swapping in a new node forces an update task through the bounded write buffer so that the
@@ -514,10 +517,11 @@ func (c *cache[K, V]) set(key K, value V, onlyIfAbsent bool) (V, bool) {
 // policy accounts the weight separately (policyWeight) and the timer wheel only reschedules a
 // deadline that moved later, so those changes go through a reconciliation task.
 //
-// Only a boxed node qualifies: its inline value is never written after publication, so a
-// concurrent reader cannot observe a torn or cleared value. The first update of a live entry
-// therefore replaces the node with a boxed one, so that later updates of this (likely hot) key
-// are applied in place.
+// A value that fits in one atomic word (a pointer-shaped value, or one without pointers of up to
+// 8 bytes) is always set in place. A larger value is kept inline, and an inline value is never
+// written after publication, so that a concurrent reader cannot observe a torn or cleared value:
+// the first update of such a live entry replaces the node with a boxed one, whose value lives
+// behind an atomic pointer, so that later updates of this (likely hot) key are applied in place.
 func (c *cache[K, V]) atomicSet(
 	key K,
 	value V,
@@ -545,7 +549,7 @@ func (c *cache[K, V]) atomicSet(
 		c.singleflight.delete(key)
 	}
 
-	if old != nil && c.withMaintenance && old.IsAlive() && old.IsBoxed() {
+	if old != nil && c.withMaintenance && old.IsAlive() && old.CanSetValue() {
 		written := writeResult{
 			// before the node is changed: an expired entry is reused, and its old value expired
 			cause:   getCause(old, nowNano, CauseReplacement),

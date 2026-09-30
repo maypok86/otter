@@ -59,7 +59,7 @@ func (n *BER[K, V]) SetValue(v V) {
 	n.valuePtr.Store(&v)
 }
 
-func (n *BER[K, V]) IsBoxed() bool {
+func (n *BER[K, V]) CanSetValue() bool {
 	return n.valuePtr.Load() != nil
 }
 

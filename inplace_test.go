@@ -30,23 +30,42 @@ import (
 	"github.com/maypok86/otter/v2/stats"
 )
 
+type retainedBlob struct{ data [1 << 10]byte }
+
 func TestCache_InPlaceUpdateDoesNotRetainOldValues(t *testing.T) {
 	t.Parallel()
 
-	type blob struct{ data [1 << 10]byte }
+	t.Run("pointer", func(t *testing.T) {
+		t.Parallel()
+		// kept in one atomic word
+		testDoesNotRetainOldValues(t, func(b *retainedBlob) *retainedBlob { return b })
+	})
+	t.Run("inline", func(t *testing.T) {
+		t.Parallel()
+		// kept inline until the first update, then behind a pointer
+		type wrapped struct {
+			b *retainedBlob
+			n int
+		}
+		testDoesNotRetainOldValues(t, func(b *retainedBlob) wrapped { return wrapped{b: b} })
+	})
+}
+
+func testDoesNotRetainOldValues[V any](t *testing.T, wrap func(b *retainedBlob) V) {
+	t.Helper()
 
 	for _, updates := range []int{1, 5} {
-		c := Must(&Options[int, *blob]{
+		c := Must(&Options[int, V]{
 			MaximumSize:      1000,
-			ExpiryCalculator: ExpiryWriting[int, *blob](time.Hour),
+			ExpiryCalculator: ExpiryWriting[int, V](time.Hour),
 		})
 
 		const n = 100
 		var collected atomic.Int64
-		track := func() *blob {
-			v := &blob{}
-			runtime.AddCleanup(v, func(_ int) { collected.Add(1) }, 0)
-			return v
+		track := func() V {
+			b := &retainedBlob{}
+			runtime.AddCleanup(b, func(_ int) { collected.Add(1) }, 0)
+			return wrap(b)
 		}
 		for i := 0; i < n; i++ {
 			c.Set(i, track())
@@ -66,9 +85,8 @@ func TestCache_InPlaceUpdateDoesNotRetainOldValues(t *testing.T) {
 		}, 5*time.Second, 10*time.Millisecond, "updates=%d: collected %d of %d", updates, collected.Load(), want)
 
 		for i := 0; i < n; i++ {
-			v, ok := c.GetIfPresent(i)
+			_, ok := c.GetIfPresent(i)
 			require.True(t, ok)
-			require.NotNil(t, v)
 		}
 		runtime.KeepAlive(c)
 	}
@@ -129,11 +147,11 @@ func TestCache_InPlaceUpdateConcurrentReads(t *testing.T) {
 	stop.Store(true)
 	wg.Wait()
 
-	// the first update boxed every node, later ones were applied in place
+	// the first update boxed every node (a pair is kept inline), later ones were applied in place
 	for i := 0; i < keys; i++ {
 		n := c.cache.hashmap.Get(i)
 		require.NotNil(t, n)
-		require.True(t, n.IsBoxed(), "key %d", i)
+		require.True(t, n.CanSetValue(), "key %d", i)
 	}
 }
 
@@ -153,7 +171,7 @@ func TestCache_ExpireNodeRechecksExpiration(t *testing.T) {
 			},
 		})
 		c.Set(1, 1)
-		c.Set(1, 2) // boxes the node, so that later writes are applied in place
+		c.Set(1, 2) // an update, applied in place
 		n := c.cache.hashmap.Get(1)
 
 		clk.Sleep(2 * time.Minute)
@@ -186,7 +204,6 @@ func TestCache_ComputeReturnsItsOwnValue(t *testing.T) {
 
 	c := Must(&Options[int, int]{MaximumSize: 100})
 	c.Set(1, 0)
-	c.Set(1, 0) // boxes the node, so that later writes are applied in place
 
 	var stop atomic.Bool
 	var wg sync.WaitGroup
@@ -247,7 +264,6 @@ func TestCache_FailedInPlaceUpdateCallsCallbacksOnce(t *testing.T) {
 			},
 		})
 		c.Set(1, 5)
-		c.Set(1, 5) // boxes the node
 
 		weighs.Store(0)
 		c.Set(1, 7) // the weight changes
@@ -267,7 +283,6 @@ func TestCache_FailedInPlaceUpdateCallsCallbacksOnce(t *testing.T) {
 			ExpiryCalculator: expiry,
 		})
 		c.Set(1, 100)
-		c.Set(1, 100) // boxes the node
 
 		expiry.updates.Store(0)
 		c.Set(1, 10) // the deadline moves earlier: the in-place attempt fails
@@ -313,7 +328,7 @@ func TestCache_InPlaceUpdateNotifications(t *testing.T) {
 	})
 
 	c.Set(1, 1)
-	c.Set(1, 2) // replaces the node with a boxed one
+	c.Set(1, 2) // in place: an int is kept in one atomic word
 	c.Set(1, 3) // in place
 	v, ok := c.Compute(1, func(oldValue int, found bool) (int, ComputeOp) {
 		return 4, WriteOp
@@ -396,7 +411,7 @@ func TestCache_UnmaintainedNodesHaveNoValuePointer(t *testing.T) {
 	c.Set(1, 1)
 	c.Set(1, 2)
 	n := c.cache.hashmap.Get(1)
-	require.False(t, n.IsBoxed())
+	require.False(t, n.CanSetValue())
 	require.Equal(t, 2, n.Value())
 }
 
@@ -481,7 +496,6 @@ func TestCache_InPlaceWeightChange(t *testing.T) {
 	})
 	for k := 1; k <= 5; k++ {
 		c.Set(k, 10)
-		c.Set(k, 10) // boxes the node
 	}
 	n := c.cache.hashmap.Get(1)
 
@@ -543,7 +557,6 @@ func TestCache_InPlaceUpdateShrinksExpiration(t *testing.T) {
 		},
 	})
 	c.Set(1, 100)
-	c.Set(1, 100) // boxes the node
 	n := c.cache.hashmap.Get(1)
 
 	c.Set(1, 10) // the entry now expires in 10s instead of 100s
@@ -587,12 +600,12 @@ func TestCache_InPlaceUpdateResurrectsExpiredEntry(t *testing.T) {
 			pending = append(pending, fn)
 		},
 	})
-	boxed := func(key int) node.Node[int, int] {
+	updatable := func(key int) node.Node[int, int] {
 		c.Set(key, 1)
-		c.Set(key, 2) // boxes the node
+		c.Set(key, 2) // an update, applied in place
 		return c.cache.hashmap.Get(key)
 	}
-	n1, n2, n3, n4 := boxed(1), boxed(2), boxed(3), boxed(4)
+	n1, n2, n3, n4 := updatable(1), updatable(2), updatable(3), updatable(4)
 	runPending()
 	clk.Sleep(2 * time.Minute) // all four expire, but stay in the table
 
@@ -632,7 +645,7 @@ func TestCache_InPlaceUpdateResurrectsExpiredEntry(t *testing.T) {
 	validateCache(t, c)
 }
 
-// A refresh of a boxed entry is applied in place.
+// A refresh of an entry that can be updated in place is applied in place.
 func TestCache_InPlaceRefresh(t *testing.T) {
 	t.Parallel()
 
@@ -644,7 +657,7 @@ func TestCache_InPlaceRefresh(t *testing.T) {
 		},
 	})
 	c.Set(1, 1)
-	c.Set(1, 2) // boxes the node
+	c.Set(1, 2) // an update, applied in place
 	n := c.cache.hashmap.Get(1)
 
 	res := <-c.Refresh(context.Background(), 1, LoaderFunc[int, int](func(ctx context.Context, key int) (int, error) {
@@ -675,7 +688,6 @@ func TestCache_ReconcileReschedulesEarlierExpiration(t *testing.T) {
 		},
 	})
 	c.Set(1, 100)
-	c.Set(1, 100) // boxes the node
 	ci := c.cache
 	n := ci.hashmap.Get(1)
 
@@ -707,7 +719,6 @@ func TestCache_ReconcileAfterDeadlinePassed(t *testing.T) {
 		},
 	})
 	c.Set(1, 100)
-	c.Set(1, 100) // boxes the node
 	ci := c.cache
 	n := ci.hashmap.Get(1)
 
@@ -747,7 +758,6 @@ func TestCache_InPlaceWeightAndExpirationChange(t *testing.T) {
 		},
 	})
 	c.Set(1, 100)
-	c.Set(1, 100) // boxes the node
 	c.Set(2, 100)
 	n := c.cache.hashmap.Get(1)
 
@@ -766,7 +776,6 @@ func TestCache_InPlaceWeightAndExpirationChange(t *testing.T) {
 
 	// an expired entry that is still in the table is written again with another weight
 	c.Set(3, 50)
-	c.Set(3, 50) // boxes the node
 	n = c.cache.hashmap.Get(3)
 	clk.Sleep(51 * time.Second)
 	c.Set(3, 30)
@@ -783,16 +792,24 @@ func TestCache_DeletionListenersAgreeOnCause(t *testing.T) {
 	t.Parallel()
 
 	clk := newNonTickingClock()
-	deleted := &deletionRecorder{}
-	atomicDeleted := &deletionRecorder{}
-	var c *Cache[int, int]
-	c = Must(&Options[int, int]{
+	var (
+		mu                     sync.Mutex
+		deleted, atomicDeleted []DeletionEvent[int, string]
+	)
+	var c *Cache[int, string]
+	c = Must(&Options[int, string]{
 		MaximumSize:      10,
 		Clock:            clk,
-		ExpiryCalculator: &countingExpiry{}, // the value is the TTL in seconds
-		OnDeletion:       deleted.record,
-		OnAtomicDeletion: func(e DeletionEvent[int, int]) {
-			atomicDeleted.record(e)
+		ExpiryCalculator: ExpiryWriting[int, string](10 * time.Second),
+		OnDeletion: func(e DeletionEvent[int, string]) {
+			mu.Lock()
+			defer mu.Unlock()
+			deleted = append(deleted, e)
+		},
+		OnAtomicDeletion: func(e DeletionEvent[int, string]) {
+			mu.Lock()
+			atomicDeleted = append(atomicDeleted, e)
+			mu.Unlock()
 			// the hash table still returns the old node, whose deadline is extended
 			c.SetExpiresAfter(e.Key, time.Hour)
 		},
@@ -801,20 +818,22 @@ func TestCache_DeletionListenersAgreeOnCause(t *testing.T) {
 		},
 	})
 
-	c.Set(1, 10) // an inline node, so the next write replaces it
+	c.Set(1, "a") // a string is kept inline, so the next write replaces the node
 	clk.Sleep(20 * time.Second)
-	c.Set(1, 20)
+	c.Set(1, "b")
 	c.CleanUp()
 
-	c.Set(2, 10)
+	c.Set(2, "a")
 	c.Invalidate(2)
 	c.CleanUp()
 
-	require.Equal(t, atomicDeleted.get(), deleted.get())
-	require.Equal(t, []DeletionEvent[int, int]{
-		{Key: 1, Value: 10, Cause: CauseExpiration},
-		{Key: 2, Value: 10, Cause: CauseInvalidation},
-	}, deleted.get())
+	mu.Lock()
+	defer mu.Unlock()
+	require.Equal(t, atomicDeleted, deleted)
+	require.Equal(t, []DeletionEvent[int, string]{
+		{Key: 1, Value: "a", Cause: CauseExpiration},
+		{Key: 2, Value: "a", Cause: CauseInvalidation},
+	}, deleted)
 }
 
 // An entry whose weight a writer changes to zero in place, after a maintenance pass replayed the

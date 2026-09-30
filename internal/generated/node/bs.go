@@ -54,7 +54,7 @@ func (n *BS[K, V]) SetValue(v V) {
 	n.valuePtr.Store(&v)
 }
 
-func (n *BS[K, V]) IsBoxed() bool {
+func (n *BS[K, V]) CanSetValue() bool {
 	return n.valuePtr.Load() != nil
 }
 

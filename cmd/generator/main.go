@@ -55,6 +55,49 @@ var (
 	aliasToFeature map[string]feature
 )
 
+// Value storages of nodes with state (the only ones that are updated in place). The storage is
+// chosen from the value type once, when the cache is created (see valueStorage in the manager).
+const (
+	// inlineStorage keeps the value inline until the node is replaced by a boxed one, whose value
+	// lives behind an atomic pointer.
+	inlineStorage = ""
+	// pointerStorage keeps a pointer-shaped value (*T, map, chan, func) in an atomic pointer.
+	pointerStorage = "p"
+	// wordStorage keeps a value without pointers of up to 8 bytes in an atomic.Uint64. A smaller
+	// value takes the same word: a separate 32-bit storage would rarely make the node smaller
+	// (only next to a key of at most 4 bytes), but would add node types, each of which every
+	// program instantiates for every cache type it uses.
+	wordStorage = "u64"
+)
+
+var storages = []string{inlineStorage, pointerStorage, wordStorage}
+
+// stateFeatures are the features that give a node state, i.e. the cache maintenance: only such
+// nodes are updated in place and get the other value storages.
+var stateFeatures = []feature{size, expiration, weight}
+
+func hasState(features map[feature]bool) bool {
+	for _, f := range stateFeatures {
+		if features[f] {
+			return true
+		}
+	}
+	return false
+}
+
+// storagesOf returns the value storages generated for nodeType.
+func storagesOf(nodeType string) []string {
+	if !hasState(getFeatures(nodeType)) {
+		// no state: the cache has no maintenance and never updates a node in place
+		return []string{inlineStorage}
+	}
+	return storages
+}
+
+func structNameOf(nodeType, storage string) string {
+	return strings.ToUpper(nodeType + storage)
+}
+
 func init() {
 	aliasToFeature = make(map[string]feature, len(declaredFeatures))
 	for _, f := range declaredFeatures {
@@ -167,15 +210,23 @@ type generator struct {
 	*writer
 
 	structName string
+	storage    string
 	features   map[feature]bool
 }
 
-func newGenerator(nodeType string) *generator {
+func newGenerator(nodeType, storage string) *generator {
 	return &generator{
 		writer:     newWriter(),
-		structName: strings.ToUpper(nodeType),
+		structName: structNameOf(nodeType, storage),
+		storage:    storage,
 		features:   getFeatures(nodeType),
 	}
+}
+
+// inWord reports whether the value is kept in one atomic word and can be replaced in place
+// from the start.
+func (g *generator) inWord() bool {
+	return g.storage != inlineStorage
 }
 
 func (g *generator) isBounded() bool {
@@ -183,7 +234,7 @@ func (g *generator) isBounded() bool {
 }
 
 func (g *generator) withState() bool {
-	return g.isBounded() || g.features[expiration]
+	return hasState(g.features)
 }
 
 func (g *generator) printImports() {
@@ -212,6 +263,14 @@ func (g *generator) printStructComment() {
 			i++
 		}
 	}
+	switch g.storage {
+	case pointerStorage:
+		g.p("//")
+		g.p("// The value is pointer-shaped and kept in an atomic pointer.")
+	case wordStorage:
+		g.p("//")
+		g.p("// The value has no pointers, takes at most 8 bytes and is kept in an atomic.Uint64.")
+	}
 }
 
 func (g *generator) printStruct() {
@@ -221,8 +280,16 @@ func (g *generator) printStruct() {
 	g.p("type %s[K comparable, V any] struct {", g.structName)
 	g.in()
 	g.p("key        K")
-	g.p("value      V")
-	if g.withState() {
+	switch g.storage {
+	case pointerStorage:
+		// accessed only atomically; holds the value's pointer word, so the GC sees it
+		g.p("value      unsafe.Pointer")
+	case wordStorage:
+		g.p("value      atomic.Uint64")
+	default:
+		g.p("value      V")
+	}
+	if g.withState() && !g.inWord() {
 		// value is immutable once the node is published. A node that has been updated is
 		// replaced (RCU) by a boxed node, whose current value lives behind valuePtr and can be
 		// swapped in place; valuePtr never goes back to nil. Readers therefore never observe a
@@ -269,12 +336,17 @@ func (g *generator) printConstructors() {
 	g.p("n := &%s[K, V]{", g.structName)
 	g.in()
 	g.p("key:        key,")
-	g.p("value:      value,")
+	if !g.inWord() {
+		g.p("value:      value,")
+	}
 	if g.features[weight] {
 		g.p("policyWeight: weight,")
 	}
 	g.out()
 	g.p("}")
+	if g.inWord() {
+		g.p("n.SetValue(value)")
+	}
 	if g.features[weight] {
 		g.p("n.weight.Store(weight)")
 	}
@@ -312,34 +384,53 @@ func (g *generator) printFunctions() {
 
 	g.p("func (n *%s[K, V]) Value() V {", g.structName)
 	g.in()
-	if g.withState() {
+	switch {
+	case g.storage == pointerStorage:
+		g.p("p := atomic.LoadPointer(&n.value)")
+		g.p("return *(*V)(unsafe.Pointer(&p))")
+	case g.inWord():
+		g.p("w := n.value.Load()")
+		g.p("return *(*V)(unsafe.Pointer(&w))")
+	case g.withState():
 		g.p("if p := n.valuePtr.Load(); p != nil {")
 		g.in()
 		g.p("return *p")
 		g.out()
 		g.p("}")
+		g.p("return n.value")
+	default:
+		g.p("return n.value")
 	}
-	g.p("return n.value")
 	g.out()
 	g.p("}")
 	g.p("")
 
 	g.p("func (n *%s[K, V]) SetValue(v V) {", g.structName)
 	g.in()
-	if g.withState() {
+	switch {
+	case g.storage == pointerStorage:
+		g.p("atomic.StorePointer(&n.value, *(*unsafe.Pointer)(unsafe.Pointer(&v)))")
+	case g.storage == wordStorage:
+		g.p("var w uint64")
+		g.p("*(*V)(unsafe.Pointer(&w)) = v")
+		g.p("n.value.Store(w)")
+	case g.withState():
 		g.p("n.valuePtr.Store(&v)")
-	} else {
+	default:
 		g.p("panic(\"not implemented\")")
 	}
 	g.out()
 	g.p("}")
 	g.p("")
 
-	g.p("func (n *%s[K, V]) IsBoxed() bool {", g.structName)
+	g.p("func (n *%s[K, V]) CanSetValue() bool {", g.structName)
 	g.in()
-	if g.withState() {
+	switch {
+	case g.inWord():
+		g.p("return true")
+	case g.withState():
 		g.p("return n.valuePtr.Load() != nil")
-	} else {
+	default:
 		g.p("return false")
 	}
 	g.out()
@@ -715,8 +806,8 @@ func (g *generator) printFunctions() {
 	g.p("")
 }
 
-func run(nodeType, dir string) error {
-	g := newGenerator(nodeType)
+func run(nodeType, storage, dir string) error {
+	g := newGenerator(nodeType, storage)
 	g.p("// Code generated by NodeGenerator. DO NOT EDIT.")
 	g.p("")
 	g.p("// Package node is a generated by the generator.")
@@ -730,7 +821,7 @@ func run(nodeType, dir string) error {
 
 	g.printFunctions()
 
-	fileName := fmt.Sprintf("%s.go", nodeType)
+	fileName := fmt.Sprintf("%s.go", nodeType+storage)
 	filePath := filepath.Join(dir, fileName)
 
 	f, err := os.Create(filePath)
@@ -740,199 +831,6 @@ func run(nodeType, dir string) error {
 	defer f.Close()
 
 	if _, err := f.Write(g.output()); err != nil {
-		return fmt.Errorf("write output: %w", err)
-	}
-
-	return nil
-}
-
-func printManager(dir string) error {
-	const nodeManager = `// Code generated by NodeGenerator. DO NOT EDIT.
-
-// Package node is a generated generator package.
-package node
-
-import (
-	"strings"
-	"unsafe"
-)
-
-const (
-	InWindowQueue uint8 = iota
-	InMainProbationQueue
-	InMainProtectedQueue
-)
-
-const (
-	aliveState uint32 = iota
-	retiredState
-	deadState
-)
-
-// Node is a cache entry.
-type Node[K comparable, V any] interface {
-	// Key returns the key.
-	Key() K
-	// Value returns the value.
-	Value() V
-	// SetValue atomically replaces the value (used for in-place updates).
-	SetValue(v V)
-	// IsBoxed returns true if the value is stored behind a pointer and can be updated in place.
-	IsBoxed() bool
-	// AsPointer returns the node as a pointer.
-	AsPointer() unsafe.Pointer
-	// Prev returns the previous node in the eviction policy.
-	Prev() Node[K, V]
-	// SetPrev sets the previous node in the eviction policy.
-	SetPrev(v Node[K, V])
-	// Next returns the next node in the eviction policy.
-	Next() Node[K, V]
-	// SetNext sets the next node in the eviction policy.
-	SetNext(v Node[K, V])
-	// PrevExp returns the previous node in the expiration policy.
-	PrevExp() Node[K, V]
-	// SetPrevExp sets the previous node in the expiration policy.
-	SetPrevExp(v Node[K, V])
-	// NextExp returns the next node in the expiration policy.
-	NextExp() Node[K, V]
-	// SetNextExp sets the next node in the expiration policy.
-	SetNextExp(v Node[K, V])
-	// HasExpired returns true if node has expired.
-	HasExpired(now int64) bool
-	// ExpiresAt returns the expiration time.
-	ExpiresAt() int64
-	// CASExpiresAt executes the compare-and-swap operation for expiresAt.
-	CASExpiresAt(old, new int64) bool
-	// SetExpiresAt sets the expiration time.
-	SetExpiresAt(new int64)
-	// RefreshableAt returns the refresh time.
-	RefreshableAt() int64
-	// CASRefreshableAt executes the compare-and-swap operation for refreshableAt.
-	CASRefreshableAt(old, new int64) bool
-	// SetRefreshableAt returns the refresh time.
-	SetRefreshableAt(new int64)
-	IsFresh(now int64) bool
-	// Weight returns the weight of the node.
-	Weight() uint32
-	// SetWeight atomically replaces the weight (used for in-place updates).
-	SetWeight(weight uint32)
-	// PolicyWeight returns the weight the eviction policy has accounted for the node.
-	PolicyWeight() uint32
-	// SetPolicyWeight sets the weight the eviction policy has accounted for the node.
-	SetPolicyWeight(weight uint32)
-	// IsAlive returns true if the entry is available in the hash-table and page replacement policy.
-	IsAlive() bool
-	// IsRetired returns true if the entry was removed from the hash-table and is awaiting removal from the page
-	// replacement policy.
-	IsRetired() bool
-	// Retire sets the node to the retired state.
-	Retire()
-	// IsDead returns true if the entry was removed from the hash-table and the page replacement policy.
-	IsDead() bool
-	// Die sets the node to the dead state.
-	Die()
-	// GetQueueType returns the queue that the entry's resides in (window, probation, or protected).
-	GetQueueType() uint8
-	// SetQueueType sets queue that the entry resides in (window, probation, or protected).
-	SetQueueType(queueType uint8)
-	// InWindow returns true if the entry is in the Window or Main space.
-	InWindow() bool
-	// MakeWindow sets the status to the Window queue.
-	MakeWindow()
-	// InMainProbation returns true if the entry is in the Main space's probation queue.
-	InMainProbation() bool
-	// MakeMainProbation sets the status to the Main space's probation queue.
-	MakeMainProbation()
-	// InMainProtected returns if the entry is in the Main space's protected queue.
-	InMainProtected() bool
-	// MakeMainProtected sets the status to the Main space's protected queue.
-	MakeMainProtected()
-}
-
-func Equals[K comparable, V any](a, b Node[K, V]) bool {
-	if a == nil {
-		return b == nil || b.AsPointer() == nil
-	}
-	if b == nil {
-		return a.AsPointer() == nil
-	}
-	return a.AsPointer() == b.AsPointer()
-}
-
-type Config struct {
-	WithSize       bool
-	WithExpiration bool
-	WithWeight     bool
-	WithRefresh    bool
-}
-
-type Manager[K comparable, V any] struct {
-	create      func(key K, value V, expiresAt, refreshableAt int64, weight uint32) Node[K, V]
-	fromPointer func(ptr unsafe.Pointer) Node[K, V]
-}
-
-func NewManager[K comparable, V any](c Config) *Manager[K, V] {
-	var sb strings.Builder
-	sb.WriteString("b")
-	if c.WithSize {
-		sb.WriteString("s")
-	}
-	if c.WithExpiration {
-		sb.WriteString("e")
-	}
-	if c.WithRefresh {
-		sb.WriteString("r")
-	}
-	if c.WithWeight {
-		sb.WriteString("w")
-	}
-	nodeType := sb.String()
-	m := &Manager[K, V]{}
-`
-
-	const nodeFooter = `return m
-}
-
-func (m *Manager[K, V]) Create(key K, value V, expiresAt, refreshableAt int64, weight uint32) Node[K, V] {
-	return m.create(key, value, expiresAt, refreshableAt, weight)
-}
-
-func (m *Manager[K, V]) FromPointer(ptr unsafe.Pointer) Node[K, V] {
-	return m.fromPointer(ptr)
-}
-
-func (m *Manager[K, V]) IsNil(n Node[K, V]) bool {
-	return n == nil || n.AsPointer() == nil
-}
-`
-	w := newWriter()
-
-	w.p(nodeManager)
-	w.in()
-	w.p("switch nodeType {")
-	for _, nodeType := range nodeTypes {
-		w.p("case \"%s\":", nodeType)
-		w.in()
-		structName := strings.ToUpper(nodeType)
-		w.p("m.create = New%s[K, V]", structName)
-		w.p("m.fromPointer = CastPointerTo%s[K, V]", structName)
-		w.out()
-	}
-	w.p("default:")
-	w.in()
-	w.p("panic(\"not valid nodeType\")")
-	w.out()
-	w.p("}")
-	w.p(nodeFooter)
-
-	managerPath := filepath.Join(dir, "manager.go")
-	f, err := os.Create(managerPath)
-	if err != nil {
-		return fmt.Errorf("create file %s: %w", managerPath, err)
-	}
-	defer f.Close()
-
-	if _, err := f.Write(w.output()); err != nil {
 		return fmt.Errorf("write output: %w", err)
 	}
 
@@ -951,8 +849,10 @@ func main() {
 	}
 
 	for _, nodeType := range nodeTypes {
-		if err := run(nodeType, dir); err != nil {
-			log.Fatal(err)
+		for _, storage := range storagesOf(nodeType) {
+			if err := run(nodeType, storage, dir); err != nil {
+				log.Fatal(err)
+			}
 		}
 	}
 
