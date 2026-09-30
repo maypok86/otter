@@ -1616,3 +1616,33 @@ func TestCache_EvictionDoesNotCancelInFlightLoad(t *testing.T) {
 	require.True(t, ok, "the loaded value was not stored")
 	require.Equal(t, 2, v)
 }
+
+// Get returns the value it found, not the one its own refresh wrote: the refresh may update the
+// node in place before Get reads it (here with a synchronous executor).
+func TestCache_GetReturnsValueBeforeInPlaceRefresh(t *testing.T) {
+	t.Parallel()
+
+	fs := &fakeSource{}
+	c := Must(&Options[int, string]{
+		MaximumSize: 10,
+		Clock:       fs,
+		Executor: func(fn func()) {
+			fn()
+		},
+		RefreshCalculator: RefreshWriting[int, string](time.Minute),
+	})
+	c.Set(1, "a")
+	c.Set(1, "b") // boxes the node, so that the refresh is applied in place
+
+	fs.Sleep(2 * time.Minute)
+	loader := LoaderFunc[int, string](func(ctx context.Context, key int) (string, error) {
+		return "c", nil
+	})
+	v, err := c.Get(context.Background(), 1, loader)
+	require.NoError(t, err)
+	require.Equal(t, "b", v)
+
+	v, ok := c.GetIfPresent(1)
+	require.True(t, ok)
+	require.Equal(t, "c", v)
+}

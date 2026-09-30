@@ -932,13 +932,16 @@ func (c *cache[K, V]) Get(ctx context.Context, key K, loader Loader[K, V]) (V, e
 	nowNano := c.clock.NowNano()
 	n := c.getNode(key, nowNano)
 	if n != nil {
+		// Read before the refresh starts: the node may be updated in place by then (with a
+		// synchronous executor, by the refresh itself).
+		value := n.Value()
 		if !n.IsFresh(nowNano) {
 			c.refreshKey(ctx, refreshableKey[K, V]{
 				key: n.Key(),
 				old: n,
 			}, loader, false)
 		}
-		return n.Value(), nil
+		return value, nil
 	}
 
 	cl, shouldLoad := c.singleflight.startCall(key, false)
