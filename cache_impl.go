@@ -130,15 +130,14 @@ func newCache[K comparable, V any](o *Options[K, V]) *cache[K, V] {
 		_, ok := o.StatsRecorder.(*stats.NoopRecorder)
 		withStats = !ok
 	}
-	statsRecorder := o.StatsRecorder
-	if !withStats {
-		statsRecorder = &stats.NoopRecorder{}
-	}
-	var statsSnapshoter stats.Snapshoter
-	if snapshoter, ok := statsRecorder.(stats.Snapshoter); ok {
-		statsSnapshoter = snapshoter
-	} else {
-		statsSnapshoter = &stats.NoopRecorder{}
+	logger := o.getLogger()
+	var statsRecorder stats.Recorder = &stats.NoopRecorder{}
+	var statsSnapshoter stats.Snapshoter = &stats.NoopRecorder{}
+	if withStats {
+		statsRecorder = &safeRecorder{recorder: o.StatsRecorder, logger: logger}
+		if snapshoter, ok := o.StatsRecorder.(stats.Snapshoter); ok {
+			statsSnapshoter = snapshoter
+		}
 	}
 
 	c := &cache[K, V]{
@@ -146,7 +145,7 @@ func newCache[K comparable, V any](o *Options[K, V]) *cache[K, V] {
 		hashmap:            hashmap.NewWithSize[K, V, node.Node[K, V]](nodeManager, o.getInitialCapacity()),
 		stats:              statsRecorder,
 		statsSnapshoter:    statsSnapshoter,
-		logger:             o.getLogger(),
+		logger:             logger,
 		singleflight:       &group[K, V]{},
 		executor:           o.getExecutor(),
 		hasDefaultExecutor: o.Executor == nil,
@@ -1275,7 +1274,11 @@ func (c *cache[K, V]) notifyDeletion(key K, value V, cause DeletionCause) {
 		return
 	}
 
+	// A panic of the listener, or of a custom executor submitting it, is logged: this may run
+	// during maintenance, under the eviction lock.
+	defer recoverCallback(c.logger, "Executor panicked while submitting OnDeletion")
 	c.executor(func() {
+		defer recoverCallback(c.logger, "OnDeletion panicked")
 		c.onDeletion(DeletionEvent[K, V]{
 			Key:   key,
 			Value: value,
@@ -1289,6 +1292,9 @@ func (c *cache[K, V]) notifyAtomicDeletion(key K, value V, cause DeletionCause) 
 		return
 	}
 
+	// The listener runs under the hash table's bucket lock, after the entry is already changed
+	// or removed; a panic is logged so that the change completes.
+	defer recoverCallback(c.logger, "OnAtomicDeletion panicked")
 	c.onAtomicDeletion(DeletionEvent[K, V]{
 		Key:   key,
 		Value: value,

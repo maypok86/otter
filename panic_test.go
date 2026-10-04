@@ -15,12 +15,35 @@
 package otter
 
 import (
+	"context"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/maypok86/otter/v2/stats"
 )
+
+// recordingLogger records the messages logged at the error level.
+type recordingLogger struct {
+	mu   sync.Mutex
+	msgs []string
+}
+
+func (l *recordingLogger) Warn(ctx context.Context, msg string, err error) {}
+
+func (l *recordingLogger) Error(ctx context.Context, msg string, err error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.msgs = append(l.msgs, msg)
+}
+
+func (l *recordingLogger) get() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]string(nil), l.msgs...)
+}
 
 // completes fails the test if fn does not return within a few seconds, which is how a lock
 // left held by a panic shows up.
@@ -37,6 +60,10 @@ func completes(t *testing.T, name string, fn func()) {
 	case <-time.After(5 * time.Second):
 		t.Fatalf("%s did not complete: a lock or a load was left behind", name)
 	}
+}
+
+func syncExecutor(fn func()) {
+	fn()
 }
 
 // A panicking weigher or expiry calculator propagates to the caller, does not apply the write,
@@ -107,3 +134,67 @@ func (e *expiryFunc) ExpireAfterUpdate(entry Entry[int, int], oldValue int) time
 }
 
 func (e *expiryFunc) ExpireAfterRead(entry Entry[int, int]) time.Duration { return e.read(entry) }
+
+// A panic of a deletion listener or a stats recorder is logged: the operation completes and the
+// cache stays consistent, also when the panic happens during maintenance.
+func TestCache_PanicInListenersAndStatsIsLogged(t *testing.T) {
+	t.Parallel()
+
+	logger := &recordingLogger{}
+	c := Must(&Options[int, int]{
+		MaximumSize: 10,
+		Executor:    syncExecutor,
+		Logger:      logger,
+		OnDeletion: func(e DeletionEvent[int, int]) {
+			panic("on deletion boom")
+		},
+		OnAtomicDeletion: func(e DeletionEvent[int, int]) {
+			panic("on atomic deletion boom")
+		},
+		StatsRecorder: &panickingRecorder{Counter: stats.NewCounter()},
+	})
+
+	completes(t, "writes with panicking listeners", func() {
+		for i := 0; i < 1000; i++ {
+			c.Set(i%50, i)
+			c.Compute(i%50, func(old int, found bool) (int, ComputeOp) {
+				return i, WriteOp
+			})
+			if i%7 == 0 {
+				c.Invalidate(i % 50)
+			}
+		}
+		c.CleanUp()
+	})
+	require.LessOrEqual(t, c.EstimatedSize(), 10)
+	validatePolicy(t, c)
+
+	msgs := logger.get()
+	require.Contains(t, msgs, "OnDeletion panicked")
+	require.Contains(t, msgs, "OnAtomicDeletion panicked")
+	require.Contains(t, msgs, "StatsRecorder.RecordHits panicked")
+	require.Contains(t, msgs, "StatsRecorder.RecordEviction panicked")
+}
+
+type panickingRecorder struct {
+	*stats.Counter
+}
+
+func (r *panickingRecorder) RecordHits(count int) { panic("stats boom") }
+
+func (r *panickingRecorder) RecordEviction(weight uint32) { panic("stats boom") }
+
+// validatePolicy checks that every entry is linked into the eviction policy and accounted.
+func validatePolicy(t *testing.T, c *Cache[int, int]) {
+	t.Helper()
+
+	ci := c.cache
+	ci.evictionMutex.Lock()
+	defer ci.evictionMutex.Unlock()
+	ci.maintenance(nil)
+
+	p := ci.evictionPolicy
+	linked := p.window.Len() + p.probation.Len() + p.protected.Len()
+	require.Equal(t, ci.hashmap.Size(), linked, "entries outside the policy")
+	require.Equal(t, uint64(linked), p.weightedSize)
+}
