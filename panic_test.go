@@ -310,6 +310,48 @@ func TestCache_PanicWhileWritingBulkResultFinishesAllCalls(t *testing.T) {
 	}
 }
 
+// A panicking loader during a refresh does not crash the process: the result carries the panic
+// as its error, the old value stays, and the error is logged.
+func TestCache_PanicInRefreshIsReturnedAsError(t *testing.T) {
+	t.Parallel()
+
+	logger := &recordingLogger{}
+	c := Must(&Options[int, int]{
+		MaximumSize:       10,
+		Logger:            logger,
+		RefreshCalculator: RefreshWriting[int, int](time.Hour),
+	})
+	c.Set(1, 1)
+
+	loader := LoaderFunc[int, int](func(ctx context.Context, key int) (int, error) {
+		panic("reload boom")
+	})
+	var res RefreshResult[int, int]
+	completes(t, "Refresh with a panicking loader", func() {
+		res = <-c.Refresh(context.Background(), 1, loader)
+	})
+	var pe *panicError
+	require.ErrorAs(t, res.Err, &pe)
+	require.Equal(t, "reload boom", pe.value)
+
+	v, ok := c.GetIfPresent(1)
+	require.True(t, ok)
+	require.Equal(t, 1, v)
+	require.Contains(t, logger.get(), "Returned an error during the refreshing")
+
+	bulkLoader := BulkLoaderFunc[int, int](func(ctx context.Context, keys []int) (map[int]int, error) {
+		panic("bulk reload boom")
+	})
+	var results []RefreshResult[int, int]
+	completes(t, "BulkRefresh with a panicking loader", func() {
+		results = <-c.BulkRefresh(context.Background(), []int{1, 2}, bulkLoader)
+	})
+	require.Len(t, results, 2)
+	for _, r := range results {
+		require.ErrorAs(t, r.Err, &pe)
+	}
+}
+
 // validatePolicy checks that every entry is linked into the eviction policy and accounted.
 func validatePolicy(t *testing.T, c *Cache[int, int]) {
 	t.Helper()

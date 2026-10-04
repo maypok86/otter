@@ -722,7 +722,7 @@ func (c *cache[K, V]) refreshKey(
 		cl, shouldLoad := c.singleflight.startCall(rk.key, true)
 		if shouldLoad {
 			//nolint:errcheck // there is no need to check error
-			_ = c.wrapLoad(func() error {
+			_ = c.wrapRefresh(func() error {
 				loadCtx := context.WithoutCancel(ctx)
 				return c.singleflight.doCall(loadCtx, cl, refresher, c.afterDeleteCall)
 			})
@@ -952,7 +952,7 @@ func (c *cache[K, V]) bulkRefreshKeys(
 
 		loadCtx := context.WithoutCancel(ctx)
 		if len(toLoadCalls) > 0 {
-			loadErr := c.wrapLoad(func() error {
+			loadErr := c.wrapRefresh(func() error {
 				return c.singleflight.doBulkCall(loadCtx, toLoadCalls, bulkLoader.BulkLoad, c.afterDeleteCall)
 			})
 			if loadErr != nil {
@@ -980,7 +980,7 @@ func (c *cache[K, V]) bulkRefreshKeys(
 				return bulkLoader.BulkReload(ctx, keys, oldValues)
 			}
 
-			reloadErr := c.wrapLoad(func() error {
+			reloadErr := c.wrapRefresh(func() error {
 				return c.singleflight.doBulkCall(loadCtx, toReloadCalls, reload, c.afterDeleteCall)
 			})
 			if reloadErr != nil {
@@ -1145,6 +1145,23 @@ func (c *cache[K, V]) wrapLoad(fn func() error) error {
 	}
 
 	return err
+}
+
+// wrapRefresh is wrapLoad for refreshes, which run on the executor: a panic of the loader, or of
+// writing its result, is returned as an error instead of crashing the executor's goroutine. The
+// refreshed calls already hold that error, so it reaches the refresh results and the log like
+// any other refresh error.
+func (c *cache[K, V]) wrapRefresh(fn func() error) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			if pe, ok := r.(*panicError); ok {
+				err = pe
+				return
+			}
+			err = newPanicError(r)
+		}
+	}()
+	return c.wrapLoad(fn)
 }
 
 // Refresh loads a new value for the key, asynchronously. While the new value is loading the
