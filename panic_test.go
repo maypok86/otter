@@ -209,6 +209,107 @@ func TestCache_PanicInExecutorDoesNotStopMaintenance(t *testing.T) {
 	require.NotEmpty(t, logger.get())
 }
 
+// A panic while writing a loaded value (here the weigher) wakes up the waiters, which receive
+// the panic as the load's error, and a later load of the key works.
+func TestCache_PanicWhileWritingLoadedValueWakesWaiters(t *testing.T) {
+	t.Parallel()
+
+	var failing sync.Map
+	c := Must(&Options[int, int]{
+		MaximumWeight: 100,
+		Weigher: func(key, value int) uint32 {
+			if _, ok := failing.Load(key); ok {
+				panic("weigher boom")
+			}
+			return 1
+		},
+	})
+
+	failing.Store(1, struct{}{})
+	release := make(chan struct{})
+	started := make(chan struct{})
+	loader := LoaderFunc[int, int](func(ctx context.Context, key int) (int, error) {
+		close(started)
+		<-release
+		return 42, nil
+	})
+
+	leader := make(chan any, 1)
+	go func() {
+		defer func() { leader <- recover() }()
+		_, _ = c.Get(context.Background(), 1, loader)
+	}()
+	<-started
+
+	waiter := make(chan error, 1)
+	go func() {
+		_, err := c.Get(context.Background(), 1, LoaderFunc[int, int](func(ctx context.Context, key int) (int, error) {
+			return 7, nil
+		}))
+		waiter <- err
+	}()
+	// give the waiter time to join the load
+	time.Sleep(50 * time.Millisecond)
+	close(release)
+
+	require.Equal(t, "weigher boom", <-leader)
+	select {
+	case err := <-waiter:
+		// the waiter either joined the failed load or started a load of its own
+		if err != nil {
+			var pe *panicError
+			require.ErrorAs(t, err, &pe)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the waiter of a load whose result could not be written was never woken up")
+	}
+
+	failing.Delete(1)
+	completes(t, "Get after the failed load", func() {
+		v, err := c.Get(context.Background(), 1, LoaderFunc[int, int](func(ctx context.Context, key int) (int, error) {
+			return 8, nil
+		}))
+		require.NoError(t, err)
+		require.Contains(t, []int{7, 8}, v)
+	})
+}
+
+// A panic while writing one result of a bulk load finishes every call of the bulk, so that no
+// later load of the other keys blocks forever.
+func TestCache_PanicWhileWritingBulkResultFinishesAllCalls(t *testing.T) {
+	t.Parallel()
+
+	c := Must(&Options[int, int]{
+		MaximumWeight: 100,
+		Weigher: func(key, value int) uint32 {
+			if key == 3 && value == 1 {
+				panic("weigher boom")
+			}
+			return 1
+		},
+	})
+	bulkLoader := BulkLoaderFunc[int, int](func(ctx context.Context, keys []int) (map[int]int, error) {
+		res := make(map[int]int, len(keys))
+		for _, k := range keys {
+			res[k] = 1
+		}
+		return res, nil
+	})
+
+	require.Panics(t, func() {
+		_, _ = c.BulkGet(context.Background(), []int{1, 2, 3, 4, 5}, bulkLoader)
+	})
+	for k := 1; k <= 5; k++ {
+		completes(t, "Get after a panicking bulk load", func() {
+			v, err := c.Get(context.Background(), k, LoaderFunc[int, int](func(ctx context.Context, key int) (int, error) {
+				return 2, nil
+			}))
+			require.NoError(t, err)
+			require.Contains(t, []int{1, 2}, v)
+		})
+	}
+}
+
 // validatePolicy checks that every entry is linked into the eviction policy and accounted.
 func validatePolicy(t *testing.T, c *Cache[int, int]) {
 	t.Helper()

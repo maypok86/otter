@@ -149,8 +149,21 @@ func (g *group[K, V]) doBulkCall(
 			}
 		}
 
+		// Every call is finished, even if finishing one of them panics: an unfinished call
+		// would block its waiters and every later load of its key.
+		var finishPanic any
 		for _, cl := range callsInBulk {
-			afterFinish(cl)
+			func() {
+				defer func() {
+					if r := recover(); r != nil && finishPanic == nil {
+						finishPanic = r
+					}
+				}()
+				afterFinish(cl)
+			}()
+		}
+		if finishPanic != nil {
+			panic(finishPanic)
 		}
 	}()
 

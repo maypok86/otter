@@ -839,6 +839,25 @@ func (c *cache[K, V]) afterDeleteCall(cl *call[K, V]) {
 		deleted  bool
 		old      node.Node[K, V]
 	)
+	// The waiters are woken up even if writing the loaded value panics (the weigher or a
+	// calculator); they then get the panic as the load's error, as the loading goroutine does.
+	canceled := false
+	defer func() {
+		if canceled {
+			return
+		}
+		if r := recover(); r != nil {
+			// The call is deleted after Compute, so a panic inside it would leave the call
+			// registered and every later Get of the key would join it and get this panic.
+			if !cl.isFake {
+				c.singleflight.deleteCall(cl)
+			}
+			cl.err = newPanicError(r)
+			cl.cancel()
+			panic(r)
+		}
+		cl.cancel()
+	}()
 	nowNano := c.clock.NowNano()
 	newNode := c.hashmap.Compute(cl.key, func(oldNode node.Node[K, V]) node.Node[K, V] {
 		// Read-only: the call is deleted after Compute returns below, not here.
@@ -866,6 +885,7 @@ func (c *cache[K, V]) afterDeleteCall(cl *call[K, V]) {
 	if !cl.isFake {
 		c.singleflight.deleteCall(cl)
 	}
+	canceled = true
 	cl.cancel()
 	if deleted {
 		c.afterDelete(old, nowNano, false)
