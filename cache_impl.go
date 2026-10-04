@@ -1412,7 +1412,18 @@ func (c *cache[K, V]) Values() iter.Seq[V] {
 // InvalidateAll discards all entries in the cache. The behavior of this operation is undefined for an entry
 // that is being loaded (or reloaded) and is otherwise not present.
 func (c *cache[K, V]) InvalidateAll() {
+	nodes := c.invalidateAllLocked()
+
+	for _, n := range nodes {
+		c.Invalidate(n.Key())
+	}
+}
+
+// invalidateAllLocked discards entries under evictionMutex while the write buffer has room, and
+// returns the rest to be invalidated one by one.
+func (c *cache[K, V]) invalidateAllLocked() []node.Node[K, V] {
 	c.evictionMutex.Lock()
+	defer c.evictionMutex.Unlock()
 
 	if c.withMaintenance {
 		c.readBuffer.DrainTo(func(n node.Node[K, V]) {})
@@ -1437,12 +1448,7 @@ func (c *cache[K, V]) InvalidateAll() {
 		nodes = nodes[:len(nodes)-1]
 		c.deleteNode(n, nowNano)
 	}
-
-	c.evictionMutex.Unlock()
-
-	for _, n := range nodes {
-		c.Invalidate(n.Key())
-	}
+	return nodes
 }
 
 // CleanUp performs any pending maintenance operations needed by the cache. Exactly which activities are
@@ -1524,9 +1530,23 @@ func (c *cache[K, V]) scheduleDrainBuffers() {
 		c.drainStatus.Store(processingToIdle)
 
 		var token atomic.Uint32
-		c.executor(func() {
-			c.drainBuffers(&token)
-		})
+		func() {
+			// A panic of a custom executor, or of maintenance run by a synchronous one, is logged:
+			// the caller's write is already done. If the drain did not take over the lock, it is
+			// released here, and the drain is left required for the next attempt.
+			defer func() {
+				if r := recover(); r != nil {
+					c.logger.Error(context.Background(), "Maintenance panicked", newPanicError(r))
+					if token.CompareAndSwap(0, 1) {
+						c.drainStatus.Store(required)
+						c.evictionMutex.Unlock()
+					}
+				}
+			}()
+			c.executor(func() {
+				c.drainBuffers(&token)
+			})
+		}()
 
 		if token.CompareAndSwap(0, 1) {
 			c.evictionMutex.Unlock()
@@ -1536,15 +1556,13 @@ func (c *cache[K, V]) scheduleDrainBuffers() {
 
 func (c *cache[K, V]) drainBuffers(token *atomic.Uint32) {
 	if c.evictionMutex.TryLock() {
-		c.maintenance(nil)
-		c.evictionMutex.Unlock()
+		c.maintenanceAndUnlock(nil)
 		c.rescheduleCleanUpIfIncomplete()
 	} else {
 		// already locked
 		if token.CompareAndSwap(0, 1) {
 			// executor is sync
-			c.maintenance(nil)
-			c.evictionMutex.Unlock()
+			c.maintenanceAndUnlock(nil)
 			c.rescheduleCleanUpIfIncomplete()
 		} else {
 			// executor is async
@@ -1555,9 +1573,15 @@ func (c *cache[K, V]) drainBuffers(token *atomic.Uint32) {
 
 func (c *cache[K, V]) performCleanUp(t *task[K, V]) {
 	c.evictionMutex.Lock()
-	c.maintenance(t)
-	c.evictionMutex.Unlock()
+	c.maintenanceAndUnlock(t)
 	c.rescheduleCleanUpIfIncomplete()
+}
+
+// maintenanceAndUnlock runs maintenance with evictionMutex held by the caller and releases it,
+// also when maintenance panics, so that a panic does not stop maintenance and every writer.
+func (c *cache[K, V]) maintenanceAndUnlock(t *task[K, V]) {
+	defer c.evictionMutex.Unlock()
+	c.maintenance(t)
 }
 
 func (c *cache[K, V]) rescheduleCleanUpIfIncomplete() {
@@ -1576,6 +1600,13 @@ func (c *cache[K, V]) rescheduleCleanUpIfIncomplete() {
 
 func (c *cache[K, V]) maintenance(t *task[K, V]) {
 	c.drainStatus.Store(processingToIdle)
+	completed := false
+	defer func() {
+		if !completed {
+			// interrupted by a panic: the buffers may still hold work
+			c.drainStatus.Store(required)
+		}
+	}()
 
 	c.drainReadBuffer()
 	c.drainWriteBuffer()
@@ -1583,6 +1614,7 @@ func (c *cache[K, V]) maintenance(t *task[K, V]) {
 	c.expireNodes()
 	c.evictNodes()
 	c.climb()
+	completed = true
 
 	if c.drainStatus.Load() != processingToIdle || !c.drainStatus.CompareAndSwap(processingToIdle, idle) {
 		c.drainStatus.Store(required)
@@ -1721,8 +1753,7 @@ func (c *cache[K, V]) SetMaximum(maximum uint64) {
 	}
 	c.evictionMutex.Lock()
 	c.evictionPolicy.setMaximumSize(maximum)
-	c.maintenance(nil)
-	c.evictionMutex.Unlock()
+	c.maintenanceAndUnlock(nil)
 	c.rescheduleCleanUpIfIncomplete()
 }
 
@@ -1733,12 +1764,14 @@ func (c *cache[K, V]) GetMaximum() uint64 {
 		return uint64(math.MaxUint64)
 	}
 
-	c.evictionMutex.Lock()
-	if c.drainStatus.Load() == required {
-		c.maintenance(nil)
-	}
-	result := c.evictionPolicy.maximum
-	c.evictionMutex.Unlock()
+	result := func() uint64 {
+		c.evictionMutex.Lock()
+		defer c.evictionMutex.Unlock()
+		if c.drainStatus.Load() == required {
+			c.maintenance(nil)
+		}
+		return c.evictionPolicy.maximum
+	}()
 	c.rescheduleCleanUpIfIncomplete()
 	return result
 }
@@ -1790,12 +1823,14 @@ func (c *cache[K, V]) WeightedSize() uint64 {
 		return 0
 	}
 
-	c.evictionMutex.Lock()
-	if c.drainStatus.Load() == required {
-		c.maintenance(nil)
-	}
-	result := c.evictionPolicy.weightedSize
-	c.evictionMutex.Unlock()
+	result := func() uint64 {
+		c.evictionMutex.Lock()
+		defer c.evictionMutex.Unlock()
+		if c.drainStatus.Load() == required {
+			c.maintenance(nil)
+		}
+		return c.evictionPolicy.weightedSize
+	}()
 	c.rescheduleCleanUpIfIncomplete()
 	return result
 }

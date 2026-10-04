@@ -184,6 +184,31 @@ func (r *panickingRecorder) RecordHits(count int) { panic("stats boom") }
 
 func (r *panickingRecorder) RecordEviction(weight uint32) { panic("stats boom") }
 
+// A panicking custom executor does not leave the eviction lock held.
+func TestCache_PanicInExecutorDoesNotStopMaintenance(t *testing.T) {
+	t.Parallel()
+
+	logger := &recordingLogger{}
+	c := Must(&Options[int, int]{
+		MaximumSize: 10,
+		Logger:      logger,
+		Executor: func(fn func()) {
+			panic("executor boom")
+		},
+		OnDeletion: func(e DeletionEvent[int, int]) {},
+	})
+
+	completes(t, "writes with a panicking executor", func() {
+		for i := 0; i < 5000; i++ {
+			c.Set(i, i)
+		}
+		c.CleanUp()
+		_ = c.GetMaximum()
+	})
+	require.LessOrEqual(t, c.EstimatedSize(), 10)
+	require.NotEmpty(t, logger.get())
+}
+
 // validatePolicy checks that every entry is linked into the eviction policy and accounted.
 func validatePolicy(t *testing.T, c *Cache[int, int]) {
 	t.Helper()
