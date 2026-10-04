@@ -456,12 +456,14 @@ func (c *cache[K, V]) set(key K, value V, onlyIfAbsent bool) (V, bool) {
 }
 
 func (c *cache[K, V]) atomicSet(key K, value V, old node.Node[K, V], cl *call[K, V], nowNano int64) node.Node[K, V] {
-	if cl == nil {
-		c.singleflight.delete(key)
-	}
+	// The user's weigher and calculators run before anything is changed: if one of them panics,
+	// the write is not applied and the panic reaches the caller.
 	n := c.newNode(key, value, old)
 	c.calcExpiresAtAfterWrite(n, old, nowNano)
 	c.calcRefreshableAt(n, old, cl, nowNano)
+	if cl == nil {
+		c.singleflight.delete(key)
+	}
 	c.makeRetired(old)
 	if old != nil {
 		cause := getCause(old, nowNano, CauseReplacement)
