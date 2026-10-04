@@ -117,9 +117,14 @@ func (g *group[K, V]) doCall(
 	load func(ctx context.Context, key K) (V, error),
 	afterFinish func(c *call[K, V]),
 ) (err error) {
+	returned := false
 	defer func() {
 		if r := recover(); r != nil {
 			err = newPanicError(r)
+		} else if !returned {
+			// The loader called runtime.Goexit: there is no value, and the waiters must not
+			// take the zero value for one.
+			err = errLoaderExited
 		}
 
 		c.err = err
@@ -128,6 +133,7 @@ func (g *group[K, V]) doCall(
 	}()
 
 	c.value, err = load(ctx, c.key)
+	returned = true
 	return err
 }
 
@@ -137,9 +143,12 @@ func (g *group[K, V]) doBulkCall(
 	bulkLoad func(ctx context.Context, keys []K) (map[K]V, error),
 	afterFinish func(c *call[K, V]),
 ) (err error) {
+	returned := false
 	defer func() {
 		if r := recover(); r != nil {
 			err = newPanicError(r)
+		} else if !returned {
+			err = errLoaderExited
 		}
 
 		if err != nil {
@@ -173,6 +182,7 @@ func (g *group[K, V]) doBulkCall(
 	}
 
 	res, err := bulkLoad(ctx, keys)
+	returned = true
 
 	var (
 		isRefresh bool

@@ -16,6 +16,8 @@ package otter
 
 import (
 	"context"
+	"errors"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -350,6 +352,45 @@ func TestCache_PanicInRefreshIsReturnedAsError(t *testing.T) {
 	for _, r := range results {
 		require.ErrorAs(t, r.Err, &pe)
 	}
+}
+
+// A loader that calls runtime.Goexit does not produce a value: the waiters get an error and
+// nothing is cached.
+func TestCache_GoexitInLoader(t *testing.T) {
+	t.Parallel()
+
+	c := Must(&Options[int, int]{MaximumSize: 10})
+
+	release := make(chan struct{})
+	started := make(chan struct{})
+	go func() {
+		_, _ = c.Get(context.Background(), 1, LoaderFunc[int, int](func(ctx context.Context, key int) (int, error) {
+			close(started)
+			<-release
+			runtime.Goexit()
+			return 0, nil
+		}))
+	}()
+	<-started
+
+	waiter := make(chan error, 1)
+	go func() {
+		_, err := c.Get(context.Background(), 1, LoaderFunc[int, int](func(ctx context.Context, key int) (int, error) {
+			return 0, errors.New("the waiter must not load")
+		}))
+		waiter <- err
+	}()
+	time.Sleep(50 * time.Millisecond)
+	close(release)
+
+	select {
+	case err := <-waiter:
+		require.Error(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("the waiter was never woken up")
+	}
+	_, ok := c.GetIfPresent(1)
+	require.False(t, ok, "the zero value of an exited load was cached")
 }
 
 // validatePolicy checks that every entry is linked into the eviction policy and accounted.
