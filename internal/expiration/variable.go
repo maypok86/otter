@@ -121,25 +121,62 @@ func (v *Variable[K, V]) deleteExpiredFromBucket(
 	end := start + steps
 	timerWheel := v.wheel[index]
 	for i := start; i < end; i++ {
-		root := timerWheel[i&mask]
-		n := root.NextExp()
-		root.SetPrevExp(root)
-		root.SetNextExp(root)
-
-		for !node.Equals(n, root) {
-			next := n.NextExp()
-			n.SetPrevExp(nil)
-			n.SetNextExp(nil)
-
-			if uint64(n.ExpiresAt()) < v.time {
-				expireNode(n, int64(v.time))
-			} else {
-				v.Add(n)
-			}
-
-			n = next
-		}
+		v.sweepBucket(timerWheel[i&mask], expireNode)
 	}
+}
+
+// reschedule adds a node left over by an interrupted sweep. An expired node goes to the level-0
+// bucket of the current tick, which the next DeleteExpired sweeps first; Add would put it in the
+// overflow bucket, because its time until expiration is negative.
+func (v *Variable[K, V]) reschedule(n node.Node[K, V]) {
+	//nolint:gosec // there is no overflow
+	if uint64(n.ExpiresAt()) < v.time {
+		link(v.wheel[0][(v.time>>shift[0])&(buckets[0]-1)], n)
+		return
+	}
+	v.Add(n)
+}
+
+// sweepBucket detaches the bucket's chain and expires or reschedules each of its nodes. If
+// expireNode panics, the nodes not yet visited, and the failing node if it is still alive, are
+// scheduled again, so that the wheel keeps every live node it held.
+func (v *Variable[K, V]) sweepBucket(root node.Node[K, V], expireNode func(n node.Node[K, V], nowNanos int64)) {
+	n := root.NextExp()
+	root.SetPrevExp(root)
+	root.SetNextExp(root)
+
+	var next node.Node[K, V]
+	completed := false
+	defer func() {
+		if completed {
+			return
+		}
+		if n.IsAlive() && node.Equals(n.NextExp(), nil) {
+			v.reschedule(n)
+		}
+		for !node.Equals(next, root) {
+			rest := next
+			next = rest.NextExp()
+			rest.SetPrevExp(nil)
+			rest.SetNextExp(nil)
+			v.reschedule(rest)
+		}
+	}()
+
+	for !node.Equals(n, root) {
+		next = n.NextExp()
+		n.SetPrevExp(nil)
+		n.SetNextExp(nil)
+
+		if uint64(n.ExpiresAt()) < v.time {
+			expireNode(n, int64(v.time))
+		} else {
+			v.Add(n)
+		}
+
+		n = next
+	}
+	completed = true
 }
 
 // link adds the entry at the tail of the bucket's list.

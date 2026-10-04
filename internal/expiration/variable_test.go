@@ -155,3 +155,45 @@ func TestVariable_DeleteExpired(t *testing.T) {
 	keys = append(keys, "k7")
 	match(t, expired, keys)
 }
+
+// A panic of expireNode in the middle of a bucket keeps the bucket's other nodes, and the failing
+// node if it is still alive, in the wheel.
+func TestVariable_DeleteExpiredPanicKeepsNodes(t *testing.T) {
+	t.Parallel()
+
+	nm := node.NewManager[string, string](node.Config{
+		WithExpiration: true,
+	})
+	now := time.Now().UnixNano()
+	v := NewVariable(nm)
+	v.time = uint64(now)
+	nodes := []node.Node[string, string]{
+		nm.Create("k1", "", now+getTestExp(1), 0, 1),
+		nm.Create("k2", "", now+getTestExp(1), 0, 1),
+		nm.Create("k3", "", now+getTestExp(1), 0, 1),
+	}
+	for _, n := range nodes {
+		v.Add(n)
+	}
+
+	var expired []node.Node[string, string]
+	func() {
+		defer func() {
+			if r := recover(); r != "expire boom" {
+				t.Fatalf("recovered %v, want the expireNode panic", r)
+			}
+		}()
+		v.DeleteExpired(now+getTestExp(2), func(n node.Node[string, string], nowNanos int64) {
+			if n.Key() == "k2" {
+				panic("expire boom")
+			}
+			expired = append(expired, n)
+		})
+	}()
+	match(t, expired, []string{"k1"})
+
+	v.DeleteExpired(now+getTestExp(70), func(n node.Node[string, string], nowNanos int64) {
+		expired = append(expired, n)
+	})
+	match(t, expired, []string{"k1", "k2", "k3"})
+}
