@@ -13,28 +13,71 @@ import (
 // 1. Base
 //
 // 2. Weight
+//
+// It is the header of the layouts that store the value (BWInline...): a node is allocated
+// as one of them, whose first field is the header, so that a pointer to the header is a
+// pointer to the whole node. The layouts do not embed the header: they have no methods,
+// which keeps the code of one node type per feature set.
 type BW[K comparable, V any] struct {
 	key          K
-	value        V
-	valuePtr     atomic.Pointer[V]
 	prev         *BW[K, V]
 	next         *BW[K, V]
 	weight       atomic.Uint32
 	policyWeight uint32
 	state        atomic.Uint32
 	queueType    uint8
+	variant      uint8
 }
 
-// NewBW creates a new BW.
-func NewBW[K comparable, V any](key K, value V, expiresAt, refreshableAt int64, weight uint32) Node[K, V] {
-	n := &BW[K, V]{
-		key:          key,
-		value:        value,
-		policyWeight: weight,
+// BWInline is the layout of a BW whose value is kept inline and never changed. The first
+// update of a live entry replaces the node with a BWBoxed.
+type BWInline[K comparable, V any] struct {
+	header BW[K, V]
+	value  V
+}
+
+// BWBoxed is the layout of a BW whose value lives behind an atomic pointer and is
+// replaced in place.
+type BWBoxed[K comparable, V any] struct {
+	header BW[K, V]
+	value  atomic.Pointer[V]
+}
+
+// BWP is the layout of a BW whose pointer-shaped value is kept in an atomic pointer.
+type BWP[K comparable, V any] struct {
+	header BW[K, V]
+	value  unsafe.Pointer
+}
+
+// BWU64 is the layout of a BW whose value, without pointers and of at most 8 bytes,
+// is kept in an atomic.Uint64.
+type BWU64[K comparable, V any] struct {
+	header BW[K, V]
+	value  atomic.Uint64
+}
+
+// NewBW creates a new BW allocated as the given variant's layout (see variantsOf in the
+// generator); nodes without state have a single layout and ignore it.
+func NewBW[K comparable, V any](key K, value V, expiresAt, refreshableAt int64, weight uint32, variant uint8) Node[K, V] {
+	var n *BW[K, V]
+	switch variant {
+	case boxedVariant:
+		n = &(&BWBoxed[K, V]{}).header
+	case pointerVariant:
+		n = &(&BWP[K, V]{}).header
+	case wordVariant:
+		n = &(&BWU64[K, V]{}).header
+	case emptyVariant:
+		n = &BW[K, V]{}
+	default:
+		n = &(&BWInline[K, V]{}).header
 	}
+	n.key = key
+	n.variant = variant
+	n.SetValue(value)
+	n.policyWeight = weight
 	n.weight.Store(weight)
 	n.state.Store(aliveState)
-
 	return n
 }
 
@@ -45,21 +88,6 @@ func CastPointerToBW[K comparable, V any](ptr unsafe.Pointer) Node[K, V] {
 
 func (n *BW[K, V]) Key() K {
 	return n.key
-}
-
-func (n *BW[K, V]) Value() V {
-	if p := n.valuePtr.Load(); p != nil {
-		return *p
-	}
-	return n.value
-}
-
-func (n *BW[K, V]) SetValue(v V) {
-	n.valuePtr.Store(&v)
-}
-
-func (n *BW[K, V]) CanSetValue() bool {
-	return n.valuePtr.Load() != nil
 }
 
 func (n *BW[K, V]) AsPointer() unsafe.Pointer {
@@ -204,4 +232,47 @@ func (n *BW[K, V]) InMainProtected() bool {
 
 func (n *BW[K, V]) MakeMainProtected() {
 	n.SetQueueType(InMainProtectedQueue)
+}
+
+func (n *BW[K, V]) Value() V {
+	switch n.variant {
+	case boxedVariant:
+		return *(*BWBoxed[K, V])(unsafe.Pointer(n)).value.Load()
+	case pointerVariant:
+		p := atomic.LoadPointer(&(*BWP[K, V])(unsafe.Pointer(n)).value)
+		return *(*V)(unsafe.Pointer(&p))
+	case wordVariant:
+		w := (*BWU64[K, V])(unsafe.Pointer(n)).value.Load()
+		return *(*V)(unsafe.Pointer(&w))
+	case emptyVariant:
+		var zero V
+		return zero
+	default:
+		return (*BWInline[K, V])(unsafe.Pointer(n)).value
+	}
+}
+
+func (n *BW[K, V]) SetValue(v V) {
+	switch n.variant {
+	case boxedVariant:
+		n.setBoxedValue(v)
+	case pointerVariant:
+		atomic.StorePointer(&(*BWP[K, V])(unsafe.Pointer(n)).value, *(*unsafe.Pointer)(unsafe.Pointer(&v)))
+	case wordVariant:
+		var w uint64
+		*(*V)(unsafe.Pointer(&w)) = v
+		(*BWU64[K, V])(unsafe.Pointer(n)).value.Store(w)
+	case emptyVariant:
+		// a value of zero size has nothing to store
+	default:
+		(*BWInline[K, V])(unsafe.Pointer(n)).value = v
+	}
+}
+
+func (n *BW[K, V]) setBoxedValue(v V) {
+	(*BWBoxed[K, V])(unsafe.Pointer(n)).value.Store(&v)
+}
+
+func (n *BW[K, V]) CanSetValue() bool {
+	return n.variant != inlineVariant
 }

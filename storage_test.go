@@ -15,8 +15,6 @@
 package otter
 
 import (
-	"fmt"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -28,16 +26,17 @@ import (
 	"github.com/maypok86/otter/v2/internal/generated/node"
 )
 
-// testValueStorage checks that values of type V are kept in the node type with the given
-// storage suffix, survive writes and reads unchanged, and that the first update is applied in
-// place exactly when the value is kept in one atomic word.
+// testValueStorage checks that values of type V are kept in the given value storage, survive
+// writes and reads unchanged, and that the first update is applied in place exactly when the
+// value is kept in one atomic word; otherwise it replaces the node with a boxed one.
 func testValueStorage[V any](t *testing.T, storage string, v1, v2 V) {
 	t.Helper()
 
 	c := Must(&Options[int, V]{MaximumSize: 10})
+	require.Equal(t, storage, c.cache.nodeManager.ValueStorage())
 	c.Set(1, v1)
 	n := c.cache.hashmap.Get(1)
-	require.True(t, strings.HasPrefix(fmt.Sprintf("%T", n), "*node.BS"+strings.ToUpper(storage)+"["), "%T", n)
+	require.Equal(t, storage != "", n.CanSetValue())
 	got, _ := c.GetIfPresent(1)
 	require.Equal(t, v1, got)
 
@@ -46,6 +45,7 @@ func testValueStorage[V any](t *testing.T, storage string, v1, v2 V) {
 	require.Equal(t, v2, got)
 	inPlace := n.AsPointer() == c.cache.hashmap.Get(1).AsPointer()
 	require.Equal(t, storage != "", inPlace, "the first update in place")
+	require.True(t, c.cache.hashmap.Get(1).CanSetValue())
 
 	c.Set(1, v1)
 	got, _ = c.GetIfPresent(1)
@@ -89,7 +89,6 @@ func TestCache_ValueStorage(t *testing.T) {
 		testValueStorage(t, "u64", float32(-1.5), float32(3.25))
 		testValueStorage(t, "u64", [3]byte{1, 2, 3}, [3]byte{4, 5, 6})
 		testValueStorage(t, "u64", word32{a: -1, b: 2}, word32{a: 3, b: -4})
-		testValueStorage(t, "u64", struct{}{}, struct{}{})
 		testValueStorage(t, "u64", int64(-1), int64(1)<<62)
 		testValueStorage(t, "u64", uint64(1)<<63, uint64(5))
 		testValueStorage(t, "u64", -1.5, 1e300)
@@ -102,6 +101,11 @@ func TestCache_ValueStorage(t *testing.T) {
 		}
 		testValueStorage(t, "u64", -7, int(large))
 	})
+	t.Run("empty", func(t *testing.T) {
+		t.Parallel()
+		testValueStorage(t, "empty", struct{}{}, struct{}{})
+		testValueStorage(t, "empty", [0]int{}, [0]int{})
+	})
 	t.Run("inline", func(t *testing.T) {
 		t.Parallel()
 		testValueStorage(t, "", "a", "b")
@@ -113,19 +117,28 @@ func TestCache_ValueStorage(t *testing.T) {
 	})
 }
 
-// A value kept in one atomic word needs neither a box nor an inline copy: without the box
-// pointer, the node is one pointer smaller than a node that keeps its value inline.
-func TestCache_WordStorageNodeSize(t *testing.T) {
+// Every node type is the shared header followed by the value field alone: a node that has not
+// been updated carries no box pointer, a boxed node no inline copy of the value, and a value kept
+// in one atomic word neither.
+func TestCache_NodeSize(t *testing.T) {
 	t.Parallel()
 
+	type large [64]byte
 	pointerSize := unsafe.Sizeof(uintptr(0))
-	require.Equal(t, unsafe.Sizeof(node.BS[int, *int]{})-pointerSize, unsafe.Sizeof(node.BSP[int, *int]{}))
+	boxed := unsafe.Sizeof(node.BSBoxed[int, large]{})
+	header := boxed - pointerSize
+
+	require.Equal(t, header+unsafe.Sizeof(large{}), unsafe.Sizeof(node.BSInline[int, large]{}))
+	require.Equal(t, boxed, unsafe.Sizeof(node.BSP[int, *int]{}))
+	// a value of zero size is not stored: such a node is allocated as the header alone
+	require.Equal(t, header, unsafe.Sizeof(node.BS[int, struct{}]{}))
+	require.Equal(t, unsafe.Sizeof(node.BSInline[int, *int]{}), unsafe.Sizeof(node.BSP[int, *int]{}))
 	if pointerSize == 8 {
-		require.Equal(t, unsafe.Sizeof(node.BS[int, uint64]{})-pointerSize, unsafe.Sizeof(node.BSU64[int, uint64]{}))
+		require.Equal(t, unsafe.Sizeof(node.BSInline[int, uint64]{}), unsafe.Sizeof(node.BSU64[int, uint64]{}))
 	} else {
 		// A plain uint64 is only 4-byte aligned on 32-bit platforms, while atomic.Uint64 is
-		// always 8-byte aligned, so the padding it needs can take the place of the pointer.
-		require.LessOrEqual(t, unsafe.Sizeof(node.BSU64[int, uint64]{}), unsafe.Sizeof(node.BS[int, uint64]{}))
+		// always 8-byte aligned, which may cost padding.
+		require.LessOrEqual(t, unsafe.Sizeof(node.BSU64[int, uint64]{}), unsafe.Sizeof(node.BSInline[int, uint64]{})+4)
 	}
 }
 

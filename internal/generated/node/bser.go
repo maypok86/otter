@@ -17,10 +17,13 @@ import (
 // 3. Expiration
 //
 // 4. Refresh
+//
+// It is the header of the layouts that store the value (BSERInline...): a node is allocated
+// as one of them, whose first field is the header, so that a pointer to the header is a
+// pointer to the whole node. The layouts do not embed the header: they have no methods,
+// which keeps the code of one node type per feature set.
 type BSER[K comparable, V any] struct {
 	key           K
-	value         V
-	valuePtr      atomic.Pointer[V]
 	prev          *BSER[K, V]
 	next          *BSER[K, V]
 	prevExp       *BSER[K, V]
@@ -29,18 +32,58 @@ type BSER[K comparable, V any] struct {
 	refreshableAt atomic.Int64
 	state         atomic.Uint32
 	queueType     uint8
+	variant       uint8
 }
 
-// NewBSER creates a new BSER.
-func NewBSER[K comparable, V any](key K, value V, expiresAt, refreshableAt int64, weight uint32) Node[K, V] {
-	n := &BSER[K, V]{
-		key:   key,
-		value: value,
+// BSERInline is the layout of a BSER whose value is kept inline and never changed. The first
+// update of a live entry replaces the node with a BSERBoxed.
+type BSERInline[K comparable, V any] struct {
+	header BSER[K, V]
+	value  V
+}
+
+// BSERBoxed is the layout of a BSER whose value lives behind an atomic pointer and is
+// replaced in place.
+type BSERBoxed[K comparable, V any] struct {
+	header BSER[K, V]
+	value  atomic.Pointer[V]
+}
+
+// BSERP is the layout of a BSER whose pointer-shaped value is kept in an atomic pointer.
+type BSERP[K comparable, V any] struct {
+	header BSER[K, V]
+	value  unsafe.Pointer
+}
+
+// BSERU64 is the layout of a BSER whose value, without pointers and of at most 8 bytes,
+// is kept in an atomic.Uint64.
+type BSERU64[K comparable, V any] struct {
+	header BSER[K, V]
+	value  atomic.Uint64
+}
+
+// NewBSER creates a new BSER allocated as the given variant's layout (see variantsOf in the
+// generator); nodes without state have a single layout and ignore it.
+func NewBSER[K comparable, V any](key K, value V, expiresAt, refreshableAt int64, weight uint32, variant uint8) Node[K, V] {
+	var n *BSER[K, V]
+	switch variant {
+	case boxedVariant:
+		n = &(&BSERBoxed[K, V]{}).header
+	case pointerVariant:
+		n = &(&BSERP[K, V]{}).header
+	case wordVariant:
+		n = &(&BSERU64[K, V]{}).header
+	case emptyVariant:
+		n = &BSER[K, V]{}
+	default:
+		n = &(&BSERInline[K, V]{}).header
 	}
+	n.key = key
+	n.variant = variant
+	n.SetValue(value)
 	n.expiresAt.Store(expiresAt)
 	n.refreshableAt.Store(refreshableAt)
 	n.state.Store(aliveState)
-
 	return n
 }
 
@@ -51,21 +94,6 @@ func CastPointerToBSER[K comparable, V any](ptr unsafe.Pointer) Node[K, V] {
 
 func (n *BSER[K, V]) Key() K {
 	return n.key
-}
-
-func (n *BSER[K, V]) Value() V {
-	if p := n.valuePtr.Load(); p != nil {
-		return *p
-	}
-	return n.value
-}
-
-func (n *BSER[K, V]) SetValue(v V) {
-	n.valuePtr.Store(&v)
-}
-
-func (n *BSER[K, V]) CanSetValue() bool {
-	return n.valuePtr.Load() != nil
 }
 
 func (n *BSER[K, V]) AsPointer() unsafe.Pointer {
@@ -217,4 +245,47 @@ func (n *BSER[K, V]) InMainProtected() bool {
 
 func (n *BSER[K, V]) MakeMainProtected() {
 	n.SetQueueType(InMainProtectedQueue)
+}
+
+func (n *BSER[K, V]) Value() V {
+	switch n.variant {
+	case boxedVariant:
+		return *(*BSERBoxed[K, V])(unsafe.Pointer(n)).value.Load()
+	case pointerVariant:
+		p := atomic.LoadPointer(&(*BSERP[K, V])(unsafe.Pointer(n)).value)
+		return *(*V)(unsafe.Pointer(&p))
+	case wordVariant:
+		w := (*BSERU64[K, V])(unsafe.Pointer(n)).value.Load()
+		return *(*V)(unsafe.Pointer(&w))
+	case emptyVariant:
+		var zero V
+		return zero
+	default:
+		return (*BSERInline[K, V])(unsafe.Pointer(n)).value
+	}
+}
+
+func (n *BSER[K, V]) SetValue(v V) {
+	switch n.variant {
+	case boxedVariant:
+		n.setBoxedValue(v)
+	case pointerVariant:
+		atomic.StorePointer(&(*BSERP[K, V])(unsafe.Pointer(n)).value, *(*unsafe.Pointer)(unsafe.Pointer(&v)))
+	case wordVariant:
+		var w uint64
+		*(*V)(unsafe.Pointer(&w)) = v
+		(*BSERU64[K, V])(unsafe.Pointer(n)).value.Store(w)
+	case emptyVariant:
+		// a value of zero size has nothing to store
+	default:
+		(*BSERInline[K, V])(unsafe.Pointer(n)).value = v
+	}
+}
+
+func (n *BSER[K, V]) setBoxedValue(v V) {
+	(*BSERBoxed[K, V])(unsafe.Pointer(n)).value.Store(&v)
+}
+
+func (n *BSER[K, V]) CanSetValue() bool {
+	return n.variant != inlineVariant
 }

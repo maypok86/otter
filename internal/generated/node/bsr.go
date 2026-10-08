@@ -15,26 +15,69 @@ import (
 // 2. Size
 //
 // 3. Refresh
+//
+// It is the header of the layouts that store the value (BSRInline...): a node is allocated
+// as one of them, whose first field is the header, so that a pointer to the header is a
+// pointer to the whole node. The layouts do not embed the header: they have no methods,
+// which keeps the code of one node type per feature set.
 type BSR[K comparable, V any] struct {
 	key           K
-	value         V
-	valuePtr      atomic.Pointer[V]
 	prev          *BSR[K, V]
 	next          *BSR[K, V]
 	refreshableAt atomic.Int64
 	state         atomic.Uint32
 	queueType     uint8
+	variant       uint8
 }
 
-// NewBSR creates a new BSR.
-func NewBSR[K comparable, V any](key K, value V, expiresAt, refreshableAt int64, weight uint32) Node[K, V] {
-	n := &BSR[K, V]{
-		key:   key,
-		value: value,
+// BSRInline is the layout of a BSR whose value is kept inline and never changed. The first
+// update of a live entry replaces the node with a BSRBoxed.
+type BSRInline[K comparable, V any] struct {
+	header BSR[K, V]
+	value  V
+}
+
+// BSRBoxed is the layout of a BSR whose value lives behind an atomic pointer and is
+// replaced in place.
+type BSRBoxed[K comparable, V any] struct {
+	header BSR[K, V]
+	value  atomic.Pointer[V]
+}
+
+// BSRP is the layout of a BSR whose pointer-shaped value is kept in an atomic pointer.
+type BSRP[K comparable, V any] struct {
+	header BSR[K, V]
+	value  unsafe.Pointer
+}
+
+// BSRU64 is the layout of a BSR whose value, without pointers and of at most 8 bytes,
+// is kept in an atomic.Uint64.
+type BSRU64[K comparable, V any] struct {
+	header BSR[K, V]
+	value  atomic.Uint64
+}
+
+// NewBSR creates a new BSR allocated as the given variant's layout (see variantsOf in the
+// generator); nodes without state have a single layout and ignore it.
+func NewBSR[K comparable, V any](key K, value V, expiresAt, refreshableAt int64, weight uint32, variant uint8) Node[K, V] {
+	var n *BSR[K, V]
+	switch variant {
+	case boxedVariant:
+		n = &(&BSRBoxed[K, V]{}).header
+	case pointerVariant:
+		n = &(&BSRP[K, V]{}).header
+	case wordVariant:
+		n = &(&BSRU64[K, V]{}).header
+	case emptyVariant:
+		n = &BSR[K, V]{}
+	default:
+		n = &(&BSRInline[K, V]{}).header
 	}
+	n.key = key
+	n.variant = variant
+	n.SetValue(value)
 	n.refreshableAt.Store(refreshableAt)
 	n.state.Store(aliveState)
-
 	return n
 }
 
@@ -45,21 +88,6 @@ func CastPointerToBSR[K comparable, V any](ptr unsafe.Pointer) Node[K, V] {
 
 func (n *BSR[K, V]) Key() K {
 	return n.key
-}
-
-func (n *BSR[K, V]) Value() V {
-	if p := n.valuePtr.Load(); p != nil {
-		return *p
-	}
-	return n.value
-}
-
-func (n *BSR[K, V]) SetValue(v V) {
-	n.valuePtr.Store(&v)
-}
-
-func (n *BSR[K, V]) CanSetValue() bool {
-	return n.valuePtr.Load() != nil
 }
 
 func (n *BSR[K, V]) AsPointer() unsafe.Pointer {
@@ -203,4 +231,47 @@ func (n *BSR[K, V]) InMainProtected() bool {
 
 func (n *BSR[K, V]) MakeMainProtected() {
 	n.SetQueueType(InMainProtectedQueue)
+}
+
+func (n *BSR[K, V]) Value() V {
+	switch n.variant {
+	case boxedVariant:
+		return *(*BSRBoxed[K, V])(unsafe.Pointer(n)).value.Load()
+	case pointerVariant:
+		p := atomic.LoadPointer(&(*BSRP[K, V])(unsafe.Pointer(n)).value)
+		return *(*V)(unsafe.Pointer(&p))
+	case wordVariant:
+		w := (*BSRU64[K, V])(unsafe.Pointer(n)).value.Load()
+		return *(*V)(unsafe.Pointer(&w))
+	case emptyVariant:
+		var zero V
+		return zero
+	default:
+		return (*BSRInline[K, V])(unsafe.Pointer(n)).value
+	}
+}
+
+func (n *BSR[K, V]) SetValue(v V) {
+	switch n.variant {
+	case boxedVariant:
+		n.setBoxedValue(v)
+	case pointerVariant:
+		atomic.StorePointer(&(*BSRP[K, V])(unsafe.Pointer(n)).value, *(*unsafe.Pointer)(unsafe.Pointer(&v)))
+	case wordVariant:
+		var w uint64
+		*(*V)(unsafe.Pointer(&w)) = v
+		(*BSRU64[K, V])(unsafe.Pointer(n)).value.Store(w)
+	case emptyVariant:
+		// a value of zero size has nothing to store
+	default:
+		(*BSRInline[K, V])(unsafe.Pointer(n)).value = v
+	}
+}
+
+func (n *BSR[K, V]) setBoxedValue(v V) {
+	(*BSRBoxed[K, V])(unsafe.Pointer(n)).value.Store(&v)
+}
+
+func (n *BSR[K, V]) CanSetValue() bool {
+	return n.variant != inlineVariant
 }

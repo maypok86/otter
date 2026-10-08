@@ -17,10 +17,13 @@ import (
 // 3. Refresh
 //
 // 4. Weight
+//
+// It is the header of the layouts that store the value (BERWInline...): a node is allocated
+// as one of them, whose first field is the header, so that a pointer to the header is a
+// pointer to the whole node. The layouts do not embed the header: they have no methods,
+// which keeps the code of one node type per feature set.
 type BERW[K comparable, V any] struct {
 	key           K
-	value         V
-	valuePtr      atomic.Pointer[V]
 	prev          *BERW[K, V]
 	next          *BERW[K, V]
 	prevExp       *BERW[K, V]
@@ -31,20 +34,60 @@ type BERW[K comparable, V any] struct {
 	policyWeight  uint32
 	state         atomic.Uint32
 	queueType     uint8
+	variant       uint8
 }
 
-// NewBERW creates a new BERW.
-func NewBERW[K comparable, V any](key K, value V, expiresAt, refreshableAt int64, weight uint32) Node[K, V] {
-	n := &BERW[K, V]{
-		key:          key,
-		value:        value,
-		policyWeight: weight,
+// BERWInline is the layout of a BERW whose value is kept inline and never changed. The first
+// update of a live entry replaces the node with a BERWBoxed.
+type BERWInline[K comparable, V any] struct {
+	header BERW[K, V]
+	value  V
+}
+
+// BERWBoxed is the layout of a BERW whose value lives behind an atomic pointer and is
+// replaced in place.
+type BERWBoxed[K comparable, V any] struct {
+	header BERW[K, V]
+	value  atomic.Pointer[V]
+}
+
+// BERWP is the layout of a BERW whose pointer-shaped value is kept in an atomic pointer.
+type BERWP[K comparable, V any] struct {
+	header BERW[K, V]
+	value  unsafe.Pointer
+}
+
+// BERWU64 is the layout of a BERW whose value, without pointers and of at most 8 bytes,
+// is kept in an atomic.Uint64.
+type BERWU64[K comparable, V any] struct {
+	header BERW[K, V]
+	value  atomic.Uint64
+}
+
+// NewBERW creates a new BERW allocated as the given variant's layout (see variantsOf in the
+// generator); nodes without state have a single layout and ignore it.
+func NewBERW[K comparable, V any](key K, value V, expiresAt, refreshableAt int64, weight uint32, variant uint8) Node[K, V] {
+	var n *BERW[K, V]
+	switch variant {
+	case boxedVariant:
+		n = &(&BERWBoxed[K, V]{}).header
+	case pointerVariant:
+		n = &(&BERWP[K, V]{}).header
+	case wordVariant:
+		n = &(&BERWU64[K, V]{}).header
+	case emptyVariant:
+		n = &BERW[K, V]{}
+	default:
+		n = &(&BERWInline[K, V]{}).header
 	}
+	n.key = key
+	n.variant = variant
+	n.SetValue(value)
+	n.policyWeight = weight
 	n.weight.Store(weight)
 	n.expiresAt.Store(expiresAt)
 	n.refreshableAt.Store(refreshableAt)
 	n.state.Store(aliveState)
-
 	return n
 }
 
@@ -55,21 +98,6 @@ func CastPointerToBERW[K comparable, V any](ptr unsafe.Pointer) Node[K, V] {
 
 func (n *BERW[K, V]) Key() K {
 	return n.key
-}
-
-func (n *BERW[K, V]) Value() V {
-	if p := n.valuePtr.Load(); p != nil {
-		return *p
-	}
-	return n.value
-}
-
-func (n *BERW[K, V]) SetValue(v V) {
-	n.valuePtr.Store(&v)
-}
-
-func (n *BERW[K, V]) CanSetValue() bool {
-	return n.valuePtr.Load() != nil
 }
 
 func (n *BERW[K, V]) AsPointer() unsafe.Pointer {
@@ -222,4 +250,47 @@ func (n *BERW[K, V]) InMainProtected() bool {
 
 func (n *BERW[K, V]) MakeMainProtected() {
 	n.SetQueueType(InMainProtectedQueue)
+}
+
+func (n *BERW[K, V]) Value() V {
+	switch n.variant {
+	case boxedVariant:
+		return *(*BERWBoxed[K, V])(unsafe.Pointer(n)).value.Load()
+	case pointerVariant:
+		p := atomic.LoadPointer(&(*BERWP[K, V])(unsafe.Pointer(n)).value)
+		return *(*V)(unsafe.Pointer(&p))
+	case wordVariant:
+		w := (*BERWU64[K, V])(unsafe.Pointer(n)).value.Load()
+		return *(*V)(unsafe.Pointer(&w))
+	case emptyVariant:
+		var zero V
+		return zero
+	default:
+		return (*BERWInline[K, V])(unsafe.Pointer(n)).value
+	}
+}
+
+func (n *BERW[K, V]) SetValue(v V) {
+	switch n.variant {
+	case boxedVariant:
+		n.setBoxedValue(v)
+	case pointerVariant:
+		atomic.StorePointer(&(*BERWP[K, V])(unsafe.Pointer(n)).value, *(*unsafe.Pointer)(unsafe.Pointer(&v)))
+	case wordVariant:
+		var w uint64
+		*(*V)(unsafe.Pointer(&w)) = v
+		(*BERWU64[K, V])(unsafe.Pointer(n)).value.Store(w)
+	case emptyVariant:
+		// a value of zero size has nothing to store
+	default:
+		(*BERWInline[K, V])(unsafe.Pointer(n)).value = v
+	}
+}
+
+func (n *BERW[K, V]) setBoxedValue(v V) {
+	(*BERWBoxed[K, V])(unsafe.Pointer(n)).value.Store(&v)
+}
+
+func (n *BERW[K, V]) CanSetValue() bool {
+	return n.variant != inlineVariant
 }

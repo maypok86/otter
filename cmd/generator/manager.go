@@ -45,13 +45,19 @@ const (
 	deadState
 )
 
+// The layouts a node with state is allocated as, recorded in its header.
+const (
+{{variants}})
+
 // Node is a cache entry.
 type Node[K comparable, V any] interface {
 	// Key returns the key.
 	Key() K
 	// Value returns the value.
 	Value() V
-	// SetValue atomically replaces the value (used for in-place updates).
+	// SetValue replaces the value. It may be called on a node that is already in the cache only
+	// when CanSetValue reports true, which makes it an atomic replacement that lock-free readers
+	// never observe torn.
 	SetValue(v V)
 	// CanSetValue reports whether the value can be replaced in place with SetValue without a
 	// concurrent reader observing a torn value: it is kept in one atomic word, or behind a pointer.
@@ -144,8 +150,11 @@ type Config struct {
 }
 
 type Manager[K comparable, V any] struct {
-	create      func(key K, value V, expiresAt, refreshableAt int64, weight uint32) Node[K, V]
-	fromPointer func(ptr unsafe.Pointer) Node[K, V]
+	create           func(key K, value V, expiresAt, refreshableAt int64, weight uint32, variant uint8) Node[K, V]
+	fromPointer      func(ptr unsafe.Pointer) Node[K, V]
+	valueStorage     string
+	createdVariant   uint8
+	updatableVariant uint8
 }
 
 func NewManager[K comparable, V any](c Config) *Manager[K, V] {
@@ -164,17 +173,32 @@ func NewManager[K comparable, V any](c Config) *Manager[K, V] {
 		sb.WriteString("w")
 	}
 	nodeType := sb.String()
-	if {{hasState}} {
-		nodeType += valueStorage(reflect.TypeFor[V]())
-	}
 	m := &Manager[K, V]{}
+	if {{hasState}} {
+		m.valueStorage = valueStorage(reflect.TypeFor[V]())
+		m.createdVariant, m.updatableVariant = variantsOfStorage(m.valueStorage)
+	}
 `
 
 	const nodeFooter = `return m
 }
 
 func (m *Manager[K, V]) Create(key K, value V, expiresAt, refreshableAt int64, weight uint32) Node[K, V] {
-	return m.create(key, value, expiresAt, refreshableAt, weight)
+	return m.create(key, value, expiresAt, refreshableAt, weight, m.createdVariant)
+}
+
+// CreateUpdatable creates a node whose value can be replaced in place (see Node.CanSetValue): a
+// value that would be kept inline is kept behind an atomic pointer instead. Nodes without state
+// are never updated in place and are created as by Create.
+func (m *Manager[K, V]) CreateUpdatable(key K, value V, expiresAt, refreshableAt int64, weight uint32) Node[K, V] {
+	return m.create(key, value, expiresAt, refreshableAt, weight, m.updatableVariant)
+}
+
+// ValueStorage returns how the nodes keep their values: "p" in an atomic pointer, "u64" in an
+// atomic.Uint64, "empty" not at all (a value of zero size), or "" inline until the first update
+// and behind an atomic pointer afterwards.
+func (m *Manager[K, V]) ValueStorage() string {
+	return m.valueStorage
 }
 
 func (m *Manager[K, V]) FromPointer(ptr unsafe.Pointer) Node[K, V] {
@@ -185,10 +209,28 @@ func (m *Manager[K, V]) IsNil(n Node[K, V]) bool {
 	return n == nil || n.AsPointer() == nil
 }
 
-// valueStorage returns the suffix of the node types that keep values of type t: a
-// pointer-shaped value, or a value without pointers of up to 8 bytes, fits in one atomic word
-// and is updated in place without a box.
+// variantsOfStorage returns the layouts of the nodes of a value storage: the one a new entry is
+// created as, and the one an entry whose value is replaced in place needs.
+func variantsOfStorage(storage string) (created, updatable uint8) {
+	switch storage {
+	case {{pointerStorage}}:
+		return pointerVariant, pointerVariant
+	case {{wordStorage}}:
+		return wordVariant, wordVariant
+	case {{emptyStorage}}:
+		return emptyVariant, emptyVariant
+	default:
+		return inlineVariant, boxedVariant
+	}
+}
+
+// valueStorage returns how values of type t are kept: a pointer-shaped value, or a value
+// without pointers of up to 8 bytes, fits in one atomic word and is updated in place without a
+// box; a value of zero size is not stored at all.
 func valueStorage(t reflect.Type) string {
+	if t.Size() == 0 {
+		return {{emptyStorage}}
+	}
 	switch t.Kind() {
 	case reflect.Pointer, reflect.Map, reflect.Chan, reflect.Func, reflect.UnsafePointer:
 		return {{pointerStorage}}
@@ -229,10 +271,20 @@ func hasPointers(t reflect.Type) bool {
 		//nolint:staticcheck // used only for ascii
 		stateConditions = append(stateConditions, "c.With"+strings.Title(f.name))
 	}
+	var variants strings.Builder
+	for i, v := range allVariants {
+		if i == 0 {
+			fmt.Fprintf(&variants, "\t%s uint8 = iota\n", v.constant)
+		} else {
+			fmt.Fprintf(&variants, "\t%s\n", v.constant)
+		}
+	}
 	template := strings.NewReplacer(
+		"{{variants}}", variants.String(),
 		"{{hasState}}", strings.Join(stateConditions, " || "),
 		"{{pointerStorage}}", fmt.Sprintf("%q", pointerStorage),
 		"{{wordStorage}}", fmt.Sprintf("%q", wordStorage),
+		"{{emptyStorage}}", fmt.Sprintf("%q", emptyStorage),
 		"{{inlineStorage}}", fmt.Sprintf("%q", inlineStorage),
 	)
 
@@ -240,14 +292,12 @@ func hasPointers(t reflect.Type) bool {
 	w.in()
 	w.p("switch nodeType {")
 	for _, nodeType := range nodeTypes {
-		for _, storage := range storagesOf(nodeType) {
-			w.p("case \"%s\":", nodeType+storage)
-			w.in()
-			structName := structNameOf(nodeType, storage)
-			w.p("m.create = New%s[K, V]", structName)
-			w.p("m.fromPointer = CastPointerTo%s[K, V]", structName)
-			w.out()
-		}
+		w.p("case \"%s\":", nodeType)
+		w.in()
+		typeName := typeNameOf(nodeType)
+		w.p("m.create = New%s[K, V]", typeName)
+		w.p("m.fromPointer = CastPointerTo%s[K, V]", typeName)
+		w.out()
 	}
 	w.p("default:")
 	w.in()

@@ -15,13 +15,13 @@ type B[K comparable, V any] struct {
 	value V
 }
 
-// NewB creates a new B.
-func NewB[K comparable, V any](key K, value V, expiresAt, refreshableAt int64, weight uint32) Node[K, V] {
+// NewB creates a new B allocated as the given variant's layout (see variantsOf in the
+// generator); nodes without state have a single layout and ignore it.
+func NewB[K comparable, V any](key K, value V, expiresAt, refreshableAt int64, weight uint32, variant uint8) Node[K, V] {
 	n := &B[K, V]{
 		key:   key,
 		value: value,
 	}
-
 	return n
 }
 
@@ -32,18 +32,6 @@ func CastPointerToB[K comparable, V any](ptr unsafe.Pointer) Node[K, V] {
 
 func (n *B[K, V]) Key() K {
 	return n.key
-}
-
-func (n *B[K, V]) Value() V {
-	return n.value
-}
-
-func (n *B[K, V]) SetValue(v V) {
-	panic("not implemented")
-}
-
-func (n *B[K, V]) CanSetValue() bool {
-	return false
 }
 
 func (n *B[K, V]) AsPointer() unsafe.Pointer {
@@ -179,4 +167,16 @@ func (n *B[K, V]) InMainProtected() bool {
 
 func (n *B[K, V]) MakeMainProtected() {
 	n.SetQueueType(InMainProtectedQueue)
+}
+
+func (n *B[K, V]) Value() V {
+	return n.value
+}
+
+func (n *B[K, V]) SetValue(v V) {
+	panic("otter: a node without state is never updated in place")
+}
+
+func (n *B[K, V]) CanSetValue() bool {
+	return false
 }

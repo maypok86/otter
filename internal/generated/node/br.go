@@ -19,14 +19,14 @@ type BR[K comparable, V any] struct {
 	refreshableAt atomic.Int64
 }
 
-// NewBR creates a new BR.
-func NewBR[K comparable, V any](key K, value V, expiresAt, refreshableAt int64, weight uint32) Node[K, V] {
+// NewBR creates a new BR allocated as the given variant's layout (see variantsOf in the
+// generator); nodes without state have a single layout and ignore it.
+func NewBR[K comparable, V any](key K, value V, expiresAt, refreshableAt int64, weight uint32, variant uint8) Node[K, V] {
 	n := &BR[K, V]{
 		key:   key,
 		value: value,
 	}
 	n.refreshableAt.Store(refreshableAt)
-
 	return n
 }
 
@@ -37,18 +37,6 @@ func CastPointerToBR[K comparable, V any](ptr unsafe.Pointer) Node[K, V] {
 
 func (n *BR[K, V]) Key() K {
 	return n.key
-}
-
-func (n *BR[K, V]) Value() V {
-	return n.value
-}
-
-func (n *BR[K, V]) SetValue(v V) {
-	panic("not implemented")
-}
-
-func (n *BR[K, V]) CanSetValue() bool {
-	return false
 }
 
 func (n *BR[K, V]) AsPointer() unsafe.Pointer {
@@ -184,4 +172,16 @@ func (n *BR[K, V]) InMainProtected() bool {
 
 func (n *BR[K, V]) MakeMainProtected() {
 	n.SetQueueType(InMainProtectedQueue)
+}
+
+func (n *BR[K, V]) Value() V {
+	return n.value
+}
+
+func (n *BR[K, V]) SetValue(v V) {
+	panic("otter: a node without state is never updated in place")
+}
+
+func (n *BR[K, V]) CanSetValue() bool {
+	return false
 }
