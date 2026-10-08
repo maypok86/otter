@@ -215,6 +215,21 @@ func (m *Map[K, V, N]) Get(key K) N {
 	}
 }
 
+// callUnlockingOnPanic calls computeFunc with mu held and releases mu if computeFunc panics
+// or exits the goroutine, so that a failing callback does not leave the bucket locked. The
+// bucket is left unchanged in that case. On a normal return mu stays locked.
+func callUnlockingOnPanic[N any](mu *sync.Mutex, computeFunc func(n N) N, n N) N {
+	returned := false
+	defer func() {
+		if !returned {
+			mu.Unlock()
+		}
+	}()
+	result := computeFunc(n)
+	returned = true
+	return result
+}
+
 // Compute either sets the computed new value for the key or deletes
 // the value for the key.
 //
@@ -263,7 +278,7 @@ func (m *Map[K, V, N]) Compute(key K, computeFunc func(n N) N) N {
 					oldNode := m.nodeManager.FromPointer(nptr)
 					if oldNode.Key() == key {
 						// In-place update/delete.
-						newNode := computeFunc(oldNode)
+						newNode := callUnlockingOnPanic(&rootb.mu, computeFunc, oldNode)
 						// oldNode != nil
 						if m.nodeManager.IsNil(newNode) {
 							// Deletion.
@@ -302,7 +317,7 @@ func (m *Map[K, V, N]) Compute(key K, computeFunc func(n N) N) N {
 					// Insertion into an existing bucket.
 					var zeroNode N
 					// oldNode == nil.
-					newNode := computeFunc(zeroNode)
+					newNode := callUnlockingOnPanic(&rootb.mu, computeFunc, zeroNode)
 					if m.nodeManager.IsNil(newNode) {
 						// no op.
 						rootb.mu.Unlock()
@@ -325,7 +340,7 @@ func (m *Map[K, V, N]) Compute(key K, computeFunc func(n N) N) N {
 				// Insertion into a new bucket.
 				var zeroNode N
 				// oldNode == nil
-				newNode := computeFunc(zeroNode)
+				newNode := callUnlockingOnPanic(&rootb.mu, computeFunc, zeroNode)
 				if m.nodeManager.IsNil(newNode) {
 					rootb.mu.Unlock()
 					return newNode

@@ -130,15 +130,14 @@ func newCache[K comparable, V any](o *Options[K, V]) *cache[K, V] {
 		_, ok := o.StatsRecorder.(*stats.NoopRecorder)
 		withStats = !ok
 	}
-	statsRecorder := o.StatsRecorder
-	if !withStats {
-		statsRecorder = &stats.NoopRecorder{}
-	}
-	var statsSnapshoter stats.Snapshoter
-	if snapshoter, ok := statsRecorder.(stats.Snapshoter); ok {
-		statsSnapshoter = snapshoter
-	} else {
-		statsSnapshoter = &stats.NoopRecorder{}
+	var logger Logger = &safeLogger{logger: o.getLogger()}
+	var statsRecorder stats.Recorder = &stats.NoopRecorder{}
+	var statsSnapshoter stats.Snapshoter = &stats.NoopRecorder{}
+	if withStats {
+		statsRecorder = &safeRecorder{recorder: o.StatsRecorder, logger: logger}
+		if snapshoter, ok := o.StatsRecorder.(stats.Snapshoter); ok {
+			statsSnapshoter = snapshoter
+		}
 	}
 
 	c := &cache[K, V]{
@@ -146,7 +145,7 @@ func newCache[K comparable, V any](o *Options[K, V]) *cache[K, V] {
 		hashmap:            hashmap.NewWithSize[K, V, node.Node[K, V]](nodeManager, o.getInitialCapacity()),
 		stats:              statsRecorder,
 		statsSnapshoter:    statsSnapshoter,
-		logger:             o.getLogger(),
+		logger:             logger,
 		singleflight:       &group[K, V]{},
 		executor:           o.getExecutor(),
 		hasDefaultExecutor: o.Executor == nil,
@@ -456,12 +455,14 @@ func (c *cache[K, V]) set(key K, value V, onlyIfAbsent bool) (V, bool) {
 }
 
 func (c *cache[K, V]) atomicSet(key K, value V, old node.Node[K, V], cl *call[K, V], nowNano int64) node.Node[K, V] {
-	if cl == nil {
-		c.singleflight.delete(key)
-	}
+	// The user's weigher and calculators run before anything is changed: if one of them panics,
+	// the write is not applied and the panic reaches the caller.
 	n := c.newNode(key, value, old)
 	c.calcExpiresAtAfterWrite(n, old, nowNano)
 	c.calcRefreshableAt(n, old, cl, nowNano)
+	if cl == nil {
+		c.singleflight.delete(key)
+	}
 	c.makeRetired(old)
 	if old != nil {
 		cause := getCause(old, nowNano, CauseReplacement)
@@ -721,7 +722,7 @@ func (c *cache[K, V]) refreshKey(
 		cl, shouldLoad := c.singleflight.startCall(rk.key, true)
 		if shouldLoad {
 			//nolint:errcheck // there is no need to check error
-			_ = c.wrapLoad(func() error {
+			_ = c.wrapRefresh(func() error {
 				loadCtx := context.WithoutCancel(ctx)
 				return c.singleflight.doCall(loadCtx, cl, refresher, c.afterDeleteCall)
 			})
@@ -838,6 +839,26 @@ func (c *cache[K, V]) afterDeleteCall(cl *call[K, V]) {
 		deleted  bool
 		old      node.Node[K, V]
 	)
+	// The waiters are woken up even if writing the loaded value panics (the weigher or a
+	// calculator); they then get the panic as the load's error, as the loading goroutine does.
+	canceled := false
+	defer func() {
+		if canceled {
+			return
+		}
+		// Compute was interrupted by a panic or by runtime.Goexit, for which recover returns
+		// nil. The call is deleted after Compute, so leaving it registered would make every
+		// later Get of the key join it.
+		if !cl.isFake {
+			c.singleflight.deleteCall(cl)
+		}
+		if r := recover(); r != nil {
+			cl.err = newPanicError(r)
+			cl.cancel()
+			panic(r)
+		}
+		cl.cancel()
+	}()
 	nowNano := c.clock.NowNano()
 	newNode := c.hashmap.Compute(cl.key, func(oldNode node.Node[K, V]) node.Node[K, V] {
 		// Read-only: the call is deleted after Compute returns below, not here.
@@ -865,6 +886,7 @@ func (c *cache[K, V]) afterDeleteCall(cl *call[K, V]) {
 	if !cl.isFake {
 		c.singleflight.deleteCall(cl)
 	}
+	canceled = true
 	cl.cancel()
 	if deleted {
 		c.afterDelete(old, nowNano, false)
@@ -931,7 +953,7 @@ func (c *cache[K, V]) bulkRefreshKeys(
 
 		loadCtx := context.WithoutCancel(ctx)
 		if len(toLoadCalls) > 0 {
-			loadErr := c.wrapLoad(func() error {
+			loadErr := c.wrapRefresh(func() error {
 				return c.singleflight.doBulkCall(loadCtx, toLoadCalls, bulkLoader.BulkLoad, c.afterDeleteCall)
 			})
 			if loadErr != nil {
@@ -959,7 +981,7 @@ func (c *cache[K, V]) bulkRefreshKeys(
 				return bulkLoader.BulkReload(ctx, keys, oldValues)
 			}
 
-			reloadErr := c.wrapLoad(func() error {
+			reloadErr := c.wrapRefresh(func() error {
 				return c.singleflight.doBulkCall(loadCtx, toReloadCalls, reload, c.afterDeleteCall)
 			})
 			if reloadErr != nil {
@@ -1126,6 +1148,23 @@ func (c *cache[K, V]) wrapLoad(fn func() error) error {
 	return err
 }
 
+// wrapRefresh is wrapLoad for refreshes, which run on the executor: a panic of the loader, or of
+// writing its result, is returned as an error instead of crashing the executor's goroutine. The
+// refreshed calls already hold that error, so it reaches the refresh results and the log like
+// any other refresh error.
+func (c *cache[K, V]) wrapRefresh(fn func() error) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			if pe, ok := r.(*panicError); ok {
+				err = pe
+				return
+			}
+			err = newPanicError(r)
+		}
+	}()
+	return c.wrapLoad(fn)
+}
+
 // Refresh loads a new value for the key, asynchronously. While the new value is loading the
 // previous value (if any) will continue to be returned by any Get unless it is evicted.
 // If the new value is loaded successfully, it will replace the previous value in the cache;
@@ -1221,7 +1260,14 @@ func (c *cache[K, V]) Invalidate(key K) (value V, invalidated bool) {
 func (c *cache[K, V]) deleteNodeFromMap(n node.Node[K, V], nowNano int64, cause DeletionCause) node.Node[K, V] {
 	var deleted node.Node[K, V]
 	c.hashmap.Compute(n.Key(), func(current node.Node[K, V]) node.Node[K, V] {
-		c.singleflight.delete(n.Key())
+		if cause == CauseInvalidation {
+			c.singleflight.delete(n.Key())
+		} else {
+			// An eviction must not cancel an in-flight load: it was most likely started
+			// because this very node has expired, and dropping it would make the loaded
+			// value silently disappear. Only a pending refresh of the evicted value is discarded.
+			c.singleflight.deleteRefresh(n.Key())
+		}
 		if current == nil {
 			return nil
 		}
@@ -1266,7 +1312,11 @@ func (c *cache[K, V]) notifyDeletion(key K, value V, cause DeletionCause) {
 		return
 	}
 
+	// A panic of the listener, or of a custom executor submitting it, is logged: this may run
+	// during maintenance, under the eviction lock.
+	defer recoverCallback(c.logger, "Executor panicked while submitting OnDeletion")
 	c.executor(func() {
+		defer recoverCallback(c.logger, "OnDeletion panicked")
 		c.onDeletion(DeletionEvent[K, V]{
 			Key:   key,
 			Value: value,
@@ -1280,6 +1330,9 @@ func (c *cache[K, V]) notifyAtomicDeletion(key K, value V, cause DeletionCause) 
 		return
 	}
 
+	// The listener runs under the hash table's bucket lock, after the entry is already changed
+	// or removed; a panic is logged so that the change completes.
+	defer recoverCallback(c.logger, "OnAtomicDeletion panicked")
 	c.onAtomicDeletion(DeletionEvent[K, V]{
 		Key:   key,
 		Value: value,
@@ -1397,7 +1450,18 @@ func (c *cache[K, V]) Values() iter.Seq[V] {
 // InvalidateAll discards all entries in the cache. The behavior of this operation is undefined for an entry
 // that is being loaded (or reloaded) and is otherwise not present.
 func (c *cache[K, V]) InvalidateAll() {
+	nodes := c.invalidateAllLocked()
+
+	for _, n := range nodes {
+		c.Invalidate(n.Key())
+	}
+}
+
+// invalidateAllLocked discards entries under evictionMutex while the write buffer has room, and
+// returns the rest to be invalidated one by one.
+func (c *cache[K, V]) invalidateAllLocked() []node.Node[K, V] {
 	c.evictionMutex.Lock()
+	defer c.evictionMutex.Unlock()
 
 	if c.withMaintenance {
 		c.readBuffer.DrainTo(func(n node.Node[K, V]) {})
@@ -1422,12 +1486,7 @@ func (c *cache[K, V]) InvalidateAll() {
 		nodes = nodes[:len(nodes)-1]
 		c.deleteNode(n, nowNano)
 	}
-
-	c.evictionMutex.Unlock()
-
-	for _, n := range nodes {
-		c.Invalidate(n.Key())
-	}
+	return nodes
 }
 
 // CleanUp performs any pending maintenance operations needed by the cache. Exactly which activities are
@@ -1509,9 +1568,23 @@ func (c *cache[K, V]) scheduleDrainBuffers() {
 		c.drainStatus.Store(processingToIdle)
 
 		var token atomic.Uint32
-		c.executor(func() {
-			c.drainBuffers(&token)
-		})
+		func() {
+			// A panic of a custom executor, or of maintenance run by a synchronous one, is logged:
+			// the caller's write is already done. If the drain did not take over the lock, it is
+			// released here, and the drain is left required for the next attempt.
+			defer func() {
+				if r := recover(); r != nil {
+					if token.CompareAndSwap(0, 1) {
+						c.drainStatus.Store(required)
+						c.evictionMutex.Unlock()
+					}
+					c.logger.Error(context.Background(), "Maintenance panicked", newPanicError(r))
+				}
+			}()
+			c.executor(func() {
+				c.drainBuffers(&token)
+			})
+		}()
 
 		if token.CompareAndSwap(0, 1) {
 			c.evictionMutex.Unlock()
@@ -1521,15 +1594,13 @@ func (c *cache[K, V]) scheduleDrainBuffers() {
 
 func (c *cache[K, V]) drainBuffers(token *atomic.Uint32) {
 	if c.evictionMutex.TryLock() {
-		c.maintenance(nil)
-		c.evictionMutex.Unlock()
+		c.maintenanceAndUnlock(nil)
 		c.rescheduleCleanUpIfIncomplete()
 	} else {
 		// already locked
 		if token.CompareAndSwap(0, 1) {
 			// executor is sync
-			c.maintenance(nil)
-			c.evictionMutex.Unlock()
+			c.maintenanceAndUnlock(nil)
 			c.rescheduleCleanUpIfIncomplete()
 		} else {
 			// executor is async
@@ -1540,9 +1611,15 @@ func (c *cache[K, V]) drainBuffers(token *atomic.Uint32) {
 
 func (c *cache[K, V]) performCleanUp(t *task[K, V]) {
 	c.evictionMutex.Lock()
-	c.maintenance(t)
-	c.evictionMutex.Unlock()
+	c.maintenanceAndUnlock(t)
 	c.rescheduleCleanUpIfIncomplete()
+}
+
+// maintenanceAndUnlock runs maintenance with evictionMutex held by the caller and releases it,
+// also when maintenance panics, so that a panic does not stop maintenance and every writer.
+func (c *cache[K, V]) maintenanceAndUnlock(t *task[K, V]) {
+	defer c.evictionMutex.Unlock()
+	c.maintenance(t)
 }
 
 func (c *cache[K, V]) rescheduleCleanUpIfIncomplete() {
@@ -1561,6 +1638,13 @@ func (c *cache[K, V]) rescheduleCleanUpIfIncomplete() {
 
 func (c *cache[K, V]) maintenance(t *task[K, V]) {
 	c.drainStatus.Store(processingToIdle)
+	completed := false
+	defer func() {
+		if !completed {
+			// interrupted by a panic: the buffers may still hold work
+			c.drainStatus.Store(required)
+		}
+	}()
 
 	c.drainReadBuffer()
 	c.drainWriteBuffer()
@@ -1568,6 +1652,7 @@ func (c *cache[K, V]) maintenance(t *task[K, V]) {
 	c.expireNodes()
 	c.evictNodes()
 	c.climb()
+	completed = true
 
 	if c.drainStatus.Load() != processingToIdle || !c.drainStatus.CompareAndSwap(processingToIdle, idle) {
 		c.drainStatus.Store(required)
@@ -1706,8 +1791,7 @@ func (c *cache[K, V]) SetMaximum(maximum uint64) {
 	}
 	c.evictionMutex.Lock()
 	c.evictionPolicy.setMaximumSize(maximum)
-	c.maintenance(nil)
-	c.evictionMutex.Unlock()
+	c.maintenanceAndUnlock(nil)
 	c.rescheduleCleanUpIfIncomplete()
 }
 
@@ -1718,12 +1802,14 @@ func (c *cache[K, V]) GetMaximum() uint64 {
 		return uint64(math.MaxUint64)
 	}
 
-	c.evictionMutex.Lock()
-	if c.drainStatus.Load() == required {
-		c.maintenance(nil)
-	}
-	result := c.evictionPolicy.maximum
-	c.evictionMutex.Unlock()
+	result := func() uint64 {
+		c.evictionMutex.Lock()
+		defer c.evictionMutex.Unlock()
+		if c.drainStatus.Load() == required {
+			c.maintenance(nil)
+		}
+		return c.evictionPolicy.maximum
+	}()
 	c.rescheduleCleanUpIfIncomplete()
 	return result
 }
@@ -1775,12 +1861,14 @@ func (c *cache[K, V]) WeightedSize() uint64 {
 		return 0
 	}
 
-	c.evictionMutex.Lock()
-	if c.drainStatus.Load() == required {
-		c.maintenance(nil)
-	}
-	result := c.evictionPolicy.weightedSize
-	c.evictionMutex.Unlock()
+	result := func() uint64 {
+		c.evictionMutex.Lock()
+		defer c.evictionMutex.Unlock()
+		if c.drainStatus.Load() == required {
+			c.maintenance(nil)
+		}
+		return c.evictionPolicy.weightedSize
+	}()
 	c.rescheduleCleanUpIfIncomplete()
 	return result
 }

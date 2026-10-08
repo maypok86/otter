@@ -117,9 +117,14 @@ func (g *group[K, V]) doCall(
 	load func(ctx context.Context, key K) (V, error),
 	afterFinish func(c *call[K, V]),
 ) (err error) {
+	returned := false
 	defer func() {
 		if r := recover(); r != nil {
 			err = newPanicError(r)
+		} else if !returned {
+			// The loader called runtime.Goexit: there is no value, and the waiters must not
+			// take the zero value for one.
+			err = errLoaderExited
 		}
 
 		c.err = err
@@ -128,6 +133,7 @@ func (g *group[K, V]) doCall(
 	}()
 
 	c.value, err = load(ctx, c.key)
+	returned = true
 	return err
 }
 
@@ -137,9 +143,12 @@ func (g *group[K, V]) doBulkCall(
 	bulkLoad func(ctx context.Context, keys []K) (map[K]V, error),
 	afterFinish func(c *call[K, V]),
 ) (err error) {
+	returned := false
 	defer func() {
 		if r := recover(); r != nil {
 			err = newPanicError(r)
+		} else if !returned {
+			err = errLoaderExited
 		}
 
 		if err != nil {
@@ -149,8 +158,21 @@ func (g *group[K, V]) doBulkCall(
 			}
 		}
 
+		// Every call is finished, even if finishing one of them panics: an unfinished call
+		// would block its waiters and every later load of its key.
+		var finishPanic any
 		for _, cl := range callsInBulk {
-			afterFinish(cl)
+			func() {
+				defer func() {
+					if r := recover(); r != nil && finishPanic == nil {
+						finishPanic = r
+					}
+				}()
+				afterFinish(cl)
+			}()
+		}
+		if finishPanic != nil {
+			panic(finishPanic)
 		}
 	}()
 
@@ -160,6 +182,7 @@ func (g *group[K, V]) doBulkCall(
 	}
 
 	res, err := bulkLoad(ctx, keys)
+	returned = true
 
 	var (
 		isRefresh bool
@@ -224,5 +247,18 @@ func (g *group[K, V]) delete(key K) {
 
 	g.calls.Compute(key, func(prevCall *call[K, V]) *call[K, V] {
 		return nil
+	})
+}
+
+func (g *group[K, V]) deleteRefresh(key K) {
+	if !g.isInitialized.Load() {
+		return
+	}
+
+	g.calls.Compute(key, func(prevCall *call[K, V]) *call[K, V] {
+		if prevCall != nil && prevCall.isRefresh {
+			return nil
+		}
+		return prevCall
 	})
 }

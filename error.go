@@ -16,6 +16,9 @@ const (
 	ErrNotFound strError = "otter: the entry was not found in the data source"
 )
 
+// errLoaderExited is the error of a load whose loader called runtime.Goexit.
+const errLoaderExited strError = "otter: the loader exited the goroutine (runtime.Goexit) without returning"
+
 // strError allows declaring errors as constants.
 type strError string
 

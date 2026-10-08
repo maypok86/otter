@@ -18,12 +18,14 @@ import (
 	"context"
 	"math"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/maypok86/otter/v2/internal/generated/node"
+	"github.com/maypok86/otter/v2/internal/xruntime"
 	"github.com/maypok86/otter/v2/stats"
 )
 
@@ -901,6 +903,30 @@ func TestCache_Eviction(t *testing.T) {
 			},
 		})
 
+		// The sketch hashes keys with a random seed, so in such a tiny table keys may
+		// collide and inflate each other's frequencies, making admission (and thus the
+		// eviction order below) nondeterministic. Pick a seed under which every key used
+		// in this test owns at least one counter, i.e. its frequency estimate is exact.
+		const keysUsed = 16
+		sketch := c.cache.evictionPolicy.sketch
+		for attempt := 0; ; attempt++ {
+			require.Less(t, attempt, 100_000, "failed to find a collision-free sketch seed")
+
+			sketch.hasher = xruntime.NewHasher[int]()
+			for i := 0; i < keysUsed; i++ {
+				sketch.increment(i)
+			}
+			exact := true
+			for i := 0; i < keysUsed && exact; i++ {
+				exact = sketch.frequency(i) == 1
+			}
+			clear(sketch.table)
+			sketch.size = 0
+			if exact {
+				break
+			}
+		}
+
 		checkContainsInOrder := func(expected []int) {
 			evictionOrder := make([]int, 0, maximum)
 			for e := range c.Coldest() {
@@ -1214,22 +1240,30 @@ func TestCache_Scheduler(t *testing.T) {
 	t.Run("rescheduleDrainBuffers", func(t *testing.T) {
 		t.Parallel()
 
+		// Block the drain inside the executor rather than inside OnAtomicDeletion:
+		// the latter runs under a hashmap lock, and if keys 1 and 2 share it
+		// (depends on the random hash seed), Set(2) would deadlock.
 		done := make(chan struct{})
-		evicting := make(chan struct{})
-		onDeletion := func(e DeletionEvent[int, int]) {
-			evicting <- struct{}{}
-			<-done
-		}
+		draining := make(chan struct{})
+		var once sync.Once
 		c := Must(&Options[int, int]{
-			MaximumSize:      1,
-			OnAtomicDeletion: onDeletion,
+			MaximumSize: 1,
+			Executor: func(fn func()) {
+				go func() {
+					once.Do(func() {
+						draining <- struct{}{}
+						<-done
+					})
+					fn()
+				}()
+			},
 		})
 		c.SetMaximum(0)
 
 		v1, ok := c.Set(1, 1)
 		require.True(t, ok)
 		require.Equal(t, 1, v1)
-		<-evicting
+		<-draining
 
 		v2, ok := c.Set(2, 2)
 		require.True(t, ok)

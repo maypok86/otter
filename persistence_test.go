@@ -17,6 +17,7 @@ package otter
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -62,6 +63,10 @@ func TestSaveLoadCache(t *testing.T) {
 		})
 
 		fs.Sleep(time.Hour + time.Minute)
+		// Keep the first cache reachable until Sleep returns. Otherwise the GC may
+		// collect it mid-Sleep, stop its cleanup goroutine, and the fake clock
+		// would block forever trying to deliver ticks nobody reads.
+		runtime.KeepAlive(c)
 
 		c = Must(&Options[int, int]{
 			MaximumSize:       maximum + 1,
