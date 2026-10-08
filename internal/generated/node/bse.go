@@ -152,6 +152,17 @@ func (n *BSE[K, V]) Weight() uint32 {
 	return 1
 }
 
+func (n *BSE[K, V]) SetWeight(weight uint32) {
+	panic("not implemented")
+}
+
+func (n *BSE[K, V]) PolicyWeight() uint32 {
+	return 1
+}
+
+func (n *BSE[K, V]) SetPolicyWeight(weight uint32) {
+}
+
 func (n *BSE[K, V]) IsAlive() bool {
 	return n.state.Load() == aliveState
 }

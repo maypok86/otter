@@ -41,14 +41,14 @@ func requireAccounted(t *testing.T, p *policy[int, int], want ...node.Node[int, 
 	var weighted, window, protected uint64
 	for n := range p.window.All() {
 		linked = append(linked, n.Key())
-		window += uint64(n.Weight())
+		window += uint64(n.PolicyWeight())
 	}
 	for n := range p.probation.All() {
 		linked = append(linked, n.Key())
 	}
 	for n := range p.protected.All() {
 		linked = append(linked, n.Key())
-		protected += uint64(n.Weight())
+		protected += uint64(n.PolicyWeight())
 	}
 	wantKeys := make([]int, 0, len(want))
 	for _, n := range want {
@@ -148,6 +148,93 @@ func TestPolicy_OutOfOrderTasks(t *testing.T) {
 		n := nm.Create(1, 1, 0, 0, 1000)
 		p.add(n, evictNode(p))
 
+		requireAccounted(t, p)
+		require.True(t, n.IsDead())
+	})
+}
+
+// reweigh applies a weight changed in place, whatever the order in which it is replayed
+// relative to the node's other tasks.
+func TestPolicy_Reweigh(t *testing.T) {
+	t.Parallel()
+
+	nm := node.NewManager[int, int](node.Config{WithWeight: true})
+	newPolicyWithMaximum := func() *policy[int, int] {
+		p := newPolicy[int, int](true)
+		p.setMaximumSize(100)
+		return p
+	}
+	evictNode := func(p *policy[int, int]) func(n node.Node[int, int], nowNanos int64) {
+		return func(n node.Node[int, int], nowNanos int64) {
+			p.delete(n)
+		}
+	}
+
+	t.Run("in the window", func(t *testing.T) {
+		t.Parallel()
+
+		p := newPolicyWithMaximum()
+		n := nm.Create(1, 1, 0, 0, 3)
+		p.add(n, evictNode(p))
+
+		n.SetWeight(7)
+		p.reweigh(n, evictNode(p))
+		requireAccounted(t, p, n)
+
+		// replaying it again changes nothing
+		p.reweigh(n, evictNode(p))
+		requireAccounted(t, p, n)
+	})
+	t.Run("in the protected queue", func(t *testing.T) {
+		t.Parallel()
+
+		p := newPolicyWithMaximum()
+		n := nm.Create(1, 1, 0, 0, 3)
+		p.add(n, evictNode(p))
+		p.window.Delete(n)
+		p.windowWeightedSize -= uint64(n.PolicyWeight())
+		n.MakeMainProtected()
+		p.protected.PushBack(n)
+		p.mainProtectedWeightedSize += uint64(n.PolicyWeight())
+
+		n.SetWeight(1)
+		p.reweigh(n, evictNode(p))
+		requireAccounted(t, p, n)
+	})
+	t.Run("before its insertion is replayed", func(t *testing.T) {
+		t.Parallel()
+
+		p := newPolicyWithMaximum()
+		n := nm.Create(1, 1, 0, 0, 3)
+		n.SetWeight(8)
+		p.reweigh(n, evictNode(p))
+		requireAccounted(t, p)
+
+		p.add(n, evictNode(p)) // takes the current weight
+		requireAccounted(t, p, n)
+	})
+	t.Run("after its removal", func(t *testing.T) {
+		t.Parallel()
+
+		p := newPolicyWithMaximum()
+		n := nm.Create(1, 1, 0, 0, 3)
+		p.add(n, evictNode(p))
+		n.Retire()
+		p.delete(n)
+
+		n.SetWeight(8)
+		p.reweigh(n, evictNode(p))
+		requireAccounted(t, p)
+	})
+	t.Run("above the maximum", func(t *testing.T) {
+		t.Parallel()
+
+		p := newPolicyWithMaximum()
+		n := nm.Create(1, 1, 0, 0, 3)
+		p.add(n, evictNode(p))
+
+		n.SetWeight(1000)
+		p.reweigh(n, evictNode(p))
 		requireAccounted(t, p)
 		require.True(t, n.IsDead())
 	})

@@ -461,14 +461,15 @@ func (c *cache[K, V]) expiresAtAfterWrite(entry Entry[K, V], old node.Node[K, V]
 
 func (c *cache[K, V]) set(key K, value V, onlyIfAbsent bool) (V, bool) {
 	var (
-		old      node.Node[K, V]
-		oldValue V
+		old       node.Node[K, V]
+		oldValue  V
+		oldWeight uint32
 	)
 	nowNano := c.clock.NowNano()
 	n := c.hashmap.Compute(key, func(current node.Node[K, V]) node.Node[K, V] {
 		old = current
 		if current != nil {
-			oldValue = current.Value()
+			oldValue, oldWeight = current.Value(), current.Weight()
 		}
 		if onlyIfAbsent && current != nil && !current.HasExpired(nowNano) {
 			// no op
@@ -480,14 +481,14 @@ func (c *cache[K, V]) set(key K, value V, onlyIfAbsent bool) (V, bool) {
 	})
 	if onlyIfAbsent {
 		if old == nil || old.HasExpired(nowNano) {
-			c.afterWrite(n, old, oldValue, nowNano)
+			c.afterWrite(n, old, oldValue, oldWeight, nowNano)
 			return value, true
 		}
 		c.afterRead(old, nowNano, false, false)
 		return oldValue, false
 	}
 
-	c.afterWrite(n, old, oldValue, nowNano)
+	c.afterWrite(n, old, oldValue, oldWeight, nowNano)
 	if old != nil {
 		return oldValue, false
 	}
@@ -503,9 +504,10 @@ func (c *cache[K, V]) set(key K, value V, onlyIfAbsent bool) (V, bool) {
 // performCleanUp, serializing all writes on evictionMutex. When the node identity is kept, the
 // policies only need to observe an access, which goes through the lossy read buffer instead.
 //
-// In-place is only possible when the weight does not change (the policies track it) and the
-// expiration time does not move earlier (the timer wheel reschedules a node whose deadline
-// moved later, but would expire an earlier deadline late). Only a boxed node qualifies: its
+// In-place is only possible when the expiration time does not move earlier (the timer wheel
+// reschedules a node whose deadline moved later, but would expire an earlier deadline late). A
+// changed weight is applied in place too: the node keeps the weight the policy has accounted
+// for separately (policyWeight), and a task brings the policy in line with the new one. Only a boxed node qualifies: its
 // inline value is never written after publication, so a concurrent reader cannot observe a
 // torn or cleared value. The first update of a live entry therefore replaces the node, as
 // before, with a boxed one, so that later updates of this (likely hot) key are applied in place.
@@ -531,12 +533,15 @@ func (c *cache[K, V]) atomicSet(key K, value V, old node.Node[K, V], cl *call[K,
 	}
 
 	isLive := cl == nil && c.isLiveNode(old, nowNano)
-	if isLive && old.IsBoxed() && weight == old.Weight() &&
-		(!c.withExpiration || entry.ExpiresAtNano >= old.ExpiresAt()) {
+	if isLive && old.IsBoxed() && (!c.withExpiration || entry.ExpiresAtNano >= old.ExpiresAt()) {
 		// The synchronous listener runs before the new value is published, as it does when the
 		// node is replaced: readers see the previous value until the write completes.
 		c.notifyAtomicDeletion(key, oldValue, CauseReplacement)
 		old.SetValue(value)
+		if c.isWeighted {
+			// only weighted nodes store a weight; the others always weigh 1
+			old.SetWeight(weight)
+		}
 		if c.withExpiration {
 			old.SetExpiresAt(entry.ExpiresAtNano)
 		}
@@ -686,6 +691,7 @@ func (c *cache[K, V]) doCompute(
 	var (
 		old        node.Node[K, V]
 		prevValue  V
+		prevWeight uint32
 		result     V
 		op         ComputeOp
 		notValidOp bool
@@ -698,7 +704,7 @@ func (c *cache[K, V]) doCompute(
 			found       bool
 		)
 		if oldNode != nil {
-			prevValue = oldNode.Value()
+			prevValue, prevWeight = oldNode.Value(), oldNode.Weight()
 			if !oldNode.HasExpired(nowNano) {
 				oldValue = prevValue
 				found = true
@@ -758,7 +764,7 @@ func (c *cache[K, V]) doCompute(
 		// so the result is the value seen under the lock, not computedNode.Value().
 		return result, true
 	case WriteOp:
-		c.afterWrite(computedNode, old, prevValue, nowNano)
+		c.afterWrite(computedNode, old, prevValue, prevWeight, nowNano)
 	case InvalidateOp:
 		c.afterDelete(old, nowNano, false)
 	}
@@ -770,7 +776,7 @@ func (c *cache[K, V]) doCompute(
 
 // afterWrite takes the old value explicitly because after an in-place update old.Value()
 // already returns the new one.
-func (c *cache[K, V]) afterWrite(n, old node.Node[K, V], oldValue V, nowNano int64) {
+func (c *cache[K, V]) afterWrite(n, old node.Node[K, V], oldValue V, oldWeight uint32, nowNano int64) {
 	if !c.withMaintenance {
 		if old != nil {
 			c.notifyDeletion(old.Key(), oldValue, CauseReplacement)
@@ -779,8 +785,15 @@ func (c *cache[K, V]) afterWrite(n, old node.Node[K, V], oldValue V, nowNano int
 	}
 
 	if old != nil && n.AsPointer() == old.AsPointer() {
-		// updated in place: the policies only need to observe an access
+		// Updated in place: the policies observe an access through the lossy read buffer, and a
+		// changed weight through a task, which must not be lost. The weight is compared outside
+		// the lock, which is enough: of several writers changing it concurrently, the last one
+		// always sees a weight different from the one it replaced, and the task applies the
+		// current weight whenever it runs.
 		c.afterRead(n, nowNano, false, false)
+		if n.Weight() != oldWeight {
+			c.afterWriteTask(c.getTask(n, nil, reweighReason, causeUnknown))
+		}
 		c.notifyDeletion(n.Key(), oldValue, CauseReplacement)
 		return
 	}
@@ -945,10 +958,11 @@ func (c *cache[K, V]) refreshableAtAfterWrite(
 
 func (c *cache[K, V]) afterDeleteCall(cl *call[K, V]) {
 	var (
-		inserted bool
-		deleted  bool
-		old      node.Node[K, V]
-		oldValue V
+		inserted  bool
+		deleted   bool
+		old       node.Node[K, V]
+		oldValue  V
+		oldWeight uint32
 	)
 	// The waiters are woken up even if writing the loaded value panics (the weigher or a
 	// calculator); they then get the panic as the load's error, as the loading goroutine does.
@@ -976,7 +990,7 @@ func (c *cache[K, V]) afterDeleteCall(cl *call[K, V]) {
 		isCorrectCall := cl.isFake || c.singleflight.isCurrentCall(cl)
 		old = oldNode
 		if oldNode != nil {
-			oldValue = oldNode.Value()
+			oldValue, oldWeight = oldNode.Value(), oldNode.Weight()
 		}
 		if isCorrectCall && cl.isNotFound {
 			deleted = oldNode != nil
@@ -1006,7 +1020,7 @@ func (c *cache[K, V]) afterDeleteCall(cl *call[K, V]) {
 		c.afterDelete(old, nowNano, false)
 	}
 	if inserted {
-		c.afterWrite(newNode, old, oldValue, nowNano)
+		c.afterWrite(newNode, old, oldValue, oldWeight, nowNano)
 	}
 }
 
@@ -1378,11 +1392,19 @@ func (c *cache[K, V]) deleteNodeFromMap(
 	nowNano int64,
 	cause DeletionCause,
 	onlyIfExpired bool,
-) (deleted node.Node[K, V], extended bool) {
+) (deleted node.Node[K, V], extended, declined bool) {
 	c.hashmap.Compute(n.Key(), func(current node.Node[K, V]) node.Node[K, V] {
 		if onlyIfExpired && current != nil && n.AsPointer() == current.AsPointer() && !current.HasExpired(nowNano) {
 			// updated in place, extending its lifetime, after it was found expired
 			extended = true
+			return current
+		}
+		if cause == CauseOverflow && c.isWeighted && current != nil && n.AsPointer() == current.AsPointer() &&
+			current.Weight() == 0 && !current.HasExpired(nowNano) {
+			// The policy chose the node by the weight it accounted, but a writer has since set
+			// its weight to zero in place, and a zero-weight entry is never evicted for size.
+			// The node stays linked until its reweigh task brings the accounted weight to zero.
+			declined = true
 			return current
 		}
 		if cause == CauseInvalidation {
@@ -1405,11 +1427,11 @@ func (c *cache[K, V]) deleteNodeFromMap(
 		}
 		return current
 	})
-	return deleted, extended
+	return deleted, extended, declined
 }
 
 func (c *cache[K, V]) deleteNode(n node.Node[K, V], nowNano int64) {
-	deleted, _ := c.deleteNodeFromMap(n, nowNano, CauseInvalidation, false)
+	deleted, _, _ := c.deleteNodeFromMap(n, nowNano, CauseInvalidation, false)
 	c.afterDelete(deleted, nowNano, true)
 }
 
@@ -1498,9 +1520,12 @@ func (c *cache[K, V]) removeNode(n node.Node[K, V], nowNanos int64, onlyIfExpire
 		cause = CauseExpiration
 	}
 
-	d, extended := c.deleteNodeFromMap(n, nowNanos, cause, onlyIfExpired)
+	d, extended, declined := c.deleteNodeFromMap(n, nowNanos, cause, onlyIfExpired)
 	if extended {
 		c.expirationPolicy.Add(n)
+		return
+	}
+	if declined {
 		return
 	}
 	deleted := d != nil
@@ -1852,6 +1877,10 @@ func (c *cache[K, V]) runTask(t *task[K, V]) {
 			c.evictionPolicy.update(n, old, c.evictNode)
 		}
 		c.notifyDeletion(old.Key(), old.Value(), t.deletionCause)
+	case reweighReason:
+		if c.withEviction {
+			c.evictionPolicy.reweigh(n, c.evictNode)
+		}
 	case deleteReason:
 		if c.withExpiration {
 			c.expirationPolicy.Delete(n)
@@ -1977,7 +2006,7 @@ func (c *cache[K, V]) EstimatedSize() int {
 	return c.hashmap.Size()
 }
 
-// IsWeighted returns whether the cache is bounded by a maximum size or maximum weight.
+// IsWeighted returns whether the cache is bounded by a maximum weight.
 func (c *cache[K, V]) IsWeighted() bool {
 	return c.isWeighted
 }

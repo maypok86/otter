@@ -247,7 +247,7 @@ func TestCache_FailedInPlaceUpdateCallsCallbacksOnce(t *testing.T) {
 		c.Set(1, 5) // boxes the node
 
 		weighs.Store(0)
-		c.Set(1, 7) // weight changes: the in-place attempt fails
+		c.Set(1, 7) // the weight changes
 		require.Equal(t, int64(1), weighs.Load())
 		v, ok := c.GetIfPresent(1)
 		require.True(t, ok)
@@ -461,4 +461,99 @@ func TestCache_ReadDoesNotRevertConcurrentDeadline(t *testing.T) {
 			require.Equal(t, tt.want, entry.ExpiresAfter())
 		})
 	}
+}
+
+// A changed weight is applied in place and reaches the eviction policy.
+func TestCache_InPlaceWeightChange(t *testing.T) {
+	t.Parallel()
+
+	c := Must(&Options[int, int]{
+		MaximumWeight: 100,
+		Weigher: func(key, value int) uint32 {
+			return uint32(value)
+		},
+		Executor: func(fn func()) {
+			fn()
+		},
+	})
+	for k := 1; k <= 5; k++ {
+		c.Set(k, 10)
+		c.Set(k, 10) // boxes the node
+	}
+	n := c.cache.hashmap.Get(1)
+
+	c.Set(1, 30) // heavier, still within the maximum
+	c.CleanUp()
+	require.True(t, n.AsPointer() == c.cache.hashmap.Get(1).AsPointer(), "the node was replaced")
+	require.Equal(t, uint64(70), c.WeightedSize())
+	validateCache(t, c)
+
+	c.Set(1, 5) // lighter
+	c.CleanUp()
+	require.Equal(t, uint64(45), c.WeightedSize())
+	validateCache(t, c)
+
+	c.Set(1, 90) // the cache now exceeds its maximum and must evict
+	c.CleanUp()
+	require.LessOrEqual(t, c.WeightedSize(), uint64(100))
+	validateCache(t, c)
+
+	c.Set(2, 1000) // heavier than the maximum: the entry itself is evicted
+	c.CleanUp()
+	_, ok := c.GetIfPresent(2)
+	require.False(t, ok)
+	require.LessOrEqual(t, c.WeightedSize(), uint64(100))
+	validateCache(t, c)
+}
+
+// An entry whose weight a writer changes to zero in place, after a maintenance pass replayed the
+// write buffer and before it evicts, must not be evicted for size on its stale accounted weight.
+func TestCache_InPlaceZeroWeightIsNotEvicted(t *testing.T) {
+	t.Parallel()
+
+	c := Must(&Options[int, int]{
+		MaximumWeight: 10,
+		// a negative value pins the entry: it weighs nothing
+		Weigher: func(_ int, v int) uint32 {
+			if v < 0 {
+				return 0
+			}
+			return 1
+		},
+		Executor: func(fn func()) {
+			fn()
+		},
+	})
+	ci := c.cache
+	for k := 1; k <= 10; k++ {
+		c.Set(k, k)
+	}
+	for k := 1; k <= 10; k++ {
+		c.Set(k, k+1000) // boxes the nodes, so that later writes are applied in place
+	}
+	c.CleanUp()
+
+	p := ci.evictionPolicy
+	victim := p.probation.Head().Key()
+	// make the window's head a frequent candidate, so that admission evicts the victim
+	for i := 0; i < 4; i++ {
+		c.GetIfPresent(p.window.Head().Key())
+	}
+	c.CleanUp()
+
+	ci.evictionMutex.Lock()
+	ci.drainReadBuffer()
+	c.Set(100, 100)
+	ci.drainWriteBuffer() // the insertion is replayed: 11 > 10
+	c.Set(victim, -1)     // weight 1 -> 0 in place; its reweigh task is still buffered
+	require.Equal(t, uint32(0), ci.hashmap.Get(victim).Weight())
+	ci.evictNodes()
+	ci.evictionMutex.Unlock()
+	c.CleanUp()
+
+	v, ok := c.GetIfPresent(victim)
+	require.True(t, ok, "the zero-weight entry %d was evicted for size", victim)
+	require.Equal(t, -1, v)
+	require.LessOrEqual(t, c.WeightedSize(), uint64(10))
+	validateCache(t, c)
 }

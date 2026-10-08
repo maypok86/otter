@@ -244,7 +244,11 @@ func (g *generator) printStruct() {
 		g.p("refreshableAt atomic.Int64")
 	}
 	if g.features[weight] {
-		g.p("weight     uint32")
+		// weight is the writer's view, updated in place under the hash table's lock and read
+		// by lock-free readers; policyWeight is the weight the eviction policy has accounted
+		// for, accessed only under the eviction lock.
+		g.p("weight     atomic.Uint32")
+		g.p("policyWeight uint32")
 	}
 
 	if g.withState() {
@@ -267,10 +271,13 @@ func (g *generator) printConstructors() {
 	g.p("key:        key,")
 	g.p("value:      value,")
 	if g.features[weight] {
-		g.p("weight:     weight,")
+		g.p("policyWeight: weight,")
 	}
 	g.out()
 	g.p("}")
+	if g.features[weight] {
+		g.p("n.weight.Store(weight)")
+	}
 	if g.features[expiration] {
 		g.p("n.expiresAt.Store(expiresAt)")
 	}
@@ -549,9 +556,40 @@ func (g *generator) printFunctions() {
 	g.p("func (n *%s[K, V]) Weight() uint32 {", g.structName)
 	g.in()
 	if g.features[weight] {
-		g.p("return n.weight")
+		g.p("return n.weight.Load()")
 	} else {
 		g.p("return 1")
+	}
+	g.out()
+	g.p("}")
+	g.p("")
+
+	g.p("func (n *%s[K, V]) SetWeight(weight uint32) {", g.structName)
+	g.in()
+	if g.features[weight] {
+		g.p("n.weight.Store(weight)")
+	} else {
+		g.p("panic(\"not implemented\")")
+	}
+	g.out()
+	g.p("}")
+	g.p("")
+
+	g.p("func (n *%s[K, V]) PolicyWeight() uint32 {", g.structName)
+	g.in()
+	if g.features[weight] {
+		g.p("return n.policyWeight")
+	} else {
+		g.p("return 1")
+	}
+	g.out()
+	g.p("}")
+	g.p("")
+
+	g.p("func (n *%s[K, V]) SetPolicyWeight(weight uint32) {", g.structName)
+	g.in()
+	if g.features[weight] {
+		g.p("n.policyWeight = weight")
 	}
 	g.out()
 	g.p("}")
@@ -776,6 +814,12 @@ type Node[K comparable, V any] interface {
 	IsFresh(now int64) bool
 	// Weight returns the weight of the node.
 	Weight() uint32
+	// SetWeight atomically replaces the weight (used for in-place updates).
+	SetWeight(weight uint32)
+	// PolicyWeight returns the weight the eviction policy has accounted for the node.
+	PolicyWeight() uint32
+	// SetPolicyWeight sets the weight the eviction policy has accounted for the node.
+	SetPolicyWeight(weight uint32)
 	// IsAlive returns true if the entry is available in the hash-table and page replacement policy.
 	IsAlive() bool
 	// IsRetired returns true if the entry was removed from the hash-table and is awaiting removal from the page

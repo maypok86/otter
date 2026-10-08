@@ -89,14 +89,16 @@ func (p *policy[K, V]) access(n node.Node[K, V]) {
 // A node's weight is accounted in the weighted sizes if and only if the node is linked into
 // one of the queues, so that removing it subtracts exactly what was added.
 func (p *policy[K, V]) add(n node.Node[K, V], evictNode func(n node.Node[K, V], nowNanos int64)) {
+	// the current weight, which a writer may have changed in place since the insertion
 	nodeWeight := uint64(n.Weight())
 	// An out-of-order write: the node was replaced or removed before its insertion was
 	// replayed. The task that replaced or removed it accounts for it.
 	isAlive := n.IsAlive()
 
-	if isAlive && nodeWeight <= p.maximum {
-		p.weightedSize += nodeWeight
-		p.windowWeightedSize += nodeWeight
+	if isAlive {
+		// a new node is in the window
+		n.SetPolicyWeight(uint32(nodeWeight))
+		p.adjustAccounted(n, 0, nodeWeight)
 	}
 	if p.weightedSize >= p.maximum>>1 {
 		// Lazily initialize when close to the maximum
@@ -115,14 +117,15 @@ func (p *policy[K, V]) add(n node.Node[K, V], evictNode func(n node.Node[K, V], 
 		return
 	}
 
-	switch {
-	case nodeWeight > p.maximum:
-		// never linked and never accounted
-		evictNode(n, 0)
-	case nodeWeight > p.windowMaximum:
+	if nodeWeight > p.windowMaximum {
 		p.window.PushFront(n)
-	default:
+	} else {
 		p.window.PushBack(n)
+	}
+	if nodeWeight > p.maximum {
+		// Linked first: the eviction is declined if a writer has set the weight to zero in place
+		// since it was read above, and the entry must then stay in the policy.
+		evictNode(n, 0)
 	}
 }
 
@@ -146,9 +149,10 @@ func (p *policy[K, V]) update(n, old node.Node[K, V], evictNode func(n node.Node
 
 	nodeWeight := uint64(n.Weight())
 	p.updateNode(n, old)
+	n.SetPolicyWeight(uint32(nodeWeight))
+	p.adjustAccounted(n, 0, nodeWeight)
 	switch {
 	case n.InWindow():
-		p.windowWeightedSize += nodeWeight
 		switch {
 		case nodeWeight > p.maximum:
 			evictNode(n, 0)
@@ -164,36 +168,59 @@ func (p *policy[K, V]) update(n, old node.Node[K, V], evictNode func(n node.Node
 			evictNode(n, 0)
 		}
 	case n.InMainProtected():
-		p.mainProtectedWeightedSize += nodeWeight
 		if nodeWeight <= p.maximum {
 			p.access(n)
 		} else {
 			evictNode(n, 0)
 		}
 	}
-
-	p.weightedSize += nodeWeight
 }
 
 // updateNode puts n in the place of old, which must be linked, and stops accounting old.
 func (p *policy[K, V]) updateNode(n, old node.Node[K, V]) {
-	oldWeight := uint64(old.Weight())
+	oldWeight := uint64(old.PolicyWeight())
 	n.SetQueueType(old.GetQueueType())
 
 	switch {
 	case n.InWindow():
 		p.window.UpdateNode(n, old)
-		p.windowWeightedSize -= oldWeight
 	case n.InMainProbation():
 		p.probation.UpdateNode(n, old)
 	default:
 		p.protected.UpdateNode(n, old)
-		p.mainProtectedWeightedSize -= oldWeight
 	}
-	p.weightedSize -= oldWeight
+	// n is in old's queue now
+	p.adjustAccounted(n, oldWeight, 0)
 	old.Die()
 }
 
+// reweigh brings the weight accounted for n in line with the weight a writer set in place.
+// Replaying it any number of times, in any order relative to n's other tasks, converges to
+// n's current weight.
+func (p *policy[K, V]) reweigh(n node.Node[K, V], evictNode func(n node.Node[K, V], nowNanos int64)) {
+	// Not linked: its insertion has not been replayed yet (add takes the current weight), or it
+	// has already left the policy. There is nothing to adjust.
+	if !p.contains(n) {
+		return
+	}
+
+	oldWeight := uint64(n.PolicyWeight())
+	newWeight := uint64(n.Weight())
+	if oldWeight == newWeight {
+		return
+	}
+	n.SetPolicyWeight(uint32(newWeight))
+	p.adjustAccounted(n, oldWeight, newWeight)
+
+	switch {
+	case newWeight > p.maximum:
+		evictNode(n, 0)
+	case n.InWindow() && newWeight > p.windowMaximum:
+		p.window.MoveToFront(n)
+	}
+}
+
+// contains reports whether n is present in the queue its type points to.
 func (p *policy[K, V]) contains(n node.Node[K, V]) bool {
 	switch {
 	case n.InWindow():
@@ -217,20 +244,30 @@ func (p *policy[K, V]) makeDead(n node.Node[K, V]) {
 		return
 	}
 	if p.contains(n) {
-		nodeWeight := uint64(n.Weight())
 		switch {
 		case n.InWindow():
 			p.window.Delete(n)
-			p.windowWeightedSize -= nodeWeight
 		case n.InMainProbation():
 			p.probation.Delete(n)
 		default:
 			p.protected.Delete(n)
-			p.mainProtectedWeightedSize -= nodeWeight
 		}
-		p.weightedSize -= nodeWeight
+		p.adjustAccounted(n, uint64(n.PolicyWeight()), 0)
 	}
 	n.Die()
+}
+
+// adjustAccounted replaces oldWeight with newWeight in the weighted size of the policy and
+// of the queue n's type points to. It is the only place that changes these sizes when a node
+// is linked, unlinked or reweighed; moves between queues adjust them where they happen.
+func (p *policy[K, V]) adjustAccounted(n node.Node[K, V], oldWeight, newWeight uint64) {
+	p.weightedSize = p.weightedSize - oldWeight + newWeight
+	switch {
+	case n.InWindow():
+		p.windowWeightedSize = p.windowWeightedSize - oldWeight + newWeight
+	case n.InMainProtected():
+		p.mainProtectedWeightedSize = p.mainProtectedWeightedSize - oldWeight + newWeight
+	}
 }
 
 func (p *policy[K, V]) setMaximumSize(maximum uint64) {
@@ -257,7 +294,7 @@ func (p *policy[K, V]) setMaximumSize(maximum uint64) {
 
 // Promote the node from probation to protected on access.
 func (p *policy[K, V]) reorderProbation(n node.Node[K, V]) {
-	nodeWeight := uint64(n.Weight())
+	nodeWeight := uint64(n.PolicyWeight())
 
 	if p.probation.NotContains(n) {
 		// Ignore stale accesses for an entry that is no longer present
@@ -290,7 +327,7 @@ func (p *policy[K, V]) evictFromWindow() node.Node[K, V] {
 		}
 
 		next := n.Next()
-		nodeWeight := uint64(n.Weight())
+		nodeWeight := uint64(n.PolicyWeight())
 		if nodeWeight != 0 {
 			n.MakeMainProbation()
 			p.window.Delete(n)
@@ -334,10 +371,10 @@ func (p *policy[K, V]) evictFromMain(candidate node.Node[K, V], evictNode func(n
 		}
 
 		// Skip over entries with zero weight
-		if !node.Equals(victim, nil) && victim.Weight() == 0 {
+		if !node.Equals(victim, nil) && victim.PolicyWeight() == 0 {
 			victim = victim.Next()
 			continue
-		} else if !node.Equals(candidate, nil) && candidate.Weight() == 0 {
+		} else if !node.Equals(candidate, nil) && candidate.PolicyWeight() == 0 {
 			candidate = candidate.Next()
 			continue
 		}
@@ -378,7 +415,7 @@ func (p *policy[K, V]) evictFromMain(candidate node.Node[K, V], evictNode func(n
 		}
 
 		// Evict immediately if the candidate's weight exceeds the maximum
-		if uint64(candidate.Weight()) > p.maximum {
+		if uint64(candidate.PolicyWeight()) > p.maximum {
 			evict := candidate
 			candidate = candidate.Next()
 			evictNode(evict, 0)
@@ -482,7 +519,7 @@ func (p *policy[K, V]) demoteFromMainProtected() {
 		}
 		demoted.MakeMainProbation()
 		p.probation.PushBack(demoted)
-		mainProtectedWeightedSize -= uint64(demoted.Weight())
+		mainProtectedWeightedSize -= uint64(demoted.PolicyWeight())
 	}
 
 	p.mainProtectedWeightedSize = mainProtectedWeightedSize
@@ -504,7 +541,7 @@ func (p *policy[K, V]) increaseWindow() {
 	for i := 0; i < queueTransferThreshold; i++ {
 		candidate := p.probation.Head()
 		probation := true
-		if node.Equals(candidate, nil) || quota < int64(candidate.Weight()) {
+		if node.Equals(candidate, nil) || quota < int64(candidate.PolicyWeight()) {
 			candidate = p.protected.Head()
 			probation = false
 		}
@@ -512,7 +549,7 @@ func (p *policy[K, V]) increaseWindow() {
 			break
 		}
 
-		weight := uint64(candidate.Weight())
+		weight := uint64(candidate.PolicyWeight())
 		if quota < int64(weight) {
 			break
 		}
@@ -553,7 +590,7 @@ func (p *policy[K, V]) decreaseWindow() {
 			break
 		}
 
-		weight := int64(candidate.Weight())
+		weight := int64(candidate.PolicyWeight())
 		if quota < weight {
 			break
 		}

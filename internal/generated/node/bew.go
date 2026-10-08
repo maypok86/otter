@@ -16,26 +16,28 @@ import (
 //
 // 3. Weight
 type BEW[K comparable, V any] struct {
-	key       K
-	value     V
-	valuePtr  atomic.Pointer[V]
-	prev      *BEW[K, V]
-	next      *BEW[K, V]
-	prevExp   *BEW[K, V]
-	nextExp   *BEW[K, V]
-	expiresAt atomic.Int64
-	weight    uint32
-	state     atomic.Uint32
-	queueType uint8
+	key          K
+	value        V
+	valuePtr     atomic.Pointer[V]
+	prev         *BEW[K, V]
+	next         *BEW[K, V]
+	prevExp      *BEW[K, V]
+	nextExp      *BEW[K, V]
+	expiresAt    atomic.Int64
+	weight       atomic.Uint32
+	policyWeight uint32
+	state        atomic.Uint32
+	queueType    uint8
 }
 
 // NewBEW creates a new BEW.
 func NewBEW[K comparable, V any](key K, value V, expiresAt, refreshableAt int64, weight uint32) Node[K, V] {
 	n := &BEW[K, V]{
-		key:    key,
-		value:  value,
-		weight: weight,
+		key:          key,
+		value:        value,
+		policyWeight: weight,
 	}
+	n.weight.Store(weight)
 	n.expiresAt.Store(expiresAt)
 	n.state.Store(aliveState)
 
@@ -151,7 +153,19 @@ func (n *BEW[K, V]) IsFresh(now int64) bool {
 }
 
 func (n *BEW[K, V]) Weight() uint32 {
-	return n.weight
+	return n.weight.Load()
+}
+
+func (n *BEW[K, V]) SetWeight(weight uint32) {
+	n.weight.Store(weight)
+}
+
+func (n *BEW[K, V]) PolicyWeight() uint32 {
+	return n.policyWeight
+}
+
+func (n *BEW[K, V]) SetPolicyWeight(weight uint32) {
+	n.policyWeight = weight
 }
 
 func (n *BEW[K, V]) IsAlive() bool {
