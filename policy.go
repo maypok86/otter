@@ -95,7 +95,7 @@ func (p *policy[K, V]) add(n node.Node[K, V], evictNode func(n node.Node[K, V], 
 	// replayed. The task that replaced or removed it accounts for it.
 	isAlive := n.IsAlive()
 
-	if isAlive && nodeWeight <= p.maximum {
+	if isAlive {
 		// a new node is in the window
 		n.SetPolicyWeight(uint32(nodeWeight))
 		p.adjustAccounted(n, 0, nodeWeight)
@@ -117,14 +117,15 @@ func (p *policy[K, V]) add(n node.Node[K, V], evictNode func(n node.Node[K, V], 
 		return
 	}
 
-	switch {
-	case nodeWeight > p.maximum:
-		// never linked and never accounted
-		evictNode(n, 0)
-	case nodeWeight > p.windowMaximum:
+	if nodeWeight > p.windowMaximum {
 		p.window.PushFront(n)
-	default:
+	} else {
 		p.window.PushBack(n)
+	}
+	if nodeWeight > p.maximum {
+		// Linked first: the eviction is declined if a writer has set the weight to zero in place
+		// since it was read above, and the entry must then stay in the policy.
+		evictNode(n, 0)
 	}
 }
 

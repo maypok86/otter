@@ -1392,11 +1392,19 @@ func (c *cache[K, V]) deleteNodeFromMap(
 	nowNano int64,
 	cause DeletionCause,
 	onlyIfExpired bool,
-) (deleted node.Node[K, V], extended bool) {
+) (deleted node.Node[K, V], extended, declined bool) {
 	c.hashmap.Compute(n.Key(), func(current node.Node[K, V]) node.Node[K, V] {
 		if onlyIfExpired && current != nil && n.AsPointer() == current.AsPointer() && !current.HasExpired(nowNano) {
 			// updated in place, extending its lifetime, after it was found expired
 			extended = true
+			return current
+		}
+		if cause == CauseOverflow && c.isWeighted && current != nil && n.AsPointer() == current.AsPointer() &&
+			current.Weight() == 0 && !current.HasExpired(nowNano) {
+			// The policy chose the node by the weight it accounted, but a writer has since set
+			// its weight to zero in place, and a zero-weight entry is never evicted for size.
+			// The node stays linked until its reweigh task brings the accounted weight to zero.
+			declined = true
 			return current
 		}
 		if cause == CauseInvalidation {
@@ -1419,11 +1427,11 @@ func (c *cache[K, V]) deleteNodeFromMap(
 		}
 		return current
 	})
-	return deleted, extended
+	return deleted, extended, declined
 }
 
 func (c *cache[K, V]) deleteNode(n node.Node[K, V], nowNano int64) {
-	deleted, _ := c.deleteNodeFromMap(n, nowNano, CauseInvalidation, false)
+	deleted, _, _ := c.deleteNodeFromMap(n, nowNano, CauseInvalidation, false)
 	c.afterDelete(deleted, nowNano, true)
 }
 
@@ -1512,9 +1520,12 @@ func (c *cache[K, V]) removeNode(n node.Node[K, V], nowNanos int64, onlyIfExpire
 		cause = CauseExpiration
 	}
 
-	d, extended := c.deleteNodeFromMap(n, nowNanos, cause, onlyIfExpired)
+	d, extended, declined := c.deleteNodeFromMap(n, nowNanos, cause, onlyIfExpired)
 	if extended {
 		c.expirationPolicy.Add(n)
+		return
+	}
+	if declined {
 		return
 	}
 	deleted := d != nil
