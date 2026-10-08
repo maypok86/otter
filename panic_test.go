@@ -19,6 +19,7 @@ import (
 	"errors"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -391,6 +392,48 @@ func TestCache_GoexitInLoader(t *testing.T) {
 	}
 	_, ok := c.GetIfPresent(1)
 	require.False(t, ok, "the zero value of an exited load was cached")
+}
+
+// A weigher that calls runtime.Goexit while the loaded value is written does not leave the load
+// registered: a later Get loads the key again instead of joining the finished load.
+func TestCache_GoexitWhileWritingLoadedValue(t *testing.T) {
+	t.Parallel()
+
+	var exit atomic.Bool
+	exit.Store(true)
+	c := Must(&Options[int, int]{
+		MaximumWeight: 100,
+		Weigher: func(key, value int) uint32 {
+			if exit.Load() {
+				runtime.Goexit()
+			}
+			return 1
+		},
+	})
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = c.Get(context.Background(), 1, LoaderFunc[int, int](func(ctx context.Context, key int) (int, error) {
+			return 7, nil
+		}))
+	}()
+	<-done
+	exit.Store(false)
+
+	var loads atomic.Int32
+	completes(t, "Get after the exited write", func() {
+		v, err := c.Get(context.Background(), 1, LoaderFunc[int, int](func(ctx context.Context, key int) (int, error) {
+			loads.Add(1)
+			return 8, nil
+		}))
+		require.NoError(t, err)
+		require.Equal(t, 8, v)
+	})
+	require.Equal(t, int32(1), loads.Load(), "the Get joined the exited load")
+	v, ok := c.GetIfPresent(1)
+	require.True(t, ok)
+	require.Equal(t, 8, v)
 }
 
 // validatePolicy checks that every entry is linked into the eviction policy and accounted.

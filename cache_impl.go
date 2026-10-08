@@ -846,12 +846,13 @@ func (c *cache[K, V]) afterDeleteCall(cl *call[K, V]) {
 		if canceled {
 			return
 		}
+		// Compute was interrupted by a panic or by runtime.Goexit, for which recover returns
+		// nil. The call is deleted after Compute, so leaving it registered would make every
+		// later Get of the key join it.
+		if !cl.isFake {
+			c.singleflight.deleteCall(cl)
+		}
 		if r := recover(); r != nil {
-			// The call is deleted after Compute, so a panic inside it would leave the call
-			// registered and every later Get of the key would join it and get this panic.
-			if !cl.isFake {
-				c.singleflight.deleteCall(cl)
-			}
 			cl.err = newPanicError(r)
 			cl.cancel()
 			panic(r)
