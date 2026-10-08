@@ -1074,7 +1074,15 @@ func (c *cache[K, V]) afterDeleteCall(cl *call[K, V]) {
 	newNode := c.hashmap.Compute(cl.key, func(oldNode node.Node[K, V]) node.Node[K, V] {
 		// Read-only: the call is deleted after Compute returns below, not here. A refresh is
 		// also stale if the node it was requested for was replaced or removed in the meantime.
-		isCorrectCall := cl.isFake || (c.singleflight.isCurrentCall(cl) && (!cl.isRefresh || isRefreshBase(cl.base, oldNode, nowNano)))
+		var isCorrectCall bool
+		if cl.isFake {
+			// A key the bulk loader returned without being asked for was not registered before
+			// the load, so a write during the load could not cancel it. It only fills a gap: the
+			// key must have no live value and no load of its own.
+			isCorrectCall = (oldNode == nil || oldNode.HasExpired(nowNano)) && c.singleflight.getCall(cl.key) == nil
+		} else {
+			isCorrectCall = c.singleflight.isCurrentCall(cl) && (!cl.isRefresh || isRefreshBase(cl.base, oldNode, nowNano))
+		}
 		old = oldNode
 		if oldNode != nil {
 			oldValue = oldNode.Value()
@@ -1183,6 +1191,10 @@ func (c *cache[K, V]) bulkRefreshKeys(
 
 			if isManual {
 				for _, cl := range toLoadCalls {
+					// the bulk loader may have added keys that were not requested
+					if cl.isFake {
+						continue
+					}
 					results = append(results, RefreshResult[K, V]{
 						Key:   cl.key,
 						Value: cl.value,
@@ -1211,6 +1223,9 @@ func (c *cache[K, V]) bulkRefreshKeys(
 
 			if isManual {
 				for _, cl := range toReloadCalls {
+					if cl.isFake {
+						continue
+					}
 					results = append(results, RefreshResult[K, V]{
 						Key:   cl.key,
 						Value: cl.value,
