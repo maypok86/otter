@@ -417,7 +417,8 @@ func (c *cache[K, V]) GetEntryQuietly(key K) (Entry[K, V], bool) {
 }
 
 // SetExpiresAfter specifies that the entry should be automatically removed from the cache once the duration has
-// elapsed. The expiration policy determines when the entry's age is reset.
+// elapsed. The expiration policy determines when the entry's age is reset. It has no effect on an absent
+// or expired entry.
 func (c *cache[K, V]) SetExpiresAfter(key K, expiresAfter time.Duration) {
 	if !c.withExpiration || expiresAfter <= 0 {
 		return
@@ -428,8 +429,15 @@ func (c *cache[K, V]) SetExpiresAfter(key K, expiresAfter time.Duration) {
 	if n == nil {
 		return
 	}
+	// An expired entry that is still in the table is absent: a new deadline would bring its
+	// stale value back. The deadline is changed only from the one checked here, so a concurrent
+	// writer's deadline is not overwritten either.
+	expiresAt := n.ExpiresAt()
+	if !n.IsAlive() || expiresAt <= nowNano {
+		return
+	}
 
-	c.setExpiresAfterRead(n, nowNano, expiresAfter)
+	c.casExpiresAfterRead(n, expiresAt, nowNano, expiresAfter)
 	c.afterRead(n, nowNano, false, false)
 }
 

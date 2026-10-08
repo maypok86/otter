@@ -215,7 +215,8 @@ func (c *Cache[K, V]) ComputeIfPresent(
 }
 
 // SetExpiresAfter specifies that the entry should be automatically removed from the cache once the duration has
-// elapsed. The expiration policy determines when the entry's age is reset.
+// elapsed. The expiration policy determines when the entry's age is reset. It has no effect on an absent
+// or expired entry.
 func (c *Cache[K, V]) SetExpiresAfter(key K, expiresAfter time.Duration) {
 	c.cache.SetExpiresAfter(key, expiresAfter)
 }

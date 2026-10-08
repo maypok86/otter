@@ -810,8 +810,12 @@ func TestCache_DeletionListenersAgreeOnCause(t *testing.T) {
 			mu.Lock()
 			atomicDeleted = append(atomicDeleted, e)
 			mu.Unlock()
-			// the hash table still returns the old node, whose deadline is extended
-			c.SetExpiresAfter(e.Key, time.Hour)
+			// The hash table still returns the old node. Its deadline is extended directly, as a
+			// reader that read the node before it expired can still do; SetExpiresAfter ignores
+			// an expired node.
+			if n := c.cache.hashmap.Get(e.Key); n != nil {
+				n.SetExpiresAt(clk.NowNano() + int64(time.Hour))
+			}
 		},
 		Executor: func(fn func()) {
 			fn()

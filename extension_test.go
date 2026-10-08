@@ -525,3 +525,20 @@ func TestCache_InvalidateOfExpiredEntryReportsAbsent(t *testing.T) {
 		})
 	}
 }
+
+// SetExpiresAfter does not bring back an expired entry that is still in the table: the entry is
+// absent, so there is nothing to set a deadline for.
+func TestCache_SetExpiresAfterDoesNotReviveExpiredEntry(t *testing.T) {
+	t.Parallel()
+
+	for _, bounded := range []bool{false, true} {
+		t.Run(fmt.Sprintf("bounded=%v", bounded), func(t *testing.T) {
+			t.Parallel()
+
+			c := newCacheWithExpiredEntry(t, bounded)
+			c.SetExpiresAfter(1, time.Hour)
+			_, ok := c.GetIfPresent(1)
+			require.False(t, ok, "SetExpiresAfter revived an expired entry")
+		})
+	}
+}
