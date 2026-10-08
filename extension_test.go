@@ -15,6 +15,7 @@
 package otter
 
 import (
+	"fmt"
 	"math/rand/v2"
 	"slices"
 	"sync"
@@ -467,4 +468,42 @@ func TestCache_EvictionOrderMergesByFrequency(t *testing.T) {
 	}
 	require.Equal(t, wantColdest, collect(c.Coldest()))
 	require.Equal(t, wantHottest, collect(c.Hottest()))
+}
+
+// newCacheWithExpiredEntry returns a cache whose key 1 has expired but is still in the table:
+// the executor never runs maintenance, which would remove it.
+func newCacheWithExpiredEntry(t *testing.T, bounded bool) *Cache[int, int] {
+	t.Helper()
+
+	clk := newNonTickingClock()
+	opts := &Options[int, int]{
+		Clock:            clk,
+		ExpiryCalculator: ExpiryWriting[int, int](time.Minute),
+		Executor:         func(fn func()) {},
+	}
+	if bounded {
+		opts.MaximumSize = 10
+	}
+	c := Must(opts)
+	c.Set(1, 1)
+	clk.Sleep(2 * time.Minute)
+	require.NotNil(t, c.cache.hashmap.Get(1), "the expired entry must still be in the table")
+	return c
+}
+
+// Set over an expired entry reports that the key had no value, as SetIfAbsent, Compute and
+// reads do.
+func TestCache_SetOverExpiredEntryReportsAbsent(t *testing.T) {
+	t.Parallel()
+
+	for _, bounded := range []bool{false, true} {
+		t.Run(fmt.Sprintf("bounded=%v", bounded), func(t *testing.T) {
+			t.Parallel()
+
+			c := newCacheWithExpiredEntry(t, bounded)
+			v, ok := c.Set(1, 2)
+			require.True(t, ok)
+			require.Equal(t, 2, v)
+		})
+	}
 }

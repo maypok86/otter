@@ -334,6 +334,7 @@ func (c *cache[K, V]) afterRead(got node.Node[K, V], nowNano int64, recordHit, c
 // Set associates the value with the key in this cache.
 //
 // If the specified key is not already associated with a value, then it returns new value and true.
+// An expired entry that has not been removed yet counts as no value.
 //
 // If the specified key is already associated with a value, then it returns existing value and false.
 func (c *cache[K, V]) Set(key K, value V) (V, bool) {
@@ -503,7 +504,8 @@ func (c *cache[K, V]) set(key K, value V, onlyIfAbsent bool) (V, bool) {
 	}
 
 	c.afterWrite(n, old, oldValue, written, nowNano, false)
-	if old != nil {
+	// An expired entry that is still in the table is absent, as for SetIfAbsent and reads.
+	if oldLive {
 		return oldValue, false
 	}
 	return value, true

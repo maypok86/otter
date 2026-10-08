@@ -118,6 +118,7 @@ func (c *Cache[K, V]) GetEntryQuietly(key K) (Entry[K, V], bool) {
 // Set associates the value with the key in this cache.
 //
 // If the specified key is not already associated with a value, then it returns new value and true.
+// An expired entry that has not been removed yet counts as no value.
 //
 // If the specified key is already associated with a value, then it returns existing value and false.
 func (c *Cache[K, V]) Set(key K, value V) (V, bool) {
