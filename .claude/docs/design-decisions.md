@@ -17,7 +17,11 @@ Audits read this file **after** recording their findings (Phase 1.5 of the audit
   its value, with `CauseExpiration`.
 - **The read buffer is lossy.** A dropped access is a lost policy signal, not a bug. Anything
   that must reach the policy (insert, replacement, weight change, earlier deadline) goes
-  through the lossless write buffer.
+  through the lossless write buffer. One exception: a read whose `ExpireAfterRead` moves the
+  deadline earlier only offers the node to the read buffer, which keeps write-buffer traffic
+  off the read path. If the access is dropped, the entry is already invisible to reads but is
+  removed at its former deadline. `SetExpiresAfter` sends an earlier deadline through the
+  write buffer.
 - **`Entry` values can mix fields of different writes of the same key.** The fields are read
   one at a time from a node that is updated in place, as in Caffeine. (The doc comment still
   calls it an immutable snapshot; that is a known documentation gap.)

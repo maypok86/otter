@@ -370,16 +370,20 @@ func (c *cache[K, V]) setExpiresAfterRead(n node.Node[K, V], nowNano int64, expi
 	c.casExpiresAfterRead(n, n.ExpiresAt(), nowNano, expiresAfter)
 }
 
-func (c *cache[K, V]) casExpiresAfterRead(n node.Node[K, V], expiresAt, nowNano int64, expiresAfter time.Duration) {
+// casExpiresAfterRead moves the deadline from expiresAt to nowNano + expiresAfter, and reports
+// whether it moved it earlier.
+func (c *cache[K, V]) casExpiresAfterRead(n node.Node[K, V], expiresAt, nowNano int64, expiresAfter time.Duration) bool {
 	if expiresAfter <= 0 {
-		return
+		return false
 	}
 
 	currentDuration := time.Duration(expiresAt - nowNano)
 	diff := xmath.Abs(int64(expiresAfter - currentDuration))
-	if diff > 0 {
-		n.CASExpiresAt(expiresAt, deadlineAfter(nowNano, expiresAfter))
+	if diff == 0 {
+		return false
 	}
+	next := deadlineAfter(nowNano, expiresAfter)
+	return n.CASExpiresAt(expiresAt, next) && next < expiresAt
 }
 
 // deadlineAfter returns nowNano + d, saturated at math.MaxInt64, the time that is never reached.
@@ -437,8 +441,15 @@ func (c *cache[K, V]) SetExpiresAfter(key K, expiresAfter time.Duration) {
 		return
 	}
 
-	c.casExpiresAfterRead(n, expiresAt, nowNano, expiresAfter)
+	earlier := c.casExpiresAfterRead(n, expiresAt, nowNano, expiresAfter)
 	c.afterRead(n, nowNano, false, false)
+	if earlier {
+		// The read buffer may drop the access, and the node would then wait in the timer wheel's
+		// bucket for its former deadline, so an earlier deadline goes through the write buffer,
+		// as for an in-place write. A later one needs nothing: the wheel re-checks the node when
+		// its former bucket expires.
+		c.afterWriteTask(c.getTask(n, nil, reconcileReason, causeUnknown))
+	}
 }
 
 // SetRefreshableAfter specifies that each entry should be eligible for reloading once a fixed duration has elapsed.

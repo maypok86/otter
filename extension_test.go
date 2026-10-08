@@ -542,3 +542,38 @@ func TestCache_SetExpiresAfterDoesNotReviveExpiredEntry(t *testing.T) {
 		})
 	}
 }
+
+// A deadline that SetExpiresAfter moves earlier reaches the timer wheel through the write buffer,
+// which does not drop tasks. Through the lossy read buffer alone, a dropped access left the entry
+// in the wheel's bucket for its former deadline, so CleanUp did not remove it once it expired.
+func TestCache_EarlierDeadlineReachesTheTimerWheel(t *testing.T) {
+	t.Parallel()
+
+	const n = 1000
+	clk := newNonTickingClock()
+	c := Must(&Options[int, int]{
+		Clock:            clk,
+		ExpiryCalculator: ExpiryWriting[int, int](time.Hour),
+		// Maintenance runs only on CleanUp, so the read buffer fills up and drops accesses.
+		Executor: func(fn func()) {},
+	})
+	for k := 0; k < n; k++ {
+		c.Set(k, k)
+	}
+	c.CleanUp()
+
+	for k := 0; k < n; k++ {
+		c.SetExpiresAfter(k, time.Second)
+	}
+	clk.Sleep(2 * time.Second)
+	c.CleanUp()
+
+	survivors := 0
+	for k := 0; k < n; k++ {
+		if c.cache.hashmap.Get(k) != nil {
+			survivors++
+		}
+	}
+	require.Zero(t, survivors, "expired entries stayed in the table after CleanUp")
+	require.Zero(t, c.EstimatedSize())
+}
