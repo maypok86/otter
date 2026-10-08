@@ -1589,9 +1589,10 @@ func (c *cache[K, V]) deleteNodeFromMap(
 	return deleted, deletedCause, extended, declined
 }
 
-func (c *cache[K, V]) deleteNode(n node.Node[K, V], nowNano int64) {
+func (c *cache[K, V]) deleteNode(n node.Node[K, V], nowNano int64) bool {
 	deleted, cause, _, _ := c.deleteNodeFromMap(n, nowNano, CauseInvalidation, false)
 	c.afterDelete(deleted, cause, true, false)
+	return deleted != nil
 }
 
 // afterDelete takes the cause that the synchronous listener was given under the lock.
@@ -1803,7 +1804,8 @@ func (c *cache[K, V]) InvalidateAll() {
 }
 
 // invalidateAllLocked discards entries under evictionMutex while the write buffer has room, and
-// returns the rest to be invalidated one by one.
+// returns the rest to be invalidated one by one, together with the keys whose node was replaced
+// after the snapshot.
 func (c *cache[K, V]) invalidateAllLocked() []node.Node[K, V] {
 	c.evictionMutex.Lock()
 	defer c.evictionMutex.Unlock()
@@ -1826,12 +1828,18 @@ func (c *cache[K, V]) invalidateAllLocked() []node.Node[K, V] {
 		return true
 	})
 	nowNano := c.clock.NowNano()
+	var replaced []node.Node[K, V]
 	for len(nodes) > 0 && c.writeBuffer.Size() < threshold {
 		n := nodes[len(nodes)-1]
 		nodes = nodes[:len(nodes)-1]
-		c.deleteNode(n, nowNano)
+		if !c.deleteNode(n, nowNano) && c.hashmap.Get(n.Key()) != nil {
+			// The key's node was replaced after the snapshot, e.g. by a reload that completed in
+			// the meantime. The new node's insertion may still be in the write buffer, so it is
+			// not removed here under the lock: the key is invalidated with the rest.
+			replaced = append(replaced, n)
+		}
 	}
-	return nodes
+	return append(nodes, replaced...)
 }
 
 // CleanUp performs any pending maintenance operations needed by the cache. Exactly which activities are
