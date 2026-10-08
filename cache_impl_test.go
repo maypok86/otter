@@ -1292,3 +1292,19 @@ func TestCache_Scheduler(t *testing.T) {
 		require.Equal(t, idle, c.cache.drainStatus.Load())
 	})
 }
+
+func TestCache_ReplaceBeforeAddIsDrained(t *testing.T) {
+	t.Parallel()
+
+	const maximum = 10
+	c := Must(&Options[int, int]{
+		MaximumSize: maximum,
+		Executor:    func(fn func()) {},
+	})
+	for i := 0; i < 100*maximum; i++ {
+		c.Set(i, i)
+		c.Set(i, i+1)
+		c.CleanUp()
+	}
+	require.LessOrEqual(t, c.EstimatedSize(), maximum)
+}

@@ -119,6 +119,14 @@ func (p *policy[K, V]) add(n node.Node[K, V], evictNode func(n node.Node[K, V], 
 }
 
 func (p *policy[K, V]) update(n, old node.Node[K, V], evictNode func(n node.Node[K, V], nowNanos int64)) {
+	if !p.contains(old) {
+		// old was never linked (its add was ignored as out-of-order) or was already evicted,
+		// so n has nothing to replace and must be added like a new node.
+		p.makeDead(old)
+		p.add(n, evictNode)
+		return
+	}
+
 	nodeWeight := uint64(n.Weight())
 	p.updateNode(n, old)
 	switch {
@@ -162,6 +170,17 @@ func (p *policy[K, V]) updateNode(n, old node.Node[K, V]) {
 		p.protected.UpdateNode(n, old)
 	}
 	p.makeDead(old)
+}
+
+func (p *policy[K, V]) contains(n node.Node[K, V]) bool {
+	switch {
+	case n.InWindow():
+		return p.window.Contains(n)
+	case n.InMainProbation():
+		return p.probation.Contains(n)
+	default:
+		return p.protected.Contains(n)
+	}
 }
 
 // delete deletes node from the eviction policy.
