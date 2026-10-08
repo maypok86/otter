@@ -65,3 +65,22 @@ func (r *safeRecorder) RecordLoadFailure(loadTime time.Duration) {
 	defer recoverCallback(r.logger, "StatsRecorder.RecordLoadFailure panicked")
 	r.recorder.RecordLoadFailure(loadTime)
 }
+
+// safeLogger is a Logger that drops panics of the user's logger. The cache logs from its recovery
+// paths and from refresh goroutines, where a panicking logger would undo the recovery (leave the
+// eviction lock held or a node half removed) or crash the process.
+type safeLogger struct {
+	logger Logger
+}
+
+func (l *safeLogger) Warn(ctx context.Context, msg string, err error) {
+	//nolint:errcheck // the logger's panic is dropped: there is nowhere left to report it
+	defer func() { _ = recover() }()
+	l.logger.Warn(ctx, msg, err)
+}
+
+func (l *safeLogger) Error(ctx context.Context, msg string, err error) {
+	//nolint:errcheck // the logger's panic is dropped: there is nowhere left to report it
+	defer func() { _ = recover() }()
+	l.logger.Error(ctx, msg, err)
+}

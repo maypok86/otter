@@ -130,7 +130,7 @@ func newCache[K comparable, V any](o *Options[K, V]) *cache[K, V] {
 		_, ok := o.StatsRecorder.(*stats.NoopRecorder)
 		withStats = !ok
 	}
-	logger := o.getLogger()
+	var logger Logger = &safeLogger{logger: o.getLogger()}
 	var statsRecorder stats.Recorder = &stats.NoopRecorder{}
 	var statsSnapshoter stats.Snapshoter = &stats.NoopRecorder{}
 	if withStats {
@@ -1573,11 +1573,11 @@ func (c *cache[K, V]) scheduleDrainBuffers() {
 			// released here, and the drain is left required for the next attempt.
 			defer func() {
 				if r := recover(); r != nil {
-					c.logger.Error(context.Background(), "Maintenance panicked", newPanicError(r))
 					if token.CompareAndSwap(0, 1) {
 						c.drainStatus.Store(required)
 						c.evictionMutex.Unlock()
 					}
+					c.logger.Error(context.Background(), "Maintenance panicked", newPanicError(r))
 				}
 			}()
 			c.executor(func() {

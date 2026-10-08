@@ -407,3 +407,57 @@ func validatePolicy(t *testing.T, c *Cache[int, int]) {
 	require.Equal(t, ci.hashmap.Size(), linked, "entries outside the policy")
 	require.Equal(t, uint64(linked), p.weightedSize)
 }
+
+type panickingLogger struct{}
+
+func (panickingLogger) Warn(context.Context, string, error) { panic("logger boom") }
+
+func (panickingLogger) Error(context.Context, string, error) { panic("logger boom") }
+
+// The cache logs from its recovery paths and from refresh goroutines. A panicking Logger must
+// not undo the recovery or crash the caller.
+func TestCache_PanicInLoggerIsContained(t *testing.T) {
+	t.Parallel()
+
+	t.Run("refresh error", func(t *testing.T) {
+		t.Parallel()
+
+		c := Must(&Options[int, int]{
+			MaximumSize:       10,
+			Logger:            panickingLogger{},
+			Executor:          syncExecutor,
+			RefreshCalculator: RefreshWriting[int, int](time.Hour),
+		})
+		c.Set(1, 1)
+
+		loader := LoaderFunc[int, int](func(ctx context.Context, key int) (int, error) {
+			return 0, errors.New("reload failed")
+		})
+		var res RefreshResult[int, int]
+		require.NotPanics(t, func() {
+			res = <-c.Refresh(context.Background(), 1, loader)
+		})
+		require.EqualError(t, res.Err, "reload failed")
+	})
+	t.Run("executor panic", func(t *testing.T) {
+		t.Parallel()
+
+		c := Must(&Options[int, int]{
+			MaximumSize: 10,
+			Logger:      panickingLogger{},
+			Executor: func(fn func()) {
+				panic("executor boom")
+			},
+		})
+		completes(t, "writes with a panicking executor and logger", func() {
+			require.NotPanics(t, func() {
+				for i := 0; i < 5000; i++ {
+					c.Set(i, i)
+				}
+				c.CleanUp()
+			})
+			_ = c.GetMaximum()
+		})
+		require.LessOrEqual(t, c.EstimatedSize(), 10)
+	})
+}
