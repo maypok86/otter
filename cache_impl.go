@@ -1305,17 +1305,23 @@ func (c *cache[K, V]) BulkGet(ctx context.Context, keys []K, bulkLoader BulkLoad
 	return result, err
 }
 
-func (c *cache[K, V]) wrapLoad(fn func() error) error {
+func (c *cache[K, V]) wrapLoad(fn func() error) (err error) {
 	startTime := c.statsClock.NowNano()
 
-	err := fn()
+	// fn panics if writing a loaded value panics. The load is still recorded, as a failure,
+	// since the caller gets the panic instead of the value.
+	completed := false
+	defer func() {
+		loadTime := time.Duration(c.statsClock.NowNano() - startTime)
+		if completed && (err == nil || errors.Is(err, ErrNotFound)) {
+			c.stats.RecordLoadSuccess(loadTime)
+		} else {
+			c.stats.RecordLoadFailure(loadTime)
+		}
+	}()
 
-	loadTime := time.Duration(c.statsClock.NowNano() - startTime)
-	if err == nil || errors.Is(err, ErrNotFound) {
-		c.stats.RecordLoadSuccess(loadTime)
-	} else {
-		c.stats.RecordLoadFailure(loadTime)
-	}
+	err = fn()
+	completed = true
 
 	var pe *panicError
 	if errors.As(err, &pe) {
