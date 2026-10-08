@@ -170,7 +170,7 @@ func TestCache_PanicInListenersAndStatsIsLogged(t *testing.T) {
 		c.CleanUp()
 	})
 	require.LessOrEqual(t, c.EstimatedSize(), 10)
-	validatePolicy(t, c)
+	validateCache(t, c)
 
 	msgs := logger.get()
 	require.Contains(t, msgs, "OnDeletion panicked")
@@ -434,21 +434,6 @@ func TestCache_GoexitWhileWritingLoadedValue(t *testing.T) {
 	v, ok := c.GetIfPresent(1)
 	require.True(t, ok)
 	require.Equal(t, 8, v)
-}
-
-// validatePolicy checks that every entry is linked into the eviction policy and accounted.
-func validatePolicy(t *testing.T, c *Cache[int, int]) {
-	t.Helper()
-
-	ci := c.cache
-	ci.evictionMutex.Lock()
-	defer ci.evictionMutex.Unlock()
-	ci.maintenance(nil)
-
-	p := ci.evictionPolicy
-	linked := p.window.Len() + p.probation.Len() + p.protected.Len()
-	require.Equal(t, ci.hashmap.Size(), linked, "entries outside the policy")
-	require.Equal(t, uint64(linked), p.weightedSize)
 }
 
 type panickingLogger struct{}
