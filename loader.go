@@ -101,6 +101,7 @@ type RefreshResult[K comparable, V any] struct {
 	Key K
 	// Value is the value corresponding to the refreshed entry.
 	Value V
-	// Err is the error that Loader / BulkLoader returned.
+	// Err is the error that Loader / BulkLoader returned, or ErrNotFound for a key that
+	// BulkLoader left out of its result.
 	Err error
 }

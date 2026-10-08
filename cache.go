@@ -228,7 +228,8 @@ func (c *Cache[K, V]) SetRefreshableAfter(key K, refreshableAfter time.Duration)
 // Get returns the value associated with key in this cache, obtaining that value from loader if necessary.
 // The method improves upon the conventional "if cached, return; otherwise create, cache and return" pattern.
 //
-// Get can return an [ErrNotFound] error if the [Loader] returns it.
+// Get can return an [ErrNotFound] error if the [Loader] returns it, or if Get waits for a [Cache.BulkGet]
+// whose [BulkLoader] leaves the key out of its result.
 // This means that the entry was not found in the data source.
 // This allows the cache to recognize when a record is missing from the data source
 // and subsequently delete the cached entry.

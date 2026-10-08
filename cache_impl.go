@@ -910,7 +910,8 @@ func (c *cache[K, V]) refreshKey(
 // Get returns the value associated with key in this cache, obtaining that value from loader if necessary.
 // The method improves upon the conventional "if cached, return; otherwise create, cache and return" pattern.
 //
-// Get can return an ErrNotFound error if the Loader returns it.
+// Get can return an ErrNotFound error if the Loader returns it, or if Get waits for a BulkGet
+// whose BulkLoader leaves the key out of its result.
 // This means that the entry was not found in the data source.
 //
 // If another call to Get is currently loading the value for key,
