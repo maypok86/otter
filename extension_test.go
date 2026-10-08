@@ -15,6 +15,7 @@
 package otter
 
 import (
+	"math/rand/v2"
 	"slices"
 	"sync"
 	"testing"
@@ -22,6 +23,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/maypok86/otter/v2/internal/generated/node"
 	"github.com/maypok86/otter/v2/stats"
 )
 
@@ -387,4 +389,82 @@ func TestCache_Hottest(t *testing.T) {
 		require.Subset(t, keys, hottest)
 		require.ElementsMatch(t, slices.Collect(c.Keys()), keys)
 	})
+}
+
+// Hottest and Coldest merge the window and probation queues by frequency: Coldest takes the less
+// frequent head first and Hottest the more frequent one. The merge used to go the other way.
+func TestCache_EvictionOrderMergesByFrequency(t *testing.T) {
+	t.Parallel()
+
+	const maximum = 1000
+	c := Must(&Options[int, int]{
+		MaximumSize: maximum,
+		Executor:    func(fn func()) { fn() },
+	})
+	z := rand.NewZipf(rand.New(rand.NewPCG(1, 7)), 1.1, 1, 50_000)
+	for range 200_000 {
+		k := int(z.Uint64())
+		if _, ok := c.GetIfPresent(k); !ok {
+			c.Set(k, k)
+		}
+	}
+	c.CleanUp()
+
+	// merge takes the head of first while firstWins says it goes before the head of second, and
+	// the head of second otherwise.
+	merge := func(first, second []node.Node[int, int], firstWins func(a, b node.Node[int, int]) bool) []int {
+		keys := make([]int, 0, len(first)+len(second))
+		for len(first) > 0 || len(second) > 0 {
+			if len(second) == 0 || (len(first) > 0 && firstWins(first[0], second[0])) {
+				keys = append(keys, first[0].Key())
+				first = first[1:]
+			} else {
+				keys = append(keys, second[0].Key())
+				second = second[1:]
+			}
+		}
+		return keys
+	}
+	var wantColdest, wantHottest []int
+	func() {
+		c.cache.evictionMutex.Lock()
+		defer c.cache.evictionMutex.Unlock()
+		p := c.cache.evictionPolicy
+		freq := func(n node.Node[int, int]) uint64 {
+			return p.sketch.frequency(n.Key())
+		}
+		keysOf := func(s []node.Node[int, int]) []int {
+			keys := make([]int, 0, len(s))
+			for _, n := range s {
+				keys = append(keys, n.Key())
+			}
+			return keys
+		}
+		window := slices.Collect(p.window.All())
+		probation := slices.Collect(p.probation.All())
+		protected := slices.Collect(p.protected.All())
+
+		wantColdest = merge(window, probation, func(w, pr node.Node[int, int]) bool {
+			return freq(w) <= freq(pr)
+		})
+		wantColdest = append(wantColdest, keysOf(protected)...)
+
+		slices.Reverse(window)
+		slices.Reverse(probation)
+		slices.Reverse(protected)
+		wantHottest = keysOf(protected)
+		wantHottest = append(wantHottest, merge(probation, window, func(pr, w node.Node[int, int]) bool {
+			return freq(pr) >= freq(w)
+		})...)
+	}()
+
+	collect := func(seq func(func(Entry[int, int]) bool)) []int {
+		var keys []int
+		for e := range seq {
+			keys = append(keys, e.Key)
+		}
+		return keys
+	}
+	require.Equal(t, wantColdest, collect(c.Coldest()))
+	require.Equal(t, wantHottest, collect(c.Hottest()))
 }

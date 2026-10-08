@@ -2245,7 +2245,10 @@ func (c *cache[K, V]) evictionOrder(hottest bool) iter.Seq[Entry[K, V]] {
 	}
 
 	return func(yield func(Entry[K, V]) bool) {
-		comparator := func(a node.Node[K, V], b node.Node[K, V]) int {
+		// MergeFunc yields the lesser head first, so the hottest order merges by descending
+		// frequency and the coldest by ascending frequency. On equal frequencies the first
+		// sequence goes first.
+		ascending := func(a node.Node[K, V], b node.Node[K, V]) int {
 			return cmp.Compare(
 				c.evictionPolicy.sketch.frequency(a.Key()),
 				c.evictionPolicy.sketch.frequency(b.Key()),
@@ -2257,7 +2260,9 @@ func (c *cache[K, V]) evictionOrder(hottest bool) iter.Seq[Entry[K, V]] {
 			secondary := xiter.MergeFunc(
 				c.evictionPolicy.probation.Backward(),
 				c.evictionPolicy.window.Backward(),
-				comparator,
+				func(a node.Node[K, V], b node.Node[K, V]) int {
+					return -ascending(a, b)
+				},
 			)
 			seq = xiter.Concat(
 				c.evictionPolicy.protected.Backward(),
@@ -2267,9 +2272,7 @@ func (c *cache[K, V]) evictionOrder(hottest bool) iter.Seq[Entry[K, V]] {
 			primary := xiter.MergeFunc(
 				c.evictionPolicy.window.All(),
 				c.evictionPolicy.probation.All(),
-				func(a node.Node[K, V], b node.Node[K, V]) int {
-					return -comparator(a, b)
-				},
+				ascending,
 			)
 
 			seq = xiter.Concat(
