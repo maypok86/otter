@@ -129,7 +129,7 @@ func TestVariable_DeleteExpired(t *testing.T) {
 		v.Add(n)
 	}
 
-	var keys []string
+	keys := make([]string, 0, 7)
 
 	v.DeleteExpired(now+getTestExp(2), expireNode)
 	keys = append(keys, "k1")

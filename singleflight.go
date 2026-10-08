@@ -193,6 +193,13 @@ func (g *group[K, V]) doBulkCall(
 	return err
 }
 
+// isCurrentCall reports whether c is still the call registered for its key,
+// without retiring it. Callers use this to decide whether c's result is
+// authoritative when retirement has to be deferred to a later deleteCall.
+func (g *group[K, V]) isCurrentCall(c *call[K, V]) bool {
+	return g.getCall(c.key) == c
+}
+
 func (g *group[K, V]) deleteCall(c *call[K, V]) (deleted bool) {
 	// fast path
 	if got := g.getCall(c.key); got != c {

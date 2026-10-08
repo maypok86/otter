@@ -291,6 +291,45 @@ func TestCache_GetWithSuccessLoad(t *testing.T) {
 	}
 }
 
+func TestCache_GetCoalescesConcurrentLoads(t *testing.T) {
+	t.Parallel()
+
+	// A thundering herd of first-time Gets for the same missing key must
+	// collapse to exactly one load. otter coalesces callers that overlap an
+	// in-flight load; the hazard is the load-completion boundary, where a
+	// caller can win a just-freed single-flight slot, miss the value that has
+	// not yet been published, and start a redundant second load. afterDeleteCall
+	// publishes the value before freeing the slot, and Get re-checks the map
+	// after winning the slot, so winning implies the value is visible and no
+	// second load occurs.
+	ctx := context.Background()
+	c := Must(&Options[int, int]{MaximumSize: 1000})
+
+	const (
+		concurrency = 64
+		rounds      = 50
+	)
+	for round := range rounds {
+		key := round // a fresh missing key each round, so every Get is a load
+		tl := newTestLoader[int, int](func(_ context.Context, k int) (int, error) {
+			return k * 10, nil
+		})
+		var wg sync.WaitGroup
+		wg.Add(concurrency)
+		for range concurrency {
+			go func() {
+				defer wg.Done()
+				v, err := c.Get(ctx, key, tl)
+				require.NoError(t, err)
+				require.Equal(t, key*10, v)
+			}()
+		}
+		wg.Wait()
+		require.Equalf(t, uint64(1), tl.loads.Load(),
+			"round %d: concurrent first-time loads for the same key must coalesce to one", round)
+	}
+}
+
 func TestCache_GetWithNotFoundLoad(t *testing.T) {
 	t.Parallel()
 

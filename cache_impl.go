@@ -780,6 +780,19 @@ func (c *cache[K, V]) Get(ctx context.Context, key K, loader Loader[K, V]) (V, e
 
 	cl, shouldLoad := c.singleflight.startCall(key, false)
 	if shouldLoad {
+		// Re-check the map before loading. The getNode above runs before this
+		// call slot is claimed, so it can miss a value that a concurrently
+		// completing load publishes in between, leaving this caller to load the
+		// same value a second time. afterDeleteCall frees a call slot only after
+		// publishing, so winning the slot means any such value is already
+		// visible here; adopt it rather than loading it again. Quiet lookup: the
+		// getNode above already recorded the miss for this request.
+		if n := c.getNodeQuietly(key, nowNano); n != nil {
+			cl.value = n.Value()
+			c.singleflight.deleteCall(cl)
+			cl.cancel()
+			return n.Value(), nil
+		}
 		//nolint:errcheck // there is no need to check error
 		_ = c.wrapLoad(func() error {
 			return c.singleflight.doCall(ctx, cl, loader.Load, c.afterDeleteCall)
@@ -827,7 +840,8 @@ func (c *cache[K, V]) afterDeleteCall(cl *call[K, V]) {
 	)
 	nowNano := c.clock.NowNano()
 	newNode := c.hashmap.Compute(cl.key, func(oldNode node.Node[K, V]) node.Node[K, V] {
-		isCorrectCall := cl.isFake || c.singleflight.deleteCall(cl)
+		// Read-only: the call is deleted after Compute returns below, not here.
+		isCorrectCall := cl.isFake || c.singleflight.isCurrentCall(cl)
 		old = oldNode
 		if isCorrectCall && cl.isNotFound {
 			deleted = oldNode != nil
@@ -845,6 +859,12 @@ func (c *cache[K, V]) afterDeleteCall(cl *call[K, V]) {
 		inserted = true
 		return c.atomicSet(cl.key, cl.value, old, cl, nowNano)
 	})
+	// Delete the call only after Compute has published the loaded value. Doing
+	// this earlier (like inside the compute closure) introduces a window in
+	// which a redundant load could be triggered.
+	if !cl.isFake {
+		c.singleflight.deleteCall(cl)
+	}
 	cl.cancel()
 	if deleted {
 		c.afterDelete(old, nowNano, false)
@@ -1059,7 +1079,6 @@ func (c *cache[K, V]) BulkGet(ctx context.Context, keys []K, bulkLoader BulkLoad
 		return result, loadErr
 	}
 
-	//nolint:prealloc // it's ok
 	var errsFromCalls []error
 	i = 0
 	for key, cl := range misses {
