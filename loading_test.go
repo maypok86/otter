@@ -1565,3 +1565,54 @@ func TestCache_ConcurrentLoadingAndInvalidate(t *testing.T) {
 		require.True(t, hasKey)
 	}
 }
+
+// Evicting an expired entry while a Get loads its new value must not cancel the load: the loaded
+// value is stored, and the next read finds it (#188).
+func TestCache_EvictionDoesNotCancelInFlightLoad(t *testing.T) {
+	t.Parallel()
+
+	clock := newNonTickingClock()
+	// Maintenance waits for the gate, so that it evicts the expired entry only after the load
+	// has started.
+	gate := make(chan struct{})
+	c := Must(&Options[int, int]{
+		Clock:            clock,
+		ExpiryCalculator: ExpiryWriting[int, int](time.Second),
+		Executor: func(fn func()) {
+			go func() {
+				<-gate
+				fn()
+			}()
+		},
+	})
+	c.Set(1, 1)
+	clock.Sleep(2 * time.Second)
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	type result struct {
+		value int
+		err   error
+	}
+	done := make(chan result, 1)
+	go func() {
+		v, err := c.Get(context.Background(), 1, LoaderFunc[int, int](func(ctx context.Context, key int) (int, error) {
+			close(started)
+			<-release
+			return 2, nil
+		}))
+		done <- result{value: v, err: err}
+	}()
+	<-started
+
+	close(gate)
+	c.CleanUp()
+	close(release)
+
+	res := <-done
+	require.NoError(t, res.err)
+	require.Equal(t, 2, res.value)
+	v, ok := c.GetIfPresent(1)
+	require.True(t, ok, "the loaded value was not stored")
+	require.Equal(t, 2, v)
+}
