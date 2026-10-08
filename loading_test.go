@@ -1646,3 +1646,65 @@ func TestCache_GetReturnsValueBeforeInPlaceRefresh(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, "c", v)
 }
+
+// Evicting a node that was already replaced must not discard the refresh of the node that
+// replaced it: the policy can pick the stale node as a victim before the replacement's update
+// task is replayed.
+func TestCache_StaleEvictionKeepsRefreshOfCurrentValue(t *testing.T) {
+	t.Parallel()
+
+	for _, stale := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stale=%v", stale), func(t *testing.T) {
+			t.Parallel()
+
+			c := Must(&Options[int, string]{
+				MaximumSize:       2,
+				RefreshCalculator: RefreshWriting[int, string](time.Hour),
+			})
+			ci := c.cache
+			c.Set(1, "a") // a string is kept inline, so the next write replaces the node
+			c.Set(2, "x")
+			c.CleanUp()
+			n1 := ci.hashmap.Get(1)
+			require.True(t, n1.InMainProbation())
+
+			ci.evictionMutex.Lock()
+			ci.drainReadBuffer()
+			ci.drainWriteBuffer()
+			c.Set(3, "y")
+			ci.drainWriteBuffer() // over the maximum now: 3 entries for 2
+
+			// The write replaces n1 after the drain, so its update task stays in the buffer and
+			// the retired n1 is still the first victim.
+			c.Set(1, "b")
+			require.True(t, n1.IsRetired())
+			require.Equal(t, n1.AsPointer(), ci.evictionPolicy.probation.Head().AsPointer())
+
+			started := make(chan struct{})
+			release := make(chan struct{})
+			ch := c.Refresh(context.Background(), 1, LoaderFunc[int, string](func(ctx context.Context, key int) (string, error) {
+				close(started)
+				<-release
+				return "refreshed", nil
+			}))
+			<-started
+
+			if !stale {
+				// the update task is replayed first, so the victim is not stale
+				ci.drainWriteBuffer()
+			}
+			ci.evictNodes()
+			ci.evictionMutex.Unlock()
+
+			close(release)
+			res := <-ch
+			require.NoError(t, res.Err)
+			require.Equal(t, "refreshed", res.Value)
+			c.CleanUp()
+
+			v, ok := c.GetIfPresent(1)
+			require.True(t, ok)
+			require.Equal(t, "refreshed", v, "the refresh reported success, but its value was not stored")
+		})
+	}
+}

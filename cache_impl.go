@@ -1463,10 +1463,12 @@ func (c *cache[K, V]) deleteNodeFromMap(
 		}
 		if cause == CauseInvalidation {
 			c.singleflight.delete(n.Key())
-		} else {
+		} else if current != nil && n.AsPointer() == current.AsPointer() {
 			// An eviction must not cancel an in-flight load: it was most likely started
 			// because this very node has expired, and dropping it would make the loaded
-			// value silently disappear. Only a pending refresh of the evicted value is discarded.
+			// value silently disappear. Only a pending refresh of the evicted value is discarded,
+			// and only if n is still the key's node: the policy may evict a node that was
+			// already replaced, and the refresh then belongs to the value that replaced it.
 			c.singleflight.deleteRefresh(n.Key())
 		}
 		if current == nil {
