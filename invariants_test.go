@@ -151,6 +151,21 @@ func (e *trackingExecutor) execute(fn func()) {
 	}()
 }
 
+// valueExpiry makes the expiration time depend on the value (1–50ms).
+type valueExpiry struct{}
+
+func (valueExpiry) ExpireAfterCreate(entry Entry[int, int]) time.Duration {
+	return time.Duration(entry.Value%50+1) * time.Millisecond
+}
+
+func (valueExpiry) ExpireAfterUpdate(entry Entry[int, int], oldValue int) time.Duration {
+	return time.Duration(entry.Value%50+1) * time.Millisecond
+}
+
+func (valueExpiry) ExpireAfterRead(entry Entry[int, int]) time.Duration {
+	return entry.ExpiresAfter()
+}
+
 func TestCache_InvariantsAfterConcurrentLoad(t *testing.T) {
 	t.Parallel()
 
@@ -174,6 +189,18 @@ func TestCache_InvariantsAfterConcurrentLoad(t *testing.T) {
 		}},
 		{"expiry", func(o *Options[int, int]) {
 			o.ExpiryCalculator = ExpiryWriting[int, int](20 * time.Millisecond)
+		}},
+		{"size_value_expiry_refresh", func(o *Options[int, int]) {
+			// deadlines move both later and earlier on update, and expired entries are written again
+			o.MaximumSize = 100
+			o.ExpiryCalculator = valueExpiry{}
+			o.RefreshCalculator = RefreshWriting[int, int](5 * time.Millisecond)
+		}},
+		{"weight_value_expiry", func(o *Options[int, int]) {
+			// one reconciliation fixes both the weight and the deadline
+			o.MaximumWeight = 500
+			o.Weigher = func(key, value int) uint32 { return uint32(value%8 + 1) }
+			o.ExpiryCalculator = valueExpiry{}
 		}},
 	}
 

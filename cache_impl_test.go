@@ -1052,7 +1052,7 @@ func TestCache_CornerCases(t *testing.T) {
 		}
 
 		require.NotPanics(t, func() {
-			c.cache.afterDelete(nil, 0, false)
+			c.cache.afterDelete(nil, 0, false, false)
 		})
 	})
 	t.Run("withNoopStatsRecorder", func(t *testing.T) {

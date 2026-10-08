@@ -26,8 +26,9 @@ const (
 	addReason
 	deleteReason
 	updateReason
-	// reweighReason reports a weight changed by an in-place update.
-	reweighReason
+	// reconcileReason reports a weight changed or an expiration time moved earlier by an
+	// in-place update.
+	reconcileReason
 )
 
 // task is a set of information to update the cache:
