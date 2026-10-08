@@ -486,14 +486,14 @@ func (c *cache[K, V]) set(key K, value V, onlyIfAbsent bool) (V, bool) {
 	})
 	if onlyIfAbsent {
 		if !oldLive {
-			c.afterWrite(n, old, oldValue, written, nowNano)
+			c.afterWrite(n, old, oldValue, written, nowNano, false)
 			return value, true
 		}
 		c.afterRead(old, nowNano, false, false)
 		return oldValue, false
 	}
 
-	c.afterWrite(n, old, oldValue, written, nowNano)
+	c.afterWrite(n, old, oldValue, written, nowNano, false)
 	if old != nil {
 		return oldValue, false
 	}
@@ -801,16 +801,16 @@ func (c *cache[K, V]) doCompute(
 	switch op {
 	case CancelOp:
 		if computedNode == nil {
-			c.afterDelete(old, deleted, false)
+			c.afterDelete(old, deleted, false, false)
 			return zeroValue[V](), false
 		}
 		// The node may be updated in place by another writer once the bucket lock is released,
 		// so the result is the value seen under the lock, not computedNode.Value().
 		return result, true
 	case WriteOp:
-		c.afterWrite(computedNode, old, prevValue, written, nowNano)
+		c.afterWrite(computedNode, old, prevValue, written, nowNano, false)
 	case InvalidateOp:
-		c.afterDelete(old, deleted, false)
+		c.afterDelete(old, deleted, false, false)
 	}
 	if computedNode == nil {
 		return zeroValue[V](), false
@@ -820,10 +820,12 @@ func (c *cache[K, V]) doCompute(
 
 // afterWrite takes the old value and what atomicSet decided under the lock explicitly, because
 // after an in-place update old is the written node.
-func (c *cache[K, V]) afterWrite(n, old node.Node[K, V], oldValue V, written writeResult, nowNano int64) {
+// afterWrite is called with onExecutor set when the write is the completion of a refresh, which runs
+// as an executor task.
+func (c *cache[K, V]) afterWrite(n, old node.Node[K, V], oldValue V, written writeResult, nowNano int64, onExecutor bool) {
 	if !c.withMaintenance {
 		if old != nil {
-			c.notifyDeletion(old.Key(), oldValue, written.cause)
+			c.notifyDeletionFrom(onExecutor, old.Key(), oldValue, written.cause)
 		}
 		return
 	}
@@ -835,7 +837,7 @@ func (c *cache[K, V]) afterWrite(n, old node.Node[K, V], oldValue V, written wri
 		if written.reconcile {
 			c.afterWriteTask(c.getTask(n, nil, reconcileReason, causeUnknown))
 		}
-		c.notifyDeletion(n.Key(), oldValue, written.cause)
+		c.notifyDeletionFrom(onExecutor, n.Key(), oldValue, written.cause)
 		return
 	}
 
@@ -1061,10 +1063,10 @@ func (c *cache[K, V]) afterDeleteCall(cl *call[K, V]) {
 	canceled = true
 	cl.cancel()
 	if deleted {
-		c.afterDelete(old, deleteCause, false)
+		c.afterDelete(old, deleteCause, false, cl.isRefresh)
 	}
 	if inserted {
-		c.afterWrite(newNode, old, oldValue, written, nowNano)
+		c.afterWrite(newNode, old, oldValue, written, nowNano, cl.isRefresh)
 	}
 }
 
@@ -1426,7 +1428,7 @@ func (c *cache[K, V]) Invalidate(key K) (value V, invalidated bool) {
 		cause = c.atomicDelete(key, d, nil, nowNano)
 		return nil
 	})
-	c.afterDelete(d, cause, false)
+	c.afterDelete(d, cause, false, false)
 	if d != nil {
 		return d.Value(), true
 	}
@@ -1481,17 +1483,17 @@ func (c *cache[K, V]) deleteNodeFromMap(
 
 func (c *cache[K, V]) deleteNode(n node.Node[K, V], nowNano int64) {
 	deleted, cause, _, _ := c.deleteNodeFromMap(n, nowNano, CauseInvalidation, false)
-	c.afterDelete(deleted, cause, true)
+	c.afterDelete(deleted, cause, true, false)
 }
 
 // afterDelete takes the cause that the synchronous listener was given under the lock.
-func (c *cache[K, V]) afterDelete(deleted node.Node[K, V], cause DeletionCause, alreadyLocked bool) {
+func (c *cache[K, V]) afterDelete(deleted node.Node[K, V], cause DeletionCause, alreadyLocked, onExecutor bool) {
 	if deleted == nil {
 		return
 	}
 
 	if !c.withMaintenance {
-		c.notifyDeletion(deleted.Key(), deleted.Value(), cause)
+		c.notifyDeletionFrom(onExecutor, deleted.Key(), deleted.Value(), cause)
 		return
 	}
 
@@ -1505,7 +1507,20 @@ func (c *cache[K, V]) afterDelete(deleted node.Node[K, V], cause DeletionCause, 
 }
 
 func (c *cache[K, V]) notifyDeletion(key K, value V, cause DeletionCause) {
+	c.notifyDeletionFrom(false, key, value, cause)
+}
+
+// notifyDeletionFrom calls the OnDeletion listener directly if the caller already runs as an
+// executor task, and submits it to the executor otherwise. Submitting another task from a task
+// deadlocks an executor that runs a bounded number of tasks and blocks the submitter: once all
+// of its slots are taken by such callers, none of them can finish.
+func (c *cache[K, V]) notifyDeletionFrom(onExecutor bool, key K, value V, cause DeletionCause) {
 	if c.onDeletion == nil {
+		return
+	}
+
+	if onExecutor {
+		c.callOnDeletion(key, value, cause)
 		return
 	}
 
@@ -1513,12 +1528,16 @@ func (c *cache[K, V]) notifyDeletion(key K, value V, cause DeletionCause) {
 	// during maintenance, under the eviction lock.
 	defer recoverCallback(c.logger, "Executor panicked while submitting OnDeletion")
 	c.executor(func() {
-		defer recoverCallback(c.logger, "OnDeletion panicked")
-		c.onDeletion(DeletionEvent[K, V]{
-			Key:   key,
-			Value: value,
-			Cause: cause,
-		})
+		c.callOnDeletion(key, value, cause)
+	})
+}
+
+func (c *cache[K, V]) callOnDeletion(key K, value V, cause DeletionCause) {
+	defer recoverCallback(c.logger, "OnDeletion panicked")
+	c.onDeletion(DeletionEvent[K, V]{
+		Key:   key,
+		Value: value,
+		Cause: cause,
 	})
 }
 

@@ -868,3 +868,62 @@ func TestCache_InPlaceZeroWeightIsNotEvicted(t *testing.T) {
 	require.LessOrEqual(t, c.WeightedSize(), uint64(10))
 	validateCache(t, c)
 }
+
+// barrierReloader reloads a key only once parties reloads are in progress at the same time.
+type barrierReloader struct {
+	arrived sync.WaitGroup
+}
+
+func (l *barrierReloader) Load(context.Context, int) (int, error) { return 0, ErrNotFound }
+
+func (l *barrierReloader) Reload(_ context.Context, key, _ int) (int, error) {
+	l.arrived.Done()
+	l.arrived.Wait()
+	return key * 10, nil
+}
+
+// A refresh runs as an executor task. When it updates the entry in place, its deletion event
+// must not be submitted to the executor as one more task: with an executor that runs at most N
+// tasks and blocks the submitter, N concurrent refreshes would wait for each other's slots forever.
+func TestCache_RefreshInPlaceWithBoundedExecutor(t *testing.T) {
+	t.Parallel()
+
+	const slots = 2
+	sem := make(chan struct{}, slots)
+	clk := newNonTickingClock()
+	var events atomic.Int64
+	c := Must(&Options[int, int]{
+		MaximumSize:       100,
+		Clock:             clk,
+		RefreshCalculator: RefreshWriting[int, int](time.Minute),
+		OnDeletion: func(DeletionEvent[int, int]) {
+			events.Add(1)
+		},
+		Executor: func(fn func()) {
+			sem <- struct{}{}
+			go func() {
+				defer func() { <-sem }()
+				fn()
+			}()
+		},
+	})
+	for k := 1; k <= slots; k++ {
+		c.Set(k, 1)
+		c.Set(k, 2) // boxes the node, so that the refresh updates it in place
+	}
+	require.Eventually(t, func() bool { return events.Load() == slots }, time.Second, time.Millisecond)
+	clk.Sleep(time.Hour)
+
+	loader := &barrierReloader{}
+	loader.arrived.Add(slots)
+	for k := 1; k <= slots; k++ {
+		_, err := c.Get(context.Background(), k, loader) // stale: starts a refresh
+		require.NoError(t, err)
+	}
+
+	require.Eventually(t, func() bool {
+		v1, _ := c.GetIfPresent(1)
+		v2, _ := c.GetIfPresent(2)
+		return v1 == 10 && v2 == 20 && events.Load() == 2*slots
+	}, 5*time.Second, time.Millisecond, "the refreshes deadlocked on the executor")
+}
