@@ -356,16 +356,26 @@ func (c *cache[K, V]) calcExpiresAtAfterRead(n node.Node[K, V], nowNano int64) {
 		return
 	}
 
-	expiresAfter := c.expiryCalculator.ExpireAfterRead(c.nodeToEntry(n, nowNano))
-	c.setExpiresAfterRead(n, nowNano, expiresAfter)
+	entry := c.nodeToEntry(n, nowNano)
+	expiresAfter := c.expiryCalculator.ExpireAfterRead(entry)
+	// The new deadline is derived from the entry the calculator was shown, so it may only replace
+	// that entry's deadline. A writer can store a new deadline in place in the meantime, and
+	// comparing against a fresh read of the node would revert it to one derived from the old value.
+	c.casExpiresAfterRead(n, entry.ExpiresAtNano, nowNano, expiresAfter)
 }
 
 func (c *cache[K, V]) setExpiresAfterRead(n node.Node[K, V], nowNano int64, expiresAfter time.Duration) {
 	if expiresAfter <= 0 {
 		return
 	}
+	c.casExpiresAfterRead(n, n.ExpiresAt(), nowNano, expiresAfter)
+}
 
-	expiresAt := n.ExpiresAt()
+func (c *cache[K, V]) casExpiresAfterRead(n node.Node[K, V], expiresAt, nowNano int64, expiresAfter time.Duration) {
+	if expiresAfter <= 0 {
+		return
+	}
+
 	currentDuration := time.Duration(expiresAt - nowNano)
 	diff := xmath.Abs(int64(expiresAfter - currentDuration))
 	if diff > 0 {

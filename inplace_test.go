@@ -396,3 +396,69 @@ func TestCache_UnmaintainedNodesHaveNoValuePointer(t *testing.T) {
 	require.False(t, n.IsBoxed())
 	require.Equal(t, 2, n.Value())
 }
+
+// readHookExpiry expires entries a fixed time after every write and calls onRead from
+// ExpireAfterRead, between the moment a read takes its snapshot of the entry and the moment
+// it stores the deadline derived from it.
+type readHookExpiry struct {
+	ttl    time.Duration
+	onRead func()
+}
+
+func (e *readHookExpiry) ExpireAfterCreate(Entry[int, int]) time.Duration { return e.ttl }
+
+func (e *readHookExpiry) ExpireAfterUpdate(Entry[int, int], int) time.Duration { return e.ttl }
+
+func (e *readHookExpiry) ExpireAfterRead(entry Entry[int, int]) time.Duration {
+	if fn := e.onRead; fn != nil {
+		e.onRead = nil
+		fn()
+	}
+	return entry.ExpiresAfter()
+}
+
+// A read must not revert a deadline that a write stored after the read took its snapshot of the
+// entry: the read's deadline is derived from the previous value.
+func TestCache_ReadDoesNotRevertConcurrentDeadline(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name  string
+		write func(c *Cache[int, int])
+		want  time.Duration
+	}{
+		{
+			name:  "in-place update",
+			write: func(c *Cache[int, int]) { c.Set(1, 3) },
+			want:  time.Hour,
+		},
+		{
+			name:  "SetExpiresAfter",
+			write: func(c *Cache[int, int]) { c.SetExpiresAfter(1, 2*time.Hour) },
+			want:  2 * time.Hour,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			clk := newNonTickingClock()
+			expiry := &readHookExpiry{ttl: time.Hour}
+			c := Must(&Options[int, int]{
+				MaximumSize:      10,
+				Clock:            clk,
+				ExpiryCalculator: expiry,
+			})
+			c.Set(1, 1)
+			c.Set(1, 2) // boxes the node, so that later writes are applied in place
+
+			clk.Sleep(30 * time.Minute)
+			expiry.onRead = func() { tt.write(c) }
+			_, ok := c.GetIfPresent(1)
+			require.True(t, ok)
+
+			entry, ok := c.GetEntryQuietly(1)
+			require.True(t, ok)
+			require.Equal(t, tt.want, entry.ExpiresAfter())
+		})
+	}
+}
