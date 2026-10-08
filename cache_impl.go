@@ -365,9 +365,12 @@ func (c *cache[K, V]) GetEntryQuietly(key K) (Entry[K, V], bool) {
 	nowNano := c.clock.NowNano()
 	n := c.getNodeQuietly(key, nowNano)
 	if n == nil {
-		return Entry[K, V]{}, false
+		return Entry[K, V]{c: c}, false
 	}
-	return c.nodeToEntry(n, nowNano), true
+	entry := c.nodeToEntry(n, nowNano)
+	entry.c = c
+	entry.n = n
+	return entry, true
 }
 
 // SetExpiresAfter specifies that the entry should be automatically removed from the cache once the duration has

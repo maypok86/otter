@@ -388,3 +388,157 @@ func TestCache_Hottest(t *testing.T) {
 		require.ElementsMatch(t, slices.Collect(c.Keys()), keys)
 	})
 }
+
+func TestCache_RecordHitMiss(t *testing.T) {
+	t.Parallel()
+
+	newCache := func(t *testing.T) (*Cache[int, int], *stats.Counter) {
+		t.Helper()
+		counter := stats.NewCounter()
+		c := Must(&Options[int, int]{
+			MaximumSize:   100,
+			StatsRecorder: counter,
+		})
+		t.Cleanup(func() { c.StopAllGoroutines() })
+		c.Set(1, 100)
+		c.Set(2, 200)
+		c.CleanUp()
+		return c, counter
+	}
+
+	t.Run("hit updates stats", func(t *testing.T) {
+		t.Parallel()
+		c, counter := newCache(t)
+		baseline := counter.Snapshot()
+
+		entry, ok := c.GetEntryQuietly(1)
+		require.True(t, ok)
+		require.Equal(t, 100, entry.Value)
+
+		snap := counter.Snapshot()
+		require.Equal(t, baseline.Hits, snap.Hits, "GetEntryQuietly must not record hits")
+		require.Equal(t, baseline.Misses, snap.Misses, "GetEntryQuietly must not record misses")
+
+		entry.RecordHitMiss(true)
+		c.CleanUp()
+
+		snap = counter.Snapshot()
+		require.Equal(t, baseline.Hits+1, snap.Hits)
+		require.Equal(t, baseline.Misses, snap.Misses)
+	})
+
+	t.Run("miss on found entry updates stats", func(t *testing.T) {
+		t.Parallel()
+		c, counter := newCache(t)
+		baseline := counter.Snapshot()
+
+		entry, ok := c.GetEntryQuietly(1)
+		require.True(t, ok)
+
+		entry.RecordHitMiss(false)
+
+		snap := counter.Snapshot()
+		require.Equal(t, baseline.Hits, snap.Hits)
+		require.Equal(t, baseline.Misses+1, snap.Misses)
+	})
+
+	t.Run("miss on absent entry updates stats", func(t *testing.T) {
+		t.Parallel()
+		c, counter := newCache(t)
+		baseline := counter.Snapshot()
+
+		entry, ok := c.GetEntryQuietly(999)
+		require.False(t, ok)
+
+		entry.RecordHitMiss(false)
+
+		snap := counter.Snapshot()
+		require.Equal(t, baseline.Hits, snap.Hits)
+		require.Equal(t, baseline.Misses+1, snap.Misses)
+	})
+
+	t.Run("hit on absent entry is no-op", func(t *testing.T) {
+		t.Parallel()
+		c, counter := newCache(t)
+		baseline := counter.Snapshot()
+
+		entry, ok := c.GetEntryQuietly(999)
+		require.False(t, ok)
+
+		// Recording a hit on a not-found entry is a no-op
+		// (there is no node to update frequency for).
+		entry.RecordHitMiss(true)
+
+		snap := counter.Snapshot()
+		require.Equal(t, baseline.Hits, snap.Hits)
+		require.Equal(t, baseline.Misses, snap.Misses)
+	})
+
+	t.Run("GetEntry returns entry where RecordHitMiss is no-op", func(t *testing.T) {
+		t.Parallel()
+		c, counter := newCache(t)
+
+		entry, ok := c.GetEntry(1)
+		require.True(t, ok)
+
+		// GetEntry already recorded the hit.
+		snapBefore := counter.Snapshot()
+
+		// RecordHitMiss on a GetEntry entry should be a no-op.
+		entry.RecordHitMiss(true)
+		entry.RecordHitMiss(false)
+
+		snapAfter := counter.Snapshot()
+		require.Equal(t, snapBefore.Hits, snapAfter.Hits, "no additional hits after no-op RecordHitMiss")
+		require.Equal(t, snapBefore.Misses, snapAfter.Misses, "no additional misses after no-op RecordHitMiss")
+	})
+
+	t.Run("mixed sequence", func(t *testing.T) {
+		t.Parallel()
+		c, counter := newCache(t)
+		baseline := counter.Snapshot()
+
+		e1, ok := c.GetEntryQuietly(1)
+		require.True(t, ok)
+		e1.RecordHitMiss(true) // hit
+
+		e2, ok := c.GetEntryQuietly(2)
+		require.True(t, ok)
+		e2.RecordHitMiss(false) // miss
+
+		e3, ok := c.GetEntryQuietly(999)
+		require.False(t, ok)
+		e3.RecordHitMiss(false) // miss
+
+		c.CleanUp()
+
+		snap := counter.Snapshot()
+		require.Equal(t, baseline.Hits+1, snap.Hits)
+		require.Equal(t, baseline.Misses+2, snap.Misses)
+	})
+
+	t.Run("after StopAllGoroutines does not panic", func(t *testing.T) {
+		t.Parallel()
+		counter := stats.NewCounter()
+		c := Must(&Options[int, int]{
+			MaximumSize:   100,
+			StatsRecorder: counter,
+		})
+		c.Set(1, 100)
+		c.CleanUp()
+		baseline := counter.Snapshot()
+
+		entry, ok := c.GetEntryQuietly(1)
+		require.True(t, ok)
+
+		c.StopAllGoroutines()
+
+		// Must not panic.
+		entry.RecordHitMiss(true)
+		entry.RecordHitMiss(false)
+
+		snap := counter.Snapshot()
+		require.GreaterOrEqual(t, snap.Hits, baseline.Hits+1)
+		require.GreaterOrEqual(t, snap.Misses, baseline.Misses+1)
+	})
+}

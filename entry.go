@@ -16,6 +16,8 @@ package otter
 
 import (
 	"time"
+
+	"github.com/maypok86/otter/v2/internal/generated/node"
 )
 
 // Entry is a key-value pair that may include policy metadata for the cached entry.
@@ -46,6 +48,55 @@ type Entry[K comparable, V any] struct {
 	//
 	// If the cache was not configured with a time-based policy then this value is always 0.
 	SnapshotAtNano int64
+
+	// c and n are set by GetEntryQuietly to allow deferred hit/miss
+	// recording via RecordHitMiss. They are nil for entries returned
+	// by other methods.
+	c *cache[K, V]
+	n node.Node[K, V] // nil when entry was not found
+}
+
+// RecordHitMiss retroactively records the outcome of a [Cache.GetEntryQuietly]
+// lookup as a cache hit (true) or miss (false).
+//
+// A hit updates statistics, the eviction policy, and expiration-on-read --
+// the same side effects as [Cache.GetEntry]. A miss updates only miss
+// statistics. The simplest correct usage is:
+//
+//	entry, ok := cache.GetEntryQuietly(key)
+//	entry.RecordHitMiss(ok)
+//	// equivalent to: entry, ok := cache.GetEntry(key)
+//
+// The value of separating lookup from recording is that the caller can
+// inspect the entry before deciding:
+//
+//	entry, ok := cache.GetEntryQuietly(key)
+//	if ok && isFresh(entry) {
+//	    entry.RecordHitMiss(true)
+//	    // use entry.Value
+//	} else {
+//	    entry.RecordHitMiss(false)
+//	    // fetch from backend
+//	}
+//
+// Calling RecordHitMiss(true) when the entry was not found (ok was false)
+// is a no-op: there is no cache entry whose policy state could be updated.
+// To record a miss in that case, pass false.
+//
+// If the entry is evicted between [Cache.GetEntryQuietly] and RecordHitMiss,
+// the policy update is best-effort, consistent with the inherent race window
+// in [Cache.GetEntry].
+//
+// On entries not returned by [Cache.GetEntryQuietly] this method is a no-op.
+func (e Entry[K, V]) RecordHitMiss(hit bool) {
+	if e.c == nil {
+		return
+	}
+	if hit && e.n != nil {
+		e.c.afterRead(e.n, e.c.clock.NowNano(), true, true)
+	} else if !hit {
+		e.c.stats.RecordMisses(1)
+	}
 }
 
 // ExpiresAt returns the entry's expiration time.
