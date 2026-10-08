@@ -201,17 +201,44 @@ func newCache[K comparable, V any](o *Options[K, V]) *cache[K, V] {
 	return c
 }
 
-func (c *cache[K, V]) newNode(key K, value V, old node.Node[K, V]) node.Node[K, V] {
-	weight := c.weigher(key, value)
+// newNode creates a node for a write whose weight and timestamps have already been computed.
+func (c *cache[K, V]) newNode(key K, value V, weight uint32, expiresAt, refreshableAt int64, boxed bool) node.Node[K, V] {
+	if !boxed {
+		return c.nodeManager.Create(key, value, expiresAt, refreshableAt, weight)
+	}
+	// The inline value stays zero: a boxed node keeps its value only behind the pointer, so
+	// replacing it later does not retain the previous value.
+	n := c.nodeManager.Create(key, zeroValue[V](), expiresAt, refreshableAt, weight)
+	n.SetValue(value)
+	return n
+}
+
+// writeEntry describes a write before it is applied: the new value and weight with the
+// timestamps of the node it replaces, which are kept unless the calculators change them.
+func (c *cache[K, V]) writeEntry(key K, value V, weight uint32, old node.Node[K, V], nanos int64) Entry[K, V] {
+	nowNano := noTime
+	if c.withTime {
+		nowNano = nanos
+	}
+
 	expiresAt := unreachableExpiresAt
 	if c.withExpiration && old != nil {
 		expiresAt = old.ExpiresAt()
 	}
+
 	refreshableAt := unreachableRefreshableAt
 	if c.withRefresh && old != nil {
 		refreshableAt = old.RefreshableAt()
 	}
-	return c.nodeManager.Create(key, value, expiresAt, refreshableAt, weight)
+
+	return Entry[K, V]{
+		Key:               key,
+		Value:             value,
+		Weight:            weight,
+		ExpiresAtNano:     expiresAt,
+		RefreshableAtNano: refreshableAt,
+		SnapshotAtNano:    nowNano,
+	}
 }
 
 func (c *cache[K, V]) nodeToEntry(n node.Node[K, V], nanos int64) Entry[K, V] {
@@ -329,16 +356,26 @@ func (c *cache[K, V]) calcExpiresAtAfterRead(n node.Node[K, V], nowNano int64) {
 		return
 	}
 
-	expiresAfter := c.expiryCalculator.ExpireAfterRead(c.nodeToEntry(n, nowNano))
-	c.setExpiresAfterRead(n, nowNano, expiresAfter)
+	entry := c.nodeToEntry(n, nowNano)
+	expiresAfter := c.expiryCalculator.ExpireAfterRead(entry)
+	// The new deadline is derived from the entry the calculator was shown, so it may only replace
+	// that entry's deadline. A writer can store a new deadline in place in the meantime, and
+	// comparing against a fresh read of the node would revert it to one derived from the old value.
+	c.casExpiresAfterRead(n, entry.ExpiresAtNano, nowNano, expiresAfter)
 }
 
 func (c *cache[K, V]) setExpiresAfterRead(n node.Node[K, V], nowNano int64, expiresAfter time.Duration) {
 	if expiresAfter <= 0 {
 		return
 	}
+	c.casExpiresAfterRead(n, n.ExpiresAt(), nowNano, expiresAfter)
+}
 
-	expiresAt := n.ExpiresAt()
+func (c *cache[K, V]) casExpiresAfterRead(n node.Node[K, V], expiresAt, nowNano int64, expiresAfter time.Duration) {
+	if expiresAfter <= 0 {
+		return
+	}
+
 	currentDuration := time.Duration(expiresAt - nowNano)
 	diff := xmath.Abs(int64(expiresAfter - currentDuration))
 	if diff > 0 {
@@ -406,30 +443,33 @@ func (c *cache[K, V]) SetRefreshableAfter(key K, refreshableAfter time.Duration)
 	}
 }
 
-func (c *cache[K, V]) calcExpiresAtAfterWrite(n, old node.Node[K, V], nowNano int64) {
-	if !c.withExpiration {
-		return
-	}
-
-	entry := c.nodeToEntry(n, nowNano)
-	currentDuration := entry.ExpiresAfter()
+// expiresAtAfterWrite returns the expiration time of the node written as entry, which replaces
+// old (nil for an insertion).
+func (c *cache[K, V]) expiresAtAfterWrite(entry Entry[K, V], old node.Node[K, V], oldValue V, nowNano int64) int64 {
 	var expiresAfter time.Duration
 	if old == nil || old.HasExpired(nowNano) {
 		expiresAfter = c.expiryCalculator.ExpireAfterCreate(entry)
 	} else {
-		expiresAfter = c.expiryCalculator.ExpireAfterUpdate(entry, old.Value())
+		expiresAfter = c.expiryCalculator.ExpireAfterUpdate(entry, oldValue)
 	}
 
-	if expiresAfter > 0 && currentDuration != expiresAfter {
-		n.SetExpiresAt(nowNano + int64(expiresAfter))
+	if expiresAfter > 0 && entry.ExpiresAfter() != expiresAfter {
+		return nowNano + int64(expiresAfter)
 	}
+	return entry.ExpiresAtNano
 }
 
 func (c *cache[K, V]) set(key K, value V, onlyIfAbsent bool) (V, bool) {
-	var old node.Node[K, V]
+	var (
+		old      node.Node[K, V]
+		oldValue V
+	)
 	nowNano := c.clock.NowNano()
 	n := c.hashmap.Compute(key, func(current node.Node[K, V]) node.Node[K, V] {
 		old = current
+		if current != nil {
+			oldValue = current.Value()
+		}
 		if onlyIfAbsent && current != nil && !current.HasExpired(nowNano) {
 			// no op
 			c.calcExpiresAtAfterRead(old, nowNano)
@@ -440,35 +480,84 @@ func (c *cache[K, V]) set(key K, value V, onlyIfAbsent bool) (V, bool) {
 	})
 	if onlyIfAbsent {
 		if old == nil || old.HasExpired(nowNano) {
-			c.afterWrite(n, old, nowNano)
+			c.afterWrite(n, old, oldValue, nowNano)
 			return value, true
 		}
 		c.afterRead(old, nowNano, false, false)
-		return old.Value(), false
+		return oldValue, false
 	}
 
-	c.afterWrite(n, old, nowNano)
+	c.afterWrite(n, old, oldValue, nowNano)
 	if old != nil {
-		return old.Value(), false
+		return oldValue, false
 	}
 	return value, true
 }
 
+// atomicSet applies a write of value to the key whose current node is old (nil if absent).
+// The user's weigher, expiry and refresh calculators are called once per write.
+//
+// An update of a live boxed node is applied in place, keeping the node. Swapping in a new node
+// forces an update task through the bounded write buffer so that the policies can relink the
+// node. Under an update-heavy workload that buffer overflows and every writer falls back to
+// performCleanUp, serializing all writes on evictionMutex. When the node identity is kept, the
+// policies only need to observe an access, which goes through the lossy read buffer instead.
+//
+// In-place is only possible when the weight does not change (the policies track it) and the
+// expiration time does not move earlier (the timer wheel reschedules a node whose deadline
+// moved later, but would expire an earlier deadline late). Only a boxed node qualifies: its
+// inline value is never written after publication, so a concurrent reader cannot observe a
+// torn or cleared value. The first update of a live entry therefore replaces the node, as
+// before, with a boxed one, so that later updates of this (likely hot) key are applied in place.
 func (c *cache[K, V]) atomicSet(key K, value V, old node.Node[K, V], cl *call[K, V], nowNano int64) node.Node[K, V] {
 	// The user's weigher and calculators run before anything is changed: if one of them panics,
 	// the write is not applied and the panic reaches the caller.
-	n := c.newNode(key, value, old)
-	c.calcExpiresAtAfterWrite(n, old, nowNano)
-	c.calcRefreshableAt(n, old, cl, nowNano)
+	var oldValue V
+	if old != nil {
+		oldValue = old.Value()
+	}
+	weight := c.weigher(key, value)
+	entry := c.writeEntry(key, value, weight, old, nowNano)
+	if c.withExpiration {
+		entry.ExpiresAtNano = c.expiresAtAfterWrite(entry, old, oldValue, nowNano)
+	}
+	if c.withRefresh {
+		// after the expiration time, so that the refresh calculator sees the new one
+		entry.RefreshableAtNano = c.refreshableAtAfterWrite(entry, old, oldValue, cl, nowNano)
+	}
+
 	if cl == nil {
 		c.singleflight.delete(key)
 	}
+
+	isLive := cl == nil && c.isLiveNode(old, nowNano)
+	if isLive && old.IsBoxed() && weight == old.Weight() &&
+		(!c.withExpiration || entry.ExpiresAtNano >= old.ExpiresAt()) {
+		// The synchronous listener runs before the new value is published, as it does when the
+		// node is replaced: readers see the previous value until the write completes.
+		c.notifyAtomicDeletion(key, oldValue, CauseReplacement)
+		old.SetValue(value)
+		if c.withExpiration {
+			old.SetExpiresAt(entry.ExpiresAtNano)
+		}
+		if c.withRefresh {
+			old.SetRefreshableAt(entry.RefreshableAtNano)
+		}
+		return old
+	}
+
+	n := c.newNode(key, value, weight, entry.ExpiresAtNano, entry.RefreshableAtNano, isLive)
 	c.makeRetired(old)
 	if old != nil {
 		cause := getCause(old, nowNano, CauseReplacement)
-		c.notifyAtomicDeletion(old.Key(), old.Value(), cause)
+		c.notifyAtomicDeletion(old.Key(), oldValue, cause)
 	}
 	return n
+}
+
+// isLiveNode reports whether n is in the hash table and has not expired.
+func (c *cache[K, V]) isLiveNode(n node.Node[K, V], nowNano int64) bool {
+	return n != nil && c.withMaintenance && n.IsAlive() && !n.HasExpired(nowNano)
 }
 
 //nolint:unparam // it's ok
@@ -596,6 +685,8 @@ func (c *cache[K, V]) doCompute(
 ) (V, bool) {
 	var (
 		old        node.Node[K, V]
+		prevValue  V
+		result     V
 		op         ComputeOp
 		notValidOp bool
 		panicErr   error
@@ -606,9 +697,12 @@ func (c *cache[K, V]) doCompute(
 			actualValue V
 			found       bool
 		)
-		if oldNode != nil && !oldNode.HasExpired(nowNano) {
-			oldValue = oldNode.Value()
-			found = true
+		if oldNode != nil {
+			prevValue = oldNode.Value()
+			if !oldNode.HasExpired(nowNano) {
+				oldValue = prevValue
+				found = true
+			}
 		}
 		old = oldNode
 
@@ -628,9 +722,11 @@ func (c *cache[K, V]) doCompute(
 			if oldNode != nil && oldNode.HasExpired(nowNano) {
 				return c.atomicDelete(key, oldNode, nil, nowNano)
 			}
+			result = prevValue
 			return oldNode
 		}
 		if op == WriteOp {
+			result = actualValue
 			return c.atomicSet(key, actualValue, old, nil, nowNano)
 		}
 		if op == InvalidateOp {
@@ -658,23 +754,34 @@ func (c *cache[K, V]) doCompute(
 			c.afterDelete(old, nowNano, false)
 			return zeroValue[V](), false
 		}
-		return computedNode.Value(), true
+		// The node may be updated in place by another writer once the bucket lock is released,
+		// so the result is the value seen under the lock, not computedNode.Value().
+		return result, true
 	case WriteOp:
-		c.afterWrite(computedNode, old, nowNano)
+		c.afterWrite(computedNode, old, prevValue, nowNano)
 	case InvalidateOp:
 		c.afterDelete(old, nowNano, false)
 	}
 	if computedNode == nil {
 		return zeroValue[V](), false
 	}
-	return computedNode.Value(), true
+	return result, true
 }
 
-func (c *cache[K, V]) afterWrite(n, old node.Node[K, V], nowNano int64) {
+// afterWrite takes the old value explicitly because after an in-place update old.Value()
+// already returns the new one.
+func (c *cache[K, V]) afterWrite(n, old node.Node[K, V], oldValue V, nowNano int64) {
 	if !c.withMaintenance {
 		if old != nil {
-			c.notifyDeletion(old.Key(), old.Value(), CauseReplacement)
+			c.notifyDeletion(old.Key(), oldValue, CauseReplacement)
 		}
+		return
+	}
+
+	if old != nil && n.AsPointer() == old.AsPointer() {
+		// updated in place: the policies only need to observe an access
+		c.afterRead(n, nowNano, false, false)
+		c.notifyDeletion(n.Key(), oldValue, CauseReplacement)
 		return
 	}
 
@@ -804,33 +911,36 @@ func (c *cache[K, V]) Get(ctx context.Context, key K, loader Loader[K, V]) (V, e
 	return cl.value, cl.err
 }
 
-func (c *cache[K, V]) calcRefreshableAt(n, old node.Node[K, V], cl *call[K, V], nowNano int64) {
-	if !c.withRefresh {
-		return
-	}
-
+// refreshableAtAfterWrite returns the refresh time of the node written as entry, which
+// replaces old (nil for an insertion) with the result of cl (nil for a plain write).
+func (c *cache[K, V]) refreshableAtAfterWrite(
+	entry Entry[K, V],
+	old node.Node[K, V],
+	oldValue V,
+	cl *call[K, V],
+	nowNano int64,
+) int64 {
 	var refreshableAfter time.Duration
-	entry := c.nodeToEntry(n, nowNano)
-	currentDuration := entry.RefreshableAfter()
 	//nolint:gocritic // it's ok
 	if cl != nil && cl.isRefresh && old != nil {
 		if cl.isNotFound {
-			return
+			return entry.RefreshableAtNano
 		}
 		if cl.err != nil {
 			refreshableAfter = c.refreshCalculator.RefreshAfterReloadFailure(entry, cl.err)
 		} else {
-			refreshableAfter = c.refreshCalculator.RefreshAfterReload(entry, old.Value())
+			refreshableAfter = c.refreshCalculator.RefreshAfterReload(entry, oldValue)
 		}
 	} else if old != nil {
-		refreshableAfter = c.refreshCalculator.RefreshAfterUpdate(entry, old.Value())
+		refreshableAfter = c.refreshCalculator.RefreshAfterUpdate(entry, oldValue)
 	} else {
 		refreshableAfter = c.refreshCalculator.RefreshAfterCreate(entry)
 	}
 
-	if refreshableAfter > 0 && currentDuration != refreshableAfter {
-		n.SetRefreshableAt(nowNano + int64(refreshableAfter))
+	if refreshableAfter > 0 && entry.RefreshableAfter() != refreshableAfter {
+		return nowNano + int64(refreshableAfter)
 	}
+	return entry.RefreshableAtNano
 }
 
 func (c *cache[K, V]) afterDeleteCall(cl *call[K, V]) {
@@ -838,6 +948,7 @@ func (c *cache[K, V]) afterDeleteCall(cl *call[K, V]) {
 		inserted bool
 		deleted  bool
 		old      node.Node[K, V]
+		oldValue V
 	)
 	// The waiters are woken up even if writing the loaded value panics (the weigher or a
 	// calculator); they then get the panic as the load's error, as the loading goroutine does.
@@ -864,13 +975,16 @@ func (c *cache[K, V]) afterDeleteCall(cl *call[K, V]) {
 		// Read-only: the call is deleted after Compute returns below, not here.
 		isCorrectCall := cl.isFake || c.singleflight.isCurrentCall(cl)
 		old = oldNode
+		if oldNode != nil {
+			oldValue = oldNode.Value()
+		}
 		if isCorrectCall && cl.isNotFound {
 			deleted = oldNode != nil
 			return c.atomicDelete(cl.key, oldNode, cl, nowNano)
 		}
 		if cl.err != nil {
-			if cl.isRefresh && oldNode != nil {
-				c.calcRefreshableAt(oldNode, oldNode, cl, nowNano)
+			if cl.isRefresh && oldNode != nil && c.withRefresh {
+				oldNode.SetRefreshableAt(c.refreshableAtAfterWrite(c.nodeToEntry(oldNode, nowNano), oldNode, oldNode.Value(), cl, nowNano))
 			}
 			return oldNode
 		}
@@ -892,7 +1006,7 @@ func (c *cache[K, V]) afterDeleteCall(cl *call[K, V]) {
 		c.afterDelete(old, nowNano, false)
 	}
 	if inserted {
-		c.afterWrite(newNode, old, nowNano)
+		c.afterWrite(newNode, old, oldValue, nowNano)
 	}
 }
 
@@ -1257,9 +1371,20 @@ func (c *cache[K, V]) Invalidate(key K) (value V, invalidated bool) {
 	return zeroValue[V](), false
 }
 
-func (c *cache[K, V]) deleteNodeFromMap(n node.Node[K, V], nowNano int64, cause DeletionCause) node.Node[K, V] {
-	var deleted node.Node[K, V]
+// deleteNodeFromMap removes n from the hash table if it is still there. With onlyIfExpired,
+// n stays if it is no longer expired, and extended reports that.
+func (c *cache[K, V]) deleteNodeFromMap(
+	n node.Node[K, V],
+	nowNano int64,
+	cause DeletionCause,
+	onlyIfExpired bool,
+) (deleted node.Node[K, V], extended bool) {
 	c.hashmap.Compute(n.Key(), func(current node.Node[K, V]) node.Node[K, V] {
+		if onlyIfExpired && current != nil && n.AsPointer() == current.AsPointer() && !current.HasExpired(nowNano) {
+			// updated in place, extending its lifetime, after it was found expired
+			extended = true
+			return current
+		}
 		if cause == CauseInvalidation {
 			c.singleflight.delete(n.Key())
 		} else {
@@ -1280,11 +1405,12 @@ func (c *cache[K, V]) deleteNodeFromMap(n node.Node[K, V], nowNano int64, cause 
 		}
 		return current
 	})
-	return deleted
+	return deleted, extended
 }
 
 func (c *cache[K, V]) deleteNode(n node.Node[K, V], nowNano int64) {
-	c.afterDelete(c.deleteNodeFromMap(n, nowNano, CauseInvalidation), nowNano, true)
+	deleted, _ := c.deleteNodeFromMap(n, nowNano, CauseInvalidation, false)
+	c.afterDelete(deleted, nowNano, true)
 }
 
 func (c *cache[K, V]) afterDelete(deleted node.Node[K, V], nowNano int64, alreadyLocked bool) {
@@ -1353,13 +1479,31 @@ func (c *cache[K, V]) periodicCleanUp() {
 	}
 }
 
+// evictNode removes n from the cache and the policies.
 func (c *cache[K, V]) evictNode(n node.Node[K, V], nowNanos int64) {
+	c.removeNode(n, nowNanos, false)
+}
+
+// expireNode is called by the timer wheel for a node whose expiration time has passed. The
+// wheel reads that time before the hash table's lock is taken, and a writer can update the
+// node in place in between, extending its lifetime. Such a node stays in the cache and is
+// scheduled again; the wheel has already unlinked it.
+func (c *cache[K, V]) expireNode(n node.Node[K, V], nowNanos int64) {
+	c.removeNode(n, nowNanos, true)
+}
+
+func (c *cache[K, V]) removeNode(n node.Node[K, V], nowNanos int64, onlyIfExpired bool) {
 	cause := CauseOverflow
-	if n.HasExpired(nowNanos) {
+	if onlyIfExpired || n.HasExpired(nowNanos) {
 		cause = CauseExpiration
 	}
 
-	deleted := c.deleteNodeFromMap(n, nowNanos, cause) != nil
+	d, extended := c.deleteNodeFromMap(n, nowNanos, cause, onlyIfExpired)
+	if extended {
+		c.expirationPolicy.Add(n)
+		return
+	}
+	deleted := d != nil
 
 	if c.withEviction {
 		c.evictionPolicy.delete(n)
@@ -1737,7 +1881,7 @@ func (c *cache[K, V]) onAccess(n node.Node[K, V]) {
 
 func (c *cache[K, V]) expireNodes() {
 	if c.withExpiration {
-		c.expirationPolicy.DeleteExpired(c.clock.NowNano(), c.evictNode)
+		c.expirationPolicy.DeleteExpired(c.clock.NowNano(), c.expireNode)
 	}
 }
 

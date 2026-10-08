@@ -18,6 +18,7 @@ import (
 type BRW[K comparable, V any] struct {
 	key           K
 	value         V
+	valuePtr      atomic.Pointer[V]
 	prev          *BRW[K, V]
 	next          *BRW[K, V]
 	refreshableAt atomic.Int64
@@ -49,7 +50,18 @@ func (n *BRW[K, V]) Key() K {
 }
 
 func (n *BRW[K, V]) Value() V {
+	if p := n.valuePtr.Load(); p != nil {
+		return *p
+	}
 	return n.value
+}
+
+func (n *BRW[K, V]) SetValue(v V) {
+	n.valuePtr.Store(&v)
+}
+
+func (n *BRW[K, V]) IsBoxed() bool {
+	return n.valuePtr.Load() != nil
 }
 
 func (n *BRW[K, V]) AsPointer() unsafe.Pointer {

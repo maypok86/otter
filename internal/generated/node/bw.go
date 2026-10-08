@@ -16,6 +16,7 @@ import (
 type BW[K comparable, V any] struct {
 	key       K
 	value     V
+	valuePtr  atomic.Pointer[V]
 	prev      *BW[K, V]
 	next      *BW[K, V]
 	weight    uint32
@@ -45,7 +46,18 @@ func (n *BW[K, V]) Key() K {
 }
 
 func (n *BW[K, V]) Value() V {
+	if p := n.valuePtr.Load(); p != nil {
+		return *p
+	}
 	return n.value
+}
+
+func (n *BW[K, V]) SetValue(v V) {
+	n.valuePtr.Store(&v)
+}
+
+func (n *BW[K, V]) IsBoxed() bool {
+	return n.valuePtr.Load() != nil
 }
 
 func (n *BW[K, V]) AsPointer() unsafe.Pointer {

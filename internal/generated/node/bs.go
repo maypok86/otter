@@ -16,6 +16,7 @@ import (
 type BS[K comparable, V any] struct {
 	key       K
 	value     V
+	valuePtr  atomic.Pointer[V]
 	prev      *BS[K, V]
 	next      *BS[K, V]
 	state     atomic.Uint32
@@ -43,7 +44,18 @@ func (n *BS[K, V]) Key() K {
 }
 
 func (n *BS[K, V]) Value() V {
+	if p := n.valuePtr.Load(); p != nil {
+		return *p
+	}
 	return n.value
+}
+
+func (n *BS[K, V]) SetValue(v V) {
+	n.valuePtr.Store(&v)
+}
+
+func (n *BS[K, V]) IsBoxed() bool {
+	return n.valuePtr.Load() != nil
 }
 
 func (n *BS[K, V]) AsPointer() unsafe.Pointer {

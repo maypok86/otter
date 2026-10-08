@@ -38,6 +38,14 @@ func (n *B[K, V]) Value() V {
 	return n.value
 }
 
+func (n *B[K, V]) SetValue(v V) {
+	panic("not implemented")
+}
+
+func (n *B[K, V]) IsBoxed() bool {
+	return false
+}
+
 func (n *B[K, V]) AsPointer() unsafe.Pointer {
 	return unsafe.Pointer(n)
 }
