@@ -4,12 +4,15 @@ on:
   push:
     paths-ignore:
       - docs/**
+  pull_request:
+    paths-ignore:
+      - docs/**
 
 jobs:
   lint:
     strategy:
       matrix:
-        go-version: [1.24.x]
+        go-version: [1.25.x]
         platform: [ubuntu-latest]
 
     runs-on: ${{ matrix.platform }}
@@ -27,5 +30,5 @@ jobs:
       - name: lint
         uses: golangci/golangci-lint-action@v9
         with:
-          version: v2.1.6
+          version: v2.13.2
           args: --timeout=4m -v
