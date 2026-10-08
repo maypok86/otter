@@ -197,6 +197,10 @@ func (g *group[K, V]) doBulkCall(
 		if ok {
 			cl.value = v
 		} else {
+			// A key the loader left out is not found, just as if Loader.Load had returned
+			// ErrNotFound: without the error, every reader would take the zero value for a
+			// loaded one.
+			cl.err = ErrNotFound
 			cl.isNotFound = true
 		}
 	}

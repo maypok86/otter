@@ -1708,3 +1708,102 @@ func TestCache_StaleEvictionKeepsRefreshOfCurrentValue(t *testing.T) {
 		})
 	}
 }
+
+// A key that the bulk loader leaves out of its result is reported as not found, as when a
+// Loader returns ErrNotFound: BulkGet leaves it out, BulkRefresh reports ErrNotFound, and a Get
+// that joined the bulk load returns ErrNotFound instead of the zero value.
+func TestCache_BulkLoadOmittedKeyIsNotFound(t *testing.T) {
+	t.Parallel()
+
+	t.Run("BulkGet", func(t *testing.T) {
+		t.Parallel()
+
+		c := Must[int, *int](nil)
+		one := 1
+		res, err := c.BulkGet(context.Background(), []int{1, 2}, BulkLoaderFunc[int, *int](func(ctx context.Context, keys []int) (map[int]*int, error) {
+			return map[int]*int{1: &one}, nil
+		}))
+		require.NoError(t, err)
+		require.Equal(t, map[int]*int{1: &one}, res)
+		_, ok := c.GetIfPresent(2)
+		require.False(t, ok)
+	})
+
+	t.Run("BulkRefresh", func(t *testing.T) {
+		t.Parallel()
+
+		c := Must(&Options[int, int]{
+			RefreshCalculator: RefreshWriting[int, int](time.Hour),
+		})
+		c.Set(1, 1)
+		c.Set(2, 2)
+		// Keys 1 and 2 are reloaded and key 3 is loaded, in separate bulk calls.
+		results := <-c.BulkRefresh(context.Background(), []int{1, 2, 3}, BulkLoaderFunc[int, int](func(ctx context.Context, keys []int) (map[int]int, error) {
+			res := make(map[int]int)
+			for _, k := range keys {
+				if k == 1 {
+					res[k] = 10
+				}
+			}
+			return res, nil
+		}))
+		require.Len(t, results, 3)
+		for _, r := range results {
+			if r.Key == 1 {
+				require.NoError(t, r.Err)
+				require.Equal(t, 10, r.Value)
+			} else {
+				require.ErrorIs(t, r.Err, ErrNotFound, "key %d", r.Key)
+			}
+		}
+		for _, k := range []int{2, 3} {
+			_, ok := c.GetIfPresent(k)
+			require.False(t, ok)
+		}
+	})
+
+	t.Run("joined Get", func(t *testing.T) {
+		t.Parallel()
+
+		// The Get has to start waiting on the bulk load before the bulk loader returns. It
+		// cannot be observed, so the test retries until the Get did not load on its own.
+		for range 20 {
+			c := Must[int, int](nil)
+			started := make(chan struct{})
+			release := make(chan struct{})
+			go func() {
+				_, _ = c.BulkGet(context.Background(), []int{1, 2}, BulkLoaderFunc[int, int](func(ctx context.Context, keys []int) (map[int]int, error) {
+					close(started)
+					<-release
+					return map[int]int{1: 10}, nil
+				}))
+			}()
+			<-started
+
+			var ownLoad atomic.Bool
+			type result struct {
+				v   int
+				err error
+			}
+			got := make(chan result, 1)
+			go func() {
+				v, err := c.Get(context.Background(), 2, LoaderFunc[int, int](func(ctx context.Context, key int) (int, error) {
+					ownLoad.Store(true)
+					return 0, ErrNotFound
+				}))
+				got <- result{v: v, err: err}
+			}()
+			time.Sleep(10 * time.Millisecond)
+			close(release)
+
+			r := <-got
+			if ownLoad.Load() {
+				continue
+			}
+			require.Equal(t, 0, r.v)
+			require.ErrorIs(t, r.err, ErrNotFound)
+			return
+		}
+		t.Fatal("Get never joined the bulk load")
+	})
+}
