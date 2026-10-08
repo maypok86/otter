@@ -48,8 +48,9 @@ func (l *recordingLogger) get() []string {
 	return append([]string(nil), l.msgs...)
 }
 
-// completes fails the test if fn does not return within a few seconds, which is how a lock
-// left held by a panic shows up.
+// completes fails the test if fn does not return in time, which is how a lock left held by a
+// panic shows up. The limit is generous: under -race and atomic coverage on a loaded CI runner,
+// a test that recovers thousands of panics takes seconds.
 func completes(t *testing.T, name string, fn func()) {
 	t.Helper()
 
@@ -60,7 +61,7 @@ func completes(t *testing.T, name string, fn func()) {
 	}()
 	select {
 	case <-done:
-	case <-time.After(5 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatalf("%s did not complete: a lock or a load was left behind", name)
 	}
 }
