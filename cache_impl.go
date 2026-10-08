@@ -377,8 +377,19 @@ func (c *cache[K, V]) casExpiresAfterRead(n node.Node[K, V], expiresAt, nowNano 
 	currentDuration := time.Duration(expiresAt - nowNano)
 	diff := xmath.Abs(int64(expiresAfter - currentDuration))
 	if diff > 0 {
-		n.CASExpiresAt(expiresAt, nowNano+int64(expiresAfter))
+		n.CASExpiresAt(expiresAt, deadlineAfter(nowNano, expiresAfter))
 	}
+}
+
+// deadlineAfter returns nowNano + d, saturated at math.MaxInt64, the time that is never reached.
+// The documented "never" duration is math.MaxInt64, and with a clock that counts from the Unix
+// epoch the plain sum would wrap to a deadline in the past. A sum with a negative nowNano cannot
+// overflow.
+func deadlineAfter(nowNano int64, d time.Duration) int64 {
+	if nowNano > 0 && int64(d) > math.MaxInt64-nowNano {
+		return math.MaxInt64
+	}
+	return nowNano + int64(d)
 }
 
 // GetEntry returns the cache entry associated with the key in this cache.
@@ -437,7 +448,7 @@ func (c *cache[K, V]) SetRefreshableAfter(key K, refreshableAfter time.Duration)
 	entry := c.nodeToEntry(n, nowNano)
 	currentDuration := entry.RefreshableAfter()
 	if refreshableAfter > 0 && currentDuration != refreshableAfter {
-		n.SetRefreshableAt(nowNano + int64(refreshableAfter))
+		n.SetRefreshableAt(deadlineAfter(nowNano, refreshableAfter))
 	}
 }
 
@@ -452,7 +463,7 @@ func (c *cache[K, V]) expiresAtAfterWrite(entry Entry[K, V], old node.Node[K, V]
 	}
 
 	if expiresAfter > 0 && entry.ExpiresAfter() != expiresAfter {
-		return nowNano + int64(expiresAfter)
+		return deadlineAfter(nowNano, expiresAfter)
 	}
 	return entry.ExpiresAtNano
 }
@@ -1025,7 +1036,7 @@ func (c *cache[K, V]) refreshableAtAfterWrite(
 	}
 
 	if refreshableAfter > 0 && entry.RefreshableAfter() != refreshableAfter {
-		return nowNano + int64(refreshableAfter)
+		return deadlineAfter(nowNano, refreshableAfter)
 	}
 	return entry.RefreshableAtNano
 }
