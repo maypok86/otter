@@ -351,7 +351,7 @@ func (c *Cache[K, V]) BulkRefresh(ctx context.Context, keys []K, bulkLoader Bulk
 // Invalidate discards any cached value for the key.
 //
 // Returns previous value if any. The invalidated result reports whether the key was
-// present.
+// present; an expired entry that has not been removed yet is not.
 func (c *Cache[K, V]) Invalidate(key K) (value V, invalidated bool) {
 	return c.cache.Invalidate(key)
 }

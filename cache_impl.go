@@ -1524,7 +1524,7 @@ func (c *cache[K, V]) BulkRefresh(ctx context.Context, keys []K, bulkLoader Bulk
 // Invalidate discards any cached value for the key.
 //
 // Returns previous value if any. The invalidated result reports whether the key was
-// present.
+// present; an expired entry that has not been removed yet is not.
 func (c *cache[K, V]) Invalidate(key K) (value V, invalidated bool) {
 	var (
 		d     node.Node[K, V]
@@ -1537,7 +1537,8 @@ func (c *cache[K, V]) Invalidate(key K) (value V, invalidated bool) {
 		return nil
 	})
 	c.afterDelete(d, cause, false, false)
-	if d != nil {
+	// An expired entry that was still in the table is removed, but it was not present.
+	if d != nil && cause != CauseExpiration {
 		return d.Value(), true
 	}
 	return zeroValue[V](), false

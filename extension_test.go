@@ -507,3 +507,21 @@ func TestCache_SetOverExpiredEntryReportsAbsent(t *testing.T) {
 		})
 	}
 }
+
+// Invalidate of an expired entry reports that the key was not present. The listeners still get
+// the expired value with CauseExpiration.
+func TestCache_InvalidateOfExpiredEntryReportsAbsent(t *testing.T) {
+	t.Parallel()
+
+	for _, bounded := range []bool{false, true} {
+		t.Run(fmt.Sprintf("bounded=%v", bounded), func(t *testing.T) {
+			t.Parallel()
+
+			c := newCacheWithExpiredEntry(t, bounded)
+			v, ok := c.Invalidate(1)
+			require.False(t, ok)
+			require.Zero(t, v)
+			require.Nil(t, c.cache.hashmap.Get(1), "the expired entry was not removed")
+		})
+	}
+}
