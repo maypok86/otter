@@ -17,6 +17,7 @@ package otter
 import (
 	"context"
 	"errors"
+	"fmt"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -211,6 +212,78 @@ func TestCache_PanicInExecutorDoesNotStopMaintenance(t *testing.T) {
 	})
 	require.LessOrEqual(t, c.EstimatedSize(), 10)
 	require.NotEmpty(t, logger.get())
+}
+
+// A refresh is registered before it is handed to the executor. If the executor panics, the
+// refresh is finished with the panic, so that a later load of the key does not wait for it
+// forever, and the task is abandoned even if the executor scheduled it before panicking.
+func TestCache_PanicInExecutorFinishesRegisteredRefresh(t *testing.T) {
+	t.Parallel()
+
+	for _, bulk := range []bool{false, true} {
+		for _, scheduled := range []bool{false, true} {
+			t.Run(fmt.Sprintf("bulk=%v/scheduled=%v", bulk, scheduled), func(t *testing.T) {
+				t.Parallel()
+
+				var (
+					failing atomic.Bool
+					loads   atomic.Int64
+				)
+				gate := make(chan struct{})
+				ran := make(chan struct{})
+				c := Must(&Options[int, int]{
+					RefreshCalculator: RefreshWriting[int, int](time.Hour),
+					Executor: func(fn func()) {
+						if !failing.Load() {
+							go fn()
+							return
+						}
+						if scheduled {
+							go func() {
+								defer close(ran)
+								<-gate
+								fn()
+							}()
+						}
+						panic("executor boom")
+					},
+				})
+
+				failing.Store(true)
+				require.PanicsWithValue(t, "executor boom", func() {
+					if bulk {
+						_ = c.BulkRefresh(context.Background(), []int{1}, BulkLoaderFunc[int, int](func(ctx context.Context, keys []int) (map[int]int, error) {
+							loads.Add(1)
+							return map[int]int{1: 1}, nil
+						}))
+					} else {
+						_ = c.Refresh(context.Background(), 1, LoaderFunc[int, int](func(ctx context.Context, key int) (int, error) {
+							loads.Add(1)
+							return 1, nil
+						}))
+					}
+				})
+				failing.Store(false)
+				if scheduled {
+					close(gate)
+					// An abandoned task that ran anyway finished its calls a second time and
+					// then waited for them forever.
+					completes(t, "the task the executor scheduled before panicking", func() {
+						<-ran
+					})
+				}
+				require.Zero(t, loads.Load(), "the abandoned refresh ran")
+
+				completes(t, "Get after a refresh the executor did not run", func() {
+					v, err := c.Get(context.Background(), 1, LoaderFunc[int, int](func(ctx context.Context, key int) (int, error) {
+						return 2, nil
+					}))
+					require.NoError(t, err)
+					require.Equal(t, 2, v)
+				})
+			})
+		}
+	}
 }
 
 // A panic while writing a loaded value (here the weigher) wakes up the waiters, which receive

@@ -92,3 +92,13 @@ through `afterDeleteCall`, which writes the result with `atomicSet` only if the 
 the current one for the key (`deleteCall` identity check). `Invalidate`, `Set` and `Compute`
 cancel a pending call for the key; eviction and expiration drop only refresh calls
 (`deleteRefresh`).
+
+A refresh must lose to any write that follows its request, so three things hold together:
+- refresh calls are registered on the requesting goroutine, before the task goes to the
+  executor (`refreshKey`, `bulkRefreshKeys`; `executeRefresh` finishes them if the executor
+  panics);
+- `atomicSet` cancels pending calls only after publishing the new value (`cancelCalls`), so a
+  refresh requested during an in-place write, e.g. from `OnAtomicDeletion`, is cancelled too;
+- a refresh call records the node it was requested for (`call.base`), and `afterDeleteCall`
+  writes its result only if that node is still the key's node (`isRefreshBase`), which covers
+  a replacement or removal published after the write's callback returns.

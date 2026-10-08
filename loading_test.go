@@ -1066,23 +1066,14 @@ func TestCache_BulkRefreshResults(t *testing.T) {
 	}
 	c.CleanUp()
 
-	done := make(chan struct{})
-	var startRefresh atomic.Bool
-	c.cache.executor = func(fn func()) {
-		go func() {
-			if startRefresh.Load() {
-				<-done
-				startRefresh.Store(false)
-			}
-			fn()
-		}()
-	}
-
+	// The Get starts loading toLoad first, so BulkRefresh finds its call and waits for it. The
+	// bulk reload of the other keys lets the Get's load finish.
 	ctx := context.Background()
+	loadStarted := make(chan struct{})
 	waitLoad := make(chan struct{})
 	tl := newTestLoader[int, int](func(ctx context.Context, key int) (int, error) {
-		done <- struct{}{}
 		if key == toLoad {
+			close(loadStarted)
 			<-waitLoad
 			return key + 101, nil
 		}
@@ -1097,21 +1088,19 @@ func TestCache_BulkRefreshResults(t *testing.T) {
 		return m, nil
 	})
 
+	getDone := make(chan struct{})
 	go func() {
-		<-done
+		defer close(getDone)
 		v, err := c.Get(ctx, toLoad, tl)
 		require.NoError(t, err)
 		require.Equal(t, toLoad+101, v)
-		done <- struct{}{}
 	}()
+	<-loadStarted
 
-	startRefresh.Store(true)
-	done <- struct{}{}
-	ch := c.BulkRefresh(ctx, keys, btl)
-	results := <-ch
+	results := <-c.BulkRefresh(ctx, keys, btl)
+	<-getDone
 
 	require.Equal(t, len(keys), len(results))
-	<-done
 	for _, r := range results {
 		require.True(t, keySet[r.Key])
 		require.NoError(t, r.Err)
@@ -1806,4 +1795,194 @@ func TestCache_BulkLoadOmittedKeyIsNotFound(t *testing.T) {
 		}
 		t.Fatal("Get never joined the bulk load")
 	})
+}
+
+// queuedExecutor holds the submitted tasks until run is called, so that a test decides when a
+// refresh starts.
+type queuedExecutor struct {
+	mu    sync.Mutex
+	tasks []func()
+}
+
+func (e *queuedExecutor) execute(fn func()) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.tasks = append(e.tasks, fn)
+}
+
+// run runs the queued tasks, including the ones they submit, until none are left.
+func (e *queuedExecutor) run() {
+	for {
+		e.mu.Lock()
+		tasks := e.tasks
+		e.tasks = nil
+		e.mu.Unlock()
+		if len(tasks) == 0 {
+			return
+		}
+		for _, task := range tasks {
+			task()
+		}
+	}
+}
+
+// A refresh is registered when it is requested, not when the executor starts it, so a write
+// that follows the request cancels it. Before, the refresh replaced a later Set, or brought an
+// invalidated key back, whenever the executor started it after the write.
+func TestCache_WriteAfterRefreshRequestCancelsIt(t *testing.T) {
+	t.Parallel()
+
+	reload := LoaderFunc[int, int](func(ctx context.Context, key int) (int, error) {
+		return 100, nil
+	})
+	tests := []struct {
+		name string
+		// request asks for a refresh of key 1, write then changes it
+		request func(c *Cache[int, int])
+		write   func(c *Cache[int, int])
+		want    int
+		present bool
+	}{
+		{
+			name: "stale Get then Set",
+			request: func(c *Cache[int, int]) {
+				v, err := c.Get(context.Background(), 1, reload)
+				require.NoError(t, err)
+				require.Equal(t, 1, v)
+			},
+			write:   func(c *Cache[int, int]) { c.Set(1, 2) },
+			want:    2,
+			present: true,
+		},
+		{
+			name: "stale Get then Invalidate",
+			request: func(c *Cache[int, int]) {
+				_, _ = c.Get(context.Background(), 1, reload)
+			},
+			write: func(c *Cache[int, int]) { c.Invalidate(1) },
+		},
+		{
+			name: "stale BulkGet then Set",
+			request: func(c *Cache[int, int]) {
+				_, _ = c.BulkGet(context.Background(), []int{1}, BulkLoaderFunc[int, int](func(ctx context.Context, keys []int) (map[int]int, error) {
+					return map[int]int{1: 100}, nil
+				}))
+			},
+			write:   func(c *Cache[int, int]) { c.Set(1, 2) },
+			want:    2,
+			present: true,
+		},
+		{
+			name: "Refresh then Compute",
+			request: func(c *Cache[int, int]) {
+				_ = c.Refresh(context.Background(), 1, reload)
+			},
+			write: func(c *Cache[int, int]) {
+				_, _ = c.Compute(1, func(oldValue int, found bool) (int, ComputeOp) {
+					return 3, WriteOp
+				})
+			},
+			want:    3,
+			present: true,
+		},
+		{
+			name: "BulkRefresh then Invalidate",
+			request: func(c *Cache[int, int]) {
+				_ = c.BulkRefresh(context.Background(), []int{1}, BulkLoaderFunc[int, int](func(ctx context.Context, keys []int) (map[int]int, error) {
+					return map[int]int{1: 100}, nil
+				}))
+			},
+			write: func(c *Cache[int, int]) { c.Invalidate(1) },
+		},
+	}
+	for _, tt := range tests {
+		// Bounded, a write updates the node in place; unbounded, it replaces the node.
+		for _, bounded := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/bounded=%v", tt.name, bounded), func(t *testing.T) {
+				t.Parallel()
+
+				clock := newNonTickingClock()
+				executor := &queuedExecutor{}
+				opts := &Options[int, int]{
+					Clock:             clock,
+					Executor:          executor.execute,
+					RefreshCalculator: RefreshWriting[int, int](time.Second),
+					Logger:            &recordingLogger{},
+				}
+				if bounded {
+					opts.MaximumSize = 100
+				}
+				c := Must(opts)
+				c.Set(1, 1)
+				clock.Sleep(2 * time.Second)
+
+				tt.request(c)
+				tt.write(c)
+				executor.run()
+
+				v, ok := c.GetIfPresent(1)
+				require.Equal(t, tt.present, ok)
+				require.Equal(t, tt.want, v)
+			})
+		}
+	}
+}
+
+// A refresh requested while a write is in progress, here from OnAtomicDeletion, which runs before
+// the new value is published, is cancelled by that write: the write cancels pending calls only
+// after it has published the value.
+func TestCache_RefreshRequestedDuringWriteIsCancelled(t *testing.T) {
+	t.Parallel()
+
+	for _, bounded := range []bool{false, true} {
+		t.Run(fmt.Sprintf("bounded=%v", bounded), func(t *testing.T) {
+			t.Parallel()
+
+			clock := newNonTickingClock()
+			executor := &queuedExecutor{}
+			var (
+				c         *Cache[int, int]
+				requested atomic.Bool
+				// what the Get in the listener returned; checked after the Set, since a failed
+				// assertion must not stop the goroutine that holds the bucket lock
+				seen int
+			)
+			opts := &Options[int, int]{
+				Clock:             clock,
+				Executor:          executor.execute,
+				RefreshCalculator: RefreshWriting[int, int](time.Second),
+				Logger:            &recordingLogger{},
+				OnAtomicDeletion: func(e DeletionEvent[int, int]) {
+					if e.Cause != CauseReplacement || !requested.CompareAndSwap(false, true) {
+						return
+					}
+					// Another goroutine still reads the previous, stale value and requests a
+					// refresh of it.
+					done := make(chan int)
+					go func() {
+						v, _ := c.Get(context.Background(), 1, LoaderFunc[int, int](func(ctx context.Context, key int) (int, error) {
+							return 100, nil
+						}))
+						done <- v
+					}()
+					seen = <-done
+				},
+			}
+			if bounded {
+				opts.MaximumSize = 100
+			}
+			c = Must(opts)
+			c.Set(1, 1)
+			clock.Sleep(2 * time.Second)
+
+			c.Set(1, 2)
+			require.True(t, requested.Load())
+			require.Equal(t, 1, seen, "the Get during the write did not read the previous value")
+			executor.run()
+
+			v, ok := c.GetIfPresent(1)
+			require.True(t, ok)
+			require.Equal(t, 2, v)
+		})
+	}
 }

@@ -18,13 +18,17 @@ import (
 	"sync/atomic"
 	"unsafe"
 
+	"github.com/maypok86/otter/v2/internal/generated/node"
 	"github.com/maypok86/otter/v2/internal/hashmap"
 )
 
 type call[K comparable, V any] struct {
-	key        K
-	value      V
-	err        error
+	key   K
+	value V
+	err   error
+	// base is the node a refresh was requested for (nil for an absent key). Its result is
+	// written only if base is still the key's node.
+	base       node.Node[K, V]
 	wg         sync.WaitGroup
 	isRefresh  bool
 	isNotFound bool
