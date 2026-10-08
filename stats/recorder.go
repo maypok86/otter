@@ -30,7 +30,8 @@ type Recorder interface {
 	// causes an entry to be loaded and the loading completes successfully (either no error or otter.ErrNotFound).
 	RecordLoadSuccess(loadTime time.Duration)
 	// RecordLoadFailure records the failed load of a new entry. This method should be called when a cache request
-	// causes an entry to be loaded, but the loading function returns an error that is not otter.ErrNotFound.
+	// causes an entry to be loaded, but the loading function returns an error that is not otter.ErrNotFound,
+	// or panics, or writing the loaded value panics.
 	RecordLoadFailure(loadTime time.Duration)
 }
 

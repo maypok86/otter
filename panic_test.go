@@ -278,6 +278,75 @@ func TestCache_PanicWhileWritingLoadedValueWakesWaiters(t *testing.T) {
 	})
 }
 
+// A load whose result cannot be written is still counted, as a failure: the caller gets a panic
+// instead of a value, just as when the loader itself panics.
+func TestCache_LoadStatsRecordedWhenWritePanics(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		misses uint64
+		load   func(t *testing.T, c *Cache[int, int])
+	}{
+		{
+			name:   "Get",
+			misses: 1,
+			load: func(t *testing.T, c *Cache[int, int]) {
+				require.PanicsWithValue(t, "weigher boom", func() {
+					_, _ = c.Get(context.Background(), 1, LoaderFunc[int, int](func(ctx context.Context, key int) (int, error) {
+						return 1, nil
+					}))
+				})
+			},
+		},
+		{
+			name:   "BulkGet",
+			misses: 1,
+			load: func(t *testing.T, c *Cache[int, int]) {
+				require.PanicsWithValue(t, "weigher boom", func() {
+					_, _ = c.BulkGet(context.Background(), []int{1}, BulkLoaderFunc[int, int](func(ctx context.Context, keys []int) (map[int]int, error) {
+						return map[int]int{1: 1}, nil
+					}))
+				})
+			},
+		},
+		{
+			// A refresh returns the panic as its error instead of propagating it.
+			name: "Refresh",
+			load: func(t *testing.T, c *Cache[int, int]) {
+				res := <-c.Refresh(context.Background(), 1, LoaderFunc[int, int](func(ctx context.Context, key int) (int, error) {
+					return 1, nil
+				}))
+				var pe *panicError
+				require.ErrorAs(t, res.Err, &pe)
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			statsCounter := stats.NewCounter()
+			c := Must(&Options[int, int]{
+				MaximumWeight: 100,
+				Weigher: func(key, value int) uint32 {
+					panic("weigher boom")
+				},
+				RefreshCalculator: RefreshWriting[int, int](time.Hour),
+				StatsRecorder:     statsCounter,
+				Logger:            &recordingLogger{},
+			})
+
+			tt.load(t, c)
+
+			snapshot := statsCounter.Snapshot()
+			require.Equal(t, tt.misses, snapshot.Misses)
+			require.Equal(t, uint64(0), snapshot.LoadSuccesses)
+			require.Equal(t, uint64(1), snapshot.LoadFailures)
+		})
+	}
+}
+
 // A panic while writing one result of a bulk load finishes every call of the bulk, so that no
 // later load of the other keys blocks forever.
 func TestCache_PanicWhileWritingBulkResultFinishesAllCalls(t *testing.T) {
