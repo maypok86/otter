@@ -197,3 +197,38 @@ func TestVariable_DeleteExpiredPanicKeepsNodes(t *testing.T) {
 	})
 	match(t, expired, []string{"k1", "k2", "k3"})
 }
+
+// A panic of expireNode does not advance the wheel: the next DeleteExpired sweeps the buckets the
+// interrupted one did not reach, instead of skipping them until the wheel wraps around.
+func TestVariable_DeleteExpiredPanicDoesNotSkipBuckets(t *testing.T) {
+	t.Parallel()
+
+	nm := node.NewManager[string, string](node.Config{
+		WithExpiration: true,
+	})
+	now := time.Now().UnixNano()
+	v := NewVariable(nm)
+	v.time = uint64(now)
+	// The deadlines are two seconds apart, so the nodes are in different level-0 buckets.
+	v.Add(nm.Create("k1", "", now+getTestExp(1), 0, 1))
+	v.Add(nm.Create("k2", "", now+getTestExp(3), 0, 1))
+
+	func() {
+		defer func() {
+			if r := recover(); r != "expire boom" {
+				t.Fatalf("recovered %v, want the expireNode panic", r)
+			}
+		}()
+		v.DeleteExpired(now+getTestExp(4), func(n node.Node[string, string], nowNanos int64) {
+			panic("expire boom")
+		})
+	}()
+
+	expired := make(map[string]bool)
+	v.DeleteExpired(now+getTestExp(5), func(n node.Node[string, string], nowNanos int64) {
+		expired[n.Key()] = true
+	})
+	if !expired["k1"] || !expired["k2"] || len(expired) != 2 {
+		t.Fatalf("expired %v, want k1 and k2", expired)
+	}
+}

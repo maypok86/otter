@@ -98,6 +98,16 @@ func (v *Variable[K, V]) DeleteExpired(nowNanos int64, expireNode func(n node.No
 	prevTime := v.time
 	v.time = currentTime
 
+	// If expireNode panics, the wheel goes back to its previous time, so that the next call sweeps
+	// the buckets this one did not reach. Otherwise they would be skipped until the wheel wraps
+	// around.
+	completed := false
+	defer func() {
+		if !completed {
+			v.time = prevTime
+		}
+	}()
+
 	for i := 0; i < len(shift); i++ {
 		previousTicks := prevTime >> shift[i]
 		currentTicks := currentTime >> shift[i]
@@ -108,6 +118,7 @@ func (v *Variable[K, V]) DeleteExpired(nowNanos int64, expireNode func(n node.No
 
 		v.deleteExpiredFromBucket(i, previousTicks, delta, expireNode)
 	}
+	completed = true
 }
 
 func (v *Variable[K, V]) deleteExpiredFromBucket(
