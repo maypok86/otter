@@ -1986,3 +1986,138 @@ func TestCache_RefreshRequestedDuringWriteIsCancelled(t *testing.T) {
 		})
 	}
 }
+
+// A key that the bulk loader returns without being asked for only fills a gap: it is cached if the
+// key has no value and is not being loaded when the bulk load completes. Nothing registered the
+// key before the load, so a write during the load could not cancel it, and it used to overwrite
+// that write.
+func TestCache_BulkLoadExtraKeyOnlyFillsGaps(t *testing.T) {
+	t.Parallel()
+
+	// bulkGet runs a BulkGet of key 1 whose loader also returns key 2 with the value 100, and
+	// calls during while the load is in progress.
+	bulkGet := func(t *testing.T, c *Cache[int, int], during func()) {
+		t.Helper()
+
+		type result struct {
+			res map[int]int
+			err error
+		}
+		started := make(chan struct{})
+		release := make(chan struct{})
+		done := make(chan result, 1)
+		go func() {
+			res, err := c.BulkGet(context.Background(), []int{1}, BulkLoaderFunc[int, int](func(ctx context.Context, keys []int) (map[int]int, error) {
+				close(started)
+				<-release
+				return map[int]int{1: 1, 2: 100}, nil
+			}))
+			done <- result{res: res, err: err}
+		}()
+		<-started
+		during()
+		close(release)
+		r := <-done
+		require.NoError(t, r.err)
+		require.Equal(t, map[int]int{1: 1}, r.res)
+	}
+
+	t.Run("absent key is cached", func(t *testing.T) {
+		t.Parallel()
+
+		c := Must[int, int](nil)
+		bulkGet(t, c, func() {})
+		v, ok := c.GetIfPresent(2)
+		require.True(t, ok)
+		require.Equal(t, 100, v)
+	})
+
+	t.Run("existing value is kept", func(t *testing.T) {
+		t.Parallel()
+
+		c := Must[int, int](nil)
+		c.Set(2, 2)
+		bulkGet(t, c, func() {})
+		v, ok := c.GetIfPresent(2)
+		require.True(t, ok)
+		require.Equal(t, 2, v)
+	})
+
+	t.Run("Set during the load wins", func(t *testing.T) {
+		t.Parallel()
+
+		c := Must[int, int](nil)
+		bulkGet(t, c, func() { c.Set(2, 3) })
+		v, ok := c.GetIfPresent(2)
+		require.True(t, ok)
+		require.Equal(t, 3, v)
+	})
+
+	t.Run("Compute during the load wins", func(t *testing.T) {
+		t.Parallel()
+
+		c := Must(&Options[int, int]{MaximumSize: 100})
+		c.Set(2, 2)
+		bulkGet(t, c, func() {
+			_, _ = c.Compute(2, func(oldValue int, found bool) (int, ComputeOp) {
+				return oldValue + 1, WriteOp
+			})
+		})
+		v, ok := c.GetIfPresent(2)
+		require.True(t, ok)
+		require.Equal(t, 3, v)
+	})
+
+	t.Run("Get load in flight wins", func(t *testing.T) {
+		t.Parallel()
+
+		c := Must[int, int](nil)
+		getStarted := make(chan struct{})
+		getRelease := make(chan struct{})
+		getDone := make(chan int)
+		bulkGet(t, c, func() {
+			go func() {
+				v, _ := c.Get(context.Background(), 2, LoaderFunc[int, int](func(ctx context.Context, key int) (int, error) {
+					close(getStarted)
+					<-getRelease
+					return 4, nil
+				}))
+				getDone <- v
+			}()
+			<-getStarted
+		})
+		// the bulk load completed while the Get was still loading the key
+		_, ok := c.GetIfPresent(2)
+		require.False(t, ok, "the extra key was written over a load in flight")
+		close(getRelease)
+		require.Equal(t, 4, <-getDone)
+		v, ok := c.GetIfPresent(2)
+		require.True(t, ok)
+		require.Equal(t, 4, v)
+	})
+
+	t.Run("BulkRefresh reports requested keys only", func(t *testing.T) {
+		t.Parallel()
+
+		c := Must(&Options[int, int]{
+			RefreshCalculator: RefreshWriting[int, int](time.Hour),
+		})
+		c.Set(1, 1)
+		// key 1 is reloaded and key 2 loaded in separate bulk calls; both return key 3
+		results := <-c.BulkRefresh(context.Background(), []int{1, 2}, BulkLoaderFunc[int, int](func(ctx context.Context, keys []int) (map[int]int, error) {
+			res := map[int]int{3: 300}
+			for _, k := range keys {
+				res[k] = k * 10
+			}
+			return res, nil
+		}))
+		keys := make([]int, 0, len(results))
+		for _, r := range results {
+			keys = append(keys, r.Key)
+		}
+		require.ElementsMatch(t, []int{1, 2}, keys)
+		v, ok := c.GetIfPresent(3)
+		require.True(t, ok)
+		require.Equal(t, 300, v)
+	})
+}

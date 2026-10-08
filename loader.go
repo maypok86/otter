@@ -60,8 +60,10 @@ type BulkLoader[K comparable, V any] interface {
 	//
 	// If the returned map doesn't contain all requested keys, then the entries it does
 	// contain will be cached, and Cache.BulkGet will return the partial results. If the returned map
-	// contains extra keys not present in keys then all returned entries will be cached, but
-	// only the entries for keys, will be returned from Cache.BulkGet.
+	// contains extra keys not present in keys, then each extra entry is cached only if its key has
+	// no value in the cache and is not being loaded when the load completes: an extra entry never
+	// replaces a value, including one written during the load. Only the entries for keys are
+	// returned from Cache.BulkGet.
 	//
 	// WARNING: loading must not attempt to update any mappings of this cache directly.
 	BulkLoad(ctx context.Context, keys []K) (map[K]V, error)
@@ -70,8 +72,8 @@ type BulkLoader[K comparable, V any] interface {
 	// This method is called when an existing cache entry is refreshed by Cache.BulkGet, or through a call to Cache.BulkRefresh.
 	//
 	// If the returned map doesn't contain all requested keys, then the entries it does
-	// contain will be cached. If the returned map
-	// contains extra keys not present in keys then all returned entries will be cached.
+	// contain will be cached. Extra keys not present in keys are cached as described for
+	// BulkLoad, and are not reported in the results of Cache.BulkRefresh.
 	//
 	// WARNING: loading must not attempt to update any mappings of this cache directly
 	// or block waiting for other cache operations to complete.
