@@ -6,12 +6,12 @@ import (
 )
 
 type Policy struct {
-	policy product.Policy[uint64, uint64]
+	policy product.Product[uint64, uint64]
 	hits   uint64
 	misses uint64
 }
 
-func NewPolicy(c product.Policy[uint64, uint64]) *Policy {
+func NewPolicy(c product.Product[uint64, uint64]) *Policy {
 	return &Policy{
 		policy: c,
 	}

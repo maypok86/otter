@@ -17,8 +17,8 @@ import (
 	"github.com/maypok86/otter/v2/benchmarks/simulator/internal/report/simulation"
 )
 
-func getPolicies() map[string]product.Policy[uint64, uint64] {
-	policies := []product.Policy[uint64, uint64]{
+func getProducts() map[string]product.Product[uint64, uint64] {
+	policies := []product.Product[uint64, uint64]{
 		&product.Otter[uint64, uint64]{},
 		&product.Theine[uint64, uint64]{},
 		&product.Ristretto[uint64, uint64]{},
@@ -27,9 +27,10 @@ func getPolicies() map[string]product.Policy[uint64, uint64] {
 		&product.S3FIFO[uint64, uint64]{},
 		&product.LRU[uint64, uint64]{},
 		&product.ARC[uint64, uint64]{},
+		&policy.Optimal[uint64, uint64]{},
 	}
 
-	policiesSet := make(map[string]product.Policy[uint64, uint64], len(policies))
+	policiesSet := make(map[string]product.Product[uint64, uint64], len(policies))
 	for _, c := range policies {
 		policiesSet[c.Name()] = c
 	}
@@ -53,14 +54,20 @@ func (s Simulator) Simulate() error {
 	size := 0
 	for i, capacity := range s.cfg.Capacities {
 		policies := make([]policyContract, 0, len(s.cfg.Caches))
-		ps := getPolicies()
+		products := getProducts()
 		for _, c := range s.cfg.Caches {
-			p, ok := ps[c]
+			pr, ok := products[c]
 			if !ok {
 				return fmt.Errorf("not valid cache name: %s", c)
 			}
 
-			policies = append(policies, policy.NewPolicy(p))
+			var po policyContract
+			if pp, ok := pr.(policyContract); ok {
+				po = pp
+			} else {
+				po = policy.NewPolicy(pr)
+			}
+			policies = append(policies, po)
 		}
 		if i == 0 {
 			size = len(s.cfg.Capacities) * len(policies)

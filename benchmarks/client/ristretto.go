@@ -1,7 +1,7 @@
 package client
 
 import (
-	"github.com/dgraph-io/ristretto"
+	"github.com/dgraph-io/ristretto/v2"
 )
 
 type Ristretto[K ristretto.Key, V any] struct {

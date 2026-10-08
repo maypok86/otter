@@ -11,7 +11,7 @@ import (
 
 	"github.com/Yiling-J/theine-go"
 	"github.com/bluele/gcache"
-	"github.com/dgraph-io/ristretto"
+	"github.com/dgraph-io/ristretto/v2"
 	hashicorp "github.com/hashicorp/golang-lru/v2/expirable"
 	"github.com/jellydator/ttlcache/v3"
 	"github.com/karlseguin/ccache/v3"

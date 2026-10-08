@@ -57,9 +57,7 @@ func (t *Table) Report() error {
 	}
 
 	tw := tablewriter.NewWriter(os.Stdout)
-	tw.SetBorders(tablewriter.Border{Left: true, Top: false, Right: true, Bottom: false})
-	tw.SetCenterSeparator("|")
-	tw.SetHeader(append([]string{"Cache"}, capacities...))
+	tw.Header(append([]string{"Cache"}, capacities...))
 	for _, results := range t.table {
 		processed := make([]string, 0, len(capacities)+1)
 		processed = append(processed, results[0].Name())

@@ -8,6 +8,7 @@ caches = [
     "sturdyc",
     "arc",
     "lru",
+    "optimal"
 ]
 limit = 1_000_000
 
