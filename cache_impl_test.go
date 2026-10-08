@@ -19,6 +19,7 @@ import (
 	"math"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1343,4 +1344,119 @@ func TestCache_ReplaceBeforeAddIsDrained(t *testing.T) {
 		c.CleanUp()
 	}
 	require.LessOrEqual(t, c.EstimatedSize(), maximum)
+}
+
+// math.MaxInt64 is the documented way to say "never expire" or "never refresh". With a clock that
+// counts from the Unix epoch, now + math.MaxInt64 used to wrap to a negative deadline: the entry
+// was expired as soon as it was written, and refreshed on every read.
+func TestCache_MaxDurationMeansNever(t *testing.T) {
+	t.Parallel()
+
+	const never = time.Duration(math.MaxInt64)
+	newClock := func() *nonTickingClock {
+		clock := newNonTickingClock()
+		clock.Sleep(time.Duration(time.Now().UnixNano()))
+		return clock
+	}
+
+	expiry := []struct {
+		name string
+		opts func(clock Clock) *Options[int, int]
+		// after runs after the write, before the checks
+		after func(c *Cache[int, int])
+	}{
+		{
+			name: "ExpiryWriting",
+			opts: func(clock Clock) *Options[int, int] {
+				return &Options[int, int]{Clock: clock, ExpiryCalculator: ExpiryWriting[int, int](never)}
+			},
+		},
+		{
+			name: "ExpiryAccessing",
+			opts: func(clock Clock) *Options[int, int] {
+				return &Options[int, int]{Clock: clock, ExpiryCalculator: ExpiryAccessing[int, int](never)}
+			},
+			after: func(c *Cache[int, int]) {
+				// a read sets the deadline again
+				_, _ = c.GetIfPresent(1)
+			},
+		},
+		{
+			name: "SetExpiresAfter",
+			opts: func(clock Clock) *Options[int, int] {
+				return &Options[int, int]{Clock: clock, ExpiryCalculator: ExpiryWriting[int, int](time.Hour)}
+			},
+			after: func(c *Cache[int, int]) {
+				c.SetExpiresAfter(1, never)
+			},
+		},
+	}
+	for _, tt := range expiry {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			clock := newClock()
+			c := Must(tt.opts(clock))
+			c.Set(1, 1)
+			if tt.after != nil {
+				tt.after(c)
+			}
+
+			clock.Sleep(1000 * 24 * time.Hour)
+			c.CleanUp()
+			v, ok := c.GetIfPresent(1)
+			require.True(t, ok, "an entry that never expires is missing")
+			require.Equal(t, 1, v)
+			e, ok := c.GetEntryQuietly(1)
+			require.True(t, ok)
+			require.Equal(t, int64(math.MaxInt64), e.ExpiresAtNano)
+		})
+	}
+
+	refresh := []struct {
+		name  string
+		calc  RefreshCalculator[int, int]
+		after func(c *Cache[int, int])
+	}{
+		{
+			name: "RefreshWriting",
+			calc: RefreshWriting[int, int](never),
+		},
+		{
+			name: "SetRefreshableAfter",
+			calc: RefreshWriting[int, int](time.Hour),
+			after: func(c *Cache[int, int]) {
+				c.SetRefreshableAfter(1, never)
+			},
+		},
+	}
+	for _, tt := range refresh {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			clock := newClock()
+			var reloads atomic.Int64
+			c := Must(&Options[int, int]{
+				Clock:             clock,
+				RefreshCalculator: tt.calc,
+				Executor:          func(fn func()) { fn() },
+			})
+			c.Set(1, 1)
+			if tt.after != nil {
+				tt.after(c)
+			}
+
+			clock.Sleep(1000 * 24 * time.Hour)
+			loader := LoaderFunc[int, int](func(ctx context.Context, key int) (int, error) {
+				reloads.Add(1)
+				return 2, nil
+			})
+			for range 3 {
+				v, err := c.Get(context.Background(), 1, loader)
+				require.NoError(t, err)
+				require.Equal(t, 1, v)
+			}
+			require.Zero(t, reloads.Load(), "an entry that is never refreshable was reloaded")
+		})
+	}
 }

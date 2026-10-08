@@ -45,6 +45,6 @@ A pinned entry is one that cannot be deleted by an eviction policy. This is usef
 
 An entry can be excluded from maximum size eviction by using weights and evaluating the entry to a weight of zero. The entry then does not count towards the overall capacity and is skipped by the maximum size eviction. A custom `Weigher` must be defined that can evaluate if the entry is pinned.
 
-An entry can be excluded from expiration by using a duration of `math.MaxInt64`, or roughly 300 years. A custom `ExpiryCalculator` must be defined that can evaluate if the entry is pinned.
+An entry can be excluded from expiration by using a duration of `math.MaxInt64`, or about 292 years. A custom `ExpiryCalculator` must be defined that can evaluate if the entry is pinned.
 
 The weight and expiration are evaluated when the entry is written into the cache.
