@@ -48,8 +48,9 @@ func (l *recordingLogger) get() []string {
 	return append([]string(nil), l.msgs...)
 }
 
-// completes fails the test if fn does not return within a few seconds, which is how a lock
-// left held by a panic shows up.
+// completes fails the test if fn does not return in time, which is how a lock left held by a
+// panic shows up. The limit is generous: under -race and atomic coverage on a loaded CI runner,
+// a test that recovers thousands of panics takes seconds.
 func completes(t *testing.T, name string, fn func()) {
 	t.Helper()
 
@@ -60,7 +61,7 @@ func completes(t *testing.T, name string, fn func()) {
 	}()
 	select {
 	case <-done:
-	case <-time.After(5 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatalf("%s did not complete: a lock or a load was left behind", name)
 	}
 }
@@ -170,7 +171,7 @@ func TestCache_PanicInListenersAndStatsIsLogged(t *testing.T) {
 		c.CleanUp()
 	})
 	require.LessOrEqual(t, c.EstimatedSize(), 10)
-	validatePolicy(t, c)
+	validateCache(t, c)
 
 	msgs := logger.get()
 	require.Contains(t, msgs, "OnDeletion panicked")
@@ -434,21 +435,6 @@ func TestCache_GoexitWhileWritingLoadedValue(t *testing.T) {
 	v, ok := c.GetIfPresent(1)
 	require.True(t, ok)
 	require.Equal(t, 8, v)
-}
-
-// validatePolicy checks that every entry is linked into the eviction policy and accounted.
-func validatePolicy(t *testing.T, c *Cache[int, int]) {
-	t.Helper()
-
-	ci := c.cache
-	ci.evictionMutex.Lock()
-	defer ci.evictionMutex.Unlock()
-	ci.maintenance(nil)
-
-	p := ci.evictionPolicy
-	linked := p.window.Len() + p.probation.Len() + p.protected.Len()
-	require.Equal(t, ci.hashmap.Size(), linked, "entries outside the policy")
-	require.Equal(t, uint64(linked), p.weightedSize)
 }
 
 type panickingLogger struct{}

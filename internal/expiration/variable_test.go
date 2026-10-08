@@ -15,6 +15,7 @@
 package expiration
 
 import (
+	"slices"
 	"testing"
 	"time"
 
@@ -154,6 +155,46 @@ func TestVariable_DeleteExpired(t *testing.T) {
 	v.DeleteExpired(now+getTestExp(1520000), expireNode)
 	keys = append(keys, "k7")
 	match(t, expired, keys)
+}
+
+func TestVariable_All(t *testing.T) {
+	t.Parallel()
+
+	nm := node.NewManager[string, string](node.Config{
+		WithExpiration: true,
+	})
+	now := time.Now().UnixNano()
+	v := NewVariable(nm)
+	v.time = uint64(now)
+
+	want := []string{"k1", "k2", "k3", "k4", "k5"}
+	exps := []int64{1, 30, 6500, 142000, 1420000}
+	for i, k := range want {
+		v.Add(nm.Create(k, "", now+getTestExp(exps[i]), 0, 1))
+	}
+
+	collect := func() []string {
+		var keys []string
+		for n := range v.All() {
+			keys = append(keys, n.Key())
+		}
+		slices.Sort(keys)
+		return keys
+	}
+	if got := collect(); !slices.Equal(got, want) {
+		t.Fatalf("All() = %v, want %v", got, want)
+	}
+
+	// removed entries are not reported
+	for n := range v.All() {
+		if n.Key() == "k3" {
+			v.Delete(n)
+			break
+		}
+	}
+	if got, want := collect(), []string{"k1", "k2", "k4", "k5"}; !slices.Equal(got, want) {
+		t.Fatalf("All() after Delete = %v, want %v", got, want)
+	}
 }
 
 // A panic of expireNode in the middle of a bucket keeps the bucket's other nodes, and the failing

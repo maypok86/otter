@@ -15,6 +15,7 @@
 package expiration
 
 import (
+	"iter"
 	"math"
 	"math/bits"
 	"time"
@@ -84,6 +85,21 @@ func (v *Variable[K, V]) Add(n node.Node[K, V]) {
 	//nolint:gosec // there is no overflow
 	root := v.findBucket(uint64(n.ExpiresAt()))
 	link(root, n)
+}
+
+// All returns an iterator over the entries scheduled in the timer wheel, in no particular order.
+func (v *Variable[K, V]) All() iter.Seq[node.Node[K, V]] {
+	return func(yield func(node.Node[K, V]) bool) {
+		for _, bucket := range v.wheel {
+			for _, root := range bucket {
+				for n := root.NextExp(); !node.Equals(n, root); n = n.NextExp() {
+					if !yield(n) {
+						return
+					}
+				}
+			}
+		}
+	}
 }
 
 // Delete removes a timer event for this entry if present.
