@@ -11,6 +11,10 @@ Audits read this file **after** recording their findings (Phase 1.5 of the audit
 - **Expired entries stay in the table until the timer wheel removes them.** Reads check
   `HasExpired` and treat them as absent. The wheel works in buckets of about 1 s at the finest
   level, so removal is late by up to a bucket.
+- **An expired entry is absent for every operation, not only for reads.** `Set` and
+  `SetIfAbsent` report no previous value, `Invalidate` reports the key as not present,
+  `Compute` gets `found=false`, and `SetExpiresAfter` leaves it alone. Only the listeners see
+  its value, with `CauseExpiration`.
 - **The read buffer is lossy.** A dropped access is a lost policy signal, not a bug. Anything
   that must reach the policy (insert, replacement, weight change, earlier deadline) goes
   through the lossless write buffer.

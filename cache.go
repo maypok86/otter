@@ -118,6 +118,7 @@ func (c *Cache[K, V]) GetEntryQuietly(key K) (Entry[K, V], bool) {
 // Set associates the value with the key in this cache.
 //
 // If the specified key is not already associated with a value, then it returns new value and true.
+// An expired entry that has not been removed yet counts as no value.
 //
 // If the specified key is already associated with a value, then it returns existing value and false.
 func (c *Cache[K, V]) Set(key K, value V) (V, bool) {
@@ -214,7 +215,8 @@ func (c *Cache[K, V]) ComputeIfPresent(
 }
 
 // SetExpiresAfter specifies that the entry should be automatically removed from the cache once the duration has
-// elapsed. The expiration policy determines when the entry's age is reset.
+// elapsed. The expiration policy determines when the entry's age is reset. It has no effect on an absent
+// or expired entry.
 func (c *Cache[K, V]) SetExpiresAfter(key K, expiresAfter time.Duration) {
 	c.cache.SetExpiresAfter(key, expiresAfter)
 }
@@ -350,7 +352,7 @@ func (c *Cache[K, V]) BulkRefresh(ctx context.Context, keys []K, bulkLoader Bulk
 // Invalidate discards any cached value for the key.
 //
 // Returns previous value if any. The invalidated result reports whether the key was
-// present.
+// present; an expired entry that has not been removed yet is not.
 func (c *Cache[K, V]) Invalidate(key K) (value V, invalidated bool) {
 	return c.cache.Invalidate(key)
 }

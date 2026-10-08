@@ -334,6 +334,7 @@ func (c *cache[K, V]) afterRead(got node.Node[K, V], nowNano int64, recordHit, c
 // Set associates the value with the key in this cache.
 //
 // If the specified key is not already associated with a value, then it returns new value and true.
+// An expired entry that has not been removed yet counts as no value.
 //
 // If the specified key is already associated with a value, then it returns existing value and false.
 func (c *cache[K, V]) Set(key K, value V) (V, bool) {
@@ -416,7 +417,8 @@ func (c *cache[K, V]) GetEntryQuietly(key K) (Entry[K, V], bool) {
 }
 
 // SetExpiresAfter specifies that the entry should be automatically removed from the cache once the duration has
-// elapsed. The expiration policy determines when the entry's age is reset.
+// elapsed. The expiration policy determines when the entry's age is reset. It has no effect on an absent
+// or expired entry.
 func (c *cache[K, V]) SetExpiresAfter(key K, expiresAfter time.Duration) {
 	if !c.withExpiration || expiresAfter <= 0 {
 		return
@@ -427,8 +429,15 @@ func (c *cache[K, V]) SetExpiresAfter(key K, expiresAfter time.Duration) {
 	if n == nil {
 		return
 	}
+	// An expired entry that is still in the table is absent: a new deadline would bring its
+	// stale value back. The deadline is changed only from the one checked here, so a concurrent
+	// writer's deadline is not overwritten either.
+	expiresAt := n.ExpiresAt()
+	if !n.IsAlive() || expiresAt <= nowNano {
+		return
+	}
 
-	c.setExpiresAfterRead(n, nowNano, expiresAfter)
+	c.casExpiresAfterRead(n, expiresAt, nowNano, expiresAfter)
 	c.afterRead(n, nowNano, false, false)
 }
 
@@ -503,7 +512,8 @@ func (c *cache[K, V]) set(key K, value V, onlyIfAbsent bool) (V, bool) {
 	}
 
 	c.afterWrite(n, old, oldValue, written, nowNano, false)
-	if old != nil {
+	// An expired entry that is still in the table is absent, as for SetIfAbsent and reads.
+	if oldLive {
 		return oldValue, false
 	}
 	return value, true
@@ -1522,7 +1532,7 @@ func (c *cache[K, V]) BulkRefresh(ctx context.Context, keys []K, bulkLoader Bulk
 // Invalidate discards any cached value for the key.
 //
 // Returns previous value if any. The invalidated result reports whether the key was
-// present.
+// present; an expired entry that has not been removed yet is not.
 func (c *cache[K, V]) Invalidate(key K) (value V, invalidated bool) {
 	var (
 		d     node.Node[K, V]
@@ -1535,7 +1545,8 @@ func (c *cache[K, V]) Invalidate(key K) (value V, invalidated bool) {
 		return nil
 	})
 	c.afterDelete(d, cause, false, false)
-	if d != nil {
+	// An expired entry that was still in the table is removed, but it was not present.
+	if d != nil && cause != CauseExpiration {
 		return d.Value(), true
 	}
 	return zeroValue[V](), false
