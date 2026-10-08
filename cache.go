@@ -288,6 +288,8 @@ func (c *Cache[K, V]) BulkGet(ctx context.Context, keys []K, bulkLoader BulkLoad
 // If refreshing returned an error, the previous value will remain,
 // and the error will be logged using [Logger] (if it's not [ErrNotFound]) and swallowed. If another goroutine is currently
 // loading the value for key, then this method does not perform an additional load.
+// If the key is written or invalidated after the refresh was requested, the loaded value is
+// discarded and the cache keeps the newer state.
 //
 // [Cache] will call Loader.Reload if the cache currently contains a value for the key,
 // and Loader.Load otherwise.
@@ -318,6 +320,8 @@ func (c *Cache[K, V]) Refresh(ctx context.Context, key K, loader Loader[K, V]) <
 // If refreshing returned an error, the previous value will remain,
 // and the error will be logged using [Logger] and swallowed. If another goroutine is currently
 // loading the value for key, then this method does not perform an additional load.
+// If the key is written or invalidated after the refresh was requested, the loaded value is
+// discarded and the cache keeps the newer state.
 //
 // [Cache] will call BulkLoader.BulkReload for existing keys, and BulkLoader.BulkLoad otherwise.
 // Loading is asynchronous by delegating to the configured Executor.

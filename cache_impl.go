@@ -541,10 +541,6 @@ func (c *cache[K, V]) atomicSet(
 		entry.RefreshableAtNano = c.refreshableAtAfterWrite(entry, old, oldValue, cl, nowNano)
 	}
 
-	if cl == nil {
-		c.singleflight.delete(key)
-	}
-
 	if old != nil && c.withMaintenance && old.IsAlive() && old.CanSetValue() {
 		written := writeResult{
 			// before the node is changed: an expired entry is reused, and its old value expired
@@ -567,6 +563,7 @@ func (c *cache[K, V]) atomicSet(
 		if c.withRefresh {
 			old.SetRefreshableAt(entry.RefreshableAtNano)
 		}
+		c.cancelCalls(key, cl)
 		return old, written
 	}
 
@@ -577,7 +574,19 @@ func (c *cache[K, V]) atomicSet(
 		written.cause = getCause(old, nowNano, CauseReplacement)
 		c.notifyAtomicDeletion(old.Key(), oldValue, written.cause)
 	}
+	c.cancelCalls(key, cl)
 	return n, written
+}
+
+// cancelCalls cancels the pending load or refresh of key when a plain write (cl == nil)
+// changes it. It runs after the new value is published, including the OnAtomicDeletion call
+// before that: a refresh requested from the previous value while the write was in progress is
+// cancelled too. A refresh requested after this point either sees the new value or, if the node
+// is replaced, finds that its base node is gone.
+func (c *cache[K, V]) cancelCalls(key K, cl *call[K, V]) {
+	if cl == nil {
+		c.singleflight.delete(key)
+	}
 }
 
 // writeResult is what atomicSet decided under the bucket lock, so that the work done after the
@@ -871,7 +880,17 @@ func (c *cache[K, V]) refreshKey(
 		ch = make(chan RefreshResult[K, V], 1)
 	}
 
-	c.executor(func() {
+	// The refresh is registered before it is handed to the executor, so that a write that
+	// follows the request cancels it. Registered by the task, a refresh that the executor starts
+	// after the write would replace the written value or bring an invalidated key back.
+	cl, shouldLoad := c.singleflight.startCall(rk.key, true)
+	var owned []*call[K, V]
+	if shouldLoad {
+		cl.base = rk.old
+		owned = []*call[K, V]{cl}
+	}
+
+	c.executeRefresh(owned, func() {
 		var refresher func(ctx context.Context, key K) (V, error)
 		if rk.old != nil {
 			refresher = func(ctx context.Context, key K) (V, error) {
@@ -881,7 +900,6 @@ func (c *cache[K, V]) refreshKey(
 			refresher = loader.Load
 		}
 
-		cl, shouldLoad := c.singleflight.startCall(rk.key, true)
 		if shouldLoad {
 			//nolint:errcheck // there is no need to check error
 			_ = c.wrapRefresh(func() error {
@@ -970,6 +988,16 @@ func (c *cache[K, V]) Get(ctx context.Context, key K, loader Loader[K, V]) (V, e
 	return cl.value, cl.err
 }
 
+// isRefreshBase reports whether current, the key's node when a refresh completes, is still the
+// node base that the refresh was requested for. A refresh of an absent key (base == nil) also
+// matches an expired node, which the request did not see.
+func isRefreshBase[K comparable, V any](base, current node.Node[K, V], nowNano int64) bool {
+	if base != nil {
+		return current != nil && current.AsPointer() == base.AsPointer()
+	}
+	return current == nil || current.HasExpired(nowNano)
+}
+
 // refreshableAtAfterWrite returns the refresh time of the node written as entry, which
 // replaces old (nil for an insertion) with the result of cl (nil for a plain write).
 func (c *cache[K, V]) refreshableAtAfterWrite(
@@ -1033,8 +1061,9 @@ func (c *cache[K, V]) afterDeleteCall(cl *call[K, V]) {
 	}()
 	nowNano := c.clock.NowNano()
 	newNode := c.hashmap.Compute(cl.key, func(oldNode node.Node[K, V]) node.Node[K, V] {
-		// Read-only: the call is deleted after Compute returns below, not here.
-		isCorrectCall := cl.isFake || c.singleflight.isCurrentCall(cl)
+		// Read-only: the call is deleted after Compute returns below, not here. A refresh is
+		// also stale if the node it was requested for was replaced or removed in the meantime.
+		isCorrectCall := cl.isFake || (c.singleflight.isCurrentCall(cl) && (!cl.isRefresh || isRefreshBase(cl.base, oldNode, nowNano)))
 		old = oldNode
 		if oldNode != nil {
 			oldValue = oldNode.Value()
@@ -1045,7 +1074,7 @@ func (c *cache[K, V]) afterDeleteCall(cl *call[K, V]) {
 			return nil
 		}
 		if cl.err != nil {
-			if cl.isRefresh && oldNode != nil && c.withRefresh {
+			if isCorrectCall && cl.isRefresh && oldNode != nil && c.withRefresh {
 				oldNode.SetRefreshableAt(c.refreshableAtAfterWrite(c.nodeToEntry(oldNode, nowNano), oldNode, oldNode.Value(), cl, nowNano))
 			}
 			return oldNode
@@ -1094,39 +1123,42 @@ func (c *cache[K, V]) bulkRefreshKeys(
 		return ch
 	}
 
-	c.executor(func() {
-		var (
-			toLoadCalls   map[K]*call[K, V]
-			toReloadCalls map[K]*call[K, V]
-			foundCalls    []*call[K, V]
-			results       []RefreshResult[K, V]
-		)
+	// Registered before the task is submitted, as in refreshKey.
+	var (
+		toLoadCalls   map[K]*call[K, V]
+		toReloadCalls map[K]*call[K, V]
+		foundCalls    []*call[K, V]
+		owned         []*call[K, V]
+	)
+	for i, rk := range rks {
+		cl, shouldLoad := c.singleflight.startCall(rk.key, true)
+		if shouldLoad {
+			cl.base = rk.old
+			owned = append(owned, cl)
+			if rk.old != nil {
+				if toReloadCalls == nil {
+					toReloadCalls = make(map[K]*call[K, V], len(rks)-i)
+				}
+				cl.value = rk.old.Value()
+				toReloadCalls[rk.key] = cl
+			} else {
+				if toLoadCalls == nil {
+					toLoadCalls = make(map[K]*call[K, V], len(rks)-i)
+				}
+				toLoadCalls[rk.key] = cl
+			}
+		} else {
+			if foundCalls == nil {
+				foundCalls = make([]*call[K, V], 0, len(rks)-i)
+			}
+			foundCalls = append(foundCalls, cl)
+		}
+	}
+
+	c.executeRefresh(owned, func() {
+		var results []RefreshResult[K, V]
 		if isManual {
 			results = make([]RefreshResult[K, V], 0, len(rks))
-		}
-		i := 0
-		for _, rk := range rks {
-			cl, shouldLoad := c.singleflight.startCall(rk.key, true)
-			if shouldLoad {
-				if rk.old != nil {
-					if toReloadCalls == nil {
-						toReloadCalls = make(map[K]*call[K, V], len(rks)-i)
-					}
-					cl.value = rk.old.Value()
-					toReloadCalls[rk.key] = cl
-				} else {
-					if toLoadCalls == nil {
-						toLoadCalls = make(map[K]*call[K, V], len(rks)-i)
-					}
-					toLoadCalls[rk.key] = cl
-				}
-			} else {
-				if foundCalls == nil {
-					foundCalls = make([]*call[K, V], 0, len(rks)-i)
-				}
-				foundCalls = append(foundCalls, cl)
-			}
-			i++
 		}
 
 		loadCtx := context.WithoutCancel(ctx)
@@ -1192,6 +1224,40 @@ func (c *cache[K, V]) bulkRefreshKeys(
 	})
 
 	return ch
+}
+
+// executeRefresh submits a refresh task that finishes the calls in owned, which the caller
+// registered. If the executor panics, the calls are finished here with the panic as their error:
+// left registered, they would block every later load of their keys. The task is then abandoned,
+// so that an executor that scheduled it before panicking does not finish the calls again.
+func (c *cache[K, V]) executeRefresh(owned []*call[K, V], task func()) {
+	const (
+		submitted = iota
+		started
+		abandoned
+	)
+	var state atomic.Int32
+	defer func() {
+		r := recover()
+		if r == nil {
+			return
+		}
+		if state.CompareAndSwap(submitted, abandoned) {
+			err := newPanicError(r)
+			for _, cl := range owned {
+				cl.err = err
+				c.singleflight.deleteCall(cl)
+				cl.cancel()
+			}
+		}
+		panic(r)
+	}()
+	c.executor(func() {
+		if !state.CompareAndSwap(submitted, started) {
+			return
+		}
+		task()
+	})
 }
 
 // BulkGet returns the value associated with key in this cache, obtaining that value from loader if necessary.
@@ -1355,6 +1421,8 @@ func (c *cache[K, V]) wrapRefresh(fn func() error) (err error) {
 // If refreshing returned an error, the previous value will remain,
 // and the error will be logged using Logger (if it's not ErrNotFound) and swallowed. If another goroutine is currently
 // loading the value for key, then this method does not perform an additional load.
+// If the key is written or invalidated after the refresh was requested, the loaded value is
+// discarded and the cache keeps the newer state.
 //
 // cache will call Loader.Reload if the cache currently contains a value for the key,
 // and Loader.Load otherwise.
@@ -1388,6 +1456,8 @@ func (c *cache[K, V]) Refresh(ctx context.Context, key K, loader Loader[K, V]) <
 // If refreshing returned an error, the previous value will remain,
 // and the error will be logged using Logger and swallowed. If another goroutine is currently
 // loading the value for key, then this method does not perform an additional load.
+// If the key is written or invalidated after the refresh was requested, the loaded value is
+// discarded and the cache keeps the newer state.
 //
 // cache will call BulkLoader.BulkReload for existing keys, and BulkLoader.BulkLoad otherwise.
 //
