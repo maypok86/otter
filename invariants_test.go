@@ -152,55 +152,78 @@ func (e *trackingExecutor) execute(fn func()) {
 }
 
 // valueExpiry makes the expiration time depend on the value (1–50ms).
-type valueExpiry struct{}
-
-func (valueExpiry) ExpireAfterCreate(entry Entry[int, int]) time.Duration {
-	return time.Duration(entry.Value%50+1) * time.Millisecond
+type valueExpiry[V any] struct {
+	num func(v V) int
 }
 
-func (valueExpiry) ExpireAfterUpdate(entry Entry[int, int], oldValue int) time.Duration {
-	return time.Duration(entry.Value%50+1) * time.Millisecond
+func (e valueExpiry[V]) ExpireAfterCreate(entry Entry[int, V]) time.Duration {
+	return time.Duration(e.num(entry.Value)%50+1) * time.Millisecond
 }
 
-func (valueExpiry) ExpireAfterRead(entry Entry[int, int]) time.Duration {
+func (e valueExpiry[V]) ExpireAfterUpdate(entry Entry[int, V], oldValue V) time.Duration {
+	return time.Duration(e.num(entry.Value)%50+1) * time.Millisecond
+}
+
+func (e valueExpiry[V]) ExpireAfterRead(entry Entry[int, V]) time.Duration {
 	return entry.ExpiresAfter()
+}
+
+// wideValue has no pointers but does not fit in one word, so it is kept inline until the first
+// update of its entry and behind a pointer afterwards.
+type wideValue struct {
+	n, pad int
+	_      [8]byte
 }
 
 func TestCache_InvariantsAfterConcurrentLoad(t *testing.T) {
 	t.Parallel()
 
+	t.Run("word", func(t *testing.T) {
+		t.Parallel()
+		testInvariantsAfterConcurrentLoad(t, func(n int) int { return n }, func(v int) int { return v })
+	})
+	t.Run("inline", func(t *testing.T) {
+		t.Parallel()
+		testInvariantsAfterConcurrentLoad(t, func(n int) wideValue { return wideValue{n: n} }, func(v wideValue) int { return v.n })
+	})
+}
+
+func testInvariantsAfterConcurrentLoad[V any](t *testing.T, toValue func(n int) V, num func(v V) int) {
+	t.Helper()
+
+	weigher := func(_ int, value V) uint32 { return uint32(num(value)%8 + 1) }
 	configs := []struct {
 		name string
-		opts func(o *Options[int, int])
+		opts func(o *Options[int, V])
 	}{
-		{"size", func(o *Options[int, int]) { o.MaximumSize = 100 }},
-		{"weight", func(o *Options[int, int]) {
+		{"size", func(o *Options[int, V]) { o.MaximumSize = 100 }},
+		{"weight", func(o *Options[int, V]) {
 			o.MaximumWeight = 500
-			o.Weigher = func(key, value int) uint32 { return uint32(value%8 + 1) }
+			o.Weigher = weigher
 		}},
-		{"size_expiry", func(o *Options[int, int]) {
+		{"size_expiry", func(o *Options[int, V]) {
 			o.MaximumSize = 100
-			o.ExpiryCalculator = ExpiryWriting[int, int](20 * time.Millisecond)
+			o.ExpiryCalculator = ExpiryWriting[int, V](20 * time.Millisecond)
 		}},
-		{"size_expiry_refresh", func(o *Options[int, int]) {
+		{"size_expiry_refresh", func(o *Options[int, V]) {
 			o.MaximumSize = 100
-			o.ExpiryCalculator = ExpiryAccessing[int, int](50 * time.Millisecond)
-			o.RefreshCalculator = RefreshWriting[int, int](10 * time.Millisecond)
+			o.ExpiryCalculator = ExpiryAccessing[int, V](50 * time.Millisecond)
+			o.RefreshCalculator = RefreshWriting[int, V](10 * time.Millisecond)
 		}},
-		{"expiry", func(o *Options[int, int]) {
-			o.ExpiryCalculator = ExpiryWriting[int, int](20 * time.Millisecond)
+		{"expiry", func(o *Options[int, V]) {
+			o.ExpiryCalculator = ExpiryWriting[int, V](20 * time.Millisecond)
 		}},
-		{"size_value_expiry_refresh", func(o *Options[int, int]) {
+		{"size_value_expiry_refresh", func(o *Options[int, V]) {
 			// deadlines move both later and earlier on update, and expired entries are written again
 			o.MaximumSize = 100
-			o.ExpiryCalculator = valueExpiry{}
-			o.RefreshCalculator = RefreshWriting[int, int](5 * time.Millisecond)
+			o.ExpiryCalculator = valueExpiry[V]{num: num}
+			o.RefreshCalculator = RefreshWriting[int, V](5 * time.Millisecond)
 		}},
-		{"weight_value_expiry", func(o *Options[int, int]) {
+		{"weight_value_expiry", func(o *Options[int, V]) {
 			// one reconciliation fixes both the weight and the deadline
 			o.MaximumWeight = 500
-			o.Weigher = func(key, value int) uint32 { return uint32(value%8 + 1) }
-			o.ExpiryCalculator = valueExpiry{}
+			o.Weigher = weigher
+			o.ExpiryCalculator = valueExpiry[V]{num: num}
 		}},
 	}
 
@@ -209,12 +232,12 @@ func TestCache_InvariantsAfterConcurrentLoad(t *testing.T) {
 			t.Parallel()
 
 			exec := &trackingExecutor{}
-			o := &Options[int, int]{Executor: exec.execute}
+			o := &Options[int, V]{Executor: exec.execute}
 			cfg.opts(o)
 			c := Must(o)
 
-			loader := LoaderFunc[int, int](func(ctx context.Context, key int) (int, error) {
-				return key, nil
+			loader := LoaderFunc[int, V](func(ctx context.Context, key int) (V, error) {
+				return toValue(key), nil
 			})
 
 			const (
@@ -232,15 +255,16 @@ func TestCache_InvariantsAfterConcurrentLoad(t *testing.T) {
 					for time.Now().Before(deadline) {
 						// a skewed key space, so that some keys are written back to back
 						k := r.IntN(keys) % (1 + r.IntN(keys))
-						v := r.IntN(1000)
+						n := r.IntN(1000)
+						v := toValue(n)
 						switch op := r.IntN(100); {
 						case op < 30:
 							c.Set(k, v)
 						case op < 40:
 							c.SetIfAbsent(k, v)
 						case op < 55:
-							c.Compute(k, func(old int, found bool) (int, ComputeOp) {
-								return v, ComputeOp(v % 3)
+							c.Compute(k, func(old V, found bool) (V, ComputeOp) {
+								return v, ComputeOp(n % 3)
 							})
 						case op < 65:
 							c.Invalidate(k)

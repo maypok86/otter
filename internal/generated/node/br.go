@@ -47,7 +47,7 @@ func (n *BR[K, V]) SetValue(v V) {
 	panic("not implemented")
 }
 
-func (n *BR[K, V]) IsBoxed() bool {
+func (n *BR[K, V]) CanSetValue() bool {
 	return false
 }
 

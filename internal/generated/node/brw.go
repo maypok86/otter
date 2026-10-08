@@ -62,7 +62,7 @@ func (n *BRW[K, V]) SetValue(v V) {
 	n.valuePtr.Store(&v)
 }
 
-func (n *BRW[K, V]) IsBoxed() bool {
+func (n *BRW[K, V]) CanSetValue() bool {
 	return n.valuePtr.Load() != nil
 }
 
