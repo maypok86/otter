@@ -1008,17 +1008,6 @@ func TestCache_CornerCases(t *testing.T) {
 		results := <-ch
 		require.Empty(t, results)
 	})
-	t.Run("withoutExpiration", func(t *testing.T) {
-		t.Parallel()
-
-		c := &Cache[int, int]{
-			cache: &cache[int, int]{},
-		}
-
-		require.NotPanics(t, func() {
-			c.cache.setExpiresAfterRead(nil, 0, -time.Hour)
-		})
-	})
 	t.Run("withoutMaintenance", func(t *testing.T) {
 		t.Parallel()
 

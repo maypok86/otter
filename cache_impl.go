@@ -363,13 +363,6 @@ func (c *cache[K, V]) calcExpiresAtAfterRead(n node.Node[K, V], nowNano int64) {
 	c.casExpiresAfterRead(n, entry.ExpiresAtNano, nowNano, expiresAfter)
 }
 
-func (c *cache[K, V]) setExpiresAfterRead(n node.Node[K, V], nowNano int64, expiresAfter time.Duration) {
-	if expiresAfter <= 0 {
-		return
-	}
-	c.casExpiresAfterRead(n, n.ExpiresAt(), nowNano, expiresAfter)
-}
-
 // casExpiresAfterRead moves the deadline from expiresAt to nowNano + expiresAfter, and reports
 // whether it moved it earlier.
 func (c *cache[K, V]) casExpiresAfterRead(n node.Node[K, V], expiresAt, nowNano int64, expiresAfter time.Duration) bool {
