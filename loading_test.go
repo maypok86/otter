@@ -2121,3 +2121,107 @@ func TestCache_BulkLoadExtraKeyOnlyFillsGaps(t *testing.T) {
 		require.Equal(t, 300, v)
 	})
 }
+
+// InvalidateAll discards an entry whose node a refresh replaced after InvalidateAll took its
+// snapshot of the nodes: it invalidates that key, not only the node it saw. The refreshes here
+// complete from OnAtomicDeletion, between the snapshot and the removal of their keys.
+func TestCache_InvalidateAllDiscardsEntriesReplacedDuringIt(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		opts *Options[int, string]
+	}{
+		// string values are stored inline when size-bounded, so the first update replaces the node
+		{name: "bounded", opts: &Options[int, string]{MaximumSize: 1000}},
+		// without maintenance every write replaces the node
+		{name: "unbounded", opts: &Options[int, string]{}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			const n = 16
+			var (
+				armed   atomic.Bool
+				fired   atomic.Bool
+				release = make(chan struct{})
+				started sync.WaitGroup
+				// done[k] is closed when the refresh of k has completed
+				done = make([]chan struct{}, n)
+
+				mu          sync.Mutex
+				invalidated = make(map[int]bool, n)
+			)
+			opts := *tt.opts
+			opts.InitialCapacity = 4096
+			opts.RefreshCalculator = RefreshWriting[int, string](time.Hour)
+			opts.Logger = &recordingLogger{}
+			opts.OnDeletion = func(e DeletionEvent[int, string]) {
+				if e.Cause == CauseInvalidation {
+					mu.Lock()
+					invalidated[e.Key] = true
+					mu.Unlock()
+				}
+			}
+			opts.OnAtomicDeletion = func(e DeletionEvent[int, string]) {
+				// The first removal by InvalidateAll lets the refreshes of the other keys
+				// complete. A key in the bucket that this removal holds completes only after
+				// the listener gives up on it.
+				if !armed.Load() || e.Cause != CauseInvalidation || !fired.CompareAndSwap(false, true) {
+					return
+				}
+				close(release)
+				for k := 0; k < n; k++ {
+					if k == e.Key {
+						continue
+					}
+					select {
+					case <-done[k]:
+					case <-time.After(100 * time.Millisecond):
+					}
+				}
+			}
+			c := Must(&opts)
+			for k := 0; k < n; k++ {
+				c.Set(k, fmt.Sprint("v", k))
+			}
+			c.CleanUp()
+			started.Add(n)
+			for k := 0; k < n; k++ {
+				done[k] = make(chan struct{})
+				ch := c.Refresh(context.Background(), k, LoaderFunc[int, string](func(ctx context.Context, key int) (string, error) {
+					started.Done()
+					<-release
+					return fmt.Sprint("refreshed", key), nil
+				}))
+				go func() {
+					<-ch
+					close(done[k])
+				}()
+			}
+			started.Wait()
+
+			armed.Store(true)
+			c.InvalidateAll()
+			armed.Store(false)
+			for k := 0; k < n; k++ {
+				<-done[k]
+			}
+
+			var survivors []int
+			for k := 0; k < n; k++ {
+				if _, ok := c.GetIfPresent(k); ok {
+					survivors = append(survivors, k)
+				}
+			}
+			require.Empty(t, survivors, "entries refreshed during InvalidateAll survived it")
+			// every key reports its invalidation; OnDeletion runs on the executor
+			require.Eventually(t, func() bool {
+				mu.Lock()
+				defer mu.Unlock()
+				return len(invalidated) == n
+			}, 5*time.Second, 10*time.Millisecond, "a key's invalidation was not reported")
+		})
+	}
+}
