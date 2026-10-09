@@ -1698,6 +1698,57 @@ func TestCache_StaleEvictionKeepsRefreshOfCurrentValue(t *testing.T) {
 	}
 }
 
+// Evicting an entry drops the pending refresh of its value: a later Get loads the key instead
+// of waiting for that refresh, and the refreshed value is not stored.
+func TestCache_EvictionDropsRefreshOfEvictedValue(t *testing.T) {
+	t.Parallel()
+
+	c := Must(&Options[int, int]{
+		MaximumSize:       10,
+		RefreshCalculator: RefreshWriting[int, int](time.Hour),
+	})
+	ci := c.cache
+	c.Set(1, 1)
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	ch := c.Refresh(context.Background(), 1, LoaderFunc[int, int](func(ctx context.Context, key int) (int, error) {
+		close(started)
+		<-release
+		return 3, nil
+	}))
+	<-started
+
+	ci.evictionMutex.Lock()
+	ci.evictNode(ci.hashmap.Get(1), 0)
+	ci.evictionMutex.Unlock()
+
+	got := make(chan int, 1)
+	go func() {
+		v, err := c.Get(context.Background(), 1, LoaderFunc[int, int](func(ctx context.Context, key int) (int, error) {
+			return 2, nil
+		}))
+		if err != nil {
+			v = -1
+		}
+		got <- v
+	}()
+	select {
+	case v := <-got:
+		require.Equal(t, 2, v)
+	case <-time.After(5 * time.Second):
+		close(release)
+		t.Fatal("Get waited for the refresh of an evicted entry")
+	}
+
+	close(release)
+	<-ch
+	c.CleanUp()
+	v, ok := c.GetIfPresent(1)
+	require.True(t, ok)
+	require.Equal(t, 2, v, "the refresh of the evicted value was stored")
+}
+
 // A key that the bulk loader leaves out of its result is reported as not found, as when a
 // Loader returns ErrNotFound: BulkGet leaves it out, BulkRefresh reports ErrNotFound, and a Get
 // that joined the bulk load returns ErrNotFound instead of the zero value.
