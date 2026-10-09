@@ -25,6 +25,7 @@ import (
 	"math/rand"
 	"runtime"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -683,6 +684,72 @@ func TestMapParallelCopy(t *testing.T) {
 	if size := m.Size(); size != 0 {
 		t.Fatalf("size is %d after deleting everything", size)
 	}
+}
+
+func TestMapParallelWritersDuringResize(t *testing.T) {
+	t.Parallel()
+
+	// Grow a table well past the parallel copy threshold from many writers at
+	// once, so that writers keep running into resizes, then shrink it back, and
+	// check that no node is lost or duplicated.
+	nm := testNodeManager[int, int]()
+	m := New(nm)
+	const (
+		numWriters = 16
+		perWriter  = 16 * minBucketsPerGoroutine * nodesPerMapBucket
+	)
+	var wg sync.WaitGroup
+	for w := 0; w < numWriters; w++ {
+		wg.Add(1)
+		go func(base int) {
+			defer wg.Done()
+			for i := base; i < base+perWriter; i++ {
+				m.Compute(i, func(n node.Node[int, int]) node.Node[int, int] {
+					return newTestNode(nm, i, i)
+				})
+			}
+		}(w * perWriter)
+	}
+	wg.Wait()
+	if size := m.Size(); size != numWriters*perWriter {
+		t.Fatalf("size is %d, want %d", size, numWriters*perWriter)
+	}
+	for i := 0; i < numWriters*perWriter; i++ {
+		if n := m.Get(i); n == nil || n.Value() != i {
+			t.Fatalf("node %d is missing", i)
+		}
+	}
+	if got := sizeBasedOnTypedRangeInt(m); got != numWriters*perWriter {
+		t.Fatalf("range visited %d nodes, want %d", got, numWriters*perWriter)
+	}
+
+	for w := 0; w < numWriters; w++ {
+		wg.Add(1)
+		go func(base int) {
+			defer wg.Done()
+			for i := base; i < base+perWriter; i++ {
+				m.Compute(i, func(n node.Node[int, int]) node.Node[int, int] {
+					return nil
+				})
+			}
+		}(w * perWriter)
+	}
+	wg.Wait()
+	if size := m.Size(); size != 0 {
+		t.Fatalf("size is %d after deleting everything", size)
+	}
+	if got := sizeBasedOnTypedRangeInt(m); got != 0 {
+		t.Fatalf("range visited %d nodes after deleting everything", got)
+	}
+}
+
+func sizeBasedOnTypedRangeInt(m *Map[int, int, node.Node[int, int]]) int {
+	size := 0
+	m.Range(func(n node.Node[int, int]) bool {
+		size++
+		return true
+	})
+	return size
 }
 
 func TestMapClear(t *testing.T) {
