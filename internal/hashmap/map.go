@@ -123,11 +123,20 @@ type bucketPadded struct {
 	bucket
 }
 
+// bucket keeps mu ahead of next, so that next is the field at the tail.
+//
+// A []bucketPadded slice is not guaranteed to start on a cache line: for
+// tables of 16 to 511 buckets the Go allocator puts an 8-byte malloc header
+// in front of it, so each bucket straddles two cache lines, and its last
+// 8 bytes share a line with the first 56 bytes of the next bucket. mu is
+// written by every write to the bucket, while next only changes when an
+// overflow chain grows. With mu at the tail, every write would invalidate
+// the meta and nodes that lock-free readers of the neighboring bucket load.
 type bucket struct {
 	meta  atomic.Uint64
 	nodes [nodesPerMapBucket]unsafe.Pointer // node.Node
-	next  atomic.Pointer[bucketPadded]
 	mu    sync.Mutex
+	next  atomic.Pointer[bucketPadded]
 }
 
 // NewWithSize creates a new Map instance with capacity enough

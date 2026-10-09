@@ -59,6 +59,17 @@ func TestMap_BucketStructSize(t *testing.T) {
 	}
 }
 
+func TestMap_BucketLockIsNotAtTail(t *testing.T) {
+	t.Parallel()
+
+	// The tail of a bucket can share a cache line with the next bucket,
+	// so it must hold next, which is rarely written, rather than mu.
+	var b bucket
+	if unsafe.Offsetof(b.next)+unsafe.Sizeof(b.next) != unsafe.Sizeof(b) {
+		t.Fatalf("next is expected to be the last field of a bucket")
+	}
+}
+
 func TestMap_MissingNode(t *testing.T) {
 	t.Parallel()
 
