@@ -462,6 +462,43 @@ func TestMapStructSetThenDelete(t *testing.T) {
 	}
 }
 
+func TestMap_MetaMatchesNodes(t *testing.T) {
+	t.Parallel()
+
+	const numNodes = 1000
+	nm := testNodeManager[int, int]()
+	m := New(nm)
+	for i := 0; i < numNodes; i++ {
+		m.Compute(i, func(n node.Node[int, int]) node.Node[int, int] {
+			return newTestNode(nm, i, i)
+		})
+	}
+	for i := 0; i < numNodes; i += 2 {
+		m.Compute(i, func(n node.Node[int, int]) node.Node[int, int] {
+			return nil
+		})
+	}
+
+	// A slot is occupied exactly when its meta byte has the high bit set,
+	// and the bytes past the last slot stay zero, so that a zeroed bucket
+	// is an empty one.
+	table := m.table.Load()
+	for i := range table.buckets {
+		for b := &table.buckets[i]; b != nil; b = b.next.Load() {
+			metaw := b.meta.Load()
+			if metaw&^metaMask != 0 {
+				t.Fatalf("bytes past the last slot are not zero: %#x", metaw)
+			}
+			for j := 0; j < nodesPerMapBucket; j++ {
+				occupied := metaw>>(j*8)&0x80 != 0
+				if occupied != (b.nodes[j] != nil) {
+					t.Fatalf("meta %#x does not match slot %d (node: %v)", metaw, j, b.nodes[j])
+				}
+			}
+		}
+	}
+}
+
 func TestMapSetThenParallelDelete_DoesNotShrinkBelowMinTableLen(t *testing.T) {
 	t.Parallel()
 

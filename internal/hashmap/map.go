@@ -44,11 +44,13 @@ const (
 const (
 	// number of Map nodes per bucket; 5 nodes lead to size of 64B
 	// (one cache line) on 64-bit machines.
-	nodesPerMapBucket        = 5
-	defaultMeta       uint64 = 0x8080808080808080
-	metaMask          uint64 = 0xffffffffff
-	defaultMetaMasked        = defaultMeta & metaMask
-	emptyMetaSlot     uint8  = 0x80
+	nodesPerMapBucket = 5
+	// an empty slot has a zero meta byte, and an occupied one has the high
+	// bit set (see h2), so that a zeroed bucket is empty and a new table
+	// needs no initialization.
+	metaMask           uint64 = 0xffffffffff
+	occupiedMeta       uint64 = 0x8080808080808080
+	occupiedMetaMasked        = occupiedMeta & metaMask
 
 	// threshold fraction of table occupation to start a table shrinking
 	// when deleting the last entry in a bucket chain.
@@ -170,9 +172,6 @@ func newMap[K comparable, V any, N mapNode[K, V]](nodeManager mapNodeManager[K, 
 
 func newMapTable[K comparable](minTableLen int) *mapTable[K] {
 	buckets := make([]bucketPadded, minTableLen)
-	for i := range buckets {
-		buckets[i].meta.Store(defaultMeta)
-	}
 	counterLen := minTableLen >> 10
 	if counterLen < minMapCounterLen {
 		counterLen = minMapCounterLen
@@ -292,13 +291,13 @@ func (m *Map[K, V, N]) Compute(key K, computeFunc func(n N) N) N {
 						if m.nodeManager.IsNil(newNode) {
 							// Deletion.
 							// First we update the hash, then the node.
-							newmetaw := setByte(metaw, emptyMetaSlot, idx)
+							newmetaw := setByte(metaw, 0, idx)
 							b.meta.Store(newmetaw)
 							atomic.StorePointer(&b.nodes[idx], nil)
 							rootb.mu.Unlock()
 							table.addSize(bidx, -1)
 							// Might need to shrink the table if we left bucket empty.
-							if newmetaw == defaultMeta {
+							if newmetaw == 0 {
 								m.resize(table, mapShrinkHint)
 							}
 							return newNode
@@ -314,7 +313,7 @@ func (m *Map[K, V, N]) Compute(key K, computeFunc func(n N) N) N {
 			}
 			if emptyb == nil {
 				// Search for empty nodes (up to 5 per bucket).
-				emptyw := metaw & defaultMetaMasked
+				emptyw := ^metaw & occupiedMetaMasked
 				if emptyw != 0 {
 					idx := firstMarkedByteIndex(emptyw)
 					emptyb = b
@@ -356,7 +355,7 @@ func (m *Map[K, V, N]) Compute(key K, computeFunc func(n N) N) N {
 				}
 				// Create and append a bucket.
 				newb := new(bucketPadded)
-				newb.meta.Store(setByte(defaultMeta, h2, 0))
+				newb.meta.Store(setByte(0, h2, 0))
 				newb.nodes[0] = newNode.AsPointer()
 				b.next.Store(newb)
 				rootb.mu.Unlock()
@@ -594,7 +593,7 @@ func appendToBucket(h2 uint8, nodePtr unsafe.Pointer, b *bucketPadded) {
 		}
 		if next := b.next.Load(); next == nil {
 			newb := new(bucketPadded)
-			newb.meta.Store(setByte(defaultMeta, h2, 0))
+			newb.meta.Store(setByte(0, h2, 0))
 			newb.nodes[0] = nodePtr
 			b.next.Store(newb)
 			return
@@ -630,7 +629,7 @@ func h1(h uint64) uint64 {
 
 func h2(h uint64) uint8 {
 	//nolint:gosec // there is no overflow
-	return uint8(h & 0x7f)
+	return 0x80 | uint8(h&0x7f)
 }
 
 func broadcast(b uint8) uint64 {
