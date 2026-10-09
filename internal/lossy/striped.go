@@ -18,7 +18,6 @@
 package lossy
 
 import (
-	"sync"
 	"sync/atomic"
 
 	"github.com/maypok86/otter/v2/internal/generated/node"
@@ -28,20 +27,6 @@ import (
 const (
 	attempts = 3
 )
-
-// pool for P tokens.
-var tokenPool sync.Pool
-
-// a P token is used to point at the current OS thread (P)
-// on which the goroutine is run; exact identity of the thread,
-// as well as P migration tolerance, is not important since
-// it's used to as a best effort mechanism for assigning
-// concurrent operations (goroutines) to different stripes of
-// the Adder.
-type token struct {
-	idx     uint32
-	padding [xruntime.CacheLineSize - 4]byte
-}
 
 type striped[K comparable, V any] struct {
 	buffers []atomic.Pointer[ring[K, V]]
@@ -69,34 +54,30 @@ func NewStriped[K comparable, V any](maxLen int, nodeManager *node.Manager[K, V]
 // violating capacity restrictions. The addition is allowed to fail spuriously if multiple
 // goroutines insert concurrently.
 func (s *Striped[K, V]) Add(n node.Node[K, V]) Status {
-	t, ok := tokenPool.Get().(*token)
-	if !ok {
-		t = &token{
-			idx: xruntime.Fastrand(),
-		}
-	}
-	defer tokenPool.Put(t)
+	// A goroutine keeps adding to the same stripe, while goroutines running at the same
+	// time mostly add to different ones.
+	h := xruntime.StackHash()
 
 	bs := s.striped.Load()
 	if bs == nil {
-		return s.expandOrRetry(n, t, true)
+		return s.expandOrRetry(n, h, true)
 	}
 
 	//nolint:gosec // len will never overflow uint32
-	buffer := bs.buffers[t.idx&uint32(bs.len-1)].Load()
+	buffer := bs.buffers[h&uint32(bs.len-1)].Load()
 	if buffer == nil {
-		return s.expandOrRetry(n, t, true)
+		return s.expandOrRetry(n, h, true)
 	}
 
 	result := buffer.add(n)
 	if result == Failed {
-		return s.expandOrRetry(n, t, false)
+		return s.expandOrRetry(n, h, false)
 	}
 
 	return result
 }
 
-func (s *Striped[K, V]) expandOrRetry(n node.Node[K, V], t *token, wasUncontended bool) Status {
+func (s *Striped[K, V]) expandOrRetry(n node.Node[K, V], h uint32, wasUncontended bool) Status {
 	result := Failed
 	// True if last slot nonempty.
 	collide := true
@@ -105,7 +86,7 @@ func (s *Striped[K, V]) expandOrRetry(n node.Node[K, V], t *token, wasUncontende
 		bs := s.striped.Load()
 		if bs != nil && bs.len > 0 {
 			//nolint:gosec // len will never overflow uint32
-			buffer := bs.buffers[t.idx&uint32(bs.len-1)].Load()
+			buffer := bs.buffers[h&uint32(bs.len-1)].Load()
 			//nolint:gocritic // the switch statement looks even worse here
 			if buffer == nil {
 				if s.busy.Load() == 0 && s.busy.CompareAndSwap(0, 1) {
@@ -115,7 +96,7 @@ func (s *Striped[K, V]) expandOrRetry(n node.Node[K, V], t *token, wasUncontende
 					if rs != nil && rs.len > 0 {
 						// Recheck under lock.
 						//nolint:gosec // len will never overflow uint32
-						j := t.idx & uint32(rs.len-1)
+						j := h & uint32(rs.len-1)
 						if rs.buffers[j].Load() == nil {
 							rs.buffers[j].Store(newRing(s.nodeManager, n))
 							created = true
@@ -161,7 +142,7 @@ func (s *Striped[K, V]) expandOrRetry(n node.Node[K, V], t *token, wasUncontende
 					continue
 				}
 			}
-			t.idx = xruntime.Fastrand()
+			h = xruntime.Fastrand()
 		} else if s.busy.Load() == 0 && s.striped.Load() == bs && s.busy.CompareAndSwap(0, 1) {
 			init := false
 			if s.striped.Load() == bs {

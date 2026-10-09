@@ -34,7 +34,7 @@ Entries transition through three states:
 
 Typical caches lock on each operation to safely reorder the entry in the access queue. An alternative is to store each reorder operation in a buffer and apply the changes in batches. This could be viewed as a write-ahead log for the page replacement policy. When the buffer is full an attempt is made to acquire the lock and perform the pending operations, but if it is already held then the goroutine can return immediately.
 
-The read buffer is implemented as a striped ring buffer. The stripes are used to reduce contention and a stripe is selected by a thread specific hash (using `sync.Pool`). The ring buffer is a fixed size array, making it efficient and minimizes garbage collection overhead. The number of stripes can grow dynamically based on a contention detecting algorithm.
+The read buffer is implemented as a striped ring buffer. The stripes are used to reduce contention and a stripe is selected by a hash of the goroutine's stack address. The ring buffer is a fixed size array, making it efficient and minimizes garbage collection overhead. The number of stripes can grow dynamically based on a contention detecting algorithm.
 
 ### Write buffer
 
