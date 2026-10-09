@@ -640,6 +640,12 @@ func (c *cache[K, V]) atomicDelete(key K, old node.Node[K, V], cl *call[K, V], n
 	if cl == nil {
 		c.singleflight.delete(key)
 	}
+	return c.retireRemoved(old, nowNano)
+}
+
+// retireRemoved retires old, which the caller removes from the hash table, without touching the
+// key's pending calls, and returns the cause reported to the synchronous listener.
+func (c *cache[K, V]) retireRemoved(old node.Node[K, V], nowNano int64) DeletionCause {
 	if old == nil {
 		return 0
 	}
@@ -800,7 +806,11 @@ func (c *cache[K, V]) doCompute(
 		}
 		if op == CancelOp {
 			if oldNode != nil && oldNode.HasExpired(nowNano) {
-				deleted = c.atomicDelete(key, oldNode, nil, nowNano)
+				// The expired entry is removed, as the timer wheel would remove it, and like the
+				// wheel this keeps a pending load of the key: it most likely started because the
+				// entry expired. Only a refresh of the expired value is dropped.
+				c.singleflight.deleteRefresh(key)
+				deleted = c.retireRemoved(oldNode, nowNano)
 				return nil
 			}
 			result = prevValue
