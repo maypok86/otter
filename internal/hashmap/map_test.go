@@ -23,6 +23,7 @@ package hashmap
 
 import (
 	"math/rand"
+	"runtime"
 	"strconv"
 	"sync/atomic"
 	"testing"
@@ -627,9 +628,12 @@ func TestMap_ResizeKeepsHasher(t *testing.T) {
 func TestMapParallelCopy(t *testing.T) {
 	t.Parallel()
 
-	// Tables of 2*minBucketsPerGoroutine buckets and more are copied by
-	// several goroutines; grow well past that and shrink back while readers
+	// Tables of 2*minBucketsPerGoroutine buckets and more are copied by up to
+	// GOMAXPROCS goroutines; grow well past that and shrink back while readers
 	// check that no node goes missing.
+	if runtime.GOMAXPROCS(0) < 2 {
+		t.Skip("a table is copied by one goroutine with GOMAXPROCS=1")
+	}
 	nm := testNodeManager[int, int]()
 	m := New(nm)
 	const numNodes = 64 * minBucketsPerGoroutine * nodesPerMapBucket
