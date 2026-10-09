@@ -101,7 +101,6 @@ type cache[K comparable, V any] struct {
 	onAtomicDeletion   func(e DeletionEvent[K, V])
 	expiryCalculator   ExpiryCalculator[K, V]
 	refreshCalculator  RefreshCalculator[K, V]
-	taskPool           sync.Pool
 	hasDefaultExecutor bool
 	withTime           bool
 	withExpiration     bool
@@ -441,7 +440,7 @@ func (c *cache[K, V]) SetExpiresAfter(key K, expiresAfter time.Duration) {
 		// bucket for its former deadline, so an earlier deadline goes through the write buffer,
 		// as for an in-place write. A later one needs nothing: the wheel re-checks the node when
 		// its former bucket expires.
-		c.afterWriteTask(c.getTask(n, nil, reconcileReason, causeUnknown))
+		c.afterWriteTask(newTask(n, nil, reconcileReason, causeUnknown))
 	}
 }
 
@@ -879,7 +878,7 @@ func (c *cache[K, V]) afterWrite(n, old node.Node[K, V], oldValue V, written wri
 		// changed weight or an earlier expiration time through a task, which must not be lost.
 		c.afterRead(n, nowNano, false, false)
 		if written.reconcile {
-			c.afterWriteTask(c.getTask(n, nil, reconcileReason, causeUnknown))
+			c.afterWriteTask(newTask(n, nil, reconcileReason, causeUnknown))
 		}
 		c.notifyDeletionFrom(onExecutor, n.Key(), oldValue, written.cause)
 		return
@@ -887,12 +886,12 @@ func (c *cache[K, V]) afterWrite(n, old node.Node[K, V], oldValue V, written wri
 
 	if old == nil {
 		// insert
-		c.afterWriteTask(c.getTask(n, nil, addReason, causeUnknown))
+		c.afterWriteTask(newTask(n, nil, addReason, causeUnknown))
 		return
 	}
 
 	// update
-	c.afterWriteTask(c.getTask(n, old, updateReason, written.cause))
+	c.afterWriteTask(newTask(n, old, updateReason, written.cause))
 }
 
 type refreshableKey[K comparable, V any] struct {
@@ -1632,7 +1631,7 @@ func (c *cache[K, V]) afterDelete(deleted node.Node[K, V], cause DeletionCause, 
 	}
 
 	// delete
-	t := c.getTask(deleted, nil, deleteReason, cause)
+	t := newTask(deleted, nil, deleteReason, cause)
 	if alreadyLocked {
 		c.runTask(t)
 	} else {
@@ -2109,8 +2108,6 @@ func (c *cache[K, V]) runTask(t *task[K, V]) {
 	default:
 		panic(fmt.Sprintf("Invalid task type: %d", t.writeReason))
 	}
-
-	c.putTask(t)
 }
 
 func (c *cache[K, V]) onAccess(n node.Node[K, V]) {
@@ -2145,30 +2142,16 @@ func (c *cache[K, V]) climb() {
 	c.evictionPolicy.climb()
 }
 
-func (c *cache[K, V]) getTask(n, old node.Node[K, V], writeReason reason, cause DeletionCause) *task[K, V] {
-	t, ok := c.taskPool.Get().(*task[K, V])
-	if !ok {
-		return &task[K, V]{
-			n:             n,
-			old:           old,
-			writeReason:   writeReason,
-			deletionCause: cause,
-		}
+// newTask allocates a task. Tasks are not pooled: writers on every P would take them and
+// maintenance on one P would return them, so writers would mostly steal from the pool of that P,
+// which costs more than the allocation.
+func newTask[K comparable, V any](n, old node.Node[K, V], writeReason reason, cause DeletionCause) *task[K, V] {
+	return &task[K, V]{
+		n:             n,
+		old:           old,
+		writeReason:   writeReason,
+		deletionCause: cause,
 	}
-	t.n = n
-	t.old = old
-	t.writeReason = writeReason
-	t.deletionCause = cause
-
-	return t
-}
-
-func (c *cache[K, V]) putTask(t *task[K, V]) {
-	t.n = nil
-	t.old = nil
-	t.writeReason = unknownReason
-	t.deletionCause = causeUnknown
-	c.taskPool.Put(t)
 }
 
 // SetMaximum specifies the maximum total size of this cache. This value may be interpreted as the weighted
