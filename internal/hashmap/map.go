@@ -160,17 +160,17 @@ func newMap[K comparable, V any, N mapNode[K, V]](nodeManager mapNodeManager[K, 
 	m.resizeCond = *sync.NewCond(&m.resizeMu)
 	var table *mapTable[K]
 	if sizeHint <= defaultMinMapTableLen*nodesPerMapBucket {
-		table = newMapTable[K](defaultMinMapTableLen)
+		table = newMapTable(defaultMinMapTableLen, xruntime.NewHasher[K]())
 	} else {
 		tableLen := xmath.RoundUpPowerOf2(uint32((float64(sizeHint) / nodesPerMapBucket) / mapLoadFactor))
-		table = newMapTable[K](int(tableLen))
+		table = newMapTable(int(tableLen), xruntime.NewHasher[K]())
 	}
 	m.minTableLen = len(table.buckets)
 	m.table.Store(table)
 	return m
 }
 
-func newMapTable[K comparable](minTableLen int) *mapTable[K] {
+func newMapTable[K comparable](minTableLen int, hasher xruntime.Hasher[K]) *mapTable[K] {
 	buckets := make([]bucketPadded, minTableLen)
 	counterLen := minTableLen >> 10
 	if counterLen < minMapCounterLen {
@@ -182,7 +182,7 @@ func newMapTable[K comparable](minTableLen int) *mapTable[K] {
 	t := &mapTable[K]{
 		buckets: buckets,
 		size:    counter,
-		hasher:  xruntime.NewHasher[K](),
+		hasher:  hasher,
 	}
 	return t
 }
@@ -403,15 +403,17 @@ func (m *Map[K, V, N]) resize(knownTable *mapTable[K], hint mapResizeHint) {
 	tableLen := len(table.buckets)
 	switch hint {
 	case mapGrowHint:
-		// Grow the table with factor of 2.
+		// Grow the table with factor of 2. The new table keeps the hasher,
+		// so that the copy can write to its buckets without locking them
+		// (see copyBuckets).
 		m.totalGrowths.Add(1)
-		newTable = newMapTable[K](tableLen << 1)
+		newTable = newMapTable(tableLen<<1, table.hasher)
 	case mapShrinkHint:
 		shrinkThreshold := int64((tableLen * nodesPerMapBucket) / mapShrinkFraction)
 		if tableLen > m.minTableLen && table.sumSize() <= shrinkThreshold {
-			// Shrink the table with factor of 2.
+			// Shrink the table with factor of 2, keeping the hasher as when growing.
 			m.totalShrinks.Add(1)
-			newTable = newMapTable[K](tableLen >> 1)
+			newTable = newMapTable(tableLen>>1, table.hasher)
 		} else {
 			// No need to shrink. Wake up all waiters and give up.
 			m.resizeMu.Lock()
@@ -421,43 +423,13 @@ func (m *Map[K, V, N]) resize(knownTable *mapTable[K], hint mapResizeHint) {
 			return
 		}
 	case mapClearHint:
-		newTable = newMapTable[K](m.minTableLen)
+		newTable = newMapTable(m.minTableLen, xruntime.NewHasher[K]())
 	default:
 		panic(fmt.Sprintf("unexpected resize hint: %d", hint))
 	}
 	// Copy the data only if we're not clearing the map.
 	if hint != mapClearHint {
-		// Enable parallel resizing when serialResize is false and table is large enough.
-		// Calculate optimal goroutine count based on table size and available CPUs
-		chunks := 1
-		if tableLen >= minBucketsPerGoroutine*2 {
-			chunks = min(tableLen/minBucketsPerGoroutine, runtime.GOMAXPROCS(0))
-			chunks = max(chunks, 1)
-		}
-		if chunks > 1 {
-			var copyWg sync.WaitGroup
-			chunkSize := (tableLen + chunks - 1) / chunks
-			for c := 0; c < chunks; c++ {
-				copyWg.Add(1)
-				go func(start, end int) {
-					for i := start; i < end; i++ {
-						copied := m.copyBucketWithDestLock(&table.buckets[i], newTable)
-						if copied > 0 {
-							//nolint:gosec // there is no overflow
-							newTable.addSize(uint64(i), copied)
-						}
-					}
-					copyWg.Done()
-				}(c*chunkSize, min((c+1)*chunkSize, tableLen))
-			}
-			copyWg.Wait()
-		} else {
-			for i := 0; i < tableLen; i++ {
-				copied := m.copyBucket(&table.buckets[i], newTable)
-				//nolint:gosec // there is no overflow
-				newTable.addSizePlain(uint64(i), copied)
-			}
-		}
+		m.copyBuckets(table, newTable)
 	}
 	// Publish the new table and wake up all waiters.
 	m.table.Store(newTable)
@@ -467,31 +439,49 @@ func (m *Map[K, V, N]) resize(knownTable *mapTable[K], hint mapResizeHint) {
 	m.resizeMu.Unlock()
 }
 
-func (m *Map[K, V, N]) copyBucketWithDestLock(b *bucketPadded, destTable *mapTable[K]) (copied int) {
-	rootb := b
-	rootb.mu.Lock()
-	for {
-		for i := 0; i < nodesPerMapBucket; i++ {
-			if b.nodes[i] == nil {
-				continue
+// copyBuckets copies the nodes of table into newTable, in parallel if the
+// table is large enough.
+//
+// The two tables share the hasher and their lengths differ by a factor of 2,
+// so a node can only move between buckets with equal indexes modulo
+// baseLen = min(len(table), len(newTable)): when growing, source bucket i
+// goes to destination buckets i and i+baseLen, and when shrinking, source
+// buckets i and i+baseLen go to destination bucket i. The work is split by
+// i, so every destination bucket is written by one goroutine only and needs
+// no lock. Nobody else can see newTable until it is published.
+func (m *Map[K, V, N]) copyBuckets(table, newTable *mapTable[K]) {
+	tableLen := len(table.buckets)
+	baseLen := min(tableLen, len(newTable.buckets))
+	copyRange := func(start, end int) {
+		copied := 0
+		for i := start; i < end; i++ {
+			for src := i; src < tableLen; src += baseLen {
+				copied += m.copyBucket(&table.buckets[src], newTable)
 			}
-			n := m.nodeManager.FromPointer(b.nodes[i])
-			hash := destTable.hasher.Hash(n.Key())
-			//nolint:gosec // there is no overflow
-			bidx := uint64(len(destTable.buckets)-1) & h1(hash)
-			destb := &destTable.buckets[bidx]
-			destb.mu.Lock()
-			appendToBucket(h2(hash), b.nodes[i], destb)
-			destb.mu.Unlock()
-			copied++
 		}
-		if next := b.next.Load(); next == nil {
-			rootb.mu.Unlock()
-			return copied
-		} else {
-			b = next
-		}
+		//nolint:gosec // there is no overflow
+		newTable.addSize(uint64(start), copied)
 	}
+
+	chunks := 1
+	if tableLen >= minBucketsPerGoroutine*2 {
+		chunks = min(tableLen/minBucketsPerGoroutine, runtime.GOMAXPROCS(0))
+		chunks = max(chunks, 1)
+	}
+	if chunks == 1 {
+		copyRange(0, baseLen)
+		return
+	}
+	var copyWg sync.WaitGroup
+	chunkSize := (baseLen + chunks - 1) / chunks
+	for start := 0; start < baseLen; start += chunkSize {
+		copyWg.Add(1)
+		go func(start, end int) {
+			defer copyWg.Done()
+			copyRange(start, end)
+		}(start, min(start+chunkSize, baseLen))
+	}
+	copyWg.Wait()
 }
 
 func (m *Map[K, V, N]) copyBucket(b *bucketPadded, destTable *mapTable[K]) (copied int) {
@@ -607,12 +597,6 @@ func (table *mapTable[K]) addSize(bucketIdx uint64, delta int) {
 	//nolint:gosec // there is no overflow
 	cidx := uint64(len(table.size)-1) & bucketIdx
 	atomic.AddInt64(&table.size[cidx].c, int64(delta))
-}
-
-func (table *mapTable[K]) addSizePlain(bucketIdx uint64, delta int) {
-	//nolint:gosec // there is no overflow
-	cidx := uint64(len(table.size)-1) & bucketIdx
-	table.size[cidx].c += int64(delta)
 }
 
 func (table *mapTable[K]) sumSize() int64 {

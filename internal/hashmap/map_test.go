@@ -590,6 +590,97 @@ func TestMapSize(t *testing.T) {
 	}
 }
 
+func TestMap_ResizeKeepsHasher(t *testing.T) {
+	t.Parallel()
+
+	// copyBuckets writes to the new table without locks, which is only safe
+	// while a node can't move to a bucket owned by another goroutine, i.e.
+	// while growing and shrinking keep the hasher.
+	nm := testNodeManager[int, int]()
+	m := New(nm)
+	hasher := m.table.Load().hasher
+	const numNodes = 10 * defaultMinMapTableLen * nodesPerMapBucket
+	for i := 0; i < numNodes; i++ {
+		m.Compute(i, func(n node.Node[int, int]) node.Node[int, int] {
+			return newTestNode(nm, i, i)
+		})
+	}
+	if m.totalGrowths.Load() == 0 {
+		t.Fatal("the table was expected to grow")
+	}
+	if m.table.Load().hasher != hasher {
+		t.Fatal("growing the table changed the hasher")
+	}
+	for i := 0; i < numNodes; i++ {
+		m.Compute(i, func(n node.Node[int, int]) node.Node[int, int] {
+			return nil
+		})
+	}
+	if m.totalShrinks.Load() == 0 {
+		t.Fatal("the table was expected to shrink")
+	}
+	if m.table.Load().hasher != hasher {
+		t.Fatal("shrinking the table changed the hasher")
+	}
+}
+
+func TestMapParallelCopy(t *testing.T) {
+	t.Parallel()
+
+	// Tables of 2*minBucketsPerGoroutine buckets and more are copied by
+	// several goroutines; grow well past that and shrink back while readers
+	// check that no node goes missing.
+	nm := testNodeManager[int, int]()
+	m := New(nm)
+	const numNodes = 64 * minBucketsPerGoroutine * nodesPerMapBucket
+	var inserted, stop atomic.Int64
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for stop.Load() == 0 {
+			n := int(inserted.Load())
+			for i := 0; i < n; i += 97 {
+				if got := m.Get(i); got == nil || got.Value() != i {
+					t.Errorf("node %d is missing", i)
+					return
+				}
+			}
+		}
+	}()
+	for i := 0; i < numNodes; i++ {
+		m.Compute(i, func(n node.Node[int, int]) node.Node[int, int] {
+			return newTestNode(nm, i, i)
+		})
+		inserted.Store(int64(i + 1))
+	}
+	stop.Store(1)
+	<-done
+	if got := len(m.table.Load().buckets); got < 2*minBucketsPerGoroutine {
+		t.Fatalf("the table has %d buckets, too few for a parallel copy", got)
+	}
+	if size := m.Size(); size != numNodes {
+		t.Fatalf("size is %d, want %d", size, numNodes)
+	}
+	for i := 0; i < numNodes; i++ {
+		m.Compute(i, func(n node.Node[int, int]) node.Node[int, int] {
+			return nil
+		})
+		if i%1000 == 0 {
+			for j := i + 1; j < numNodes; j += 101 {
+				if got := m.Get(j); got == nil || got.Value() != j {
+					t.Fatalf("node %d is missing after deleting %d nodes", j, i+1)
+				}
+			}
+		}
+	}
+	if got := len(m.table.Load().buckets); got != m.minTableLen {
+		t.Fatalf("the table has %d buckets after deleting everything, want %d", got, m.minTableLen)
+	}
+	if size := m.Size(); size != 0 {
+		t.Fatalf("size is %d after deleting everything", size)
+	}
+}
+
 func TestMapClear(t *testing.T) {
 	t.Parallel()
 
