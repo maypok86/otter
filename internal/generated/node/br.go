@@ -32,6 +32,9 @@ func NewBR[K comparable, V any](key K, value V, expiresAt, refreshableAt int64, 
 
 // CastPointerToBR casts a pointer to BR.
 func CastPointerToBR[K comparable, V any](ptr unsafe.Pointer) Node[K, V] {
+	if ptr == nil {
+		return nil
+	}
 	return (*BR[K, V])(ptr)
 }
 

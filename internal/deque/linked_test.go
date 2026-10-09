@@ -37,7 +37,7 @@ func checkLinkedPtrs[K comparable, V any](t *testing.T, d *Linked[K, V], nodes [
 
 	// zero length queues must be the zero value
 	if len(nodes) == 0 {
-		if !(node.Equals(d.head, nil) && node.Equals(d.tail, nil)) {
+		if !(d.head == nil && d.tail == nil) {
 			t.Errorf("d.head = %p, d.tail = %p; both should be nil", d.head, d.tail)
 		}
 		return
@@ -49,7 +49,7 @@ func checkLinkedPtrs[K comparable, V any](t *testing.T, d *Linked[K, V], nodes [
 		if i > 0 {
 			prev = nodes[i-1]
 		}
-		if p := d.getPrev(n); !node.Equals(p, prev) {
+		if p := d.getPrev(n); p != prev {
 			t.Errorf("elt[%d](%p).prev = %p, want %p", i, n, p, prev)
 		}
 
@@ -57,7 +57,7 @@ func checkLinkedPtrs[K comparable, V any](t *testing.T, d *Linked[K, V], nodes [
 		if i < len(nodes)-1 {
 			next = nodes[i+1]
 		}
-		if nn := d.getNext(n); !node.Equals(nn, next) {
+		if nn := d.getNext(n); nn != next {
 			t.Errorf("nodes[%d](%p).next = %p, want %p", i, n, nn, next)
 		}
 	}
@@ -116,7 +116,7 @@ func TestLinked(t *testing.T) {
 
 	// Check standard iteration.
 	sum := 0
-	for e := d.head; !node.Equals(e, nil); e = d.getNext(e) {
+	for e := d.head; e != nil; e = d.getNext(e) {
 		i, err := strconv.Atoi(e.Value())
 		if err != nil {
 			continue
@@ -129,7 +129,7 @@ func TestLinked(t *testing.T) {
 
 	// Clear all elements by iterating
 	var next node.Node[string, string]
-	for e := d.head; !node.Equals(e, nil); e = next {
+	for e := d.head; e != nil; e = next {
 		next = d.getNext(e)
 		d.Delete(e)
 	}

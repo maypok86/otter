@@ -79,6 +79,9 @@ func NewBS[K comparable, V any](key K, value V, expiresAt, refreshableAt int64, 
 
 // CastPointerToBS casts a pointer to BS.
 func CastPointerToBS[K comparable, V any](ptr unsafe.Pointer) Node[K, V] {
+	if ptr == nil {
+		return nil
+	}
 	return (*BS[K, V])(ptr)
 }
 
@@ -91,6 +94,9 @@ func (n *BS[K, V]) AsPointer() unsafe.Pointer {
 }
 
 func (n *BS[K, V]) Prev() Node[K, V] {
+	if n.prev == nil {
+		return nil
+	}
 	return n.prev
 }
 
@@ -103,6 +109,9 @@ func (n *BS[K, V]) SetPrev(v Node[K, V]) {
 }
 
 func (n *BS[K, V]) Next() Node[K, V] {
+	if n.next == nil {
+		return nil
+	}
 	return n.next
 }
 

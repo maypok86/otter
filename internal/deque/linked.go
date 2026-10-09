@@ -48,8 +48,8 @@ func (d *Linked[K, V]) PushBack(n node.Node[K, V]) {
 
 func (d *Linked[K, V]) UpdateNode(n, old node.Node[K, V]) {
 	oldNext := d.getNext(old)
-	if node.Equals(oldNext, nil) {
-		if node.Equals(d.tail, old) {
+	if oldNext == nil {
+		if d.tail == old {
 			d.tail = n
 		}
 	} else {
@@ -59,8 +59,8 @@ func (d *Linked[K, V]) UpdateNode(n, old node.Node[K, V]) {
 	}
 
 	oldPrev := d.getPrev(old)
-	if node.Equals(oldPrev, nil) {
-		if node.Equals(d.head, old) {
+	if oldPrev == nil {
+		if d.head == old {
 			d.head = n
 		}
 	} else {
@@ -110,18 +110,18 @@ func (d *Linked[K, V]) NotContains(n node.Node[K, V]) bool {
 }
 
 func (d *Linked[K, V]) Contains(n node.Node[K, V]) bool {
-	return !node.Equals(d.getPrev(n), nil) || !node.Equals(d.getNext(n), nil) || node.Equals(d.head, n)
+	return d.getPrev(n) != nil || d.getNext(n) != nil || d.head == n
 }
 
 func (d *Linked[K, V]) MoveToBack(n node.Node[K, V]) {
-	if !node.Equals(n, d.tail) {
+	if n != d.tail {
 		d.Delete(n)
 		d.PushBack(n)
 	}
 }
 
 func (d *Linked[K, V]) MoveToFront(n node.Node[K, V]) {
-	if !node.Equals(n, d.head) {
+	if n != d.head {
 		d.Delete(n)
 		d.PushFront(n)
 	}
@@ -131,8 +131,8 @@ func (d *Linked[K, V]) Delete(n node.Node[K, V]) {
 	next := d.getNext(n)
 	prev := d.getPrev(n)
 
-	if node.Equals(prev, nil) {
-		if node.Equals(next, nil) && !node.Equals(d.head, n) {
+	if prev == nil {
+		if next == nil && d.head != n {
 			return
 		}
 
@@ -142,7 +142,7 @@ func (d *Linked[K, V]) Delete(n node.Node[K, V]) {
 		d.setPrev(n, nil)
 	}
 
-	if node.Equals(next, nil) {
+	if next == nil {
 		d.tail = prev
 	} else {
 		d.setPrev(next, prev)
@@ -177,7 +177,7 @@ func (d *Linked[K, V]) Tail() node.Node[K, V] {
 func (d *Linked[K, V]) All() iter.Seq[node.Node[K, V]] {
 	return func(yield func(node.Node[K, V]) bool) {
 		cursor := d.head
-		for !node.Equals(cursor, nil) {
+		for cursor != nil {
 			if !yield(cursor) {
 				return
 			}
@@ -189,7 +189,7 @@ func (d *Linked[K, V]) All() iter.Seq[node.Node[K, V]] {
 func (d *Linked[K, V]) Backward() iter.Seq[node.Node[K, V]] {
 	return func(yield func(node.Node[K, V]) bool) {
 		cursor := d.tail
-		for !node.Equals(cursor, nil) {
+		for cursor != nil {
 			if !yield(cursor) {
 				return
 			}

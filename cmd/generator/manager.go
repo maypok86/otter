@@ -132,16 +132,6 @@ type Node[K comparable, V any] interface {
 	MakeMainProtected()
 }
 
-func Equals[K comparable, V any](a, b Node[K, V]) bool {
-	if a == nil {
-		return b == nil || b.AsPointer() == nil
-	}
-	if b == nil {
-		return a.AsPointer() == nil
-	}
-	return a.AsPointer() == b.AsPointer()
-}
-
 type Config struct {
 	WithSize       bool
 	WithExpiration bool
@@ -203,10 +193,6 @@ func (m *Manager[K, V]) ValueStorage() string {
 
 func (m *Manager[K, V]) FromPointer(ptr unsafe.Pointer) Node[K, V] {
 	return m.fromPointer(ptr)
-}
-
-func (m *Manager[K, V]) IsNil(n Node[K, V]) bool {
-	return n == nil || n.AsPointer() == nil
 }
 
 // variantsOfStorage returns the layouts of the nodes of a value storage: the one a new entry is

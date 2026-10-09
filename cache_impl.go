@@ -1028,7 +1028,7 @@ func (c *cache[K, V]) Get(ctx context.Context, key K, loader Loader[K, V]) (V, e
 // matches an expired node, which the request did not see.
 func isRefreshBase[K comparable, V any](base, current node.Node[K, V], nowNano int64) bool {
 	if base != nil {
-		return current != nil && current.AsPointer() == base.AsPointer()
+		return current != nil && current == base
 	}
 	return current == nil || current.HasExpired(nowNano)
 }
@@ -1576,12 +1576,12 @@ func (c *cache[K, V]) deleteNodeFromMap(
 	onlyIfExpired bool,
 ) (deleted node.Node[K, V], deletedCause DeletionCause, extended, declined bool) {
 	c.hashmap.Compute(n.Key(), func(current node.Node[K, V]) node.Node[K, V] {
-		if onlyIfExpired && current != nil && n.AsPointer() == current.AsPointer() && !current.HasExpired(nowNano) {
+		if onlyIfExpired && current != nil && n == current && !current.HasExpired(nowNano) {
 			// updated in place, extending its lifetime, after it was found expired
 			extended = true
 			return current
 		}
-		if cause == CauseOverflow && c.isWeighted && current != nil && n.AsPointer() == current.AsPointer() &&
+		if cause == CauseOverflow && c.isWeighted && current != nil && n == current &&
 			current.Weight() == 0 && !current.HasExpired(nowNano) {
 			// The policy chose the node by the weight it accounted, but a writer has since set
 			// its weight to zero in place, and a zero-weight entry is never evicted for size.
@@ -1591,7 +1591,7 @@ func (c *cache[K, V]) deleteNodeFromMap(
 		}
 		if cause == CauseInvalidation {
 			c.singleflight.delete(n.Key())
-		} else if current != nil && n.AsPointer() == current.AsPointer() {
+		} else if current != nil && n == current {
 			// An eviction must not cancel an in-flight load: it was most likely started
 			// because this very node has expired, and dropping it would make the loaded
 			// value silently disappear. Only a pending refresh of the evicted value is discarded,
@@ -1602,7 +1602,7 @@ func (c *cache[K, V]) deleteNodeFromMap(
 		if current == nil {
 			return nil
 		}
-		if n.AsPointer() == current.AsPointer() {
+		if n == current {
 			deleted = current
 			deletedCause = getCause(deleted, nowNano, cause)
 			c.makeRetired(deleted)
@@ -2092,7 +2092,7 @@ func (c *cache[K, V]) runTask(t *task[K, V]) {
 		if c.withEviction {
 			c.evictionPolicy.reweigh(n, c.evictNode)
 		}
-		if c.withExpiration && n.IsAlive() && !node.Equals(n.NextExp(), nil) {
+		if c.withExpiration && n.IsAlive() && n.NextExp() != nil {
 			// scheduled in the timer wheel: move it to the bucket of its current expiration time
 			// (a node that is not scheduled yet is added with that time by its insertion)
 			c.expirationPolicy.Delete(n)
@@ -2117,7 +2117,7 @@ func (c *cache[K, V]) onAccess(n node.Node[K, V]) {
 	if c.withEviction {
 		c.evictionPolicy.access(n)
 	}
-	if c.withExpiration && !node.Equals(n.NextExp(), nil) {
+	if c.withExpiration && n.NextExp() != nil {
 		c.expirationPolicy.Delete(n)
 		if n.IsAlive() {
 			c.expirationPolicy.Add(n)

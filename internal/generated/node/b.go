@@ -27,6 +27,9 @@ func NewB[K comparable, V any](key K, value V, expiresAt, refreshableAt int64, w
 
 // CastPointerToB casts a pointer to B.
 func CastPointerToB[K comparable, V any](ptr unsafe.Pointer) Node[K, V] {
+	if ptr == nil {
+		return nil
+	}
 	return (*B[K, V])(ptr)
 }
 

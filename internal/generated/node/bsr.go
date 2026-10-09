@@ -83,6 +83,9 @@ func NewBSR[K comparable, V any](key K, value V, expiresAt, refreshableAt int64,
 
 // CastPointerToBSR casts a pointer to BSR.
 func CastPointerToBSR[K comparable, V any](ptr unsafe.Pointer) Node[K, V] {
+	if ptr == nil {
+		return nil
+	}
 	return (*BSR[K, V])(ptr)
 }
 
@@ -95,6 +98,9 @@ func (n *BSR[K, V]) AsPointer() unsafe.Pointer {
 }
 
 func (n *BSR[K, V]) Prev() Node[K, V] {
+	if n.prev == nil {
+		return nil
+	}
 	return n.prev
 }
 
@@ -107,6 +113,9 @@ func (n *BSR[K, V]) SetPrev(v Node[K, V]) {
 }
 
 func (n *BSR[K, V]) Next() Node[K, V] {
+	if n.next == nil {
+		return nil
+	}
 	return n.next
 }
 
