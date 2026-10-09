@@ -695,7 +695,7 @@ func TestCache_ReconcileReschedulesEarlierExpiration(t *testing.T) {
 	ci.maintenance(nil)
 	// an in-place update moved the deadline from 100s to 10s, and its access was dropped
 	n.SetExpiresAt(clk.NowNano() + int64(10*time.Second))
-	ci.runTask(ci.getTask(n, nil, reconcileReason, causeUnknown))
+	ci.runTask(newTask(n, nil, reconcileReason, causeUnknown))
 	ci.evictionMutex.Unlock()
 
 	clk.Sleep(20 * time.Second)
@@ -728,7 +728,7 @@ func TestCache_ReconcileAfterDeadlinePassed(t *testing.T) {
 	n.SetExpiresAt(clk.NowNano() + int64(10*time.Second))
 	clk.Sleep(20 * time.Second)
 	ci.maintenance(nil)
-	ci.runTask(ci.getTask(n, nil, reconcileReason, causeUnknown))
+	ci.runTask(newTask(n, nil, reconcileReason, causeUnknown))
 	ci.evictionMutex.Unlock()
 
 	clk.Sleep(2 * time.Second)
