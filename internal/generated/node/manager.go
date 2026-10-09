@@ -113,14 +113,11 @@ type Node[K comparable, V any] interface {
 	MakeMainProtected()
 }
 
+// Equals reports whether a and b are the same node. The accessors return a missing node as a
+// nil interface, never as a typed nil, so == is enough, and it does not call AsPointer through
+// the interface on the hot paths of the policy.
 func Equals[K comparable, V any](a, b Node[K, V]) bool {
-	if a == nil {
-		return b == nil || b.AsPointer() == nil
-	}
-	if b == nil {
-		return a.AsPointer() == nil
-	}
-	return a.AsPointer() == b.AsPointer()
+	return a == b
 }
 
 type Config struct {

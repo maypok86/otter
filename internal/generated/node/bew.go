@@ -89,6 +89,9 @@ func NewBEW[K comparable, V any](key K, value V, expiresAt, refreshableAt int64,
 
 // CastPointerToBEW casts a pointer to BEW.
 func CastPointerToBEW[K comparable, V any](ptr unsafe.Pointer) Node[K, V] {
+	if ptr == nil {
+		return nil
+	}
 	return (*BEW[K, V])(ptr)
 }
 
@@ -101,6 +104,9 @@ func (n *BEW[K, V]) AsPointer() unsafe.Pointer {
 }
 
 func (n *BEW[K, V]) Prev() Node[K, V] {
+	if n.prev == nil {
+		return nil
+	}
 	return n.prev
 }
 
@@ -113,6 +119,9 @@ func (n *BEW[K, V]) SetPrev(v Node[K, V]) {
 }
 
 func (n *BEW[K, V]) Next() Node[K, V] {
+	if n.next == nil {
+		return nil
+	}
 	return n.next
 }
 
@@ -125,6 +134,9 @@ func (n *BEW[K, V]) SetNext(v Node[K, V]) {
 }
 
 func (n *BEW[K, V]) PrevExp() Node[K, V] {
+	if n.prevExp == nil {
+		return nil
+	}
 	return n.prevExp
 }
 
@@ -137,6 +149,9 @@ func (n *BEW[K, V]) SetPrevExp(v Node[K, V]) {
 }
 
 func (n *BEW[K, V]) NextExp() Node[K, V] {
+	if n.nextExp == nil {
+		return nil
+	}
 	return n.nextExp
 }
 

@@ -235,6 +235,11 @@ func (g *generator) printConstructors() {
 	g.p("// CastPointerTo%s casts a pointer to %s.", g.structName, g.structName)
 	g.p("func CastPointerTo%s[K comparable, V any](ptr unsafe.Pointer) Node[K, V] {", g.structName)
 	g.in()
+	g.p("if ptr == nil {")
+	g.in()
+	g.p("return nil")
+	g.out()
+	g.p("}")
 	g.p("return (*%s[K, V])(ptr)", g.structName)
 	g.out()
 	g.p("}")
@@ -373,6 +378,13 @@ func (g *generator) printFunctions() {
 	g.p("func (n *%s[K, V]) Prev() Node[K, V] {", g.structName)
 	g.in()
 	if g.isBounded() {
+		// A nil field is returned as a nil interface, not as a typed nil, so that callers
+		// can compare nodes with ==.
+		g.p("if n.prev == nil {")
+		g.in()
+		g.p("return nil")
+		g.out()
+		g.p("}")
 		g.p("return n.prev")
 	} else {
 		g.p("panic(\"not implemented\")")
@@ -401,6 +413,11 @@ func (g *generator) printFunctions() {
 	g.p("func (n *%s[K, V]) Next() Node[K, V] {", g.structName)
 	g.in()
 	if g.isBounded() {
+		g.p("if n.next == nil {")
+		g.in()
+		g.p("return nil")
+		g.out()
+		g.p("}")
 		g.p("return n.next")
 	} else {
 		g.p("panic(\"not implemented\")")
@@ -429,6 +446,11 @@ func (g *generator) printFunctions() {
 	g.p("func (n *%s[K, V]) PrevExp() Node[K, V] {", g.structName)
 	g.in()
 	if g.features[expiration] {
+		g.p("if n.prevExp == nil {")
+		g.in()
+		g.p("return nil")
+		g.out()
+		g.p("}")
 		g.p("return n.prevExp")
 	} else {
 		g.p("panic(\"not implemented\")")
@@ -457,6 +479,11 @@ func (g *generator) printFunctions() {
 	g.p("func (n *%s[K, V]) NextExp() Node[K, V] {", g.structName)
 	g.in()
 	if g.features[expiration] {
+		g.p("if n.nextExp == nil {")
+		g.in()
+		g.p("return nil")
+		g.out()
+		g.p("}")
 		g.p("return n.nextExp")
 	} else {
 		g.p("panic(\"not implemented\")")

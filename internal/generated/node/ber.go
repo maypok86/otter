@@ -84,6 +84,9 @@ func NewBER[K comparable, V any](key K, value V, expiresAt, refreshableAt int64,
 
 // CastPointerToBER casts a pointer to BER.
 func CastPointerToBER[K comparable, V any](ptr unsafe.Pointer) Node[K, V] {
+	if ptr == nil {
+		return nil
+	}
 	return (*BER[K, V])(ptr)
 }
 
@@ -112,6 +115,9 @@ func (n *BER[K, V]) SetNext(v Node[K, V]) {
 }
 
 func (n *BER[K, V]) PrevExp() Node[K, V] {
+	if n.prevExp == nil {
+		return nil
+	}
 	return n.prevExp
 }
 
@@ -124,6 +130,9 @@ func (n *BER[K, V]) SetPrevExp(v Node[K, V]) {
 }
 
 func (n *BER[K, V]) NextExp() Node[K, V] {
+	if n.nextExp == nil {
+		return nil
+	}
 	return n.nextExp
 }
 
