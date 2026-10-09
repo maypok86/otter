@@ -116,8 +116,11 @@ func (r *ring[K, V]) drainTo(consumer func(n node.Node[K, V])) {
 }
 
 func (r *ring[K, V]) len() int {
+	// The head is loaded first: it never passes the tail, so a tail loaded later is never
+	// behind it, while a head loaded after the tail may already be ahead of it.
+	head := r.head.Load()
 	//nolint:gosec // there is no overflow
-	return int(r.tail.Load() - r.head.Load())
+	return int(r.tail.Load() - head)
 }
 
 /*

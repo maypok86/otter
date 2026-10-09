@@ -194,3 +194,30 @@ func TestRing_Overflow(t *testing.T) {
 		t.Fatalf("the head must be equal to 0, but got %d", head)
 	}
 }
+
+func TestRing_LenIsNeverNegative(t *testing.T) {
+	t.Parallel()
+
+	nm := node.NewManager[int, int](node.Config{})
+	n := nm.Create(1, 2, 0, 0, 1)
+	r := &ring[int, int]{
+		nodeManager: nm,
+	}
+
+	// The producer keeps adding and draining, so the head often moves past a tail that the
+	// reader loaded a moment earlier.
+	var done atomic.Bool
+	go func() {
+		for !done.Load() {
+			r.add(n)
+			r.drainTo(func(node.Node[int, int]) {})
+		}
+	}()
+	defer done.Store(true)
+
+	for i := 0; i < 1_000_000; i++ {
+		if l := r.len(); l < 0 {
+			t.Fatalf("the length must not be negative, but got %d", l)
+		}
+	}
+}
