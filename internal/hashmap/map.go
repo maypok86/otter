@@ -226,6 +226,13 @@ func (m *Map[K, V, N]) Get(key K) N {
 // callUnlockingOnPanic calls computeFunc with mu held and releases mu if computeFunc panics
 // or exits the goroutine, so that a failing callback does not leave the bucket locked. The
 // bucket is left unchanged in that case. On a normal return mu stays locked.
+// isNil reports whether n is a missing node: the zero value of N, a nil pointer or a nil
+// interface.
+func isNil[N comparable](n N) bool {
+	var zero N
+	return n == zero
+}
+
 func callUnlockingOnPanic[N any](mu *sync.Mutex, computeFunc func(n N) N, n N) N {
 	returned := false
 	defer func() {
@@ -288,7 +295,7 @@ func (m *Map[K, V, N]) Compute(key K, computeFunc func(n N) N) N {
 						// In-place update/delete.
 						newNode := callUnlockingOnPanic(&rootb.mu, computeFunc, oldNode)
 						// oldNode != nil
-						if m.nodeManager.IsNil(newNode) {
+						if isNil(newNode) {
 							// Deletion.
 							// First we update the hash, then the node.
 							newmetaw := setByte(metaw, 0, idx)
@@ -326,7 +333,7 @@ func (m *Map[K, V, N]) Compute(key K, computeFunc func(n N) N) N {
 					var zeroNode N
 					// oldNode == nil.
 					newNode := callUnlockingOnPanic(&rootb.mu, computeFunc, zeroNode)
-					if m.nodeManager.IsNil(newNode) {
+					if isNil(newNode) {
 						// no op.
 						rootb.mu.Unlock()
 						return newNode
@@ -349,7 +356,7 @@ func (m *Map[K, V, N]) Compute(key K, computeFunc func(n N) N) N {
 				var zeroNode N
 				// oldNode == nil
 				newNode := callUnlockingOnPanic(&rootb.mu, computeFunc, zeroNode)
-				if m.nodeManager.IsNil(newNode) {
+				if isNil(newNode) {
 					rootb.mu.Unlock()
 					return newNode
 				}

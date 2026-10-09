@@ -222,10 +222,6 @@ func (m *Manager[K, V]) FromPointer(ptr unsafe.Pointer) Node[K, V] {
 	return m.fromPointer(ptr)
 }
 
-func (m *Manager[K, V]) IsNil(n Node[K, V]) bool {
-	return n == nil || n.AsPointer() == nil
-}
-
 // variantsOfStorage returns the layouts of the nodes of a value storage: the one a new entry is
 // created as, and the one an entry whose value is replaced in place needs.
 func variantsOfStorage(storage string) (created, updatable uint8) {

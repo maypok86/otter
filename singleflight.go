@@ -74,10 +74,6 @@ func (m *mapCallManager[K, V]) FromPointer(ptr unsafe.Pointer) *call[K, V] {
 	return (*call[K, V])(ptr)
 }
 
-func (m *mapCallManager[K, V]) IsNil(c *call[K, V]) bool {
-	return c == nil
-}
-
 type group[K comparable, V any] struct {
 	calls         *hashmap.Map[K, V, *call[K, V]]
 	initMutex     sync.Mutex
