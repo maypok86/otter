@@ -19,6 +19,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -372,4 +373,67 @@ func TestMPSC_BlockingCalls(t *testing.T) {
 	hammerMPSCBlockingCalls(t, 1, n, n)
 	hammerMPSCBlockingCalls(t, 2, 10*n, 2*n)
 	hammerMPSCBlockingCalls(t, 4, 100*n, 4*n)
+}
+
+func TestMPSC_KeepsTheOrderOfEachProducer(t *testing.T) {
+	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(-1))
+
+	type item struct {
+		producer int
+		seq      int
+	}
+
+	const (
+		producers   = 8
+		perProducer = 5000
+	)
+	for _, procs := range []int{1, 4, runtime.NumCPU()} {
+		// A small maximum keeps the queue full most of the time; a large one makes it grow
+		// through several buffers while the consumer follows the links.
+		for _, maxCapacity := range []uint32{4, 1024} {
+			runtime.GOMAXPROCS(procs)
+			q := NewMPSC[item](2, maxCapacity)
+
+			var wg sync.WaitGroup
+			wg.Add(producers)
+			for p := 0; p < producers; p++ {
+				go func() {
+					defer wg.Done()
+
+					for i := 0; i < perProducer; i++ {
+						it := &item{producer: p, seq: i}
+						for !q.TryPush(it) {
+							runtime.Gosched()
+						}
+					}
+				}()
+			}
+
+			next := make([]int, producers)
+			lastPop := time.Now()
+			for popped := 0; popped < producers*perProducer; {
+				it := q.TryPop()
+				if it == nil {
+					if time.Since(lastPop) > 10*time.Second {
+						t.Fatalf("GOMAXPROCS=%d, maxCapacity=%d: no item for 10s after %d of %d",
+							procs, maxCapacity, popped, producers*perProducer)
+					}
+					runtime.Gosched()
+					continue
+				}
+				lastPop = time.Now()
+				if it.seq != next[it.producer] {
+					t.Fatalf("GOMAXPROCS=%d, maxCapacity=%d: producer %d: got item %d, want %d",
+						procs, maxCapacity, it.producer, it.seq, next[it.producer])
+				}
+				next[it.producer]++
+				popped++
+			}
+			wg.Wait()
+
+			require.Nil(t, q.TryPop())
+			require.True(t, q.IsEmpty())
+			require.Equal(t, uint64(0), q.Size())
+		}
+	}
 }
