@@ -244,8 +244,12 @@ func (g *group[K, V]) deleteCall(c *call[K, V]) (deleted bool) {
 	return cl == nil
 }
 
+// delete removes the call registered for key, if any. Every write and invalidation of a cache
+// that has loaded at least once comes here, and there is rarely a call to remove, so the lock-free
+// lookup skips taking the bucket lock. A call registered concurrently can be missed by the lookup
+// just as by Compute, which sees the bucket at one moment too.
 func (g *group[K, V]) delete(key K) {
-	if !g.isInitialized.Load() {
+	if !g.isInitialized.Load() || g.getCall(key) == nil {
 		return
 	}
 
@@ -254,8 +258,14 @@ func (g *group[K, V]) delete(key K) {
 	})
 }
 
+// deleteRefresh removes the call registered for key if it is a refresh. Every eviction comes here,
+// so as in delete a lookup without the lock comes first; isRefresh is set before the call is
+// registered and never changes.
 func (g *group[K, V]) deleteRefresh(key K) {
 	if !g.isInitialized.Load() {
+		return
+	}
+	if cl := g.getCall(key); cl == nil || !cl.isRefresh {
 		return
 	}
 
