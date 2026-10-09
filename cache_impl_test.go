@@ -249,17 +249,17 @@ func TestCache_Eviction(t *testing.T) {
 		}
 		expected := make([]int, 0, maximum)
 		h := c.cache.evictionPolicy.window.Head()
-		for !node.Equals(h, nil) {
+		for h != nil {
 			expected = append(expected, h.Key())
 			h = h.Next()
 		}
 		c.cache.evictionPolicy.windowMaximum = 0
 		candidate := c.cache.evictionPolicy.evictFromWindow()
-		require.False(t, node.Equals(candidate, nil))
+		require.NotNil(t, candidate)
 
 		actual := make([]int, 0, maximum)
 		h = c.cache.evictionPolicy.probation.Head()
-		for !node.Equals(h, nil) {
+		for h != nil {
 			actual = append(actual, h.Key())
 			h = h.Next()
 		}
@@ -292,16 +292,16 @@ func TestCache_Eviction(t *testing.T) {
 
 		c.cache.evictionPolicy.windowMaximum = 0
 		candidate := c.cache.evictionPolicy.evictFromWindow()
-		require.False(t, node.Equals(candidate, nil))
+		require.NotNil(t, candidate)
 
 		expected := make([]int, 0, maximum)
 		h := c.cache.evictionPolicy.probation.Head()
-		for !node.Equals(h, nil) {
+		for h != nil {
 			expected = append(expected, h.Key())
 			h = h.Next()
 		}
 		h = c.cache.evictionPolicy.protected.Head()
-		for !node.Equals(h, nil) {
+		for h != nil {
 			expected = append(expected, h.Key())
 			h = h.Next()
 		}
@@ -343,7 +343,7 @@ func TestCache_Eviction(t *testing.T) {
 
 		expected := make([]int, 0, maximum)
 		h := c.cache.evictionPolicy.window.Head()
-		for !node.Equals(h, nil) {
+		for h != nil {
 			expected = append(expected, h.Key())
 			h = h.Next()
 		}
@@ -388,7 +388,7 @@ func TestCache_Eviction(t *testing.T) {
 
 		expected := make([]int, 0, maximum)
 		h := c.cache.evictionPolicy.window.Head()
-		for !node.Equals(h, nil) {
+		for h != nil {
 			expected = append(expected, h.Key())
 			h = h.Next()
 		}
@@ -439,17 +439,17 @@ func TestCache_Eviction(t *testing.T) {
 
 		expected := make([]int, 0, maximum)
 		h := e.window.Head()
-		for !node.Equals(h, nil) {
+		for h != nil {
 			expected = append(expected, h.Key())
 			h = h.Next()
 		}
 		h = e.probation.Head()
-		for !node.Equals(h, nil) {
+		for h != nil {
 			expected = append(expected, h.Key())
 			h = h.Next()
 		}
 		h = e.protected.Head()
-		for !node.Equals(h, nil) {
+		for h != nil {
 			expected = append(expected, h.Key())
 			h = h.Next()
 		}
@@ -493,17 +493,17 @@ func TestCache_Eviction(t *testing.T) {
 
 		expected := make([]int, 0, maximum)
 		h := e.window.Head()
-		for !node.Equals(h, nil) {
+		for h != nil {
 			expected = append(expected, h.Key())
 			h = h.Next()
 		}
 		h = e.probation.Head()
-		for !node.Equals(h, nil) {
+		for h != nil {
 			expected = append(expected, h.Key())
 			h = h.Next()
 		}
 		h = e.protected.Head()
-		for !node.Equals(h, nil) {
+		for h != nil {
 			expected = append(expected, h.Key())
 			h = h.Next()
 		}

@@ -28,8 +28,8 @@ func getTestExp(sec int64) int64 {
 
 func contains[K comparable, V any](root, f node.Node[K, V]) bool {
 	n := root.NextExp()
-	for !node.Equals(n, root) {
-		if node.Equals(n, f) {
+	for n != root {
+		if n == f {
 			return true
 		}
 

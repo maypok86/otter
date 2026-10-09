@@ -322,7 +322,7 @@ func (p *policy[K, V]) evictFromWindow() node.Node[K, V] {
 	n := p.window.Head()
 	for p.windowWeightedSize > p.windowMaximum {
 		// The pending operations will adjust the size to reflect the correct weight
-		if node.Equals(n, nil) {
+		if n == nil {
 			break
 		}
 
@@ -349,13 +349,13 @@ func (p *policy[K, V]) evictFromMain(candidate node.Node[K, V], evictNode func(n
 	victim := p.probation.Head()
 	for p.weightedSize > p.maximum {
 		// Search the admission window for additional candidates
-		if node.Equals(candidate, nil) && candidateQueue == node.InMainProbationQueue {
+		if candidate == nil && candidateQueue == node.InMainProbationQueue {
 			candidate = p.window.Head()
 			candidateQueue = node.InWindowQueue
 		}
 
 		// Try evicting from the protected and window queues
-		if node.Equals(candidate, nil) && node.Equals(victim, nil) {
+		if candidate == nil && victim == nil {
 			if victimQueue == node.InMainProbationQueue {
 				victim = p.protected.Head()
 				victimQueue = node.InMainProtectedQueue
@@ -371,22 +371,22 @@ func (p *policy[K, V]) evictFromMain(candidate node.Node[K, V], evictNode func(n
 		}
 
 		// Skip over entries with zero weight
-		if !node.Equals(victim, nil) && victim.PolicyWeight() == 0 {
+		if victim != nil && victim.PolicyWeight() == 0 {
 			victim = victim.Next()
 			continue
-		} else if !node.Equals(candidate, nil) && candidate.PolicyWeight() == 0 {
+		} else if candidate != nil && candidate.PolicyWeight() == 0 {
 			candidate = candidate.Next()
 			continue
 		}
 
 		// Evict immediately if only one of the entries is present
-		if node.Equals(victim, nil) {
+		if victim == nil {
 			previous := candidate.Next()
 			evict := candidate
 			candidate = previous
 			evictNode(evict, 0)
 			continue
-		} else if node.Equals(candidate, nil) {
+		} else if candidate == nil {
 			evict := victim
 			victim = victim.Next()
 			evictNode(evict, 0)
@@ -394,7 +394,7 @@ func (p *policy[K, V]) evictFromMain(candidate node.Node[K, V], evictNode func(n
 		}
 
 		// Evict immediately if both selected the same entry
-		if node.Equals(candidate, victim) {
+		if candidate == victim {
 			victim = victim.Next()
 			evictNode(candidate, 0)
 			candidate = nil
@@ -514,7 +514,7 @@ func (p *policy[K, V]) demoteFromMainProtected() {
 		}
 
 		demoted := p.protected.PopFront()
-		if node.Equals(demoted, nil) {
+		if demoted == nil {
 			break
 		}
 		demoted.MakeMainProbation()
@@ -541,11 +541,11 @@ func (p *policy[K, V]) increaseWindow() {
 	for i := 0; i < queueTransferThreshold; i++ {
 		candidate := p.probation.Head()
 		probation := true
-		if node.Equals(candidate, nil) || quota < int64(candidate.PolicyWeight()) {
+		if candidate == nil || quota < int64(candidate.PolicyWeight()) {
 			candidate = p.protected.Head()
 			probation = false
 		}
-		if node.Equals(candidate, nil) {
+		if candidate == nil {
 			break
 		}
 
@@ -586,7 +586,7 @@ func (p *policy[K, V]) decreaseWindow() {
 
 	for i := 0; i < queueTransferThreshold; i++ {
 		candidate := p.window.Head()
-		if node.Equals(candidate, nil) {
+		if candidate == nil {
 			break
 		}
 

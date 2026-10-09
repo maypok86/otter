@@ -2092,7 +2092,7 @@ func (c *cache[K, V]) runTask(t *task[K, V]) {
 		if c.withEviction {
 			c.evictionPolicy.reweigh(n, c.evictNode)
 		}
-		if c.withExpiration && n.IsAlive() && !node.Equals(n.NextExp(), nil) {
+		if c.withExpiration && n.IsAlive() && n.NextExp() != nil {
 			// scheduled in the timer wheel: move it to the bucket of its current expiration time
 			// (a node that is not scheduled yet is added with that time by its insertion)
 			c.expirationPolicy.Delete(n)
@@ -2117,7 +2117,7 @@ func (c *cache[K, V]) onAccess(n node.Node[K, V]) {
 	if c.withEviction {
 		c.evictionPolicy.access(n)
 	}
-	if c.withExpiration && !node.Equals(n.NextExp(), nil) {
+	if c.withExpiration && n.NextExp() != nil {
 		c.expirationPolicy.Delete(n)
 		if n.IsAlive() {
 			c.expirationPolicy.Add(n)

@@ -100,7 +100,7 @@ func (v *Variable[K, V]) All() iter.Seq[node.Node[K, V]] {
 	return func(yield func(node.Node[K, V]) bool) {
 		for _, bucket := range v.wheel {
 			for _, root := range bucket {
-				for n := root.NextExp(); !node.Equals(n, root); n = n.NextExp() {
+				for n := root.NextExp(); n != root; n = n.NextExp() {
 					if !yield(n) {
 						return
 					}
@@ -186,10 +186,10 @@ func (v *Variable[K, V]) sweepBucket(root node.Node[K, V], expireNode func(n nod
 		if completed {
 			return
 		}
-		if n.IsAlive() && node.Equals(n.NextExp(), nil) {
+		if n.IsAlive() && n.NextExp() == nil {
 			v.reschedule(n)
 		}
-		for !node.Equals(next, root) {
+		for next != root {
 			rest := next
 			next = rest.NextExp()
 			rest.SetPrevExp(nil)
@@ -198,7 +198,7 @@ func (v *Variable[K, V]) sweepBucket(root node.Node[K, V], expireNode func(n nod
 		}
 	}()
 
-	for !node.Equals(n, root) {
+	for n != root {
 		next = n.NextExp()
 		n.SetPrevExp(nil)
 		n.SetNextExp(nil)
@@ -226,7 +226,7 @@ func link[K comparable, V any](root, n node.Node[K, V]) {
 // unlink removes the entry from its bucket, if scheduled.
 func unlink[K comparable, V any](n node.Node[K, V]) {
 	next := n.NextExp()
-	if !node.Equals(next, nil) {
+	if next != nil {
 		prev := n.PrevExp()
 		next.SetPrevExp(prev)
 		prev.SetNextExp(next)

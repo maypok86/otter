@@ -21,9 +21,9 @@ import (
 	"github.com/maypok86/otter/v2/internal/generated/node"
 )
 
-// node.Equals compares nodes with ==, which holds only if a missing node is a nil interface.
-// A typed nil (a nil node pointer in a non-nil interface) would make Equals(n, nil) false, and
-// the eviction loops would never see the end of a queue.
+// Nodes are compared with ==, which holds only if a missing node is a nil interface. A typed
+// nil (a nil node pointer in a non-nil interface) would make n == nil false, and the eviction
+// loops would never see the end of a queue.
 func TestNode_MissingNodesAreNilInterfaces(t *testing.T) {
 	t.Parallel()
 
