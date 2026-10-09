@@ -33,7 +33,8 @@ const (
 	Success Status = 0
 	// Failed means that the CAS failed.
 	Failed Status = -1
-	// Full means that the buffer is full.
+	// Full means that the buffer is full: either the node was rejected, or it was added
+	// into the last free slot. Either way the buffer needs to be drained.
 	Full Status = 1
 )
 
@@ -87,6 +88,11 @@ func (r *ring[K, V]) add(n node.Node[K, V]) Status {
 
 	if r.tail.CompareAndSwap(tail, tail+1) {
 		atomic.StorePointer(&r.buffer[tail&mask], n.AsPointer())
+		// Report the buffer full as soon as it fills up, so that a drain is scheduled
+		// before the next read is dropped rather than after.
+		if size+1 >= bufferSize {
+			return Full
+		}
 		return Success
 	}
 	return Failed

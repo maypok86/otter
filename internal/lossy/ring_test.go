@@ -221,3 +221,31 @@ func TestRing_LenIsNeverNegative(t *testing.T) {
 		}
 	}
 }
+
+func TestRing_AddReportsFullWhenItFillsTheBuffer(t *testing.T) {
+	t.Parallel()
+
+	nm := node.NewManager[int, int](node.Config{})
+	n := nm.Create(1, 2, 0, 0, 1)
+	r := &ring[int, int]{
+		nodeManager: nm,
+	}
+
+	for i := 0; i < bufferSize-1; i++ {
+		if res := r.add(n); res != Success {
+			t.Fatalf("add %d: the status must be Success, but got: %v", i, res)
+		}
+	}
+	if res := r.add(n); res != Full {
+		t.Fatalf("the add that fills the buffer must report Full, but got: %v", res)
+	}
+	if l := r.len(); l != bufferSize {
+		t.Fatalf("the add that fills the buffer must keep the node: the length must be %d, but got %d", bufferSize, l)
+	}
+	if res := r.add(n); res != Full {
+		t.Fatalf("an add to a full buffer must report Full, but got: %v", res)
+	}
+	if l := r.len(); l != bufferSize {
+		t.Fatalf("an add to a full buffer must drop the node: the length must be %d, but got %d", bufferSize, l)
+	}
+}
