@@ -79,8 +79,9 @@ func (s *Striped[K, V]) Add(n node.Node[K, V]) Status {
 
 func (s *Striped[K, V]) expandOrRetry(n node.Node[K, V], h uint32, wasUncontended bool) Status {
 	result := Failed
-	// True if last slot nonempty.
-	collide := true
+	// True if the CAS also failed on another stripe. It starts false, so the table grows
+	// only when the contention shows up again after a rehash, not on a single collision.
+	collide := false
 
 	for attempt := 0; attempt < attempts; attempt++ {
 		bs := s.striped.Load()
