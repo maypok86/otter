@@ -420,7 +420,8 @@ func mutationCases() []mutationCase {
 
 // Every key mutation (Set, SetIfAbsent, the Compute family, Invalidate, and the completion of a
 // load or refresh) over an absent, live or expired key, for values updated in place (int) and
-// values whose node is replaced on the first update ([2]int).
+// values whose node is replaced on the first update ([2]int64, which does not fit in a word on any
+// platform).
 func TestCache_KeyMutations(t *testing.T) {
 	t.Parallel()
 
@@ -430,7 +431,7 @@ func TestCache_KeyMutations(t *testing.T) {
 	})
 	t.Run("replacement", func(t *testing.T) {
 		t.Parallel()
-		testKeyMutations(t, false, func(v int) [2]int { return [2]int{v, v} }, func(v [2]int) int { return v[0] })
+		testKeyMutations(t, false, func(v int) [2]int64 { return [2]int64{int64(v), int64(v)} }, func(v [2]int64) int { return int(v[0]) })
 	})
 }
 
