@@ -55,6 +55,10 @@ func (s Simulator) Simulate() error {
 		policies := make([]policyContract, 0, len(s.cfg.Caches))
 		ps := getPolicies()
 		for _, c := range s.cfg.Caches {
+			if c == "optimal" {
+				policies = append(policies, policy.NewOptimal())
+				continue
+			}
 			p, ok := ps[c]
 			if !ok {
 				return fmt.Errorf("not valid cache name: %s", c)
