@@ -1048,16 +1048,18 @@ func (c *cache[K, V]) Get(ctx context.Context, key K, loader Loader[K, V]) (V, e
 
 // isRefreshBase reports whether current, the key's node when a refresh completes, is still the
 // node base that the refresh was requested for. A refresh of an absent key (base == nil) also
-// matches an expired node, which the request did not see.
+// matches an expired node, which the request did not see. A base that has expired since the
+// request is absent, so there is nothing left to refresh.
 func isRefreshBase[K comparable, V any](base, current node.Node[K, V], nowNano int64) bool {
 	if base != nil {
-		return current != nil && current == base
+		return current != nil && current == base && !current.HasExpired(nowNano)
 	}
 	return current == nil || current.HasExpired(nowNano)
 }
 
 // refreshableAtAfterWrite returns the refresh time of the node written as entry, which
-// replaces old (nil for an insertion) with the result of cl (nil for a plain write).
+// replaces old (nil for an insertion) with the result of cl (nil for a plain write). A write
+// over an expired node creates the entry, as for the expiry calculator.
 func (c *cache[K, V]) refreshableAtAfterWrite(
 	entry Entry[K, V],
 	old node.Node[K, V],
@@ -1066,8 +1068,9 @@ func (c *cache[K, V]) refreshableAtAfterWrite(
 	nowNano int64,
 ) int64 {
 	var refreshableAfter time.Duration
+	oldLive := old != nil && !old.HasExpired(nowNano)
 	//nolint:gocritic // it's ok
-	if cl != nil && cl.isRefresh && old != nil {
+	if cl != nil && cl.isRefresh && oldLive {
 		if cl.isNotFound {
 			return entry.RefreshableAtNano
 		}
@@ -1076,7 +1079,7 @@ func (c *cache[K, V]) refreshableAtAfterWrite(
 		} else {
 			refreshableAfter = c.refreshCalculator.RefreshAfterReload(entry, oldValue)
 		}
-	} else if old != nil {
+	} else if oldLive {
 		refreshableAfter = c.refreshCalculator.RefreshAfterUpdate(entry, oldValue)
 	} else {
 		refreshableAfter = c.refreshCalculator.RefreshAfterCreate(entry)
@@ -1140,7 +1143,8 @@ func (c *cache[K, V]) afterDeleteCall(cl *call[K, V]) {
 			return nil
 		}
 		if cl.err != nil {
-			if isCorrectCall && cl.isRefresh && oldNode != nil && c.withRefresh {
+			// A failed refresh of an absent key leaves an expired node that it matched as it is.
+			if isCorrectCall && cl.isRefresh && oldNode != nil && !oldNode.HasExpired(nowNano) && c.withRefresh {
 				oldNode.SetRefreshableAt(c.refreshableAtAfterWrite(c.nodeToEntry(oldNode, nowNano), oldNode, oldNode.Value(), cl, nowNano))
 			}
 			return oldNode
@@ -1494,8 +1498,8 @@ func (c *cache[K, V]) wrapRefresh(fn func() error) (err error) {
 // If refreshing returned an error, the previous value will remain,
 // and the error will be logged using Logger (if it's not ErrNotFound) and swallowed. If another goroutine is currently
 // loading the value for key, then this method does not perform an additional load.
-// If the key is written or invalidated after the refresh was requested, the loaded value is
-// discarded and the cache keeps the newer state.
+// If the key is written, invalidated or expires after the refresh was requested, the loaded
+// value is discarded and the cache keeps the newer state.
 //
 // cache will call Loader.Reload if the cache currently contains a value for the key,
 // and Loader.Load otherwise.
@@ -1529,8 +1533,8 @@ func (c *cache[K, V]) Refresh(ctx context.Context, key K, loader Loader[K, V]) <
 // If refreshing returned an error, the previous value will remain,
 // and the error will be logged using Logger and swallowed. If another goroutine is currently
 // loading the value for key, then this method does not perform an additional load.
-// If the key is written or invalidated after the refresh was requested, the loaded value is
-// discarded and the cache keeps the newer state.
+// If the key is written, invalidated or expires after the refresh was requested, the loaded
+// value is discarded and the cache keeps the newer state.
 //
 // cache will call BulkLoader.BulkReload for existing keys, and BulkLoader.BulkLoad otherwise.
 //

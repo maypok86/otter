@@ -101,5 +101,6 @@ A refresh must lose to any write that follows its request, so three things hold 
 - `atomicSet` cancels pending calls only after publishing the new value (`cancelCalls`), so a
   refresh requested during an in-place write, e.g. from `OnAtomicDeletion`, is cancelled too;
 - a refresh call records the node it was requested for (`call.base`), and `afterDeleteCall`
-  writes its result only if that node is still the key's node (`isRefreshBase`), which covers
-  a replacement or removal published after the write's callback returns.
+  writes its result only if that node is still the key's node and has not expired
+  (`isRefreshBase`), which covers a replacement or removal published after the write's
+  callback returns.
