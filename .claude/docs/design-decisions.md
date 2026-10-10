@@ -25,8 +25,11 @@ Audits read this file **after** recording their findings (Phase 1.5 of the audit
 - **`Entry` values can mix fields of different writes of the same key.** The fields are read
   one at a time from a node that is updated in place, as in Caffeine. (The doc comment still
   calls it an immutable snapshot; that is a known documentation gap.)
-- **`ExpireAfterRead` deadlines move with a CAS on every read** under `ExpiryAccessing`. No
-  tolerance window exists today.
+- **A read leaves the deadline as it is when it would move by at most `expireTolerance`**
+  (1 s), as long as both the remaining and the new lifetime are longer than that. Otherwise
+  every read under `ExpiryAccessing` would CAS the node. Entries can expire up to 1 s early,
+  or late when `ExpireAfterRead` shortens the lifetime by less than that. `SetExpiresAfter`
+  passes no tolerance and stays exact.
 
 ## In-place updates
 

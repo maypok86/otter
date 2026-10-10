@@ -17,6 +17,7 @@ package otter
 import (
 	"context"
 	"math"
+	"runtime"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -1448,4 +1449,57 @@ func TestCache_MaxDurationMeansNever(t *testing.T) {
 			require.Zero(t, reloads.Load(), "an entry that is never refreshable was reloaded")
 		})
 	}
+}
+
+func TestCache_ReadsWithinExpireToleranceKeepTheDeadline(t *testing.T) {
+	t.Parallel()
+
+	fs := &fakeSource{}
+	newCache := func(expiresAfter time.Duration) *Cache[int, int] {
+		c := Must(&Options[int, int]{
+			Clock:            fs,
+			ExpiryCalculator: ExpiryAccessing[int, int](expiresAfter),
+		})
+		c.Set(1, 1)
+		return c
+	}
+	deadline := func(c *Cache[int, int]) int64 {
+		e, ok := c.GetEntryQuietly(1)
+		require.True(t, ok)
+		return e.ExpiresAtNano
+	}
+
+	// A read within the tolerance of the last stored deadline does not write a new one, so that
+	// readers of a hot key don't all write to its node.
+	c := newCache(time.Minute)
+	set := deadline(c)
+	fs.Sleep(expireTolerance / 2)
+	c.GetIfPresent(1)
+	require.Equal(t, set, deadline(c), "a read within the tolerance moved the deadline")
+	fs.Sleep(expireTolerance)
+	c.GetIfPresent(1)
+	require.Equal(t, set+int64(expireTolerance*3/2), deadline(c), "a read past the tolerance kept the deadline")
+
+	// A deadline with no more than the tolerance left is updated, so that a lifetime only a little
+	// longer than the tolerance is not cut short.
+	near := newCache(expireTolerance * 3 / 2)
+	set = deadline(near)
+	fs.Sleep(expireTolerance * 9 / 10)
+	near.GetIfPresent(1)
+	require.Equal(t, set+int64(expireTolerance*9/10), deadline(near), "a deadline that was almost due was kept")
+
+	// The deadline the caller asks for is set exactly.
+	c.SetExpiresAfter(1, time.Minute+expireTolerance/2)
+	require.Equal(t, fs.NowNano()+int64(time.Minute+expireTolerance/2), deadline(c))
+
+	// A lifetime within the tolerance is updated on every read.
+	short := newCache(expireTolerance / 2)
+	set = deadline(short)
+	fs.Sleep(expireTolerance / 4)
+	short.GetIfPresent(1)
+	require.Equal(t, set+int64(expireTolerance/4), deadline(short))
+
+	runtime.KeepAlive(c)
+	runtime.KeepAlive(near)
+	runtime.KeepAlive(short)
 }
