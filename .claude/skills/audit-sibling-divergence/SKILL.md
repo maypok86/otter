@@ -43,7 +43,7 @@ Compare return values, hit/miss stats, listener events, deadlines and refresh ti
 **Group C: write paths that should be indistinguishable**
 - C1: update in place vs replacement of an inline node vs resurrection of an expired node
   (`atomicSet`): events, causes, weight accounting, deadlines, refresh scheduling
-- C2: `set` vs `doCompute` vs `afterDeleteCall` (load or refresh completion), each calling
+- C2: `set` vs `doCompute` vs `commitCall` (load or refresh completion), each calling
   `atomicSet`: what each passes in, what each does after the lock
 - C3: `afterWrite` vs `afterDelete` vs `runTask`: which events reach `OnDeletion` and with
   which cause

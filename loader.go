@@ -28,6 +28,8 @@ type Loader[K comparable, V any] interface {
 	// Reload computes or retrieves a replacement value corresponding to an already-cached key.
 	// If the replacement value is not found, then the mapping will be removed if ErrNotFound is returned.
 	// This method is called when an existing cache entry is refreshed by Cache.Get, or through a call to Cache.Refresh.
+	// oldValue is the entry's value when the reload starts, which may be newer than the value
+	// that was found due for a refresh.
 	//
 	// WARNING: loading must not attempt to update any mappings of this cache directly
 	// or block waiting for other cache operations to complete.
@@ -70,6 +72,8 @@ type BulkLoader[K comparable, V any] interface {
 	// BulkReload computes or retrieves replacement values corresponding to already-cached keys.
 	// If the replacement value is not found, then the mapping will be removed.
 	// This method is called when an existing cache entry is refreshed by Cache.BulkGet, or through a call to Cache.BulkRefresh.
+	// oldValues holds, in the order of keys, each entry's value when the reload starts, as for
+	// Loader.Reload.
 	//
 	// If the returned map doesn't contain all requested keys, then the entries it does
 	// contain will be cached. Extra keys not present in keys are cached as described for

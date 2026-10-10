@@ -77,6 +77,10 @@ type mutation[K comparable, V any] struct {
 	previous[K, V]
 	// op is what the mutation did.
 	op mutationOp
+	// from is where the mutation came from.
+	from origin
+	// nowNano is the time the mutation was decided at.
+	nowNano int64
 	// next is the key's node afterwards, or nil if it is absent. After an update in place it is
 	// previous.node.
 	next node.Node[K, V]
@@ -94,7 +98,7 @@ func (c *cache[K, V]) mutate(
 	from origin,
 	decide func(prev previous[K, V]) (mutationOp, V),
 ) mutation[K, V] {
-	var m mutation[K, V]
+	m := mutation[K, V]{from: from, nowNano: nowNano}
 	m.next = c.hashmap.Compute(key, func(current node.Node[K, V]) node.Node[K, V] {
 		m.node = current
 		if current != nil {
@@ -128,11 +132,11 @@ func (c *cache[K, V]) mutate(
 
 // publish hands a mutation to the policies, through the write or read buffer, and reports the
 // previous value to the OnDeletion listener with the cause decided under the lock.
-func (c *cache[K, V]) publish(m mutation[K, V], from origin, nowNano int64) {
-	onExecutor := from == fromRefresh
+func (c *cache[K, V]) publish(m mutation[K, V]) {
+	onExecutor := m.from == fromRefresh
 	switch m.op {
 	case opWrite:
-		c.afterWrite(m, nowNano, onExecutor)
+		c.afterWrite(m, onExecutor)
 	case opInvalidate, opRemoveExpired:
 		c.afterDelete(m.node, m.cause, false, onExecutor)
 	default:
@@ -141,7 +145,7 @@ func (c *cache[K, V]) publish(m mutation[K, V], from origin, nowNano int64) {
 
 // afterWrite publishes a write. It takes the previous value from the mutation, because after an
 // in-place update the previous node is the written one.
-func (c *cache[K, V]) afterWrite(m mutation[K, V], nowNano int64, onExecutor bool) {
+func (c *cache[K, V]) afterWrite(m mutation[K, V], onExecutor bool) {
 	n, old := m.next, m.node
 	if !c.withMaintenance {
 		if old != nil {
@@ -153,7 +157,7 @@ func (c *cache[K, V]) afterWrite(m mutation[K, V], nowNano int64, onExecutor boo
 	if m.inPlace {
 		// Updated in place: the policies observe an access through the lossy read buffer, and a
 		// changed weight or an earlier expiration time through a task, which must not be lost.
-		c.afterRead(n, nowNano, false, false)
+		c.afterRead(n, m.nowNano, false, false)
 		if m.reconcile {
 			c.afterWriteTask(newTask(n, nil, reconcileReason, causeUnknown))
 		}
