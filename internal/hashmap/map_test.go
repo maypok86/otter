@@ -890,33 +890,6 @@ func sizeBasedOnTypedRangeInt(m *Map[int, int, node.Node[int, int]]) int {
 	return size
 }
 
-func TestMapClear(t *testing.T) {
-	t.Parallel()
-
-	const numNodes = 1000
-	nm := testNodeManager[string, int]()
-	m := New(nm)
-	for i := 0; i < numNodes; i++ {
-		key := strconv.Itoa(i)
-		m.Compute(key, func(n node.Node[string, int]) node.Node[string, int] {
-			return newTestNode(nm, key, i)
-		})
-	}
-	size := m.Size()
-	if size != numNodes {
-		t.Fatalf("size of %d was expected, got: %d", numNodes, size)
-	}
-	m.Clear()
-	size = m.Size()
-	if size != 0 {
-		t.Fatalf("zero size was expected, got: %d", size)
-	}
-	rsize := sizeBasedOnTypedRange(m)
-	if rsize != 0 {
-		t.Fatalf("zero number of entries in Range was expected, got: %d", rsize)
-	}
-}
-
 func parallelRandTypedResizer(m *Map[string, int, node.Node[string, int]], numIters, numNodes int, cdone chan bool) {
 	r := rand.New(rand.NewSource(time.Now().UnixNano()))
 	for i := 0; i < numIters; i++ {
@@ -961,48 +934,6 @@ func TestMapParallelResize(t *testing.T) {
 			t.Fatalf("values do not match for %d: %v", i, n)
 		}
 	}
-	s := m.Size()
-	if s > numNodes {
-		t.Fatalf("unexpected size: %v", s)
-	}
-	rs := sizeBasedOnTypedRange(m)
-	if s != rs {
-		t.Fatalf("size does not match number of entries in Range: %v, %v", s, rs)
-	}
-}
-
-func parallelRandTypedClearer(m *Map[string, int, node.Node[string, int]], numIters, numNodes int, cdone chan bool) {
-	r := rand.New(rand.NewSource(time.Now().UnixNano()))
-	for i := 0; i < numIters; i++ {
-		coin := r.Int63n(2)
-		for j := 0; j < numNodes; j++ {
-			key := strconv.Itoa(j)
-			if coin == 1 {
-				m.Compute(key, func(n node.Node[string, int]) node.Node[string, int] {
-					return newTestNode(m.nodeManager, key, j)
-				})
-			} else {
-				m.Clear()
-			}
-		}
-	}
-	cdone <- true
-}
-
-func TestMapParallelClear(t *testing.T) {
-	t.Parallel()
-
-	const numIters = 100
-	const numNodes = 1_000
-	nm := testNodeManager[string, int]()
-	m := New(nm)
-	cdone := make(chan bool)
-	go parallelRandTypedClearer(m, numIters, numNodes, cdone)
-	go parallelRandTypedClearer(m, numIters, numNodes, cdone)
-	// Wait for the goroutines to finish.
-	<-cdone
-	<-cdone
-	// Verify map size.
 	s := m.Size()
 	if s > numNodes {
 		t.Fatalf("unexpected size: %v", s)

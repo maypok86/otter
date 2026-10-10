@@ -38,7 +38,6 @@ type mapResizeHint int
 const (
 	mapGrowHint   mapResizeHint = 0
 	mapShrinkHint mapResizeHint = 1
-	mapClearHint  mapResizeHint = 2
 )
 
 const (
@@ -439,15 +438,10 @@ func (m *Map[K, V, N]) resize(knownTable *mapTable[K], hint mapResizeHint) {
 			m.finishResize()
 			return
 		}
-	case mapClearHint:
-		newTable = newMapTable(m.minTableLen, xruntime.NewHasher[K]())
 	default:
 		panic(fmt.Sprintf("unexpected resize hint: %d", hint))
 	}
-	// Copy the data only if we're not clearing the map.
-	if hint != mapClearHint {
-		m.copyBuckets(table, newTable)
-	}
+	m.copyBuckets(table, newTable)
 	// Publish the new table and wake up all waiters.
 	m.table.Store(newTable)
 	m.finishResize()
@@ -580,12 +574,6 @@ func (m *Map[K, V, N]) Range(fn func(n N) bool) {
 		}
 		bnodes = bnodes[:0]
 	}
-}
-
-// Clear deletes all keys and values currently stored in the map.
-func (m *Map[K, V, N]) Clear() {
-	table := m.table.Load()
-	m.resize(table, mapClearHint)
 }
 
 // Size returns current size of the map.
