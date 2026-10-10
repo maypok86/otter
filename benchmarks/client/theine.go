@@ -28,6 +28,10 @@ func (c *Theine[K, V]) Set(key K, value V) {
 	c.client.Set(key, value, 1)
 }
 
+func (c *Theine[K, V]) Wait() {
+	c.client.Wait()
+}
+
 func (c *Theine[K, V]) Close() {
 	c.client.Close()
 	c.client = nil

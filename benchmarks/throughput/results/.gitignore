@@ -1,3 +1,5 @@
 *.txt
 *.png
+*.svg
+*.test
 !throughput.txt

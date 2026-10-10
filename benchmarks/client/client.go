@@ -7,3 +7,9 @@ type Client[K comparable, V any] interface {
 	Name() string
 	Close()
 }
+
+// Waiter is implemented by the caches that apply writes asynchronously.
+type Waiter interface {
+	// Wait blocks until the buffered writes are applied.
+	Wait()
+}

@@ -3,6 +3,7 @@ package throughput
 import (
 	"fmt"
 	"math/rand"
+	"runtime"
 	"strconv"
 	"sync/atomic"
 	"testing"
@@ -52,17 +53,16 @@ func newValue(v string) string {
 }
 
 type benchCase struct {
-	name           string
 	readPercentage int
 	setPercentage  uint64
 }
 
 var benchCases = []benchCase{
-	{"reads=100%,writes=0%", 100, 0},
-	{"reads=75%,writes=25%", 75, 25},
-	{"reads=50%,writes=50%", 50, 50},
-	{"reads=25%,writes=75%", 25, 75},
-	{"reads=0%,writes=100%", 0, 100},
+	{100, 0},
+	{75, 25},
+	{50, 50},
+	{25, 75},
+	{0, 100},
 }
 
 type data struct {
@@ -90,11 +90,15 @@ func newZipfData() data {
 func runParallelBenchmark(b *testing.B, benchFunc func(pb *testing.PB)) {
 	b.Helper()
 
+	// Collect the garbage left by the previous benchmark, so that
+	// this one doesn't pay for it.
+	runtime.GC()
 	b.ResetTimer()
 	b.ReportAllocs()
 	start := time.Now()
 	b.RunParallel(benchFunc)
 	opsPerSec := float64(b.N) / time.Since(start).Seconds()
+	b.StopTimer()
 	b.ReportMetric(opsPerSec, "ops/s")
 }
 
@@ -107,12 +111,21 @@ func runCacheBenchmark(
 	b.Helper()
 
 	c.Init(dataLength)
+	defer c.Close()
 
 	for i := 0; i < dataLength; i++ {
 		c.Set(keys[i], values[i])
 	}
+	// Let the prepopulated entries land before the measurement starts.
+	if w, ok := c.(client.Waiter); ok {
+		w.Wait()
+	}
 
-	rc := uint64(0)
+	var (
+		rc     uint64
+		hits   atomic.Uint64
+		misses atomic.Uint64
+	)
 	mask := dataLength - 1
 
 	runParallelBenchmark(b, func(pb *testing.PB) {
@@ -124,23 +137,35 @@ func runCacheBenchmark(
 				index++
 			}
 		} else {
+			var h, m uint64
 			for pb.Next() {
-				c.Get(keys[index&mask])
+				if _, ok := c.Get(keys[index&mask]); ok {
+					h++
+				} else {
+					m++
+				}
 				index++
 			}
+			hits.Add(h)
+			misses.Add(m)
 		}
 	})
+
+	// Every key fits in the cache, so a miss means that the cache lost
+	// an entry, and its reads are cheaper than they should be.
+	if reads := hits.Load() + misses.Load(); reads > 0 {
+		b.ReportMetric(100*float64(hits.Load())/float64(reads), "hit%")
+	}
 }
 
 func BenchmarkCache(b *testing.B) {
 	for _, data := range datas {
 		for _, benchCase := range benchCases {
 			for _, c := range clients {
-				name := fmt.Sprintf("%s_%s_%s", data.name, c.Name(), benchCase.name)
+				name := fmt.Sprintf("dist=%s/cache=%s/reads=%d%%", data.name, c.Name(), benchCase.readPercentage)
 				b.Run(name, func(b *testing.B) {
 					runCacheBenchmark(b, benchCase, data.keys, c)
 				})
-				c.Close()
 			}
 		}
 	}

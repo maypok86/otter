@@ -1,6 +1,6 @@
 package product
 
-import "github.com/dgraph-io/ristretto"
+import "github.com/dgraph-io/ristretto/v2"
 
 type Ristretto[K ristretto.Key, V any] struct {
 	client *ristretto.Cache[K, V]
