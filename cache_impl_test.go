@@ -1338,7 +1338,8 @@ func TestCache_ReplaceBeforeAddIsDrained(t *testing.T) {
 
 // math.MaxInt64 is the documented way to say "never expire" or "never refresh". With a clock that
 // counts from the Unix epoch, now + math.MaxInt64 used to wrap to a negative deadline: the entry
-// was expired as soon as it was written, and refreshed on every read.
+// was expired as soon as it was written, and refreshed on every read. The arithmetic is tested in
+// TestNextDeadline and TestMoveDeadline; this checks that writes, reads and loads use it.
 func TestCache_MaxDurationMeansNever(t *testing.T) {
 	t.Parallel()
 
@@ -1349,120 +1350,59 @@ func TestCache_MaxDurationMeansNever(t *testing.T) {
 		return clock
 	}
 
-	expiry := []struct {
-		name string
-		opts func(clock Clock) *Options[int, int]
-		// after runs after the write, before the checks
-		after func(c *Cache[int, int])
-	}{
-		{
-			name: "ExpiryWriting",
-			opts: func(clock Clock) *Options[int, int] {
-				return &Options[int, int]{Clock: clock, ExpiryCalculator: ExpiryWriting[int, int](never)}
-			},
-		},
-		{
-			name: "ExpiryAccessing",
-			opts: func(clock Clock) *Options[int, int] {
-				return &Options[int, int]{Clock: clock, ExpiryCalculator: ExpiryAccessing[int, int](never)}
-			},
-			after: func(c *Cache[int, int]) {
-				// a read sets the deadline again
-				_, _ = c.GetIfPresent(1)
-			},
-		},
-		{
-			name: "SetExpiresAfter",
-			opts: func(clock Clock) *Options[int, int] {
-				return &Options[int, int]{Clock: clock, ExpiryCalculator: ExpiryWriting[int, int](time.Hour)}
-			},
-			after: func(c *Cache[int, int]) {
-				c.SetExpiresAfter(1, never)
-			},
-		},
-	}
-	for _, tt := range expiry {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+	t.Run("expiry", func(t *testing.T) {
+		t.Parallel()
 
-			clock := newClock()
-			c := Must(tt.opts(clock))
-			c.Set(1, 1)
-			if tt.after != nil {
-				tt.after(c)
-			}
+		clock := newClock()
+		c := Must(&Options[int, int]{Clock: clock, ExpiryCalculator: ExpiryAccessing[int, int](never)})
+		c.Set(1, 1)
+		_, _ = c.GetIfPresent(1) // a read sets the deadline again
 
-			clock.Sleep(1000 * 24 * time.Hour)
-			c.CleanUp()
-			v, ok := c.GetIfPresent(1)
-			require.True(t, ok, "an entry that never expires is missing")
+		clock.Sleep(1000 * 24 * time.Hour)
+		c.CleanUp()
+		v, ok := c.GetIfPresent(1)
+		require.True(t, ok, "an entry that never expires is missing")
+		require.Equal(t, 1, v)
+		e, ok := c.GetEntryQuietly(1)
+		require.True(t, ok)
+		require.Equal(t, int64(math.MaxInt64), e.ExpiresAtNano)
+	})
+
+	t.Run("refresh", func(t *testing.T) {
+		t.Parallel()
+
+		clock := newClock()
+		var reloads atomic.Int64
+		c := Must(&Options[int, int]{
+			Clock:             clock,
+			RefreshCalculator: RefreshWriting[int, int](never),
+			Executor:          func(fn func()) { fn() },
+		})
+		c.Set(1, 1)
+
+		clock.Sleep(1000 * 24 * time.Hour)
+		loader := LoaderFunc[int, int](func(ctx context.Context, key int) (int, error) {
+			reloads.Add(1)
+			return 2, nil
+		})
+		for range 3 {
+			v, err := c.Get(context.Background(), 1, loader)
+			require.NoError(t, err)
 			require.Equal(t, 1, v)
-			e, ok := c.GetEntryQuietly(1)
-			require.True(t, ok)
-			require.Equal(t, int64(math.MaxInt64), e.ExpiresAtNano)
-		})
-	}
-
-	refresh := []struct {
-		name  string
-		calc  RefreshCalculator[int, int]
-		after func(c *Cache[int, int])
-	}{
-		{
-			name: "RefreshWriting",
-			calc: RefreshWriting[int, int](never),
-		},
-		{
-			name: "SetRefreshableAfter",
-			calc: RefreshWriting[int, int](time.Hour),
-			after: func(c *Cache[int, int]) {
-				c.SetRefreshableAfter(1, never)
-			},
-		},
-	}
-	for _, tt := range refresh {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			clock := newClock()
-			var reloads atomic.Int64
-			c := Must(&Options[int, int]{
-				Clock:             clock,
-				RefreshCalculator: tt.calc,
-				Executor:          func(fn func()) { fn() },
-			})
-			c.Set(1, 1)
-			if tt.after != nil {
-				tt.after(c)
-			}
-
-			clock.Sleep(1000 * 24 * time.Hour)
-			loader := LoaderFunc[int, int](func(ctx context.Context, key int) (int, error) {
-				reloads.Add(1)
-				return 2, nil
-			})
-			for range 3 {
-				v, err := c.Get(context.Background(), 1, loader)
-				require.NoError(t, err)
-				require.Equal(t, 1, v)
-			}
-			require.Zero(t, reloads.Load(), "an entry that is never refreshable was reloaded")
-		})
-	}
+		}
+		require.Zero(t, reloads.Load(), "an entry that is never refreshable was reloaded")
+	})
 }
 
 func TestCache_ReadsWithinExpireToleranceKeepTheDeadline(t *testing.T) {
 	t.Parallel()
 
 	fs := &fakeSource{}
-	newCache := func(expiresAfter time.Duration) *Cache[int, int] {
-		c := Must(&Options[int, int]{
-			Clock:            fs,
-			ExpiryCalculator: ExpiryAccessing[int, int](expiresAfter),
-		})
-		c.Set(1, 1)
-		return c
-	}
+	c := Must(&Options[int, int]{
+		Clock:            fs,
+		ExpiryCalculator: ExpiryAccessing[int, int](time.Minute),
+	})
+	c.Set(1, 1)
 	deadline := func(c *Cache[int, int]) int64 {
 		e, ok := c.GetEntryQuietly(1)
 		require.True(t, ok)
@@ -1470,8 +1410,8 @@ func TestCache_ReadsWithinExpireToleranceKeepTheDeadline(t *testing.T) {
 	}
 
 	// A read within the tolerance of the last stored deadline does not write a new one, so that
-	// readers of a hot key don't all write to its node.
-	c := newCache(time.Minute)
+	// readers of a hot key don't all write to its node. The arithmetic is tested in
+	// TestMoveDeadline.
 	set := deadline(c)
 	fs.Sleep(expireTolerance / 2)
 	c.GetIfPresent(1)
@@ -1480,28 +1420,11 @@ func TestCache_ReadsWithinExpireToleranceKeepTheDeadline(t *testing.T) {
 	c.GetIfPresent(1)
 	require.Equal(t, set+int64(expireTolerance*3/2), deadline(c), "a read past the tolerance kept the deadline")
 
-	// A deadline with no more than the tolerance left is updated, so that a lifetime only a little
-	// longer than the tolerance is not cut short.
-	near := newCache(expireTolerance * 3 / 2)
-	set = deadline(near)
-	fs.Sleep(expireTolerance * 9 / 10)
-	near.GetIfPresent(1)
-	require.Equal(t, set+int64(expireTolerance*9/10), deadline(near), "a deadline that was almost due was kept")
-
 	// The deadline the caller asks for is set exactly.
 	c.SetExpiresAfter(1, time.Minute+expireTolerance/2)
 	require.Equal(t, fs.NowNano()+int64(time.Minute+expireTolerance/2), deadline(c))
 
-	// A lifetime within the tolerance is updated on every read.
-	short := newCache(expireTolerance / 2)
-	set = deadline(short)
-	fs.Sleep(expireTolerance / 4)
-	short.GetIfPresent(1)
-	require.Equal(t, set+int64(expireTolerance/4), deadline(short))
-
 	runtime.KeepAlive(c)
-	runtime.KeepAlive(near)
-	runtime.KeepAlive(short)
 }
 
 // newDeferredCache returns a cache whose executor queues tasks until run is called, so that an

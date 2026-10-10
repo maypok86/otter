@@ -44,14 +44,6 @@ const (
 
 	minWriteBufferSize = 4
 	writeBufferRetries = 100
-
-	// expireTolerance is how far a read may move an entry's deadline without writing it. The clock
-	// counts nanoseconds, so with an expiration that is reset on every read, each read would store
-	// a new deadline, and readers of a hot key would all write to the same cache line. The deadline
-	// is left as it is only while both the current and the new lifetime are longer than
-	// expireTolerance, so an entry may expire up to expireTolerance early, or late if the
-	// calculator shortens its lifetime by less than that.
-	expireTolerance = time.Second
 )
 
 const (
@@ -225,22 +217,21 @@ func (c *cache[K, V]) newNode(key K, value V, weight uint32, expiresAt, refresha
 }
 
 // writeEntry describes a write before it is applied: the new value and weight with the
-// timestamps of the node it replaces, which are kept unless the calculators change them. A
-// write over an expired node creates the entry, which sees no timestamps, as for an absent key.
+// timestamps of the node it replaces, which are kept unless the calculators change them. old is
+// nil for a creation, which sees no timestamps.
 func (c *cache[K, V]) writeEntry(key K, value V, weight uint32, old node.Node[K, V], nanos int64) Entry[K, V] {
 	nowNano := noTime
 	if c.withTime {
 		nowNano = nanos
 	}
-	oldLive := old != nil && !old.HasExpired(nanos)
 
 	expiresAt := unreachableExpiresAt
-	if c.withExpiration && oldLive {
+	if c.withExpiration && old != nil {
 		expiresAt = old.ExpiresAt()
 	}
 
 	refreshableAt := unreachableRefreshableAt
-	if c.withRefresh && oldLive {
+	if c.withRefresh && old != nil {
 		refreshableAt = old.RefreshableAt()
 	}
 
@@ -371,47 +362,12 @@ func (c *cache[K, V]) calcExpiresAtAfterRead(n node.Node[K, V], nowNano int64) {
 	}
 
 	entry := c.nodeToEntry(n, nowNano)
-	expiresAfter := c.expiryCalculator.ExpireAfterRead(entry)
 	// The new deadline is derived from the entry the calculator was shown, so it may only replace
 	// that entry's deadline. A writer can store a new deadline in place in the meantime, and
 	// comparing against a fresh read of the node would revert it to one derived from the old value.
-	c.casExpiresAfterRead(n, entry.ExpiresAtNano, nowNano, expiresAfter, expireTolerance)
-}
-
-// casExpiresAfterRead moves the deadline from expiresAt to nowNano + expiresAfter, and reports
-// whether it moved it earlier. While both the current and the new lifetime are longer than
-// tolerance, a deadline that would move by at most tolerance is left as it is.
-func (c *cache[K, V]) casExpiresAfterRead(
-	n node.Node[K, V],
-	expiresAt, nowNano int64,
-	expiresAfter, tolerance time.Duration,
-) bool {
-	if expiresAfter <= 0 {
-		return false
+	if next, ok := expiresAtAfterRead(c.expiryCalculator, entry, nowNano); ok {
+		n.CASExpiresAt(entry.ExpiresAtNano, next)
 	}
-
-	next := deadlineAfter(nowNano, expiresAfter)
-	if next == expiresAt {
-		// Also a deadline that is never reached: storing it again would still take the cache line.
-		return false
-	}
-	currentDuration := time.Duration(expiresAt - nowNano)
-	diff := time.Duration(xmath.Abs(int64(expiresAfter - currentDuration)))
-	if diff <= tolerance && expiresAfter > tolerance && currentDuration > tolerance {
-		return false
-	}
-	return n.CASExpiresAt(expiresAt, next) && next < expiresAt
-}
-
-// deadlineAfter returns nowNano + d, saturated at math.MaxInt64, the time that is never reached.
-// The documented "never" duration is math.MaxInt64, and with a clock that counts from the Unix
-// epoch the plain sum would wrap to a deadline in the past. A sum with a negative nowNano cannot
-// overflow.
-func deadlineAfter(nowNano int64, d time.Duration) int64 {
-	if nowNano > 0 && int64(d) > math.MaxInt64-nowNano {
-		return math.MaxInt64
-	}
-	return nowNano + int64(d)
 }
 
 // GetEntry returns the cache entry associated with the key in this cache.
@@ -459,7 +415,8 @@ func (c *cache[K, V]) SetExpiresAfter(key K, expiresAfter time.Duration) {
 	}
 
 	// The caller asked for this deadline, so it is set exactly.
-	earlier := c.casExpiresAfterRead(n, expiresAt, nowNano, expiresAfter, 0)
+	next, ok := moveDeadline(expiresAt, nowNano, expiresAfter, 0)
+	earlier := ok && n.CASExpiresAt(expiresAt, next) && next < expiresAt
 	c.afterRead(n, nowNano, false, false)
 	if earlier {
 		// The read buffer may drop the access, and the node would then wait in the timer wheel's
@@ -483,27 +440,10 @@ func (c *cache[K, V]) SetRefreshableAfter(key K, refreshableAfter time.Duration)
 		return
 	}
 
-	entry := c.nodeToEntry(n, nowNano)
-	currentDuration := entry.RefreshableAfter()
-	if refreshableAfter > 0 && currentDuration != refreshableAfter {
-		n.SetRefreshableAt(deadlineAfter(nowNano, refreshableAfter))
+	refreshableAt := n.RefreshableAt()
+	if next := nextDeadline(refreshableAt, nowNano, refreshableAfter); next != refreshableAt {
+		n.SetRefreshableAt(next)
 	}
-}
-
-// expiresAtAfterWrite returns the expiration time of the node written as entry, which replaces
-// old (nil for an insertion).
-func (c *cache[K, V]) expiresAtAfterWrite(entry Entry[K, V], old node.Node[K, V], oldValue V, nowNano int64) int64 {
-	var expiresAfter time.Duration
-	if old == nil || old.HasExpired(nowNano) {
-		expiresAfter = c.expiryCalculator.ExpireAfterCreate(entry)
-	} else {
-		expiresAfter = c.expiryCalculator.ExpireAfterUpdate(entry, oldValue)
-	}
-
-	if expiresAfter > 0 && entry.ExpiresAfter() != expiresAfter {
-		return deadlineAfter(nowNano, expiresAfter)
-	}
-	return entry.ExpiresAtNano
 }
 
 func (c *cache[K, V]) set(key K, value V, onlyIfAbsent bool) (V, bool) {
@@ -582,13 +522,18 @@ func (c *cache[K, V]) atomicSet(
 		oldValue = old.Value()
 	}
 	weight := c.weigher(key, value)
-	entry := c.writeEntry(key, value, weight, old, nowNano)
+	kind := newWriteKind(old != nil && !old.HasExpired(nowNano), cl != nil && cl.isRefresh)
+	base := old
+	if kind == createWrite {
+		base = nil
+	}
+	entry := c.writeEntry(key, value, weight, base, nowNano)
 	if c.withExpiration {
-		entry.ExpiresAtNano = c.expiresAtAfterWrite(entry, old, oldValue, nowNano)
+		entry.ExpiresAtNano = expiresAtAfterWrite(c.expiryCalculator, kind, entry, oldValue, nowNano)
 	}
 	if c.withRefresh {
 		// after the expiration time, so that the refresh calculator sees the new one
-		entry.RefreshableAtNano = c.refreshableAtAfterWrite(entry, old, oldValue, cl, nowNano)
+		entry.RefreshableAtNano = refreshableAtAfterWrite(c.refreshCalculator, kind, entry, oldValue, nil, nowNano)
 	}
 
 	if old != nil && c.withMaintenance && old.IsAlive() && old.CanSetValue() {
@@ -1059,40 +1004,6 @@ func isRefreshBase[K comparable, V any](base, current node.Node[K, V], nowNano i
 	return current == nil || current.HasExpired(nowNano)
 }
 
-// refreshableAtAfterWrite returns the refresh time of the node written as entry, which
-// replaces old (nil for an insertion) with the result of cl (nil for a plain write). A write
-// over an expired node creates the entry, as for the expiry calculator.
-func (c *cache[K, V]) refreshableAtAfterWrite(
-	entry Entry[K, V],
-	old node.Node[K, V],
-	oldValue V,
-	cl *call[K, V],
-	nowNano int64,
-) int64 {
-	var refreshableAfter time.Duration
-	oldLive := old != nil && !old.HasExpired(nowNano)
-	//nolint:gocritic // it's ok
-	if cl != nil && cl.isRefresh && oldLive {
-		if cl.isNotFound {
-			return entry.RefreshableAtNano
-		}
-		if cl.err != nil {
-			refreshableAfter = c.refreshCalculator.RefreshAfterReloadFailure(entry, cl.err)
-		} else {
-			refreshableAfter = c.refreshCalculator.RefreshAfterReload(entry, oldValue)
-		}
-	} else if oldLive {
-		refreshableAfter = c.refreshCalculator.RefreshAfterUpdate(entry, oldValue)
-	} else {
-		refreshableAfter = c.refreshCalculator.RefreshAfterCreate(entry)
-	}
-
-	if refreshableAfter > 0 && entry.RefreshableAfter() != refreshableAfter {
-		return deadlineAfter(nowNano, refreshableAfter)
-	}
-	return entry.RefreshableAtNano
-}
-
 func (c *cache[K, V]) afterDeleteCall(cl *call[K, V]) {
 	var (
 		inserted    bool
@@ -1147,7 +1058,8 @@ func (c *cache[K, V]) afterDeleteCall(cl *call[K, V]) {
 		if cl.err != nil {
 			// A failed refresh of an absent key leaves an expired node that it matched as it is.
 			if isCorrectCall && cl.isRefresh && oldNode != nil && !oldNode.HasExpired(nowNano) && c.withRefresh {
-				oldNode.SetRefreshableAt(c.refreshableAtAfterWrite(c.nodeToEntry(oldNode, nowNano), oldNode, oldNode.Value(), cl, nowNano))
+				entry := c.nodeToEntry(oldNode, nowNano)
+				oldNode.SetRefreshableAt(refreshableAtAfterWrite(c.refreshCalculator, reloadFailure, entry, entry.Value, cl.err, nowNano))
 			}
 			return oldNode
 		}
