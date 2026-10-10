@@ -1,0 +1,85 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 900 480"><path d="M 0 0
+L 900 0
+L 900 480
+L 0 480
+L 0 0" style="stroke:none;fill:white"/><text x="259" y="42" style="stroke:none;fill:rgb(70,70,70);font-size:21.3px;font-family:'Roboto Medium',sans-serif">Expiration (zipf): reads=0%,writes=100%</text><path d="M 20 432
+L 50 432
+L 50 445
+L 20 445
+L 20 432" style="stroke:none;fill:rgb(84,112,198)"/><text x="52" y="444" style="stroke:none;fill:rgb(70,70,70);font-size:16px;font-family:'Roboto Medium',sans-serif">otter</text><path d="M 106 432
+L 136 432
+L 136 445
+L 106 445
+L 106 432" style="stroke:none;fill:rgb(145,204,117)"/><text x="138" y="444" style="stroke:none;fill:rgb(70,70,70);font-size:16px;font-family:'Roboto Medium',sans-serif">theine</text><path d="M 203 432
+L 233 432
+L 233 445
+L 203 445
+L 203 432" style="stroke:none;fill:rgb(250,200,88)"/><text x="235" y="444" style="stroke:none;fill:rgb(70,70,70);font-size:16px;font-family:'Roboto Medium',sans-serif">ristretto</text><path d="M 313 432
+L 343 432
+L 343 445
+L 313 445
+L 313 432" style="stroke:none;fill:rgb(59,162,114)"/><text x="345" y="444" style="stroke:none;fill:rgb(70,70,70);font-size:16px;font-family:'Roboto Medium',sans-serif">phuslu</text><path d="M 414 432
+L 444 432
+L 444 445
+L 414 445
+L 414 432" style="stroke:none;fill:rgb(116,159,131)"/><text x="446" y="444" style="stroke:none;fill:rgb(70,70,70);font-size:16px;font-family:'Roboto Medium',sans-serif">freelru</text><path d="M 514 432
+L 544 432
+L 544 445
+L 514 445
+L 514 432" style="stroke:none;fill:rgb(238,102,102)"/><text x="546" y="444" style="stroke:none;fill:rgb(70,70,70);font-size:16px;font-family:'Roboto Medium',sans-serif">sturdyc</text><path d="M 620 432
+L 650 432
+L 650 445
+L 620 445
+L 620 432" style="stroke:none;fill:rgb(115,192,222)"/><text x="652" y="444" style="stroke:none;fill:rgb(70,70,70);font-size:16px;font-family:'Roboto Medium',sans-serif">ccache</text><path d="M 724 432
+L 754 432
+L 754 445
+L 724 445
+L 724 432" style="stroke:none;fill:rgb(252,132,82)"/><text x="756" y="444" style="stroke:none;fill:rgb(70,70,70);font-size:16px;font-family:'Roboto Medium',sans-serif">ttlcache</text><path d="M 20 448
+L 50 448
+L 50 461
+L 20 461
+L 20 448" style="stroke:none;fill:rgb(154,96,180)"/><text x="52" y="460" style="stroke:none;fill:rgb(70,70,70);font-size:16px;font-family:'Roboto Medium',sans-serif">golang-lru</text><text x="34" y="245" style="stroke:none;fill:rgb(70,70,70);font-size:16px;font-family:'Roboto Medium',sans-serif" transform="rotate(270.00,34,245)">ops/s</text><text x="39" y="63" style="stroke:none;fill:rgb(70,70,70);font-size:16px;font-family:'Roboto Medium',sans-serif">50M</text><text x="39" y="129" style="stroke:none;fill:rgb(70,70,70);font-size:16px;font-family:'Roboto Medium',sans-serif">40M</text><text x="39" y="196" style="stroke:none;fill:rgb(70,70,70);font-size:16px;font-family:'Roboto Medium',sans-serif">30M</text><text x="39" y="263" style="stroke:none;fill:rgb(70,70,70);font-size:16px;font-family:'Roboto Medium',sans-serif">20M</text><text x="39" y="330" style="stroke:none;fill:rgb(70,70,70);font-size:16px;font-family:'Roboto Medium',sans-serif">10M</text><text x="62" y="397" style="stroke:none;fill:rgb(70,70,70);font-size:16px;font-family:'Roboto Medium',sans-serif">0</text><path d="M 78 57
+L 880 57" style="stroke-width:1;stroke:rgb(224,230,242);fill:none"/><path d="M 78 124
+L 880 124" style="stroke-width:1;stroke:rgb(224,230,242);fill:none"/><path d="M 78 191
+L 880 191" style="stroke-width:1;stroke:rgb(224,230,242);fill:none"/><path d="M 78 258
+L 880 258" style="stroke-width:1;stroke:rgb(224,230,242);fill:none"/><path d="M 78 325
+L 880 325" style="stroke-width:1;stroke:rgb(224,230,242);fill:none"/><path d="M 82 393
+L 880 393" style="stroke-width:1;stroke:rgb(110,112,121);fill:none"/><path d="M 82 398
+L 82 393" style="stroke-width:1;stroke:rgb(110,112,121);fill:none"/><path d="M 880 398
+L 880 393" style="stroke-width:1;stroke:rgb(110,112,121);fill:none"/><path d="M 92 202
+L 174 202
+L 174 392
+L 92 392
+L 92 202" style="stroke:none;fill:rgb(84,112,198)"/><path d="M 179 370
+L 261 370
+L 261 392
+L 179 392
+L 179 370" style="stroke:none;fill:rgb(145,204,117)"/><path d="M 266 379
+L 348 379
+L 348 392
+L 266 392
+L 266 379" style="stroke:none;fill:rgb(250,200,88)"/><path d="M 353 110
+L 435 110
+L 435 392
+L 353 392
+L 353 110" style="stroke:none;fill:rgb(59,162,114)"/><path d="M 440 234
+L 522 234
+L 522 392
+L 440 392
+L 440 234" style="stroke:none;fill:rgb(116,159,131)"/><path d="M 527 332
+L 609 332
+L 609 392
+L 527 392
+L 527 332" style="stroke:none;fill:rgb(238,102,102)"/><path d="M 614 382
+L 696 382
+L 696 392
+L 614 392
+L 614 382" style="stroke:none;fill:rgb(115,192,222)"/><path d="M 701 365
+L 783 365
+L 783 392
+L 701 392
+L 701 365" style="stroke:none;fill:rgb(252,132,82)"/><path d="M 788 360
+L 870 360
+L 870 392
+L 788 392
+L 788 360" style="stroke:none;fill:rgb(154,96,180)"/><text x="114" y="197" style="stroke:none;fill:rgb(70,70,70);font-size:13.3px;font-family:'Roboto Medium',sans-serif">28.5M</text><text x="205" y="365" style="stroke:none;fill:rgb(70,70,70);font-size:13.3px;font-family:'Roboto Medium',sans-serif">3.5M</text><text x="292" y="374" style="stroke:none;fill:rgb(70,70,70);font-size:13.3px;font-family:'Roboto Medium',sans-serif">2.1M</text><text x="375" y="105" style="stroke:none;fill:rgb(70,70,70);font-size:13.3px;font-family:'Roboto Medium',sans-serif">42.1M</text><text x="462" y="229" style="stroke:none;fill:rgb(70,70,70);font-size:13.3px;font-family:'Roboto Medium',sans-serif">23.8M</text><text x="553" y="327" style="stroke:none;fill:rgb(70,70,70);font-size:13.3px;font-family:'Roboto Medium',sans-serif">9.1M</text><text x="640" y="377" style="stroke:none;fill:rgb(70,70,70);font-size:13.3px;font-family:'Roboto Medium',sans-serif">1.7M</text><text x="727" y="360" style="stroke:none;fill:rgb(70,70,70);font-size:13.3px;font-family:'Roboto Medium',sans-serif">4.3M</text><text x="814" y="355" style="stroke:none;fill:rgb(70,70,70);font-size:13.3px;font-family:'Roboto Medium',sans-serif">4.9M</text></svg>

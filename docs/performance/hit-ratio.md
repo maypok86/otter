@@ -2,23 +2,25 @@
 
 The hit rate simulation code is available [here](https://github.com/maypok86/otter/tree/main/benchmarks/simulator).
 
+Every chart also shows `optimal`, Belady's MIN policy. It knows the whole trace: it evicts the entry that is needed again furthest in the future, and it doesn't admit an entry that would be evicted first. No cache can beat it on the same trace, which makes it a useful upper bound. It levels off too, because the first access to a key is a miss for any cache.
+
 ## Traditional traces
 
 ### Zipf
 
-![zipf](../results/hit-ratio/zipf.png)
+![zipf](../results/hit-ratio/zipf.svg)
 
 ### S3
 
 This trace is described as "disk read accesses initiated by a large commercial search engine in response to various web search requests.".
 
-![s3](../results/hit-ratio/s3.png)
+![s3](../results/hit-ratio/s3.svg)
 
 ### DS1
 
 This trace is described as "a database server running at a commercial site running an ERP application on top of a commercial database.".
 
-![ds1](../results/hit-ratio/ds1.png)
+![ds1](../results/hit-ratio/ds1.svg)
 
 ### P8
 
@@ -26,31 +28,31 @@ The trace P8 was collected from workstations running Windows NT by using Vtrace
 which captures disk operations through the use of device
 filters.
 
-![p8](../results/hit-ratio/p8.png)
+![p8](../results/hit-ratio/p8.svg)
 
 ### Glimpse
 
 This trace exhibits a looping access pattern.
 
-![glimpse](../results/hit-ratio/glimpse.png)
+![glimpse](../results/hit-ratio/glimpse.svg)
 
 ### OLTP
 
 This trace is described as "references to a CODASYL database for a one-hour period.".
 
-![oltp](../results/hit-ratio/oltp.png)
+![oltp](../results/hit-ratio/oltp.svg)
 
 ### Scarab
 
 Scarab Research 1 hour database trace. Frequency is a negative signal in this workload.
 
-![scarab](../results/hit-ratio/scarab.png)
+![scarab](../results/hit-ratio/scarab.svg)
 
 ### Mixed
 
 This workload shifts between a recency-skewed trace (Corda) and a frequency-skewed trace (Lirs' LOOP).
 
-![mixed](../results/hit-ratio/mixed.png)
+![mixed](../results/hit-ratio/mixed.svg)
 
 ## Conclusion
 

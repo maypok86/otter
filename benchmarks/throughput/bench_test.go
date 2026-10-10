@@ -30,9 +30,10 @@ func newClients(ttl time.Duration) []client.Client[string, string] {
 		&client.Otter[string, string]{TTL: ttl},
 		&client.Theine[string, string]{TTL: ttl},
 		&client.Ristretto[string, string]{TTL: ttl},
+		&client.Phuslu[string, string]{TTL: ttl},
+		&client.FreeLRU[string, string]{TTL: ttl},
 		&client.Sturdyc[string]{TTL: ttl},
 		&client.Ccache[string]{TTL: ttl},
-		&client.Gcache[string, string]{TTL: ttl},
 		&client.TTLCache[string, string]{TTL: ttl},
 		&client.GolangLRU[string, string]{TTL: ttl},
 	}

@@ -50,17 +50,19 @@ var colors = map[string]string{
 	"ristretto":  "#fac858",
 	"sturdyc":    "#ee6666",
 	"ccache":     "#73c0de",
-	"gcache":     "#3ba272",
+	"phuslu":     "#3ba272",
+	"freelru":    "#749f83",
 	"ttlcache":   "#fc8452",
 	"golang-lru": "#9a60b4",
 	"lru":        "#9a60b4",
 	"arc":        "#ea7ccc",
 	"s3-fifo":    "#2f4554",
 	"clock-pro":  "#61a0a8",
+	"optimal":    "#6e7074",
 }
 
 // fallbackColors are used for the series without a fixed color.
-var fallbackColors = []string{"#d48265", "#749f83", "#ca8622", "#bda29a", "#6e7074", "#546570"}
+var fallbackColors = []string{"#d48265", "#ca8622", "#bda29a", "#546570"}
 
 func theme(names []string) charts.ColorPalette {
 	series := make([]charts.Color, 0, len(names))

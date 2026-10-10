@@ -7,9 +7,9 @@ replace github.com/maypok86/otter/v2 => ../
 require (
 	github.com/BurntSushi/toml v1.5.0
 	github.com/Yiling-J/theine-go v0.6.2
-	github.com/bluele/gcache v0.0.2
 	github.com/dgraph-io/ristretto/v2 v2.4.2
 	github.com/dgryski/go-clockpro v0.0.0-20140817124034-edc6d3eeb96e
+	github.com/elastic/go-freelru v0.16.0
 	github.com/go-analyze/charts v0.6.1
 	github.com/hashicorp/golang-lru/arc/v2 v2.0.7
 	github.com/hashicorp/golang-lru/v2 v2.0.7
@@ -18,6 +18,7 @@ require (
 	github.com/klauspost/compress v1.18.0
 	github.com/maypok86/otter/v2 v2.0.0-00010101000000-000000000000
 	github.com/olekukonko/tablewriter v0.0.5
+	github.com/phuslu/lru v1.0.24
 	github.com/pingcap/go-ycsb v1.0.1
 	github.com/scalalang2/golang-fifo/v2 v2.0.0-20231212012136-274aca942e14
 	github.com/ulikunitz/xz v0.5.12
