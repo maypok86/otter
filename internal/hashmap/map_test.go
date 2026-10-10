@@ -744,6 +744,26 @@ func TestMap_ResizeKeepsHasher(t *testing.T) {
 	}
 }
 
+func TestMap_LateGrowDoesNotGrowAgain(t *testing.T) {
+	t.Parallel()
+
+	// A writer that saw a full chain unlocks its bucket and only then starts
+	// the resize. If another writer has grown the table in between, the late
+	// one must not grow the new table again.
+	nm := testNodeManager[int, int]()
+	m := New(nm)
+	seen := m.table.Load()
+	m.resize(seen, mapGrowHint)
+	grown := len(m.table.Load().buckets)
+	m.resize(seen, mapGrowHint)
+	if l := len(m.table.Load().buckets); l != grown {
+		t.Fatalf("a table of %d buckets was expected, got: %d", grown, l)
+	}
+	if g := m.totalGrowths.Load(); g != 1 {
+		t.Fatalf("one growth was expected, got: %d", g)
+	}
+}
+
 func TestMapParallelCopy(t *testing.T) {
 	t.Parallel()
 

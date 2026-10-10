@@ -417,6 +417,12 @@ func (m *Map[K, V, N]) resize(knownTable *mapTable[K], hint mapResizeHint) {
 	tableLen := len(table.buckets)
 	switch hint {
 	case mapGrowHint:
+		if table != knownTable {
+			// The caller saw knownTable full, but another writer has grown it
+			// since. Growing again would double a table that has room.
+			m.finishResize()
+			return
+		}
 		// Grow the table with factor of 2. The new table keeps the hasher,
 		// so that the copy can write to its buckets without locking them
 		// (see copyBuckets).
@@ -430,10 +436,7 @@ func (m *Map[K, V, N]) resize(knownTable *mapTable[K], hint mapResizeHint) {
 			newTable = newMapTable(tableLen>>1, table.hasher)
 		} else {
 			// No need to shrink. Wake up all waiters and give up.
-			m.resizeMu.Lock()
-			m.resizing.Store(false)
-			m.resizeCond.Broadcast()
-			m.resizeMu.Unlock()
+			m.finishResize()
 			return
 		}
 	case mapClearHint:
@@ -447,6 +450,11 @@ func (m *Map[K, V, N]) resize(knownTable *mapTable[K], hint mapResizeHint) {
 	}
 	// Publish the new table and wake up all waiters.
 	m.table.Store(newTable)
+	m.finishResize()
+}
+
+// finishResize clears the resize flag and wakes up the writers waiting for it.
+func (m *Map[K, V, N]) finishResize() {
 	m.resizeMu.Lock()
 	m.resizing.Store(false)
 	m.resizeCond.Broadcast()
