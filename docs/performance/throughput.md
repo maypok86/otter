@@ -1,127 +1,198 @@
 # Throughput
 
-Throughput benchmarks are a Go port of the Caffeine [benchmarks](https://github.com/ben-manes/caffeine/blob/master/caffeine/src/jmh/java/com/github/benmanes/caffeine/cache/GetPutBenchmark.java).
+Throughput benchmarks are a Go port of the Caffeine [benchmarks](https://github.com/ben-manes/caffeine/blob/master/caffeine/src/jmh/java/com/github/benmanes/caffeine/cache/GetPutBenchmark.java), extended with workloads that evict, expire, load and don't fit in the CPU caches.
 
-### Description
+## Setup
 
-The [benchmark](https://github.com/maypok86/benchmarks/blob/main/throughput/bench_test.go) that I use has a pre-populated cache with a zipf distribution for the access requests. That creates hot spots as some entries are used much more often than others, just like a real cache would experience. A common mistake is a uniform policy (distribution consisting of unique elements) which evenly spreads the contention, which would imply random replacement is the ideal policy. A skewed distribution means that locks suffer higher contention so it exacerbates that as a problems, while also benefiting contention-free implementations who can better utilize the cpu cache.
+| | |
+|---|---|
+| CPU | Apple M4 Pro: 8 performance cores in two clusters of 4, each cluster with a shared 16 MB L2, and 4 efficiency cores |
+| Go | 1.27.1 |
+| Caches | otter (main), theine v0.6.2, ristretto v2.4.2, phuslu/lru v1.0.24, go-freelru v0.16.0, sturdyc v1.1.6, ccache v3.0.8, ttlcache v3.4.1, golang-lru v2.0.7 |
+| Method | 8 rounds, each running every cache once, so a slowdown of the machine is spread over all of them. The charts show the median. |
+
+Every cache is bounded by the number of entries. sturdyc and ccache always expire entries, so they run with a 1 hour TTL everywhere; the others get a TTL only in the expiration benchmark. All benchmarks except the thread scaling run on 8 threads. The benchmark also reports the hit ratio, so a cache that drops entries can't look faster than it is.
+
+The source code is [here](https://github.com/maypok86/otter/blob/main/benchmarks/throughput/bench_test.go). To reproduce the results, run `benchmarks/throughput/bench.sh`.
+
+## Classic benchmark
+
+The cache is pre-populated, and the requests follow a zipf distribution. That creates hot spots as some entries are used much more often than others, just like a real cache would experience. A common mistake is a uniform policy (distribution consisting of unique elements) which evenly spreads the contention, which would imply random replacement is the ideal policy. A skewed distribution means that locks suffer higher contention so it exacerbates that as a problem, while also benefiting contention-free implementations who can better utilize the cpu cache.
 
 The benchmark's overhead is thread-local work for an index increment, array lookup, loop, and operation counter. If we introduce a cost like data dependencies (such as by using a random number generator to select the next key), we'd see this fall sharply as we no longer allow the CPU/compiler to use the hardware's full potential.
 
-Also in benchmarks, the cache initially fully populated because a cache miss always takes much less time than a hit, since you don't need to update the eviction policy. Because of this, implementations with a small hit ratio get a huge advantage and as a result it is easy to misinterpret the results of such benchmarks.
+Every key fits in the cache, so every read is a hit and every write is an update. A miss is much cheaper than a hit because there is no eviction policy to update, and with every key in the cache, a cache can't look faster by losing entries. The benchmarks below cover misses and eviction.
 
-In the end, I think this is one of the best benchmarks to compare cache speeds because this micro-benchmark tries to isolate the costs to only measuring the cache in a concurrent workload. It would show bottlenecks such as due to hardware cache coherence, data dependencies, poor branch prediction, saturation of the logic units (there are multiple ALUs for every FP unit), (lack of) SIMD, waits on the store buffer, blocking and context switches, system calls, inefficient algorithms, etc.
+This micro-benchmark tries to isolate the costs to only measuring the cache in a concurrent workload. It would show bottlenecks such as due to hardware cache coherence, data dependencies, poor branch prediction, saturation of the logic units, (lack of) SIMD, waits on the store buffer, blocking and context switches, system calls, inefficient algorithms, etc.
 
-### Read (100%)
+The read/write mix is split by threads: with 75% reads, 6 threads read and 2 threads write.
 
-In this [benchmark](https://github.com/maypok86/otter/blob/main/benchmarks/throughput/bench_test.go) **8 threads** concurrently read from a cache configured with a maximum size.
+=== "reads=100%"
 
-![reads=100%,writes=0%](../results/throughput/reads=100,writes=0.png)
+    ![reads=100%,writes=0%](../results/throughput/reads=100,writes=0.svg)
 
-### Read (75%) / Write (25%)
+=== "reads=75%"
 
-In this [benchmark](https://github.com/maypok86/otter/blob/main/benchmarks/throughput/bench_test.go) **6 threads** concurrently read from and **2 threads** write to a cache configured with a maximum size.
+    ![reads=75%,writes=25%](../results/throughput/reads=75,writes=25.svg)
 
-![reads=75%,writes=25%](../results/throughput/reads=75,writes=25.png)
+=== "reads=50%"
 
-### Read (50%) / Write (50%)
+    ![reads=50%,writes=50%](../results/throughput/reads=50,writes=50.svg)
 
-In this [benchmark](https://github.com/maypok86/otter/blob/main/benchmarks/throughput/bench_test.go) **4 threads** concurrently read from and **4 threads** write to a cache configured with a maximum size.
+=== "reads=25%"
 
-![reads=50%,writes=50%](../results/throughput/reads=50,writes=50.png)
+    ![reads=25%,writes=75%](../results/throughput/reads=25,writes=75.svg)
 
-### Read (25%) / Write (75%)
+=== "reads=0%"
 
-In this [benchmark](https://github.com/maypok86/otter/blob/main/benchmarks/throughput/bench_test.go) **2 threads** concurrently read from and **6 threads** write to a cache configured with a maximum size.
+    ![reads=0%,writes=100%](../results/throughput/reads=0,writes=100.svg)
 
-![reads=25%,writes=75%](../results/throughput/reads=25,writes=75.png)
+## Thread scaling
 
-### Write (100%)
+The classic benchmark on 1, 2, 4 and 8 threads. At least 8 goroutines always run, so that the read/write split stays the same on fewer cores. The efficiency cores are left out: they are slower, so they would show the difference between the cores rather than how the caches scale.
 
-In this [benchmark](https://github.com/maypok86/otter/blob/main/benchmarks/throughput/bench_test.go) **8 threads** concurrently write to a cache configured with a maximum size.
+Up to 4 threads, all of them can run in one cluster and share its L2. From 4 to 8 the second cluster joins, and every cache line that both clusters write has to travel between them. On pure reads, only otter and theine grow noticeably from 4 to 8 threads. With 75% reads, only otter does. With writes only, every cache peaks at 4 threads or fewer.
 
-![reads=0%,writes=100%](../results/throughput/reads=0,writes=100.png)
+=== "reads=100%"
 
-### Conclusion
+    ![scaling reads=100%,writes=0%](../results/throughput/scaling_reads=100,writes=0.svg)
 
-Otter maintains excellent throughput under high contention across all workload types, except extreme write-heavy (update-heavy) scenarios. However, such workloads are uncommon for caches, as they typically indicate an inherently low hit rate and usually cache misses are inserts, not updates.
+=== "reads=75%"
+
+    ![scaling reads=75%,writes=25%](../results/throughput/scaling_reads=75,writes=25.svg)
+
+=== "reads=50%"
+
+    ![scaling reads=50%,writes=50%](../results/throughput/scaling_reads=50,writes=50.svg)
+
+=== "reads=25%"
+
+    ![scaling reads=25%,writes=75%](../results/throughput/scaling_reads=25,writes=75.svg)
+
+=== "reads=0%"
+
+    ![scaling reads=0%,writes=100%](../results/throughput/scaling_reads=0,writes=100.svg)
 
 ## Eviction
 
-A [benchmark](https://github.com/maypok86/otter/blob/main/benchmarks/eviction/bench_test.go) that evaluates the eviction performance of a cache. The cache is prepopulated for a 100% eviction rate to mimic worst-case behavior (100% inserts). This benchmark should not be used to compare cache speeds, but it may reveal some interesting issues.
+The cache holds 8,192 entries out of 32,768 keys, so reads miss and writes insert new entries and evict old ones. The requests follow a zipf or a uniform distribution.
 
-capacity=100
-```
-goos: darwin
-goarch: arm64
-pkg: github.com/maypok86/otter/v2/benchmarks/eviction
-cpu: Apple M1 Pro
-BenchmarkCache
-BenchmarkCache/otter_capacity=100
-BenchmarkCache/otter_capacity=100-10         	 3898776	       307.5 ns/op	   3251920 ops/s	      41 B/op	       1 allocs/op
-BenchmarkCache/theine_capacity=100
-BenchmarkCache/theine_capacity=100-10        	 2690583	       425.9 ns/op	   2348010 ops/s	      80 B/op	       1 allocs/op
-BenchmarkCache/ristretto_capacity=100
-BenchmarkCache/ristretto_capacity=100-10     	27816357	        44.95 ns/op	  22246427 ops/s	      68 B/op	       1 allocs/op
-BenchmarkCache/golang-lru_capacity=100
-BenchmarkCache/golang-lru_capacity=100-10    	 4476072	       266.6 ns/op	   3750443 ops/s	      64 B/op	       1 allocs/op
-BenchmarkCache/gcache_capacity=100
-BenchmarkCache/gcache_capacity=100-10        	 3380430	       376.6 ns/op	   2655666 ops/s	     120 B/op	       3 allocs/op
-BenchmarkCache/ttlcache_capacity=100
-BenchmarkCache/ttlcache_capacity=100-10      	 4002375	       290.8 ns/op	   3438486 ops/s	     128 B/op	       2 allocs/op
-```
+Hit ratio with 75% reads:
 
-capacity=10000
-```
-goos: darwin
-goarch: arm64
-pkg: github.com/maypok86/otter/v2/benchmarks/eviction
-cpu: Apple M1 Pro
-BenchmarkCache
-BenchmarkCache/otter_capacity=10000
-BenchmarkCache/otter_capacity=10000-10         	 3020878	       342.2 ns/op	   2922559 ops/s	      41 B/op	       1 allocs/op
-BenchmarkCache/theine_capacity=10000
-BenchmarkCache/theine_capacity=10000-10        	 2648924	       465.2 ns/op	   2149415 ops/s	      80 B/op	       1 allocs/op
-BenchmarkCache/ristretto_capacity=10000
-BenchmarkCache/ristretto_capacity=10000-10     	25218223	        50.80 ns/op	  19686347 ops/s	      69 B/op	       1 allocs/op
-BenchmarkCache/golang-lru_capacity=10000
-BenchmarkCache/golang-lru_capacity=10000-10    	 2870298	       396.6 ns/op	   2521622 ops/s	      64 B/op	       1 allocs/op
-BenchmarkCache/gcache_capacity=10000
-BenchmarkCache/gcache_capacity=10000-10        	 3519871	       373.7 ns/op	   2675902 ops/s	     120 B/op	       3 allocs/op
-BenchmarkCache/ttlcache_capacity=10000
-BenchmarkCache/ttlcache_capacity=10000-10      	 3601334	       321.4 ns/op	   3111849 ops/s	     128 B/op	       2 allocs/op
-PASS
-```
+| Cache | zipf | uniform |
+|---|---|---|
+| otter | 72.7% | 56.6% |
+| theine | 71.8% | 56.0% |
+| ristretto | 72.0% | 55.4% |
+| phuslu/lru | 70.7% | 53.9% |
+| go-freelru | 70.2% | 50.8% |
+| sturdyc | 65.2% | 45.7% |
+| ccache | 69.0% | 52.7% |
+| ttlcache | 63.0% | 42.9% |
+| golang-lru | 68.6% | 51.9% |
 
-capacity=1000000
-```
-goos: darwin
-goarch: arm64
-pkg: github.com/maypok86/otter/v2/benchmarks/eviction
-cpu: Apple M1 Pro
-BenchmarkCache
-BenchmarkCache/otter_capacity=1000000
-BenchmarkCache/otter_capacity=1000000-10         	 2432457	       417.0 ns/op	   2398029 ops/s	      32 B/op	       1 allocs/op
-BenchmarkCache/theine_capacity=1000000
-BenchmarkCache/theine_capacity=1000000-10        	 2130484	       578.4 ns/op	   1728787 ops/s	      80 B/op	       1 allocs/op
-BenchmarkCache/ristretto_capacity=1000000
-BenchmarkCache/ristretto_capacity=1000000-10     	16660399	        64.80 ns/op	  15431051 ops/s	      77 B/op	       1 allocs/op
-BenchmarkCache/golang-lru_capacity=1000000
-BenchmarkCache/golang-lru_capacity=1000000-10    	 2655174	       461.0 ns/op	   2169356 ops/s	      64 B/op	       1 allocs/op
-BenchmarkCache/gcache_capacity=1000000
-BenchmarkCache/gcache_capacity=1000000-10        	 2908304	       424.4 ns/op	   2356435 ops/s	     120 B/op	       3 allocs/op
-BenchmarkCache/ttlcache_capacity=1000000
-BenchmarkCache/ttlcache_capacity=1000000-10      	 2409374	       483.7 ns/op	   2067315 ops/s	     128 B/op	       2 allocs/op
-PASS
-```
+### Zipf
 
-### Conclusion
+=== "reads=100%"
 
-**Otter** demonstrated quite good performance, even though it inherently has a harder time handling a 100% insert workload compared to simple mutex-protected LRU caches (golang-lru, ttlcache, gcache). The reason is that Otter uses a more sophisticated eviction policy, which takes more time to make eviction decisions. Additionally, in this case, the write buffer doesn’t help much simply because we can’t gain time by delaying writes—each one is quickly followed by many others. Otter also allocates the least amount of memory.
+    ![eviction zipf reads=100%,writes=0%](../results/throughput/eviction_zipf_reads=100,writes=0.svg)
 
-**Theine** showed acceptable eviction speed since your system is unlikely to ever exceed 2 million misses per second.
+=== "reads=75%"
 
-**Ristretto** delivered fantastic speed, but unfortunately, this is achieved by dropping inserts due to contention.
-Whether you need this feature is up to you. Just keep in mind that such drops can lead to a significant drop in hit rate under heavy load.
+    ![eviction zipf reads=75%,writes=25%](../results/throughput/eviction_zipf_reads=75,writes=25.svg)
 
-**Gcache, ttlcache, and golang-lru** were added as baseline comparisons against a simple mutex-protected map with LRU, so no further comments here.
+=== "reads=50%"
+
+    ![eviction zipf reads=50%,writes=50%](../results/throughput/eviction_zipf_reads=50,writes=50.svg)
+
+=== "reads=25%"
+
+    ![eviction zipf reads=25%,writes=75%](../results/throughput/eviction_zipf_reads=25,writes=75.svg)
+
+=== "reads=0%"
+
+    ![eviction zipf reads=0%,writes=100%](../results/throughput/eviction_zipf_reads=0,writes=100.svg)
+
+### Uniform
+
+=== "reads=100%"
+
+    ![eviction uniform reads=100%,writes=0%](../results/throughput/eviction_uniform_reads=100,writes=0.svg)
+
+=== "reads=75%"
+
+    ![eviction uniform reads=75%,writes=25%](../results/throughput/eviction_uniform_reads=75,writes=25.svg)
+
+=== "reads=50%"
+
+    ![eviction uniform reads=50%,writes=50%](../results/throughput/eviction_uniform_reads=50,writes=50.svg)
+
+=== "reads=25%"
+
+    ![eviction uniform reads=25%,writes=75%](../results/throughput/eviction_uniform_reads=25,writes=75.svg)
+
+=== "reads=0%"
+
+    ![eviction uniform reads=0%,writes=100%](../results/throughput/eviction_uniform_reads=0,writes=100.svg)
+
+## Expiration
+
+The classic benchmark with a 1 hour expiration after write in every cache.
+
+=== "reads=100%"
+
+    ![expiration reads=100%,writes=0%](../results/throughput/expiration_zipf_reads=100,writes=0.svg)
+
+=== "reads=75%"
+
+    ![expiration reads=75%,writes=25%](../results/throughput/expiration_zipf_reads=75,writes=25.svg)
+
+=== "reads=50%"
+
+    ![expiration reads=50%,writes=50%](../results/throughput/expiration_zipf_reads=50,writes=50.svg)
+
+=== "reads=25%"
+
+    ![expiration reads=25%,writes=75%](../results/throughput/expiration_zipf_reads=25,writes=75.svg)
+
+=== "reads=0%"
+
+    ![expiration reads=0%,writes=100%](../results/throughput/expiration_zipf_reads=0,writes=100.svg)
+
+## Large cache
+
+A million entries, so the hash table no longer fits in the CPU caches. Every key fits in the cache.
+
+=== "reads=100%"
+
+    ![large reads=100%,writes=0%](../results/throughput/large_zipf_reads=100,writes=0.svg)
+
+=== "reads=75%"
+
+    ![large reads=75%,writes=25%](../results/throughput/large_zipf_reads=75,writes=25.svg)
+
+=== "reads=50%"
+
+    ![large reads=50%,writes=50%](../results/throughput/large_zipf_reads=50,writes=50.svg)
+
+=== "reads=25%"
+
+    ![large reads=25%,writes=75%](../results/throughput/large_zipf_reads=25,writes=75.svg)
+
+=== "reads=0%"
+
+    ![large reads=0%,writes=100%](../results/throughput/large_zipf_reads=0,writes=100.svg)
+
+## Loading
+
+Every request goes through the loading API of the caches that have one, on the zipf eviction workload, where part of the requests miss and load the value. The loader returns right away, so the chart shows only the overhead of the cache. ccache doesn't deduplicate concurrent loads of the same key, and the sturdyc and ccache clients build a closure per call, because their APIs take the loader per call.
+
+![loading](../results/throughput/loading_zipf_reads=100,writes=0.svg)
+
+## Conclusion
+
+Otter is the fastest cache on reads, and on every workload with at least half reads, in every benchmark. On pure reads it is 1.5–2.2x faster than the next cache. It also keeps scaling when the second cluster of cores joins in: from 4 to 8 threads it grows on pure reads, as theine does, and with 75% reads, where no other cache does. Under eviction, its hit ratio is the highest or within a point of it.
+
+On write-heavy workloads, phuslu/lru is faster. Its sharded, array-backed LRU makes an insert cheap, while otter also updates its eviction policy and buffers. The gap is the largest when every write is an insert that evicts: about 40M ops/s for phuslu/lru against 8–11M for otter. Such workloads are uncommon for caches, since they mean a low hit ratio, but if that's your workload, a sharded LRU will serve it faster. With a single thread and only writes, a mutex-guarded LRU (golang-lru) is also faster than otter, because there is no contention to save on.
+
+The caches that guard an LRU list with a single mutex (ttlcache, golang-lru) stay at 1.7–6M ops/s on any workload from 2 threads up.
