@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"hash/maphash"
 	"log"
 	"math"
 	"os"
@@ -10,11 +11,12 @@ import (
 	"time"
 
 	"github.com/Yiling-J/theine-go"
-	"github.com/bluele/gcache"
 	"github.com/dgraph-io/ristretto/v2"
+	"github.com/elastic/go-freelru"
 	hashicorp "github.com/hashicorp/golang-lru/v2/expirable"
 	"github.com/jellydator/ttlcache/v3"
 	"github.com/karlseguin/ccache/v3"
+	"github.com/phuslu/lru"
 	"github.com/viccon/sturdyc"
 
 	"github.com/maypok86/otter/v2"
@@ -66,7 +68,8 @@ func main() {
 		"theine":     newTheine,
 		"ristretto":  newRistretto,
 		"ccache":     newCcache,
-		"gcache":     newGcache,
+		"phuslu":     newPhuslu,
+		"freelru":    newFreeLRU,
 		"ttlcache":   newTTLCache,
 		"golang-lru": newHashicorp,
 		"sturdyc":    newSturdyc,
@@ -177,21 +180,40 @@ func newCcache(capacity int) func(string) bool {
 	}
 }
 
-func newGcache(capacity int) func(string) bool {
-	cache := gcache.New(capacity).Expiration(time.Hour).LRU().Build()
+func newPhuslu(capacity int) func(string) bool {
+	cache := lru.NewTTLCache[string, string](capacity)
 	for _, key := range keys {
-		if err := cache.Set(key, key); err != nil {
-			panic(err)
-		}
+		cache.Set(key, key, time.Hour)
 		for i := 0; i < 10; i++ {
-			if _, err := cache.Get(key); err != nil {
-				panic(err)
-			}
+			cache.Get(key)
 		}
 	}
 	return func(key string) bool {
-		_, err := cache.Get(key)
-		return err == nil
+		_, ok := cache.Get(key)
+		return ok
+	}
+}
+
+func newFreeLRU(capacity int) func(string) bool {
+	seed := maphash.MakeSeed()
+	//nolint:gosec // capacity is small enough
+	cache, err := freelru.NewSharded[string, string](uint32(capacity), func(key string) uint32 {
+		//nolint:gosec // only the lower bits are needed
+		return uint32(maphash.String(seed, key))
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	cache.SetLifetime(time.Hour)
+	for _, key := range keys {
+		cache.Add(key, key)
+		for i := 0; i < 10; i++ {
+			cache.Get(key)
+		}
+	}
+	return func(key string) bool {
+		_, ok := cache.Get(key)
+		return ok
 	}
 }
 

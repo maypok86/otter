@@ -17,7 +17,8 @@ var clients = []client.Client[int, struct{}]{
 	&client.Theine[int, struct{}]{},
 	&client.Ristretto[int, struct{}]{},
 	&client.GolangLRU[int, struct{}]{},
-	&client.Gcache[int, struct{}]{},
+	&client.Phuslu[int, struct{}]{},
+	&client.FreeLRU[int, struct{}]{},
 	&client.TTLCache[int, struct{}]{},
 }
 

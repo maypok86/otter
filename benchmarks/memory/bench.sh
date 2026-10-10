@@ -6,9 +6,10 @@ caches=(
   "otter"
   "theine"
   "ristretto"
+  "phuslu"
+  "freelru"
   "sturdyc"
   "ccache"
-  "gcache"
   "ttlcache"
   "golang-lru"
 )
