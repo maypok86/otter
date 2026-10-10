@@ -225,20 +225,22 @@ func (c *cache[K, V]) newNode(key K, value V, weight uint32, expiresAt, refresha
 }
 
 // writeEntry describes a write before it is applied: the new value and weight with the
-// timestamps of the node it replaces, which are kept unless the calculators change them.
+// timestamps of the node it replaces, which are kept unless the calculators change them. A
+// write over an expired node creates the entry, which sees no timestamps, as for an absent key.
 func (c *cache[K, V]) writeEntry(key K, value V, weight uint32, old node.Node[K, V], nanos int64) Entry[K, V] {
 	nowNano := noTime
 	if c.withTime {
 		nowNano = nanos
 	}
+	oldLive := old != nil && !old.HasExpired(nanos)
 
 	expiresAt := unreachableExpiresAt
-	if c.withExpiration && old != nil {
+	if c.withExpiration && oldLive {
 		expiresAt = old.ExpiresAt()
 	}
 
 	refreshableAt := unreachableRefreshableAt
-	if c.withRefresh && old != nil {
+	if c.withRefresh && oldLive {
 		refreshableAt = old.RefreshableAt()
 	}
 

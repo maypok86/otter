@@ -1506,7 +1506,11 @@ func TestCache_ReadsWithinExpireToleranceKeepTheDeadline(t *testing.T) {
 
 // newDeferredCache returns a cache whose executor queues tasks until run is called, so that an
 // expired entry stays in the table until the test lets maintenance remove it.
-func newDeferredCache(clk Clock, refresh RefreshCalculator[int, int]) (c *Cache[int, int], run func()) {
+func newDeferredCache(
+	clk Clock,
+	expiry ExpiryCalculator[int, int],
+	refresh RefreshCalculator[int, int],
+) (c *Cache[int, int], run func()) {
 	var pending []func()
 	run = func() {
 		for len(pending) > 0 {
@@ -1518,7 +1522,7 @@ func newDeferredCache(clk Clock, refresh RefreshCalculator[int, int]) (c *Cache[
 	c = Must(&Options[int, int]{
 		MaximumSize:       10,
 		Clock:             clk,
-		ExpiryCalculator:  ExpiryWriting[int, int](time.Minute),
+		ExpiryCalculator:  expiry,
 		RefreshCalculator: refresh,
 		Executor: func(fn func()) {
 			pending = append(pending, fn)
@@ -1560,7 +1564,7 @@ func TestCache_WriteOverExpiredEntryIsCreation(t *testing.T) {
 			t.Parallel()
 
 			clk := newNonTickingClock()
-			c, run := newDeferredCache(clk, RefreshCreating[int, int](10*time.Second))
+			c, run := newDeferredCache(clk, ExpiryWriting[int, int](time.Minute), RefreshCreating[int, int](10*time.Second))
 			c.Set(1, 1)
 			run()
 			clk.Sleep(2 * time.Minute) // expired, but still in the table
@@ -1606,7 +1610,7 @@ func TestCache_RefreshOfExpiredEntryIsDiscarded(t *testing.T) {
 				return 2, nil
 			})
 			clk := newNonTickingClock()
-			c, run := newDeferredCache(clk, RefreshWriting[int, int](10*time.Second))
+			c, run := newDeferredCache(clk, ExpiryWriting[int, int](time.Minute), RefreshWriting[int, int](10*time.Second))
 			c.Set(1, 1)
 			run()
 			clk.Sleep(30 * time.Second) // refreshable, expires at 1m
@@ -1622,4 +1626,42 @@ func TestCache_RefreshOfExpiredEntryIsDiscarded(t *testing.T) {
 			validateCache(t, c)
 		})
 	}
+}
+
+// A creation sees no expiration or refresh time, whether the key was absent or held an expired
+// entry that is still in the table. A non-positive duration keeps the time it sees: for an
+// absent key, never; over an expired entry, its deadline in the past, which made the new entry
+// invisible at once and refreshable on its first read.
+func TestCache_CreationOverExpiredEntrySeesNoDeadlines(t *testing.T) {
+	t.Parallel()
+
+	// The first value gets a lifetime; any other gets a non-positive duration.
+	durations := func(d time.Duration) func(e Entry[int, int]) time.Duration {
+		return func(e Entry[int, int]) time.Duration {
+			if e.Value == 1 {
+				return d
+			}
+			return 0
+		}
+	}
+	clk := newNonTickingClock()
+	c, run := newDeferredCache(clk,
+		ExpiryWritingFunc(durations(time.Minute)),
+		RefreshWritingFunc(durations(10*time.Second)),
+	)
+	c.Set(1, 1)
+	run()
+	clk.Sleep(2 * time.Minute) // expired, but still in the table
+
+	c.Set(1, 2)
+	c.Set(2, 2) // absent
+	for key := 1; key <= 2; key++ {
+		e, ok := c.GetEntryQuietly(key)
+		require.True(t, ok, "key %d", key)
+		require.Equal(t, unreachableExpiresAt, e.ExpiresAtNano, "key %d", key)
+		require.Equal(t, unreachableRefreshableAt, e.RefreshableAtNano, "key %d", key)
+	}
+
+	run()
+	validateCache(t, c)
 }

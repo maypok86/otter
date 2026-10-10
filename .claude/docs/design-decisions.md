@@ -15,8 +15,8 @@ Audits read this file **after** recording their findings (Phase 1.5 of the audit
   `SetIfAbsent` report no previous value, `Invalidate` reports the key as not present,
   `Compute` gets `found=false`, and `SetExpiresAfter` leaves it alone. Only the listeners see
   its value, with `CauseExpiration`. A write or load over it creates the entry for both
-  calculators (`ExpireAfterCreate`, `RefreshAfterCreate`), and a refresh whose entry expires
-  while it is in flight is discarded.
+  calculators (`ExpireAfterCreate`, `RefreshAfterCreate`), which see no expiration or refresh
+  time, as for an absent key; a refresh whose entry expires while it is in flight is discarded.
 - **The read buffer is lossy.** A dropped access is a lost policy signal, not a bug. Anything
   that must reach the policy (insert, replacement, weight change, earlier deadline) goes
   through the lossless write buffer. One exception: a read whose `ExpireAfterRead` moves the
