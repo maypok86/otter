@@ -501,6 +501,124 @@ func TestMap_MetaMatchesNodes(t *testing.T) {
 	}
 }
 
+// keysInRootBucket returns n int keys that m puts into its first bucket.
+func keysInRootBucket(m *Map[int, int, node.Node[int, int]], n int) []int {
+	table := m.table.Load()
+	//nolint:gosec // there is no overflow
+	mask := uint64(len(table.buckets) - 1)
+	keys := make([]int, 0, n)
+	for k := 0; len(keys) < n; k++ {
+		if h1(table.hasher.Hash(k))&mask == 0 {
+			keys = append(keys, k)
+		}
+	}
+	return keys
+}
+
+func chainLen(b *bucketPadded) int {
+	l := 0
+	for ; b != nil; b = b.next.Load() {
+		l++
+	}
+	return l
+}
+
+func TestMap_UnlinksEmptyOverflowBucket(t *testing.T) {
+	t.Parallel()
+
+	nm := testNodeManager[int, int]()
+	m := New(nm)
+	set := func(k int) {
+		m.Compute(k, func(n node.Node[int, int]) node.Node[int, int] {
+			return newTestNode(nm, k, k)
+		})
+	}
+	del := func(k int) {
+		m.Compute(k, func(n node.Node[int, int]) node.Node[int, int] {
+			return nil
+		})
+	}
+	// Fill the root bucket, one overflow bucket and part of a second one.
+	keys := keysInRootBucket(m, 2*nodesPerMapBucket+3)
+	root := keys[:nodesPerMapBucket:nodesPerMapBucket]
+	middle := keys[nodesPerMapBucket : 2*nodesPerMapBucket : 2*nodesPerMapBucket]
+	tail := keys[2*nodesPerMapBucket:]
+	for _, k := range keys {
+		set(k)
+	}
+	rootb := &m.table.Load().buckets[0]
+	if l := chainLen(rootb); l != 3 {
+		t.Fatalf("a chain of 3 buckets was expected, got: %d", l)
+	}
+
+	// Without unlinking, a table that never resizes keeps the longest chain
+	// it ever had, and every miss walks all of it.
+	for _, k := range middle {
+		del(k)
+	}
+	if l := chainLen(rootb); l != 2 {
+		t.Fatalf("the empty overflow bucket was expected to be unlinked, chain length: %d", l)
+	}
+	for _, k := range append(append([]int{}, root...), tail...) {
+		if m.Get(k) == nil {
+			t.Fatalf("node was not found for %d after unlinking", k)
+		}
+	}
+
+	// Readers must keep finding the nodes behind a bucket that is unlinked
+	// under them. Each round links a bucket of middle keys after the root
+	// and a bucket of tail keys after it, then unlinks the middle bucket
+	// while readers look up the tail keys. A miss only counts while the
+	// round is in that phase, before the tail keys are deleted too.
+	for _, k := range tail {
+		del(k)
+	}
+	var (
+		wg      sync.WaitGroup
+		phase   atomic.Int64
+		stop    atomic.Bool
+		missing atomic.Int64
+	)
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for !stop.Load() {
+				p := phase.Load()
+				if p%2 == 0 {
+					continue
+				}
+				for _, k := range tail {
+					if m.Get(k) == nil && phase.Load() == p {
+						missing.Add(1)
+					}
+				}
+			}
+		}()
+	}
+	for r := int64(0); r < 20_000; r++ {
+		for _, k := range middle {
+			set(k)
+		}
+		for _, k := range tail {
+			set(k)
+		}
+		phase.Store(2*r + 1)
+		for _, k := range middle {
+			del(k)
+		}
+		phase.Store(2*r + 2)
+		for _, k := range tail {
+			del(k)
+		}
+	}
+	stop.Store(true)
+	wg.Wait()
+	if n := missing.Load(); n != 0 {
+		t.Fatalf("nodes behind an unlinked bucket were not found %d times", n)
+	}
+}
+
 func TestMapSetThenParallelDelete_DoesNotShrinkBelowMinTableLen(t *testing.T) {
 	t.Parallel()
 

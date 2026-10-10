@@ -283,6 +283,7 @@ func (m *Map[K, V, N]) Compute(key K, computeFunc func(n N) N) N {
 			goto compute_attempt
 		}
 		b := rootb
+		var prevb *bucketPadded
 		for {
 			metaw := b.meta.Load()
 			markedw := markZeroBytes(metaw^h2w) & metaMask
@@ -301,6 +302,11 @@ func (m *Map[K, V, N]) Compute(key K, computeFunc func(n N) N) N {
 							newmetaw := setByte(metaw, 0, idx)
 							b.meta.Store(newmetaw)
 							atomic.StorePointer(&b.nodes[idx], nil)
+							if newmetaw == 0 && prevb != nil {
+								// Unlink the empty overflow bucket. Readers that are in it
+								// go on to its next bucket, which stays the same.
+								prevb.next.Store(b.next.Load())
+							}
 							rootb.mu.Unlock()
 							table.addSize(bidx, -1)
 							// Might need to shrink the table if we left bucket empty.
@@ -369,6 +375,7 @@ func (m *Map[K, V, N]) Compute(key K, computeFunc func(n N) N) N {
 				table.addSize(bidx, 1)
 				return newNode
 			}
+			prevb = b
 			b = b.next.Load()
 		}
 	}
