@@ -1,10 +1,14 @@
 package client
 
 import (
+	"time"
+
 	"github.com/dgraph-io/ristretto/v2"
 )
 
 type Ristretto[K ristretto.Key, V any] struct {
+	// TTL enables expiration after write when it's positive.
+	TTL    time.Duration
 	client *ristretto.Cache[K, V]
 }
 
@@ -35,6 +39,10 @@ func (c *Ristretto[K, V]) Get(key K) (V, bool) {
 }
 
 func (c *Ristretto[K, V]) Set(key K, value V) {
+	if c.TTL > 0 {
+		c.client.SetWithTTL(key, value, 1, c.TTL)
+		return
+	}
 	c.client.Set(key, value, 1)
 }
 

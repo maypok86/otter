@@ -42,6 +42,40 @@ type Line struct {
 	Format func(float64) string
 }
 
+// colors keeps the color of a cache the same on every chart, even when
+// some caches are missing from it.
+var colors = map[string]string{
+	"otter":      "#5470c6",
+	"theine":     "#91cc75",
+	"ristretto":  "#fac858",
+	"sturdyc":    "#ee6666",
+	"ccache":     "#73c0de",
+	"gcache":     "#3ba272",
+	"ttlcache":   "#fc8452",
+	"golang-lru": "#9a60b4",
+	"lru":        "#9a60b4",
+	"arc":        "#ea7ccc",
+	"s3-fifo":    "#2f4554",
+	"clock-pro":  "#61a0a8",
+}
+
+// fallbackColors are used for the series without a fixed color.
+var fallbackColors = []string{"#d48265", "#749f83", "#ca8622", "#bda29a", "#6e7074", "#546570"}
+
+func theme(names []string) charts.ColorPalette {
+	series := make([]charts.Color, 0, len(names))
+	fallback := 0
+	for _, name := range names {
+		c, ok := colors[name]
+		if !ok {
+			c = fallbackColors[fallback%len(fallbackColors)]
+			fallback++
+		}
+		series = append(series, charts.ParseColor(c))
+	}
+	return charts.GetDefaultTheme().WithSeriesColors(series)
+}
+
 func newPainter() *charts.Painter {
 	return charts.NewPainter(charts.PainterOptions{
 		OutputFormat: charts.ChartOutputSVG,
@@ -85,6 +119,7 @@ func SaveBar(path string, b Bar) error {
 	axisMax, labels := niceAxis(b.Values)
 	p := newPainter()
 	err := p.BarChart(charts.BarChartOption{
+		Theme:      theme(b.Names),
 		Padding:    charts.NewBox(20, 20, 20, 10),
 		Title:      title(b.Title),
 		Legend:     legend(b.Names),
@@ -118,6 +153,7 @@ func SaveLine(path string, l Line) error {
 
 	p := newPainter()
 	err := p.LineChart(charts.LineChartOption{
+		Theme:      theme(l.Names),
 		Padding:    charts.NewBox(20, 20, 20, 10),
 		Title:      title(l.Title),
 		Legend:     legend(l.Names),
@@ -139,8 +175,8 @@ func SaveLine(path string, l Line) error {
 }
 
 // niceAxis returns the maximum of a value axis that starts at zero and the
-// number of its labels, so that the steps are round (1, 2 or 5 times a
-// power of ten) and the highest bar leaves room for its label.
+// number of its labels, so that the steps are round (1, 2, 2.5 or 5 times
+// a power of ten) and the highest bar leaves room for its label.
 func niceAxis(values []float64) (axisMax float64, labels int) {
 	highest := 0.0
 	for _, v := range values {
@@ -154,7 +190,7 @@ func niceAxis(values []float64) (axisMax float64, labels int) {
 	raw := highest * 1.1 / steps
 	magnitude := math.Pow(10, math.Floor(math.Log10(raw)))
 	step := 10 * magnitude
-	for _, m := range []float64{1, 2, 5} {
+	for _, m := range []float64{1, 2, 2.5, 5} {
 		if m*magnitude >= raw {
 			step = m * magnitude
 			break
