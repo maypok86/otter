@@ -9,7 +9,8 @@ singleflight, and lock-free reads.
 | Path | What lives there |
 |---|---|
 | `cache.go`, `options.go`, `entry.go`, `deletion.go`, `loader.go`, `*_calculator.go` | Public API and its documentation |
-| `cache_impl.go` | The cache: read path, write path (`set`, `doCompute`, `atomicSet`, `afterWrite`), loading and refresh, maintenance |
+| `cache_impl.go` | The cache: read path, the API's writes (`set`, `doCompute`), loading and refresh, maintenance |
+| `mutation.go` | Key mutations: `mutate` decides and applies a change of a key under its bucket lock, `publish` hands it to the policies and listeners |
 | `policy.go`, `sketch.go` | W-TinyLFU eviction policy, hill climber, count-min sketch |
 | `singleflight.go` | In-flight loads and refreshes |
 | `task.go` | Write-buffer tasks replayed by maintenance |

@@ -46,7 +46,7 @@ Audits read this file **after** recording their findings (Phase 1.5 of the audit
   is a key, not a version, as in Caffeine.
 - **`OnAtomicDeletion` runs under the bucket lock before the new value is published**, for
   updates in place as for replacements.
-- **Both deletion listeners receive the cause decided under the lock** (`writeResult.cause`,
+- **Both deletion listeners receive the cause decided under the lock** (`mutation.cause`,
   `deleteNodeFromMap`'s returned cause).
 
 ## Policy

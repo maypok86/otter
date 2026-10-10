@@ -447,182 +447,23 @@ func (c *cache[K, V]) SetRefreshableAfter(key K, refreshableAfter time.Duration)
 }
 
 func (c *cache[K, V]) set(key K, value V, onlyIfAbsent bool) (V, bool) {
-	var (
-		old      node.Node[K, V]
-		oldValue V
-		// whether old held a live value, seen under the lock: after an in-place update old is the
-		// written node, so old.HasExpired no longer describes the previous value
-		oldLive bool
-		written writeResult
-	)
 	nowNano := c.clock.NowNano()
-	n := c.hashmap.Compute(key, func(current node.Node[K, V]) node.Node[K, V] {
-		old = current
-		if current != nil {
-			oldValue, oldLive = current.Value(), !current.HasExpired(nowNano)
+	m := c.mutate(key, nowNano, fromCaller, func(prev previous[K, V]) (mutationOp, V) {
+		if onlyIfAbsent && prev.live {
+			c.calcExpiresAtAfterRead(prev.node, nowNano)
+			return opKeep, value
 		}
-		if onlyIfAbsent && oldLive {
-			// no op
-			c.calcExpiresAtAfterRead(old, nowNano)
-			return current
-		}
-		// set
-		var n node.Node[K, V]
-		n, written = c.atomicSet(key, value, old, nil, nowNano)
-		return n
+		return opWrite, value
 	})
+	c.publish(m, fromCaller, nowNano)
+	// An expired entry that is still in the table is absent, as for reads.
+	if !m.live {
+		return value, true
+	}
 	if onlyIfAbsent {
-		if !oldLive {
-			c.afterWrite(n, old, oldValue, written, nowNano, false)
-			return value, true
-		}
-		c.afterRead(old, nowNano, false, false)
-		return oldValue, false
+		c.afterRead(m.node, nowNano, false, false)
 	}
-
-	c.afterWrite(n, old, oldValue, written, nowNano, false)
-	// An expired entry that is still in the table is absent, as for SetIfAbsent and reads.
-	if oldLive {
-		return oldValue, false
-	}
-	return value, true
-}
-
-// atomicSet applies a write of value to the key whose current node is old (nil if absent).
-// The user's weigher, expiry and refresh calculators are called once per write.
-//
-// A write over a node that can set its value and is still in the table is applied in place,
-// keeping the node:
-// plain updates, loads and refreshes, and writes over an expired entry that has not been
-// removed yet (it is reused for the new value, and the old one is reported as expired).
-// Swapping in a new node forces an update task through the bounded write buffer so that the
-// policies can relink the node. Under an update-heavy workload that buffer overflows and every
-// writer falls back to performCleanUp, serializing all writes on evictionMutex. When the node
-// identity is kept, the policies only need to observe an access, which goes through the lossy
-// read buffer, unless the weight changed or the expiration time moved earlier: the eviction
-// policy accounts the weight separately (policyWeight) and the timer wheel only reschedules a
-// deadline that moved later, so those changes go through a reconciliation task.
-//
-// A value that fits in one atomic word (a pointer-shaped value, or one without pointers of up to
-// 8 bytes) is always set in place. A larger value is kept inline, and an inline value is never
-// written after publication, so that a concurrent reader cannot observe a torn or cleared value:
-// the first update of such a live entry replaces the node with a boxed one, whose value lives
-// behind an atomic pointer, so that later updates of this (likely hot) key are applied in place.
-func (c *cache[K, V]) atomicSet(
-	key K,
-	value V,
-	old node.Node[K, V],
-	cl *call[K, V],
-	nowNano int64,
-) (node.Node[K, V], writeResult) {
-	// The user's weigher and calculators run before anything is changed: if one of them panics,
-	// the write is not applied and the panic reaches the caller.
-	var oldValue V
-	if old != nil {
-		oldValue = old.Value()
-	}
-	weight := c.weigher(key, value)
-	kind := newWriteKind(old != nil && !old.HasExpired(nowNano), cl != nil && cl.isRefresh)
-	base := old
-	if kind == createWrite {
-		base = nil
-	}
-	entry := c.writeEntry(key, value, weight, base, nowNano)
-	if c.withExpiration {
-		entry.ExpiresAtNano = expiresAtAfterWrite(c.expiryCalculator, kind, entry, oldValue, nowNano)
-	}
-	if c.withRefresh {
-		// after the expiration time, so that the refresh calculator sees the new one
-		entry.RefreshableAtNano = refreshableAtAfterWrite(c.refreshCalculator, kind, entry, oldValue, nil, nowNano)
-	}
-
-	if old != nil && c.withMaintenance && old.IsAlive() && old.CanSetValue() {
-		written := writeResult{
-			// before the node is changed: an expired entry is reused, and its old value expired
-			cause:   getCause(old, nowNano, CauseReplacement),
-			inPlace: true,
-			reconcile: weight != old.Weight() ||
-				(c.withExpiration && entry.ExpiresAtNano < old.ExpiresAt()),
-		}
-		// The synchronous listener runs before the new value is published, as it does when the
-		// node is replaced: readers see the previous value until the write completes.
-		c.notifyAtomicDeletion(key, oldValue, written.cause)
-		old.SetValue(value)
-		if c.isWeighted {
-			// only weighted nodes store a weight; the others always weigh 1
-			old.SetWeight(weight)
-		}
-		if c.withExpiration {
-			old.SetExpiresAt(entry.ExpiresAtNano)
-		}
-		if c.withRefresh {
-			old.SetRefreshableAt(entry.RefreshableAtNano)
-		}
-		c.cancelCalls(key, cl)
-		return old, written
-	}
-
-	n := c.newNode(key, value, weight, entry.ExpiresAtNano, entry.RefreshableAtNano, c.isLiveNode(old, nowNano))
-	c.makeRetired(old)
-	var written writeResult
-	if old != nil {
-		written.cause = getCause(old, nowNano, CauseReplacement)
-		c.notifyAtomicDeletion(old.Key(), oldValue, written.cause)
-	}
-	c.cancelCalls(key, cl)
-	return n, written
-}
-
-// cancelCalls cancels the pending load or refresh of key when a plain write (cl == nil)
-// changes it. It runs after the new value is published, including the OnAtomicDeletion call
-// before that: a refresh requested from the previous value while the write was in progress is
-// cancelled too. A refresh requested after this point either sees the new value or, if the node
-// is replaced, finds that its base node is gone.
-func (c *cache[K, V]) cancelCalls(key K, cl *call[K, V]) {
-	if cl == nil {
-		c.singleflight.delete(key)
-	}
-}
-
-// writeResult is what atomicSet decided under the bucket lock, so that the work done after the
-// lock is released agrees with it.
-type writeResult struct {
-	// cause is why the previous value left the cache: CauseReplacement, or CauseExpiration when
-	// it had expired. It is reported to both deletion listeners; recomputing it later could
-	// disagree, because the deadline of a replaced node can still be changed by a reader that
-	// holds it. Unset when there was no previous node.
-	cause DeletionCause
-	// inPlace reports that the existing node was updated instead of being replaced.
-	inPlace bool
-	// reconcile reports a changed weight or an earlier expiration time of an in-place update,
-	// which the policies cannot pick up from an access.
-	reconcile bool
-}
-
-// isLiveNode reports whether n is in the hash table and has not expired.
-func (c *cache[K, V]) isLiveNode(n node.Node[K, V], nowNano int64) bool {
-	return n != nil && c.withMaintenance && n.IsAlive() && !n.HasExpired(nowNano)
-}
-
-// atomicDelete retires old, which the caller removes from the hash table, and returns the
-// cause reported to the synchronous listener, for afterDelete to report the same one.
-func (c *cache[K, V]) atomicDelete(key K, old node.Node[K, V], cl *call[K, V], nowNano int64) DeletionCause {
-	if cl == nil {
-		c.singleflight.delete(key)
-	}
-	return c.retireRemoved(old, nowNano)
-}
-
-// retireRemoved retires old, which the caller removes from the hash table, without touching the
-// key's pending calls, and returns the cause reported to the synchronous listener.
-func (c *cache[K, V]) retireRemoved(old node.Node[K, V], nowNano int64) DeletionCause {
-	if old == nil {
-		return 0
-	}
-	cause := getCause(old, nowNano, CauseInvalidation)
-	c.makeRetired(old)
-	c.notifyAtomicDeletion(old.Key(), old.Value(), cause)
-	return cause
+	return m.value, false
 }
 
 // Compute either sets the computed new value for the key,
@@ -736,31 +577,19 @@ func (c *cache[K, V]) doCompute(
 	recordStats bool,
 ) (V, bool) {
 	var (
-		old        node.Node[K, V]
-		prevValue  V
-		prevLive   bool
-		written    writeResult
-		deleted    DeletionCause
 		result     V
 		op         ComputeOp
 		notValidOp bool
 		panicErr   error
 	)
-	computedNode := c.hashmap.Compute(key, func(oldNode node.Node[K, V]) node.Node[K, V] {
+	m := c.mutate(key, nowNano, fromCaller, func(prev previous[K, V]) (mutationOp, V) {
 		var (
 			oldValue    V
 			actualValue V
-			found       bool
 		)
-		if oldNode != nil {
-			prevValue = oldNode.Value()
-			if !oldNode.HasExpired(nowNano) {
-				oldValue = prevValue
-				found = true
-			}
+		if prev.live {
+			oldValue = prev.value
 		}
-		prevLive = found
-		old = oldNode
 
 		func() {
 			defer func() {
@@ -769,35 +598,28 @@ func (c *cache[K, V]) doCompute(
 				}
 			}()
 
-			actualValue, op = remappingFunc(oldValue, found)
+			actualValue, op = remappingFunc(oldValue, prev.live)
 		}()
 		if panicErr != nil {
-			return oldNode
+			return opKeep, actualValue
 		}
-		if op == CancelOp {
-			if oldNode != nil && oldNode.HasExpired(nowNano) {
-				// The expired entry is removed, as the timer wheel would remove it, and like the
-				// wheel this keeps a pending load of the key: it most likely started because the
-				// entry expired. Only a refresh of the expired value is dropped.
-				c.singleflight.deleteRefresh(key)
-				deleted = c.retireRemoved(oldNode, nowNano)
-				return nil
+		switch op {
+		case CancelOp:
+			if prev.node != nil && !prev.live {
+				// The expired entry is removed, as the timer wheel would remove it.
+				return opRemoveExpired, actualValue
 			}
-			result = prevValue
-			return oldNode
-		}
-		if op == WriteOp {
+			result = prev.value
+			return opKeep, actualValue
+		case WriteOp:
 			result = actualValue
-			var n node.Node[K, V]
-			n, written = c.atomicSet(key, actualValue, old, nil, nowNano)
-			return n
+			return opWrite, actualValue
+		case InvalidateOp:
+			return opInvalidate, actualValue
+		default:
+			notValidOp = true
+			return opKeep, actualValue
 		}
-		if op == InvalidateOp {
-			deleted = c.atomicDelete(key, old, nil, nowNano)
-			return nil
-		}
-		notValidOp = true
-		return oldNode
 	})
 	if panicErr != nil {
 		panic(panicErr)
@@ -806,63 +628,19 @@ func (c *cache[K, V]) doCompute(
 		panic(fmt.Sprintf("otter: invalid ComputeOp: %d", op))
 	}
 	if recordStats {
-		if prevLive {
+		if m.live {
 			c.stats.RecordHits(1)
 		} else {
 			c.stats.RecordMisses(1)
 		}
 	}
-	switch op {
-	case CancelOp:
-		if computedNode == nil {
-			c.afterDelete(old, deleted, false, false)
-			return zeroValue[V](), false
-		}
-		// The node may be updated in place by another writer once the bucket lock is released,
-		// so the result is the value seen under the lock, not computedNode.Value().
-		return result, true
-	case WriteOp:
-		c.afterWrite(computedNode, old, prevValue, written, nowNano, false)
-	case InvalidateOp:
-		c.afterDelete(old, deleted, false, false)
-	}
-	if computedNode == nil {
+	c.publish(m, fromCaller, nowNano)
+	if m.next == nil {
 		return zeroValue[V](), false
 	}
+	// The node may be updated in place by another writer once the bucket lock is released, so
+	// the result is the value seen under the lock, not m.next.Value().
 	return result, true
-}
-
-// afterWrite takes the old value and what atomicSet decided under the lock explicitly, because
-// after an in-place update old is the written node.
-// afterWrite is called with onExecutor set when the write is the completion of a refresh, which runs
-// as an executor task.
-func (c *cache[K, V]) afterWrite(n, old node.Node[K, V], oldValue V, written writeResult, nowNano int64, onExecutor bool) {
-	if !c.withMaintenance {
-		if old != nil {
-			c.notifyDeletionFrom(onExecutor, old.Key(), oldValue, written.cause)
-		}
-		return
-	}
-
-	if written.inPlace {
-		// Updated in place: the policies observe an access through the lossy read buffer, and a
-		// changed weight or an earlier expiration time through a task, which must not be lost.
-		c.afterRead(n, nowNano, false, false)
-		if written.reconcile {
-			c.afterWriteTask(newTask(n, nil, reconcileReason, causeUnknown))
-		}
-		c.notifyDeletionFrom(onExecutor, n.Key(), oldValue, written.cause)
-		return
-	}
-
-	if old == nil {
-		// insert
-		c.afterWriteTask(newTask(n, nil, addReason, causeUnknown))
-		return
-	}
-
-	// update
-	c.afterWriteTask(newTask(n, old, updateReason, written.cause))
 }
 
 type refreshableKey[K comparable, V any] struct {
@@ -1005,14 +783,10 @@ func isRefreshBase[K comparable, V any](base, current node.Node[K, V], nowNano i
 }
 
 func (c *cache[K, V]) afterDeleteCall(cl *call[K, V]) {
-	var (
-		inserted    bool
-		deleted     bool
-		deleteCause DeletionCause
-		old         node.Node[K, V]
-		oldValue    V
-		written     writeResult
-	)
+	from := fromLoad
+	if cl.isRefresh {
+		from = fromRefresh
+	}
 	// The waiters are woken up even if writing the loaded value panics (the weigher or a
 	// calculator); they then get the panic as the load's error, as the loading goroutine does.
 	canceled := false
@@ -1020,8 +794,8 @@ func (c *cache[K, V]) afterDeleteCall(cl *call[K, V]) {
 		if canceled {
 			return
 		}
-		// Compute was interrupted by a panic or by runtime.Goexit, for which recover returns
-		// nil. The call is deleted after Compute, so leaving it registered would make every
+		// mutate was interrupted by a panic or by runtime.Goexit, for which recover returns
+		// nil. The call is deleted after mutate, so leaving it registered would make every
 		// later Get of the key join it.
 		if !cl.isFake {
 			c.singleflight.deleteCall(cl)
@@ -1034,57 +808,43 @@ func (c *cache[K, V]) afterDeleteCall(cl *call[K, V]) {
 		cl.cancel()
 	}()
 	nowNano := c.clock.NowNano()
-	newNode := c.hashmap.Compute(cl.key, func(oldNode node.Node[K, V]) node.Node[K, V] {
-		// Read-only: the call is deleted after Compute returns below, not here. A refresh is
+	m := c.mutate(cl.key, nowNano, from, func(prev previous[K, V]) (mutationOp, V) {
+		// Read-only: the call is deleted after mutate returns below, not here. A refresh is
 		// also stale if the node it was requested for was replaced or removed in the meantime.
 		var isCorrectCall bool
 		if cl.isFake {
 			// A key the bulk loader returned without being asked for was not registered before
 			// the load, so a write during the load could not cancel it. It only fills a gap: the
 			// key must have no live value and no load of its own.
-			isCorrectCall = (oldNode == nil || oldNode.HasExpired(nowNano)) && c.singleflight.getCall(cl.key) == nil
+			isCorrectCall = !prev.live && c.singleflight.getCall(cl.key) == nil
 		} else {
-			isCorrectCall = c.singleflight.isCurrentCall(cl) && (!cl.isRefresh || isRefreshBase(cl.base, oldNode, nowNano))
-		}
-		old = oldNode
-		if oldNode != nil {
-			oldValue = oldNode.Value()
+			isCorrectCall = c.singleflight.isCurrentCall(cl) && (!cl.isRefresh || isRefreshBase(cl.base, prev.node, nowNano))
 		}
 		if isCorrectCall && cl.isNotFound {
-			deleted = oldNode != nil
-			deleteCause = c.atomicDelete(cl.key, oldNode, cl, nowNano)
-			return nil
+			return opInvalidate, cl.value
 		}
 		if cl.err != nil {
 			// A failed refresh of an absent key leaves an expired node that it matched as it is.
-			if isCorrectCall && cl.isRefresh && oldNode != nil && !oldNode.HasExpired(nowNano) && c.withRefresh {
-				entry := c.nodeToEntry(oldNode, nowNano)
-				oldNode.SetRefreshableAt(refreshableAtAfterWrite(c.refreshCalculator, reloadFailure, entry, entry.Value, cl.err, nowNano))
+			if isCorrectCall && cl.isRefresh && prev.live && c.withRefresh {
+				entry := c.nodeToEntry(prev.node, nowNano)
+				prev.node.SetRefreshableAt(refreshableAtAfterWrite(c.refreshCalculator, reloadFailure, entry, entry.Value, cl.err, nowNano))
 			}
-			return oldNode
+			return opKeep, cl.value
 		}
 		if !isCorrectCall {
-			return oldNode
+			return opKeep, cl.value
 		}
-		inserted = true
-		var n node.Node[K, V]
-		n, written = c.atomicSet(cl.key, cl.value, old, cl, nowNano)
-		return n
+		return opWrite, cl.value
 	})
-	// Delete the call only after Compute has published the loaded value. Doing
-	// this earlier (like inside the compute closure) introduces a window in
+	// Delete the call only after mutate has published the loaded value. Doing
+	// this earlier (like inside decide) introduces a window in
 	// which a redundant load could be triggered.
 	if !cl.isFake {
 		c.singleflight.deleteCall(cl)
 	}
 	canceled = true
 	cl.cancel()
-	if deleted {
-		c.afterDelete(old, deleteCause, false, cl.isRefresh)
-	}
-	if inserted {
-		c.afterWrite(newNode, old, oldValue, written, nowNano, cl.isRefresh)
-	}
+	c.publish(m, from, nowNano)
 }
 
 func (c *cache[K, V]) bulkRefreshKeys(
@@ -1489,20 +1249,14 @@ func (c *cache[K, V]) BulkRefresh(ctx context.Context, keys []K, bulkLoader Bulk
 // Returns previous value if any. The invalidated result reports whether the key was
 // present; an expired entry that has not been removed yet is not.
 func (c *cache[K, V]) Invalidate(key K) (value V, invalidated bool) {
-	var (
-		d     node.Node[K, V]
-		cause DeletionCause
-	)
 	nowNano := c.clock.NowNano()
-	c.hashmap.Compute(key, func(n node.Node[K, V]) node.Node[K, V] {
-		d = n
-		cause = c.atomicDelete(key, d, nil, nowNano)
-		return nil
+	m := c.mutate(key, nowNano, fromCaller, func(prev previous[K, V]) (mutationOp, V) {
+		return opInvalidate, prev.value
 	})
-	c.afterDelete(d, cause, false, false)
+	c.publish(m, fromCaller, nowNano)
 	// An expired entry that was still in the table is removed, but it was not present.
-	if d != nil && cause != CauseExpiration {
-		return d.Value(), true
+	if m.live {
+		return m.value, true
 	}
 	return zeroValue[V](), false
 }

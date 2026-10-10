@@ -56,13 +56,20 @@ lossy read buffer. A full buffer drops the access; it never blocks.
 
 ## Write path
 
-1. `hashmap.Compute` locks the bucket and calls `set` / `doCompute` / `afterDeleteCall`.
+Every change decided from a key's current value (`set`, `doCompute`, `Invalidate`,
+`afterDeleteCall`) is a key mutation (`mutation.go`):
+
+1. `mutate` locks the bucket (`hashmap.Compute`), reads the current node once (absent, live or
+   expired) and asks the caller's `decide` for an op: keep, write, invalidate or remove an
+   expired entry. Its `origin` (caller, load or refresh) decides which pending calls are
+   cancelled and whether a write is a reload.
 2. Under the lock, `atomicSet` decides between an **in-place update** (old node alive and
    `CanSetValue`: value, weight, deadline and refresh time change on the same node, and
    `OnAtomicDeletion` runs first) and a **replacement** (a new node, the old one retired). An
    expired node that is still in the table is reused in place ("resurrection"). The decision,
-   the deletion cause and whether reconciliation is needed are returned as `writeResult`.
-3. After the lock is released, `afterWrite`:
+   the deletion cause and whether reconciliation is needed are returned in the `mutation`.
+3. After the lock is released, `publish` (`afterWrite` for a write, `afterDelete` for a
+   removal):
    - in place: an access through the read buffer, plus a `reconcileReason` task if the weight
      changed or the deadline moved earlier;
    - insert: an `addReason` task; replacement: an `updateReason` task.
