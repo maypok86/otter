@@ -501,6 +501,124 @@ func TestMap_MetaMatchesNodes(t *testing.T) {
 	}
 }
 
+// keysInRootBucket returns n int keys that m puts into its first bucket.
+func keysInRootBucket(m *Map[int, int, node.Node[int, int]], n int) []int {
+	table := m.table.Load()
+	//nolint:gosec // there is no overflow
+	mask := uint64(len(table.buckets) - 1)
+	keys := make([]int, 0, n)
+	for k := 0; len(keys) < n; k++ {
+		if h1(table.hasher.Hash(k))&mask == 0 {
+			keys = append(keys, k)
+		}
+	}
+	return keys
+}
+
+func chainLen(b *bucketPadded) int {
+	l := 0
+	for ; b != nil; b = b.next.Load() {
+		l++
+	}
+	return l
+}
+
+func TestMap_UnlinksEmptyOverflowBucket(t *testing.T) {
+	t.Parallel()
+
+	nm := testNodeManager[int, int]()
+	m := New(nm)
+	set := func(k int) {
+		m.Compute(k, func(n node.Node[int, int]) node.Node[int, int] {
+			return newTestNode(nm, k, k)
+		})
+	}
+	del := func(k int) {
+		m.Compute(k, func(n node.Node[int, int]) node.Node[int, int] {
+			return nil
+		})
+	}
+	// Fill the root bucket, one overflow bucket and part of a second one.
+	keys := keysInRootBucket(m, 2*nodesPerMapBucket+3)
+	root := keys[:nodesPerMapBucket:nodesPerMapBucket]
+	middle := keys[nodesPerMapBucket : 2*nodesPerMapBucket : 2*nodesPerMapBucket]
+	tail := keys[2*nodesPerMapBucket:]
+	for _, k := range keys {
+		set(k)
+	}
+	rootb := &m.table.Load().buckets[0]
+	if l := chainLen(rootb); l != 3 {
+		t.Fatalf("a chain of 3 buckets was expected, got: %d", l)
+	}
+
+	// Without unlinking, a table that never resizes keeps the longest chain
+	// it ever had, and every miss walks all of it.
+	for _, k := range middle {
+		del(k)
+	}
+	if l := chainLen(rootb); l != 2 {
+		t.Fatalf("the empty overflow bucket was expected to be unlinked, chain length: %d", l)
+	}
+	for _, k := range append(append([]int{}, root...), tail...) {
+		if m.Get(k) == nil {
+			t.Fatalf("node was not found for %d after unlinking", k)
+		}
+	}
+
+	// Readers must keep finding the nodes behind a bucket that is unlinked
+	// under them. Each round links a bucket of middle keys after the root
+	// and a bucket of tail keys after it, then unlinks the middle bucket
+	// while readers look up the tail keys. A miss only counts while the
+	// round is in that phase, before the tail keys are deleted too.
+	for _, k := range tail {
+		del(k)
+	}
+	var (
+		wg      sync.WaitGroup
+		phase   atomic.Int64
+		stop    atomic.Bool
+		missing atomic.Int64
+	)
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for !stop.Load() {
+				p := phase.Load()
+				if p%2 == 0 {
+					continue
+				}
+				for _, k := range tail {
+					if m.Get(k) == nil && phase.Load() == p {
+						missing.Add(1)
+					}
+				}
+			}
+		}()
+	}
+	for r := int64(0); r < 20_000; r++ {
+		for _, k := range middle {
+			set(k)
+		}
+		for _, k := range tail {
+			set(k)
+		}
+		phase.Store(2*r + 1)
+		for _, k := range middle {
+			del(k)
+		}
+		phase.Store(2*r + 2)
+		for _, k := range tail {
+			del(k)
+		}
+	}
+	stop.Store(true)
+	wg.Wait()
+	if n := missing.Load(); n != 0 {
+		t.Fatalf("nodes behind an unlinked bucket were not found %d times", n)
+	}
+}
+
 func TestMapSetThenParallelDelete_DoesNotShrinkBelowMinTableLen(t *testing.T) {
 	t.Parallel()
 
@@ -623,6 +741,26 @@ func TestMap_ResizeKeepsHasher(t *testing.T) {
 	}
 	if m.table.Load().hasher != hasher {
 		t.Fatal("shrinking the table changed the hasher")
+	}
+}
+
+func TestMap_LateGrowDoesNotGrowAgain(t *testing.T) {
+	t.Parallel()
+
+	// A writer that saw a full chain unlocks its bucket and only then starts
+	// the resize. If another writer has grown the table in between, the late
+	// one must not grow the new table again.
+	nm := testNodeManager[int, int]()
+	m := New(nm)
+	seen := m.table.Load()
+	m.resize(seen, mapGrowHint)
+	grown := len(m.table.Load().buckets)
+	m.resize(seen, mapGrowHint)
+	if l := len(m.table.Load().buckets); l != grown {
+		t.Fatalf("a table of %d buckets was expected, got: %d", grown, l)
+	}
+	if g := m.totalGrowths.Load(); g != 1 {
+		t.Fatalf("one growth was expected, got: %d", g)
 	}
 }
 
@@ -752,33 +890,6 @@ func sizeBasedOnTypedRangeInt(m *Map[int, int, node.Node[int, int]]) int {
 	return size
 }
 
-func TestMapClear(t *testing.T) {
-	t.Parallel()
-
-	const numNodes = 1000
-	nm := testNodeManager[string, int]()
-	m := New(nm)
-	for i := 0; i < numNodes; i++ {
-		key := strconv.Itoa(i)
-		m.Compute(key, func(n node.Node[string, int]) node.Node[string, int] {
-			return newTestNode(nm, key, i)
-		})
-	}
-	size := m.Size()
-	if size != numNodes {
-		t.Fatalf("size of %d was expected, got: %d", numNodes, size)
-	}
-	m.Clear()
-	size = m.Size()
-	if size != 0 {
-		t.Fatalf("zero size was expected, got: %d", size)
-	}
-	rsize := sizeBasedOnTypedRange(m)
-	if rsize != 0 {
-		t.Fatalf("zero number of entries in Range was expected, got: %d", rsize)
-	}
-}
-
 func parallelRandTypedResizer(m *Map[string, int, node.Node[string, int]], numIters, numNodes int, cdone chan bool) {
 	r := rand.New(rand.NewSource(time.Now().UnixNano()))
 	for i := 0; i < numIters; i++ {
@@ -823,48 +934,6 @@ func TestMapParallelResize(t *testing.T) {
 			t.Fatalf("values do not match for %d: %v", i, n)
 		}
 	}
-	s := m.Size()
-	if s > numNodes {
-		t.Fatalf("unexpected size: %v", s)
-	}
-	rs := sizeBasedOnTypedRange(m)
-	if s != rs {
-		t.Fatalf("size does not match number of entries in Range: %v, %v", s, rs)
-	}
-}
-
-func parallelRandTypedClearer(m *Map[string, int, node.Node[string, int]], numIters, numNodes int, cdone chan bool) {
-	r := rand.New(rand.NewSource(time.Now().UnixNano()))
-	for i := 0; i < numIters; i++ {
-		coin := r.Int63n(2)
-		for j := 0; j < numNodes; j++ {
-			key := strconv.Itoa(j)
-			if coin == 1 {
-				m.Compute(key, func(n node.Node[string, int]) node.Node[string, int] {
-					return newTestNode(m.nodeManager, key, j)
-				})
-			} else {
-				m.Clear()
-			}
-		}
-	}
-	cdone <- true
-}
-
-func TestMapParallelClear(t *testing.T) {
-	t.Parallel()
-
-	const numIters = 100
-	const numNodes = 1_000
-	nm := testNodeManager[string, int]()
-	m := New(nm)
-	cdone := make(chan bool)
-	go parallelRandTypedClearer(m, numIters, numNodes, cdone)
-	go parallelRandTypedClearer(m, numIters, numNodes, cdone)
-	// Wait for the goroutines to finish.
-	<-cdone
-	<-cdone
-	// Verify map size.
 	s := m.Size()
 	if s > numNodes {
 		t.Fatalf("unexpected size: %v", s)

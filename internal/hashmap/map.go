@@ -38,7 +38,6 @@ type mapResizeHint int
 const (
 	mapGrowHint   mapResizeHint = 0
 	mapShrinkHint mapResizeHint = 1
-	mapClearHint  mapResizeHint = 2
 )
 
 const (
@@ -120,7 +119,7 @@ type mapTable[K comparable] struct {
 // bucketPadded is a CL-sized map bucket holding up to
 // nodesPerMapBucket nodes.
 type bucketPadded struct {
-	//lint:ignore U1000 ensure each bucket takes two cache lines on both 32 and 64-bit archs
+	//lint:ignore U1000 pads a bucket to 64 bytes on 32-bit archs; it is already 64 bytes on 64-bit ones
 	pad [64 - unsafe.Sizeof(bucket{})]byte
 	bucket
 }
@@ -223,9 +222,6 @@ func (m *Map[K, V, N]) Get(key K) N {
 	}
 }
 
-// callUnlockingOnPanic calls computeFunc with mu held and releases mu if computeFunc panics
-// or exits the goroutine, so that a failing callback does not leave the bucket locked. The
-// bucket is left unchanged in that case. On a normal return mu stays locked.
 // isNil reports whether n is a missing node: the zero value of N, a nil pointer or a nil
 // interface.
 func isNil[N comparable](n N) bool {
@@ -233,6 +229,9 @@ func isNil[N comparable](n N) bool {
 	return n == zero
 }
 
+// callUnlockingOnPanic calls computeFunc with mu held and releases mu if computeFunc panics
+// or exits the goroutine, so that a failing callback does not leave the bucket locked. The
+// bucket is left unchanged in that case. On a normal return mu stays locked.
 func callUnlockingOnPanic[N any](mu *sync.Mutex, computeFunc func(n N) N, n N) N {
 	returned := false
 	defer func() {
@@ -283,6 +282,7 @@ func (m *Map[K, V, N]) Compute(key K, computeFunc func(n N) N) N {
 			goto compute_attempt
 		}
 		b := rootb
+		var prevb *bucketPadded
 		for {
 			metaw := b.meta.Load()
 			markedw := markZeroBytes(metaw^h2w) & metaMask
@@ -301,6 +301,11 @@ func (m *Map[K, V, N]) Compute(key K, computeFunc func(n N) N) N {
 							newmetaw := setByte(metaw, 0, idx)
 							b.meta.Store(newmetaw)
 							atomic.StorePointer(&b.nodes[idx], nil)
+							if newmetaw == 0 && prevb != nil {
+								// Unlink the empty overflow bucket. Readers that are in it
+								// go on to its next bucket, which stays the same.
+								prevb.next.Store(b.next.Load())
+							}
 							rootb.mu.Unlock()
 							table.addSize(bidx, -1)
 							// Might need to shrink the table if we left bucket empty.
@@ -369,6 +374,7 @@ func (m *Map[K, V, N]) Compute(key K, computeFunc func(n N) N) N {
 				table.addSize(bidx, 1)
 				return newNode
 			}
+			prevb = b
 			b = b.next.Load()
 		}
 	}
@@ -410,6 +416,12 @@ func (m *Map[K, V, N]) resize(knownTable *mapTable[K], hint mapResizeHint) {
 	tableLen := len(table.buckets)
 	switch hint {
 	case mapGrowHint:
+		if table != knownTable {
+			// The caller saw knownTable full, but another writer has grown it
+			// since. Growing again would double a table that has room.
+			m.finishResize()
+			return
+		}
 		// Grow the table with factor of 2. The new table keeps the hasher,
 		// so that the copy can write to its buckets without locking them
 		// (see copyBuckets).
@@ -423,23 +435,20 @@ func (m *Map[K, V, N]) resize(knownTable *mapTable[K], hint mapResizeHint) {
 			newTable = newMapTable(tableLen>>1, table.hasher)
 		} else {
 			// No need to shrink. Wake up all waiters and give up.
-			m.resizeMu.Lock()
-			m.resizing.Store(false)
-			m.resizeCond.Broadcast()
-			m.resizeMu.Unlock()
+			m.finishResize()
 			return
 		}
-	case mapClearHint:
-		newTable = newMapTable(m.minTableLen, xruntime.NewHasher[K]())
 	default:
 		panic(fmt.Sprintf("unexpected resize hint: %d", hint))
 	}
-	// Copy the data only if we're not clearing the map.
-	if hint != mapClearHint {
-		m.copyBuckets(table, newTable)
-	}
+	m.copyBuckets(table, newTable)
 	// Publish the new table and wake up all waiters.
 	m.table.Store(newTable)
+	m.finishResize()
+}
+
+// finishResize clears the resize flag and wakes up the writers waiting for it.
+func (m *Map[K, V, N]) finishResize() {
 	m.resizeMu.Lock()
 	m.resizing.Store(false)
 	m.resizeCond.Broadcast()
@@ -565,12 +574,6 @@ func (m *Map[K, V, N]) Range(fn func(n N) bool) {
 		}
 		bnodes = bnodes[:0]
 	}
-}
-
-// Clear deletes all keys and values currently stored in the map.
-func (m *Map[K, V, N]) Clear() {
-	table := m.table.Load()
-	m.resize(table, mapClearHint)
 }
 
 // Size returns current size of the map.
