@@ -44,6 +44,14 @@ const (
 
 	minWriteBufferSize = 4
 	writeBufferRetries = 100
+
+	// expireTolerance is how far a read may move an entry's deadline without writing it. The clock
+	// counts nanoseconds, so with an expiration that is reset on every read, each read would store
+	// a new deadline, and readers of a hot key would all write to the same cache line. The deadline
+	// is left as it is only while both the current and the new lifetime are longer than
+	// expireTolerance, so an entry may expire up to expireTolerance early, or late if the
+	// calculator shortens its lifetime by less than that.
+	expireTolerance = time.Second
 )
 
 const (
@@ -359,22 +367,31 @@ func (c *cache[K, V]) calcExpiresAtAfterRead(n node.Node[K, V], nowNano int64) {
 	// The new deadline is derived from the entry the calculator was shown, so it may only replace
 	// that entry's deadline. A writer can store a new deadline in place in the meantime, and
 	// comparing against a fresh read of the node would revert it to one derived from the old value.
-	c.casExpiresAfterRead(n, entry.ExpiresAtNano, nowNano, expiresAfter)
+	c.casExpiresAfterRead(n, entry.ExpiresAtNano, nowNano, expiresAfter, expireTolerance)
 }
 
 // casExpiresAfterRead moves the deadline from expiresAt to nowNano + expiresAfter, and reports
-// whether it moved it earlier.
-func (c *cache[K, V]) casExpiresAfterRead(n node.Node[K, V], expiresAt, nowNano int64, expiresAfter time.Duration) bool {
+// whether it moved it earlier. While both the current and the new lifetime are longer than
+// tolerance, a deadline that would move by at most tolerance is left as it is.
+func (c *cache[K, V]) casExpiresAfterRead(
+	n node.Node[K, V],
+	expiresAt, nowNano int64,
+	expiresAfter, tolerance time.Duration,
+) bool {
 	if expiresAfter <= 0 {
 		return false
 	}
 
-	currentDuration := time.Duration(expiresAt - nowNano)
-	diff := xmath.Abs(int64(expiresAfter - currentDuration))
-	if diff == 0 {
+	next := deadlineAfter(nowNano, expiresAfter)
+	if next == expiresAt {
+		// Also a deadline that is never reached: storing it again would still take the cache line.
 		return false
 	}
-	next := deadlineAfter(nowNano, expiresAfter)
+	currentDuration := time.Duration(expiresAt - nowNano)
+	diff := time.Duration(xmath.Abs(int64(expiresAfter - currentDuration)))
+	if diff <= tolerance && expiresAfter > tolerance && currentDuration > tolerance {
+		return false
+	}
 	return n.CASExpiresAt(expiresAt, next) && next < expiresAt
 }
 
@@ -433,7 +450,8 @@ func (c *cache[K, V]) SetExpiresAfter(key K, expiresAfter time.Duration) {
 		return
 	}
 
-	earlier := c.casExpiresAfterRead(n, expiresAt, nowNano, expiresAfter)
+	// The caller asked for this deadline, so it is set exactly.
+	earlier := c.casExpiresAfterRead(n, expiresAt, nowNano, expiresAfter, 0)
 	c.afterRead(n, nowNano, false, false)
 	if earlier {
 		// The read buffer may drop the access, and the node would then wait in the timer wheel's
