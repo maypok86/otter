@@ -50,7 +50,8 @@ layouts whose first field is that header; an immutable `variant` byte records wh
 ## Read path
 
 `GetIfPresent` → `getNode`: lock-free `hashmap.Get`, `HasExpired`, then `afterRead`, which
-recalculates the deadline (`ExpireAfterRead`, CAS on `expiresAt`) and offers the node to the
+recalculates the deadline (`ExpireAfterRead`, CAS on `expiresAt`; skipped for `ExpiryCreating`
+and `ExpiryWriting`, whose reads keep it, see `withReadExpiry`) and offers the node to the
 lossy read buffer. A full buffer drops the access; it never blocks.
 
 ## Write path
@@ -69,7 +70,7 @@ lossy read buffer. A full buffer drops the access; it never blocks.
    `performCleanUp` itself under `evictionMutex`.
 
 User callbacks under the bucket lock: the weigher, `ExpiryCalculator.ExpireAfterCreate/Update`
-(and `ExpireAfterRead` when `SetIfAbsent` finds a live entry),
+(and `ExpireAfterRead` when `SetIfAbsent` finds a live entry, unless reads keep the deadline),
 the `RefreshCalculator`, `OnAtomicDeletion`, and the `Compute` remapping function (whose panic
 is recovered). `OnDeletion` and loaders run on the executor (default `go fn()`); with a
 synchronous executor they run inline, possibly under `evictionMutex`.

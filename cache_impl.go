@@ -117,6 +117,9 @@ type cache[K comparable, V any] struct {
 	isWeighted         bool
 	withMaintenance    bool
 	withStats          bool
+	// whether a read may change the expiration time: ExpireAfterRead is not called for the
+	// built-in calculators whose reads always keep it
+	withReadExpiry bool
 }
 
 // newCache returns a new cache instance based on the settings from Options.
@@ -185,6 +188,9 @@ func newCache[K comparable, V any](o *Options[K, V]) *cache[K, V] {
 	}
 
 	c.withExpiration = o.ExpiryCalculator != nil
+	_, creating := o.ExpiryCalculator.(*varExpiryCreating[K, V])
+	_, writing := o.ExpiryCalculator.(*varExpiryWriting[K, V])
+	c.withReadExpiry = c.withExpiration && !creating && !writing
 	c.withRefresh = o.RefreshCalculator != nil
 	c.withTime = c.withExpiration || c.withRefresh
 	c.withMaintenance = c.withEviction || c.withExpiration
@@ -358,7 +364,7 @@ func (c *cache[K, V]) SetIfAbsent(key K, value V) (V, bool) {
 }
 
 func (c *cache[K, V]) calcExpiresAtAfterRead(n node.Node[K, V], nowNano int64) {
-	if !c.withExpiration {
+	if !c.withReadExpiry {
 		return
 	}
 
