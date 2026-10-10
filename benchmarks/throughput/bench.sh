@@ -6,13 +6,10 @@ set -eo pipefail
 # interval, and the charts show the median.
 count="${COUNT:-8}"
 # The classic benchmark also runs on these core counts to show how the
-# caches scale. The other benchmarks run on 8 cores.
-cpus="1,2,4,8"
-ncpu="$(getconf _NPROCESSORS_ONLN)"
-if [ "$ncpu" -gt 8 ]; then
-  cpus="$cpus,$ncpu"
-fi
-cpus="${CPUS:-$cpus}"
+# caches scale. The other benchmarks run on 8 cores. Machines with cores
+# of different speed, like Apple silicon, would show the slower cores
+# rather than the cache above that, so the default stops at 8.
+cpus="${CPUS:-1,2,4,8}"
 result_path="./results/throughput.txt"
 
 echo -n "" > "$result_path"
