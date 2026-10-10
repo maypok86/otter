@@ -1,7 +1,7 @@
 package client
 
 import (
-	"github.com/dgraph-io/ristretto"
+	"github.com/dgraph-io/ristretto/v2"
 )
 
 type Ristretto[K ristretto.Key, V any] struct {
@@ -36,6 +36,10 @@ func (c *Ristretto[K, V]) Get(key K) (V, bool) {
 
 func (c *Ristretto[K, V]) Set(key K, value V) {
 	c.client.Set(key, value, 1)
+}
+
+func (c *Ristretto[K, V]) Wait() {
+	c.client.Wait()
 }
 
 func (c *Ristretto[K, V]) Close() {

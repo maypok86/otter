@@ -9,9 +9,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/go-echarts/go-echarts/v2/charts"
-	"github.com/go-echarts/go-echarts/v2/opts"
-	"github.com/go-echarts/snapshot-chromedp/render"
+	"github.com/go-analyze/charts"
+
+	"github.com/maypok86/otter/v2/benchmarks/internal/chart"
 )
 
 type memoryResult struct {
@@ -64,43 +64,25 @@ func run(path, dir string) error {
 	}
 
 	for capacity, results := range capacityToResults {
-		bar := charts.NewBar()
-		bar.SetGlobalOptions(
-			charts.WithYAxisOpts(opts.YAxis{
-				Name: "alloc",
-				AxisLabel: &opts.AxisLabel{
-					Formatter: "{value} MB",
-				},
-			}),
-			charts.WithTitleOpts(opts.Title{
-				Title: fmt.Sprintf("Memory consumption (%d)", capacity),
-				Right: "40%",
-			}),
-			charts.WithLegendOpts(opts.Legend{
-				Orient: "vertical",
-				Right:  "0%",
-				Top:    "10%",
-			}),
-			// for png render
-			charts.WithAnimation(false),
-			charts.WithInitializationOpts(opts.Initialization{
-				BackgroundColor: "white",
-			}),
-		)
-
-		bar = bar.SetXAxis([]string{"cache"})
+		names := make([]string, 0, len(results))
+		values := make([]float64, 0, len(results))
 		for _, res := range results {
-			bar = bar.AddSeries(res.cacheName, []opts.BarData{
-				{
-					Value: res.alloc,
-				},
-			})
+			names = append(names, res.cacheName)
+			values = append(values, res.alloc)
 		}
 
 		outputName := fmt.Sprintf("memory_%d", capacity)
-		imagePath := filepath.Join(dir, fmt.Sprintf("%s.png", outputName))
-		if err := render.MakeChartSnapshot(bar.RenderContent(), imagePath); err != nil {
-			return fmt.Errorf("save chart: %w", err)
+		err := chart.SaveBar(filepath.Join(dir, outputName+".svg"), chart.Bar{
+			Title:  fmt.Sprintf("Memory consumption (%d)", capacity),
+			Unit:   "alloc",
+			Names:  names,
+			Values: values,
+			Format: func(v float64) string {
+				return charts.FormatValueHumanize(v, 1, false) + " MB"
+			},
+		})
+		if err != nil {
+			return err
 		}
 	}
 
