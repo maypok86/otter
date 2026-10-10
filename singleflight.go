@@ -22,6 +22,8 @@ import (
 	"github.com/maypok86/otter/v2/internal/hashmap"
 )
 
+// call is a load or refresh of one key that its waiters share. Its fields are written only
+// in this file: by its registration, by the load, and by group.finish.
 type call[K comparable, V any] struct {
 	key   K
 	value V
@@ -35,10 +37,11 @@ type call[K comparable, V any] struct {
 	isFake     bool
 }
 
-func newCall[K comparable, V any](key K, isRefresh bool) *call[K, V] {
+func newCall[K comparable, V any](key K, isRefresh bool, base node.Node[K, V]) *call[K, V] {
 	c := &call[K, V]{
 		key:       key,
 		isRefresh: isRefresh,
+		base:      base,
 	}
 	c.wg.Add(1)
 	return c
@@ -68,16 +71,37 @@ func (c *call[K, V]) wait() {
 	c.wg.Wait()
 }
 
+// refreshResult is what a manual refresh reports for c once it has finished.
+func (c *call[K, V]) refreshResult() RefreshResult[K, V] {
+	return RefreshResult[K, V]{
+		Key:   c.key,
+		Value: c.value,
+		Err:   c.err,
+	}
+}
+
 type mapCallManager[K comparable, V any] struct{}
 
 func (m *mapCallManager[K, V]) FromPointer(ptr unsafe.Pointer) *call[K, V] {
 	return (*call[K, V])(ptr)
 }
 
+// group runs loads and refreshes so that each key has at most one at a time, and owns their
+// lifecycle: a call is registered before it runs, runs with its panics and runtime.Goexit
+// caught, and is finished exactly once, whatever fails: its result is committed, then the call
+// is deleted and its waiters woken, then the commit is published.
 type group[K comparable, V any] struct {
 	calls         *hashmap.Map[K, V, *call[K, V]]
 	initMutex     sync.Mutex
 	isInitialized atomic.Bool
+
+	// commit decides and applies under the key's bucket lock what a finished call writes. It
+	// asks authoritative whether the call's result may be written.
+	commit func(cl *call[K, V]) mutation[K, V]
+	// publish hands a committed mutation to the policies and listeners.
+	publish func(m mutation[K, V])
+	// executor runs refresh tasks.
+	executor func(fn func())
 }
 
 func (g *group[K, V]) init() {
@@ -95,7 +119,21 @@ func (g *group[K, V]) getCall(key K) *call[K, V] {
 	return g.calls.Get(key)
 }
 
-func (g *group[K, V]) startCall(key K, isRefresh bool) (c *call[K, V], shouldLoad bool) {
+// startLoad registers a load of key, or returns the call already registered for it. shouldLoad
+// reports that the caller registered the call and must run it.
+func (g *group[K, V]) startLoad(key K) (c *call[K, V], shouldLoad bool) {
+	return g.startCall(key, false, nil)
+}
+
+// startRefresh registers a refresh of key, whose node was base (nil if absent) when it was
+// requested, or returns the call already registered for it. A refresh is registered on the
+// requesting goroutine, before it is handed to the executor, so that a write that follows the
+// request cancels it.
+func (g *group[K, V]) startRefresh(key K, base node.Node[K, V]) (c *call[K, V], shouldLoad bool) {
+	return g.startCall(key, true, base)
+}
+
+func (g *group[K, V]) startCall(key K, isRefresh bool, base node.Node[K, V]) (c *call[K, V], shouldLoad bool) {
 	// fast path
 	if c := g.getCall(key); c != nil {
 		return c, shouldLoad
@@ -107,15 +145,22 @@ func (g *group[K, V]) startCall(key K, isRefresh bool) (c *call[K, V], shouldLoa
 			return prevCall
 		}
 		shouldLoad = true
-		return newCall[K, V](key, isRefresh)
+		return newCall[K, V](key, isRefresh, base)
 	}), shouldLoad
+}
+
+// adopt finishes c, which the caller registered, with a value that is already in the cache,
+// without loading it.
+func (g *group[K, V]) adopt(c *call[K, V], value V) {
+	c.value = value
+	g.deleteCall(c)
+	c.cancel()
 }
 
 func (g *group[K, V]) doCall(
 	ctx context.Context,
 	c *call[K, V],
 	load func(ctx context.Context, key K) (V, error),
-	afterFinish func(c *call[K, V]),
 ) (err error) {
 	returned := false
 	defer func() {
@@ -129,7 +174,7 @@ func (g *group[K, V]) doCall(
 
 		c.err = err
 		c.isNotFound = errors.Is(err, ErrNotFound)
-		afterFinish(c)
+		g.finish(c)
 	}()
 
 	c.value, err = load(ctx, c.key)
@@ -141,7 +186,6 @@ func (g *group[K, V]) doBulkCall(
 	ctx context.Context,
 	callsInBulk map[K]*call[K, V],
 	bulkLoad func(ctx context.Context, keys []K) (map[K]V, error),
-	afterFinish func(c *call[K, V]),
 ) (err error) {
 	returned := false
 	defer func() {
@@ -152,6 +196,8 @@ func (g *group[K, V]) doBulkCall(
 		}
 
 		if err != nil {
+			// A key is not found only if the loader left it out of a result: an ErrNotFound
+			// for the whole bulk does not remove the keys.
 			for _, cl := range callsInBulk {
 				cl.err = err
 				cl.isNotFound = false
@@ -168,7 +214,7 @@ func (g *group[K, V]) doBulkCall(
 						finishPanic = r
 					}
 				}()
-				afterFinish(cl)
+				g.finish(cl)
 			}()
 		}
 		if finishPanic != nil {
@@ -220,11 +266,95 @@ func (g *group[K, V]) doBulkCall(
 	return err
 }
 
-// isCurrentCall reports whether c is still the call registered for its key,
-// without retiring it. Callers use this to decide whether c's result is
-// authoritative when retirement has to be deferred to a later deleteCall.
-func (g *group[K, V]) isCurrentCall(c *call[K, V]) bool {
-	return g.getCall(c.key) == c
+// finish commits the result of c, then deletes c, wakes its waiters and publishes the commit.
+// Deleting c only after the commit has published the value closes a window in which a new
+// load of the key could start before the value is visible. If committing panics (the weigher
+// or a calculator) or calls runtime.Goexit, c is still deleted and its waiters are woken, with
+// the panic as its error: left registered, it would block every later load of its key.
+func (g *group[K, V]) finish(c *call[K, V]) {
+	finished := false
+	defer func() {
+		if finished {
+			return
+		}
+		if !c.isFake {
+			g.deleteCall(c)
+		}
+		if r := recover(); r != nil {
+			c.err = newPanicError(r)
+			c.cancel()
+			panic(r)
+		}
+		c.cancel()
+	}()
+
+	m := g.commit(c)
+	if !c.isFake {
+		g.deleteCall(c)
+	}
+	finished = true
+	c.cancel()
+	g.publish(m)
+}
+
+// authoritative reports whether the result of c may be written over prev, the key's entry when
+// c finishes. It runs under the key's bucket lock, before c is deleted.
+//
+// A call is stale once a write or an invalidation has deleted it. A refresh is also stale if the
+// node it was requested for was replaced, removed or has expired in the meantime. A key the bulk
+// loader returned without being asked for was not registered before the load, so a write during
+// the load could not cancel it: it only fills a gap, where the key has no live value and no
+// load of its own.
+func (g *group[K, V]) authoritative(c *call[K, V], prev previous[K, V], nowNano int64) bool {
+	if c.isFake {
+		return !prev.live && g.getCall(c.key) == nil
+	}
+	return g.getCall(c.key) == c && (!c.isRefresh || isRefreshBase(c.base, prev.node, nowNano))
+}
+
+// isRefreshBase reports whether current, the key's node when a refresh completes, is still the
+// node base that the refresh was requested for. A refresh of an absent key (base == nil) also
+// matches an expired node, which the request did not see. A base that has expired since the
+// request is absent, so there is nothing left to refresh.
+func isRefreshBase[K comparable, V any](base, current node.Node[K, V], nowNano int64) bool {
+	if base != nil {
+		return current != nil && current == base && !current.HasExpired(nowNano)
+	}
+	return current == nil || current.HasExpired(nowNano)
+}
+
+// submitRefresh submits a refresh task that finishes the calls in owned, which the caller
+// registered. If the executor panics, the calls are finished here with the panic as their error:
+// left registered, they would block every later load of their keys. The task is then abandoned,
+// so that an executor that scheduled it before panicking does not finish the calls again.
+func (g *group[K, V]) submitRefresh(owned []*call[K, V], task func()) {
+	const (
+		submitted = iota
+		started
+		abandoned
+	)
+	var state atomic.Int32
+	defer func() {
+		r := recover()
+		if r == nil {
+			return
+		}
+		if state.CompareAndSwap(submitted, abandoned) {
+			err := newPanicError(r)
+			for _, cl := range owned {
+				cl.err = err
+				g.deleteCall(cl)
+				cl.cancel()
+			}
+		}
+		panic(r)
+	}()
+	g.executor(func() {
+		if !state.CompareAndSwap(submitted, started) {
+			return
+		}
+		task()
+	})
 }
 
 func (g *group[K, V]) deleteCall(c *call[K, V]) (deleted bool) {

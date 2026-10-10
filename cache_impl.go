@@ -161,6 +161,10 @@ func newCache[K comparable, V any](o *Options[K, V]) *cache[K, V] {
 		isWeighted:         withWeight,
 		withStats:          withStats,
 	}
+	c.singleflight.commit = c.commitCall
+	c.singleflight.publish = c.publish
+	// read on every refresh, so that tests can replace the executor
+	c.singleflight.executor = func(fn func()) { c.executor(fn) }
 
 	if withStats {
 		c.statsClock.Init()
@@ -455,7 +459,7 @@ func (c *cache[K, V]) set(key K, value V, onlyIfAbsent bool) (V, bool) {
 		}
 		return opWrite, value
 	})
-	c.publish(m, fromCaller, nowNano)
+	c.publish(m)
 	// An expired entry that is still in the table is absent, as for reads.
 	if !m.live {
 		return value, true
@@ -634,7 +638,7 @@ func (c *cache[K, V]) doCompute(
 			c.stats.RecordMisses(1)
 		}
 	}
-	c.publish(m, fromCaller, nowNano)
+	c.publish(m)
 	if m.next == nil {
 		return zeroValue[V](), false
 	}
@@ -666,14 +670,13 @@ func (c *cache[K, V]) refreshKey(
 	// The refresh is registered before it is handed to the executor, so that a write that
 	// follows the request cancels it. Registered by the task, a refresh that the executor starts
 	// after the write would replace the written value or bring an invalidated key back.
-	cl, shouldLoad := c.singleflight.startCall(rk.key, true)
+	cl, shouldLoad := c.singleflight.startRefresh(rk.key, rk.old)
 	var owned []*call[K, V]
 	if shouldLoad {
-		cl.base = rk.old
 		owned = []*call[K, V]{cl}
 	}
 
-	c.executeRefresh(owned, func() {
+	c.singleflight.submitRefresh(owned, func() {
 		var refresher func(ctx context.Context, key K) (V, error)
 		if rk.old != nil {
 			refresher = func(ctx context.Context, key K) (V, error) {
@@ -687,7 +690,7 @@ func (c *cache[K, V]) refreshKey(
 			//nolint:errcheck // there is no need to check error
 			_ = c.wrapRefresh(func() error {
 				loadCtx := context.WithoutCancel(ctx)
-				return c.singleflight.doCall(loadCtx, cl, refresher, c.afterDeleteCall)
+				return c.singleflight.doCall(loadCtx, cl, refresher)
 			})
 		}
 		cl.wait()
@@ -697,11 +700,7 @@ func (c *cache[K, V]) refreshKey(
 		}
 
 		if isManual {
-			ch <- RefreshResult[K, V]{
-				Key:   cl.key,
-				Value: cl.value,
-				Err:   cl.err,
-			}
+			ch <- cl.refreshResult()
 		}
 	})
 
@@ -746,24 +745,23 @@ func (c *cache[K, V]) Get(ctx context.Context, key K, loader Loader[K, V]) (V, e
 		return value, nil
 	}
 
-	cl, shouldLoad := c.singleflight.startCall(key, false)
+	cl, shouldLoad := c.singleflight.startLoad(key)
 	if shouldLoad {
 		// Re-check the map before loading. The getNode above runs before this
 		// call slot is claimed, so it can miss a value that a concurrently
 		// completing load publishes in between, leaving this caller to load the
-		// same value a second time. afterDeleteCall frees a call slot only after
-		// publishing, so winning the slot means any such value is already
-		// visible here; adopt it rather than loading it again. Quiet lookup: the
+		// same value a second time. group.finish frees a call slot only after
+		// committing the value to the table, so winning the slot means any such
+		// value is already visible here; adopt it rather than loading it again. Quiet lookup: the
 		// getNode above already recorded the miss for this request.
 		if n := c.getNodeQuietly(key, nowNano); n != nil {
-			cl.value = n.Value()
-			c.singleflight.deleteCall(cl)
-			cl.cancel()
-			return n.Value(), nil
+			value := n.Value()
+			c.singleflight.adopt(cl, value)
+			return value, nil
 		}
 		//nolint:errcheck // there is no need to check error
 		_ = c.wrapLoad(func() error {
-			return c.singleflight.doCall(ctx, cl, loader.Load, c.afterDeleteCall)
+			return c.singleflight.doCall(ctx, cl, loader.Load)
 		})
 	}
 	cl.wait()
@@ -771,80 +769,33 @@ func (c *cache[K, V]) Get(ctx context.Context, key K, loader Loader[K, V]) (V, e
 	return cl.value, cl.err
 }
 
-// isRefreshBase reports whether current, the key's node when a refresh completes, is still the
-// node base that the refresh was requested for. A refresh of an absent key (base == nil) also
-// matches an expired node, which the request did not see. A base that has expired since the
-// request is absent, so there is nothing left to refresh.
-func isRefreshBase[K comparable, V any](base, current node.Node[K, V], nowNano int64) bool {
-	if base != nil {
-		return current != nil && current == base && !current.HasExpired(nowNano)
-	}
-	return current == nil || current.HasExpired(nowNano)
-}
-
-func (c *cache[K, V]) afterDeleteCall(cl *call[K, V]) {
+// commitCall writes the result of a finished load or refresh, if it may still be written, for
+// group.finish: not found removes the entry, an error keeps it (a failed refresh moves its
+// refresh time), and a value is written over it.
+func (c *cache[K, V]) commitCall(cl *call[K, V]) mutation[K, V] {
 	from := fromLoad
 	if cl.isRefresh {
 		from = fromRefresh
 	}
-	// The waiters are woken up even if writing the loaded value panics (the weigher or a
-	// calculator); they then get the panic as the load's error, as the loading goroutine does.
-	canceled := false
-	defer func() {
-		if canceled {
-			return
-		}
-		// mutate was interrupted by a panic or by runtime.Goexit, for which recover returns
-		// nil. The call is deleted after mutate, so leaving it registered would make every
-		// later Get of the key join it.
-		if !cl.isFake {
-			c.singleflight.deleteCall(cl)
-		}
-		if r := recover(); r != nil {
-			cl.err = newPanicError(r)
-			cl.cancel()
-			panic(r)
-		}
-		cl.cancel()
-	}()
 	nowNano := c.clock.NowNano()
-	m := c.mutate(cl.key, nowNano, from, func(prev previous[K, V]) (mutationOp, V) {
-		// Read-only: the call is deleted after mutate returns below, not here. A refresh is
-		// also stale if the node it was requested for was replaced or removed in the meantime.
-		var isCorrectCall bool
-		if cl.isFake {
-			// A key the bulk loader returned without being asked for was not registered before
-			// the load, so a write during the load could not cancel it. It only fills a gap: the
-			// key must have no live value and no load of its own.
-			isCorrectCall = !prev.live && c.singleflight.getCall(cl.key) == nil
-		} else {
-			isCorrectCall = c.singleflight.isCurrentCall(cl) && (!cl.isRefresh || isRefreshBase(cl.base, prev.node, nowNano))
-		}
-		if isCorrectCall && cl.isNotFound {
+	return c.mutate(cl.key, nowNano, from, func(prev previous[K, V]) (mutationOp, V) {
+		authoritative := c.singleflight.authoritative(cl, prev, nowNano)
+		if authoritative && cl.isNotFound {
 			return opInvalidate, cl.value
 		}
 		if cl.err != nil {
 			// A failed refresh of an absent key leaves an expired node that it matched as it is.
-			if isCorrectCall && cl.isRefresh && prev.live && c.withRefresh {
+			if authoritative && cl.isRefresh && prev.live && c.withRefresh {
 				entry := c.nodeToEntry(prev.node, nowNano)
 				prev.node.SetRefreshableAt(refreshableAtAfterWrite(c.refreshCalculator, reloadFailure, entry, entry.Value, cl.err, nowNano))
 			}
 			return opKeep, cl.value
 		}
-		if !isCorrectCall {
+		if !authoritative {
 			return opKeep, cl.value
 		}
 		return opWrite, cl.value
 	})
-	// Delete the call only after mutate has published the loaded value. Doing
-	// this earlier (like inside decide) introduces a window in
-	// which a redundant load could be triggered.
-	if !cl.isFake {
-		c.singleflight.deleteCall(cl)
-	}
-	canceled = true
-	cl.cancel()
-	c.publish(m, from, nowNano)
 }
 
 func (c *cache[K, V]) bulkRefreshKeys(
@@ -875,15 +826,13 @@ func (c *cache[K, V]) bulkRefreshKeys(
 		owned         []*call[K, V]
 	)
 	for i, rk := range rks {
-		cl, shouldLoad := c.singleflight.startCall(rk.key, true)
+		cl, shouldLoad := c.singleflight.startRefresh(rk.key, rk.old)
 		if shouldLoad {
-			cl.base = rk.old
 			owned = append(owned, cl)
 			if rk.old != nil {
 				if toReloadCalls == nil {
 					toReloadCalls = make(map[K]*call[K, V], len(rks)-i)
 				}
-				cl.value = rk.old.Value()
 				toReloadCalls[rk.key] = cl
 			} else {
 				if toLoadCalls == nil {
@@ -899,7 +848,7 @@ func (c *cache[K, V]) bulkRefreshKeys(
 		}
 	}
 
-	c.executeRefresh(owned, func() {
+	c.singleflight.submitRefresh(owned, func() {
 		var results []RefreshResult[K, V]
 		if isManual {
 			results = make([]RefreshResult[K, V], 0, len(rks))
@@ -908,7 +857,7 @@ func (c *cache[K, V]) bulkRefreshKeys(
 		loadCtx := context.WithoutCancel(ctx)
 		if len(toLoadCalls) > 0 {
 			loadErr := c.wrapRefresh(func() error {
-				return c.singleflight.doBulkCall(loadCtx, toLoadCalls, bulkLoader.BulkLoad, c.afterDeleteCall)
+				return c.singleflight.doBulkCall(loadCtx, toLoadCalls, bulkLoader.BulkLoad)
 			})
 			if loadErr != nil {
 				c.logger.Error(ctx, "BulkLoad returned an error", loadErr)
@@ -920,11 +869,7 @@ func (c *cache[K, V]) bulkRefreshKeys(
 					if cl.isFake {
 						continue
 					}
-					results = append(results, RefreshResult[K, V]{
-						Key:   cl.key,
-						Value: cl.value,
-						Err:   cl.err,
-					})
+					results = append(results, cl.refreshResult())
 				}
 			}
 		}
@@ -932,15 +877,15 @@ func (c *cache[K, V]) bulkRefreshKeys(
 			reload := func(ctx context.Context, keys []K) (map[K]V, error) {
 				oldValues := make([]V, 0, len(keys))
 				for _, k := range keys {
-					cl := toReloadCalls[k]
-					oldValues = append(oldValues, cl.value)
-					cl.value = zeroValue[V]()
+					// read when the reload starts, as for a single refresh: a write that changed
+					// it since the request has cancelled the refresh
+					oldValues = append(oldValues, toReloadCalls[k].base.Value())
 				}
 				return bulkLoader.BulkReload(ctx, keys, oldValues)
 			}
 
 			reloadErr := c.wrapRefresh(func() error {
-				return c.singleflight.doBulkCall(loadCtx, toReloadCalls, reload, c.afterDeleteCall)
+				return c.singleflight.doBulkCall(loadCtx, toReloadCalls, reload)
 			})
 			if reloadErr != nil {
 				c.logger.Error(ctx, "BulkReload returned an error", reloadErr)
@@ -951,22 +896,14 @@ func (c *cache[K, V]) bulkRefreshKeys(
 					if cl.isFake {
 						continue
 					}
-					results = append(results, RefreshResult[K, V]{
-						Key:   cl.key,
-						Value: cl.value,
-						Err:   cl.err,
-					})
+					results = append(results, cl.refreshResult())
 				}
 			}
 		}
 		for _, cl := range foundCalls {
 			cl.wait()
 			if isManual {
-				results = append(results, RefreshResult[K, V]{
-					Key:   cl.key,
-					Value: cl.value,
-					Err:   cl.err,
-				})
+				results = append(results, cl.refreshResult())
 			}
 		}
 		if isManual {
@@ -975,40 +912,6 @@ func (c *cache[K, V]) bulkRefreshKeys(
 	})
 
 	return ch
-}
-
-// executeRefresh submits a refresh task that finishes the calls in owned, which the caller
-// registered. If the executor panics, the calls are finished here with the panic as their error:
-// left registered, they would block every later load of their keys. The task is then abandoned,
-// so that an executor that scheduled it before panicking does not finish the calls again.
-func (c *cache[K, V]) executeRefresh(owned []*call[K, V], task func()) {
-	const (
-		submitted = iota
-		started
-		abandoned
-	)
-	var state atomic.Int32
-	defer func() {
-		r := recover()
-		if r == nil {
-			return
-		}
-		if state.CompareAndSwap(submitted, abandoned) {
-			err := newPanicError(r)
-			for _, cl := range owned {
-				cl.err = err
-				c.singleflight.deleteCall(cl)
-				cl.cancel()
-			}
-		}
-		panic(r)
-	}()
-	c.executor(func() {
-		if !state.CompareAndSwap(submitted, started) {
-			return
-		}
-		task()
-	})
 }
 
 // BulkGet returns the value associated with key in this cache, obtaining that value from loader if necessary.
@@ -1075,7 +978,7 @@ func (c *cache[K, V]) BulkGet(ctx context.Context, keys []K, bulkLoader BulkLoad
 	var toLoadCalls map[K]*call[K, V]
 	i := 0
 	for key := range misses {
-		cl, shouldLoad := c.singleflight.startCall(key, false)
+		cl, shouldLoad := c.singleflight.startLoad(key)
 		if shouldLoad {
 			if toLoadCalls == nil {
 				toLoadCalls = make(map[K]*call[K, V], len(misses)-i)
@@ -1089,7 +992,7 @@ func (c *cache[K, V]) BulkGet(ctx context.Context, keys []K, bulkLoader BulkLoad
 	var loadErr error
 	if len(toLoadCalls) > 0 {
 		loadErr = c.wrapLoad(func() error {
-			return c.singleflight.doBulkCall(ctx, toLoadCalls, bulkLoader.BulkLoad, c.afterDeleteCall)
+			return c.singleflight.doBulkCall(ctx, toLoadCalls, bulkLoader.BulkLoad)
 		})
 	}
 	if loadErr != nil {
@@ -1253,7 +1156,7 @@ func (c *cache[K, V]) Invalidate(key K) (value V, invalidated bool) {
 	m := c.mutate(key, nowNano, fromCaller, func(prev previous[K, V]) (mutationOp, V) {
 		return opInvalidate, prev.value
 	})
-	c.publish(m, fromCaller, nowNano)
+	c.publish(m)
 	// An expired entry that was still in the table is removed, but it was not present.
 	if m.live {
 		return m.value, true

@@ -298,7 +298,7 @@ func TestCache_GetCoalescesConcurrentLoads(t *testing.T) {
 	// collapse to exactly one load. otter coalesces callers that overlap an
 	// in-flight load; the hazard is the load-completion boundary, where a
 	// caller can win a just-freed single-flight slot, miss the value that has
-	// not yet been published, and start a redundant second load. afterDeleteCall
+	// not yet been published, and start a redundant second load. group.finish
 	// publishes the value before freeing the slot, and Get re-checks the map
 	// after winning the slot, so winning implies the value is visible and no
 	// second load occurs.

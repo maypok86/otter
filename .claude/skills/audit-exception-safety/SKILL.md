@@ -20,7 +20,7 @@ User code:
 2. `ExpiryCalculator.ExpireAfterCreate / ExpireAfterUpdate` (under the bucket lock) and
    `ExpireAfterRead` (on the read path without a lock, but under the bucket lock when
    `SetIfAbsent` finds a live entry)
-3. `RefreshCalculator` methods (under the bucket lock: `atomicSet`, `afterDeleteCall`)
+3. `RefreshCalculator` methods (under the bucket lock: `atomicSet`, `commitCall`)
 4. `OnAtomicDeletion` (under the bucket lock, and under `evictionMutex` during maintenance)
 5. `OnDeletion` (on the executor; inline under `evictionMutex` with a synchronous executor)
 6. The `Compute` / `ComputeIfAbsent` / `ComputeIfPresent` functions (under the bucket lock;

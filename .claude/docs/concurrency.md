@@ -11,8 +11,8 @@ in another order.
 | Lock | Guards | Taken by |
 |---|---|---|
 | `cache.evictionMutex` | the eviction policy (queues, sizes, sketch, climber), the timer wheel, `policyWeight`, `queueType`, node `dead` transition | `maintenance` (`performCleanUp`, `scheduleDrainBuffers` via `TryLock`), `SetMaximum`, `Hottest`/`Coldest`, `WeightedSize`/`GetMaximum` |
-| `hashmap` bucket lock (`internal/hashmap/map.go`, inside `Compute`) | the bucket's slots; every write to a key; node value/weight/deadline changes made in place; the `retired` transition | `set`, `doCompute`, `Invalidate`, `afterDeleteCall`, `deleteNodeFromMap` |
-| singleflight bucket lock | in-flight `call`s per key | `startCall`, `deleteCall`, `delete`, `deleteRefresh` |
+| `hashmap` bucket lock (`internal/hashmap/map.go`, inside `Compute`) | the bucket's slots; every write to a key; node value/weight/deadline changes made in place; the `retired` transition | `set`, `doCompute`, `Invalidate`, `commitCall`, `deleteNodeFromMap` |
+| singleflight bucket lock | in-flight `call`s per key | `startLoad`, `startRefresh`, `deleteCall`, `delete`, `deleteRefresh` |
 
 `hashmap.Get` takes no lock: it reads bucket slots atomically. Readers therefore see a node
 that a writer may be changing or replacing at that moment.
@@ -57,7 +57,7 @@ lossy read buffer. A full buffer drops the access; it never blocks.
 ## Write path
 
 Every change decided from a key's current value (`set`, `doCompute`, `Invalidate`,
-`afterDeleteCall`) is a key mutation (`mutation.go`):
+`commitCall`) is a key mutation (`mutation.go`):
 
 1. `mutate` locks the bucket (`hashmap.Compute`), reads the current node once (absent, live or
    expired) and asks the caller's `decide` for an op: keep, write, invalidate or remove an
@@ -95,19 +95,31 @@ node that a writer extended in the meantime.
 
 ## Loading and refresh
 
-`Get`/`BulkGet` with a loader start a singleflight `call`; waiters block on it. Completion goes
-through `afterDeleteCall`, which writes the result with `atomicSet` only if the call is still
-the current one for the key (`deleteCall` identity check). `Invalidate`, `Set` and `Compute`
-cancel a pending call for the key; eviction and expiration drop only refresh calls
-(`deleteRefresh`).
+`group` (`singleflight.go`) owns the lifecycle of a `call`: `Get`/`BulkGet` register one with
+`startLoad`, refreshes with `startRefresh`; waiters block on it. `doCall`/`doBulkCall` run the
+loader with its panics and `runtime.Goexit` caught and end in `group.finish`, which commits the
+result through the cache's `commitCall` (a key mutation from a load or refresh), then deletes
+the call, wakes its waiters and publishes. `commitCall` writes only if `group.authoritative`
+says the call is still the current one for the key. `Invalidate`, `Set` and `Compute` cancel a
+pending call for the key; eviction and expiration drop only refresh calls (`deleteRefresh`).
 
 A refresh must lose to any write that follows its request, so three things hold together:
 - refresh calls are registered on the requesting goroutine, before the task goes to the
-  executor (`refreshKey`, `bulkRefreshKeys`; `executeRefresh` finishes them if the executor
-  panics);
+  executor (`startRefresh` in `refreshKey`, `bulkRefreshKeys`; `group.submitRefresh` finishes
+  them if the executor panics);
 - `atomicSet` cancels pending calls only after publishing the new value (`cancelCalls`), so a
   refresh requested during an in-place write, e.g. from `OnAtomicDeletion`, is cancelled too;
-- a refresh call records the node it was requested for (`call.base`), and `afterDeleteCall`
-  writes its result only if that node is still the key's node and has not expired
-  (`isRefreshBase`), which covers a replacement or removal published after the write's
+- a refresh call records the node it was requested for (`call.base`), and its result is
+  written only if that node is still the key's node and has not expired (`isRefreshBase` in
+  `group.authoritative`), which covers a replacement or removal published after the write's
   callback returns.
+
+`isRefreshBase` compares node identity, so it does not see the base updated in place. While a
+refresh is registered, only a write from the API changes the base's value in place, and that
+write cancels the refresh: `cancelCalls` runs after the new value is published. Loads and
+refreshes of the key join the registered call, a fake call writes only when the key has no call
+of its own, and `SetExpiresAfter`/`SetRefreshableAfter` change deadlines, not the value. The
+exception is a write whose cancellation comes before the refresh is registered: the refresh is
+not cancelled and its result replaces the written value. That is why a reload reads the base's
+value when it starts (`base.Value()`, `rk.old.Value()`), not when it was requested: the loader
+gets the value its result replaces.
