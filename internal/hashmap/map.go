@@ -120,7 +120,7 @@ type mapTable[K comparable] struct {
 // bucketPadded is a CL-sized map bucket holding up to
 // nodesPerMapBucket nodes.
 type bucketPadded struct {
-	//lint:ignore U1000 ensure each bucket takes two cache lines on both 32 and 64-bit archs
+	//lint:ignore U1000 pads a bucket to 64 bytes on 32-bit archs; it is already 64 bytes on 64-bit ones
 	pad [64 - unsafe.Sizeof(bucket{})]byte
 	bucket
 }
@@ -223,9 +223,6 @@ func (m *Map[K, V, N]) Get(key K) N {
 	}
 }
 
-// callUnlockingOnPanic calls computeFunc with mu held and releases mu if computeFunc panics
-// or exits the goroutine, so that a failing callback does not leave the bucket locked. The
-// bucket is left unchanged in that case. On a normal return mu stays locked.
 // isNil reports whether n is a missing node: the zero value of N, a nil pointer or a nil
 // interface.
 func isNil[N comparable](n N) bool {
@@ -233,6 +230,9 @@ func isNil[N comparable](n N) bool {
 	return n == zero
 }
 
+// callUnlockingOnPanic calls computeFunc with mu held and releases mu if computeFunc panics
+// or exits the goroutine, so that a failing callback does not leave the bucket locked. The
+// bucket is left unchanged in that case. On a normal return mu stays locked.
 func callUnlockingOnPanic[N any](mu *sync.Mutex, computeFunc func(n N) N, n N) N {
 	returned := false
 	defer func() {
