@@ -8,7 +8,12 @@ import (
 )
 
 type Ccache[V any] struct {
+	// TTL sets the expiration after write. ccache always expires entries,
+	// so a non-positive TTL means an hour.
+	TTL    time.Duration
 	client *ccache.Cache[V]
+	ttl    time.Duration
+	load   func(string) V
 }
 
 func (c *Ccache[V]) Init(capacity int) {
@@ -19,6 +24,15 @@ func (c *Ccache[V]) Init(capacity int) {
 			Buckets(uint32(16 * runtime.GOMAXPROCS(0))),
 	)
 	c.client = client
+	c.ttl = c.TTL
+	if c.ttl <= 0 {
+		c.ttl = time.Hour
+	}
+}
+
+func (c *Ccache[V]) InitLoading(capacity int, load func(string) V) {
+	c.Init(capacity)
+	c.load = load
 }
 
 func (c *Ccache[V]) Name() string {
@@ -35,12 +49,24 @@ func (c *Ccache[V]) Get(key string) (V, bool) {
 	return item.Value(), true
 }
 
+func (c *Ccache[V]) Load(key string) V {
+	// Fetch doesn't deduplicate concurrent loads of the same key.
+	item, err := c.client.Fetch(key, c.ttl, func() (V, error) {
+		return c.load(key), nil
+	})
+	if err != nil {
+		panic(err)
+	}
+	return item.Value()
+}
+
 func (c *Ccache[V]) Set(key string, value V) {
-	c.client.Set(key, value, time.Hour)
+	c.client.Set(key, value, c.ttl)
 }
 
 func (c *Ccache[V]) Close() {
 	c.client.Clear()
 	c.client.Stop()
 	c.client = nil
+	c.load = nil
 }
