@@ -1746,3 +1746,59 @@ func TestCache_DeletionListenerSeesEvictionCounted(t *testing.T) {
 		require.Equal(t, []uint64{1}, seen, "expire=%v", expire)
 	}
 }
+
+// The policy can choose a node that a write has already replaced, while the replacement's task is
+// still in the write buffer. Evicting it only drops it from the policy: the replaced value is
+// reported once, as replaced, and nothing is counted as an eviction for it.
+func TestCache_EvictionOfReplacedNodeReportsNothing(t *testing.T) {
+	t.Parallel()
+
+	counter := stats.NewCounter()
+	var deleted []DeletionEvent[int, string]
+	c := Must(&Options[int, string]{
+		MaximumSize:   2,
+		StatsRecorder: counter,
+		OnDeletion: func(e DeletionEvent[int, string]) {
+			deleted = append(deleted, e)
+		},
+		Executor: func(fn func()) {
+			fn()
+		},
+	})
+	ci := c.cache
+	c.Set(1, "a") // a string is kept inline, so the next write replaces the node
+	c.Set(2, "x")
+	c.CleanUp()
+	n1 := ci.hashmap.Get(1)
+	require.True(t, n1.InMainProbation())
+
+	ci.evictionMutex.Lock()
+	ci.drainReadBuffer()
+	ci.drainWriteBuffer()
+	c.Set(3, "y")
+	ci.drainWriteBuffer() // over the maximum now: 3 entries for 2
+	c.Set(1, "b")         // replaces n1; the update task stays in the buffer
+	require.True(t, n1.IsRetired())
+	require.Equal(t, n1.AsPointer(), ci.evictionPolicy.probation.Head().AsPointer())
+	ci.evictNodes()
+	require.True(t, n1.IsDead())
+	ci.evictionMutex.Unlock()
+	c.CleanUp()
+
+	replaced, evictions := 0, 0
+	for _, e := range deleted {
+		if e.Value == "a" {
+			require.Equal(t, CauseReplacement, e.Cause)
+			replaced++
+		}
+		if e.Cause == CauseOverflow {
+			evictions++
+		}
+	}
+	require.Equal(t, 1, replaced)
+	require.Equal(t, uint64(evictions), counter.Snapshot().Evictions)
+	v, ok := c.GetIfPresent(1)
+	require.True(t, ok)
+	require.Equal(t, "b", v)
+	validateCache(t, c)
+}
