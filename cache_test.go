@@ -1120,7 +1120,8 @@ func TestCache_SetWithExpiresAfterAccessing(t *testing.T) {
 		}
 	}
 
-	fs.Sleep(2 * time.Hour)
+	// past the deadlines of the second round of writes, but before the extended ones
+	fs.Sleep(2*time.Hour - time.Second)
 	c.CleanUp()
 
 	if cacheSize := c.EstimatedSize(); cacheSize == 0 {

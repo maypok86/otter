@@ -17,7 +17,7 @@ singleflight, and lock-free reads.
 | `persistence.go` | `SaveCacheTo` / `LoadCacheFrom` |
 | `internal/hashmap` | Hash table with per-bucket locks and lock-free `Get` |
 | `internal/lossy`, `internal/deque/queue` | Lossy striped read buffer, bounded MPSC write buffer |
-| `internal/expiration` | Timer wheel (`Variable`) |
+| `internal/expiration` | Timer wheel (`Wheel`) |
 | `internal/generated/node` | **Generated** node types. Never edit; change `cmd/generator` and run `make generate` |
 | `cmd/generator` | Node generator (`main.go`, `node.go`, `manager.go`) |
 | `benchmarks/` | Separate module: throughput, memory, eviction benchmarks and the hit-rate simulator |

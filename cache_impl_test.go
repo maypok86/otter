@@ -1588,3 +1588,84 @@ func TestCache_CreationOverExpiredEntrySeesNoDeadlines(t *testing.T) {
 	run()
 	validateCache(t, c)
 }
+
+// The timer wheel removes an entry at its deadline, when reads stop seeing it, not a bucket later.
+func TestCache_CleanUpAtDeadlineRemovesEntry(t *testing.T) {
+	t.Parallel()
+
+	clk := newNonTickingClock()
+	c, run := newDeferredCache(clk, ExpiryWriting[int, int](time.Minute), nil)
+	c.Set(1, 1)
+	run()
+	clk.Sleep(time.Minute) // exactly the deadline
+
+	_, ok := c.GetIfPresent(1)
+	require.False(t, ok)
+	c.CleanUp()
+	run()
+	require.Zero(t, c.EstimatedSize())
+	validateCache(t, c)
+}
+
+// Maintenance replays the read buffer before the write buffer, so the timer wheel sees an access
+// to a node before the node's insertion, or after its removal, and must schedule it exactly once,
+// or not at all.
+func TestCache_ReadsReplayedAroundWrites(t *testing.T) {
+	t.Parallel()
+
+	t.Run("before the insertion", func(t *testing.T) {
+		t.Parallel()
+
+		clk := newNonTickingClock()
+		c, run := newDeferredCache(clk, ExpiryWriting[int, int](time.Minute), nil)
+		c.Set(1, 1)
+		_, ok := c.GetIfPresent(1)
+		require.True(t, ok)
+		run()
+		validateCache(t, c)
+
+		clk.Sleep(time.Minute)
+		c.CleanUp()
+		run()
+		require.Zero(t, c.EstimatedSize())
+		validateCache(t, c)
+	})
+	t.Run("expired before the insertion", func(t *testing.T) {
+		t.Parallel()
+
+		// An access schedules a node whose insertion is still in the write buffer, and the wheel
+		// can expire it before the insertion is replayed (a drain replays a bounded number of
+		// writes). The insertion then finds the node dead and leaves it out of the policies.
+		clk := newNonTickingClock()
+		c, run := newDeferredCache(clk, ExpiryWriting[int, int](time.Minute), nil)
+		c.Set(1, 1)
+		n := c.cache.hashmap.Get(1)
+
+		ci := c.cache
+		ci.evictionMutex.Lock()
+		ci.onAccess(n)
+		clk.Sleep(time.Minute)
+		ci.expireNodes()
+		require.Zero(t, c.EstimatedSize())
+		ci.drainWriteBuffer()
+		ci.evictionMutex.Unlock()
+
+		run()
+		require.Zero(t, c.EstimatedSize())
+		validateCache(t, c)
+	})
+	t.Run("after the removal", func(t *testing.T) {
+		t.Parallel()
+
+		clk := newNonTickingClock()
+		c, run := newDeferredCache(clk, ExpiryWriting[int, int](time.Minute), nil)
+		c.Set(1, 1)
+		run()
+		_, ok := c.GetIfPresent(1)
+		require.True(t, ok)
+		c.Invalidate(1)
+		run()
+		require.Zero(t, c.EstimatedSize())
+		validateCache(t, c)
+	})
+}
