@@ -14,7 +14,8 @@ Audits read this file **after** recording their findings (Phase 1.5 of the audit
 - **An expired entry is absent for every operation, not only for reads.** `Set` and
   `SetIfAbsent` report no previous value, `Invalidate` reports the key as not present,
   `Compute` gets `found=false`, and `SetExpiresAfter` leaves it alone. Only the listeners see
-  its value, with `CauseExpiration`. A write or load over it creates the entry for both
+  its value, with `CauseExpiration`, also when size eviction reaches it before the timer wheel
+  does. A write or load over it creates the entry for both
   calculators (`ExpireAfterCreate`, `RefreshAfterCreate`), which see no expiration or refresh
   time, as for an absent key; a refresh whose entry expires while it is in flight is discarded.
 - **The read buffer is lossy.** A dropped access is a lost policy signal, not a bug. Anything
@@ -51,9 +52,6 @@ Audits read this file **after** recording their findings (Phase 1.5 of the audit
 
 ## Policy
 
-- **Eviction calls `evictNode(n, 0)`**, so an expired node that is evicted for size before the
-  wheel reaches it is reported as `CauseOverflow`, where Caffeine reports expiration.
-  Known and undecided.
 - **Region maxima (`windowMaximum`, `mainProtectedMaximum`) are targets**, adjusted by at most
   `queueTransferThreshold` (1000) transfers per maintenance; the regions can lag behind them.
 - **Hashing is randomized per cache**, so hit rates of one simulator run vary by up to ±3

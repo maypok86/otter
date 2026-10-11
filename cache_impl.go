@@ -112,6 +112,10 @@ type cache[K comparable, V any] struct {
 	// whether a read may change the expiration time: ExpireAfterRead is not called for the
 	// built-in calculators whose reads always keep it
 	withReadExpiry bool
+	// the time of the current maintenance pass, read once when it starts (with expiration only),
+	// so that the timer wheel and size eviction agree on what has expired; guarded by
+	// evictionMutex
+	maintenanceNanos int64
 }
 
 // newCache returns a new cache instance based on the settings from Options.
@@ -1301,9 +1305,11 @@ func (c *cache[K, V]) periodicCleanUp() {
 	}
 }
 
-// evictNode removes n from the cache and the policies.
-func (c *cache[K, V]) evictNode(n node.Node[K, V], nowNanos int64) {
-	c.removeNode(n, nowNanos, false)
+// evictNode removes n from the cache and the policies. The policy has no clock, so the time of
+// the maintenance pass is used: an entry that has expired, but that the timer wheel has not
+// reached yet, is reported as expired, as every other path reports it.
+func (c *cache[K, V]) evictNode(n node.Node[K, V], _ int64) {
+	c.removeNode(n, c.maintenanceNanos, false)
 }
 
 // expireNode is called by the timer wheel for a node whose expiration time has passed, and
@@ -1433,6 +1439,8 @@ func (c *cache[K, V]) invalidateAllLocked() []node.Node[K, V] {
 	defer c.evictionMutex.Unlock()
 
 	if c.withMaintenance {
+		// the replayed writes can evict
+		c.readMaintenanceTime()
 		c.readBuffer.DrainTo(func(n node.Node[K, V]) {})
 		for {
 			t := c.writeBuffer.TryPop()
@@ -1613,6 +1621,7 @@ func (c *cache[K, V]) rescheduleCleanUpIfIncomplete() {
 
 func (c *cache[K, V]) maintenance(t *task[K, V]) {
 	c.drainStatus.Store(processingToIdle)
+	c.readMaintenanceTime()
 	completed := false
 	defer func() {
 		if !completed {
@@ -1631,6 +1640,14 @@ func (c *cache[K, V]) maintenance(t *task[K, V]) {
 
 	if c.drainStatus.Load() != processingToIdle || !c.drainStatus.CompareAndSwap(processingToIdle, idle) {
 		c.drainStatus.Store(required)
+	}
+}
+
+// readMaintenanceTime reads the time of a maintenance pass, under evictionMutex. Reading the clock
+// once per pass rather than per eviction keeps it off the single-threaded maintenance path.
+func (c *cache[K, V]) readMaintenanceTime() {
+	if c.withExpiration {
+		c.maintenanceNanos = c.clock.NowNano()
 	}
 }
 
@@ -1714,7 +1731,7 @@ func (c *cache[K, V]) onAccess(n node.Node[K, V]) {
 
 func (c *cache[K, V]) expireNodes() {
 	if c.withExpiration {
-		c.timerWheel.Advance(c.clock.NowNano(), c.expireNode)
+		c.timerWheel.Advance(c.maintenanceNanos, c.expireNode)
 	}
 }
 

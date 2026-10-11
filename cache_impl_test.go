@@ -1645,6 +1645,7 @@ func TestCache_ReadsReplayedAroundWrites(t *testing.T) {
 		ci.evictionMutex.Lock()
 		ci.onAccess(n)
 		clk.Sleep(time.Minute)
+		ci.readMaintenanceTime()
 		ci.expireNodes()
 		require.Zero(t, c.EstimatedSize())
 		ci.drainWriteBuffer()
@@ -1668,4 +1669,49 @@ func TestCache_ReadsReplayedAroundWrites(t *testing.T) {
 		require.Zero(t, c.EstimatedSize())
 		validateCache(t, c)
 	})
+}
+
+// An entry that has expired, but that the timer wheel has not reached yet, is reported as expired
+// when it is evicted for size, as every other path reports it.
+func TestCache_SizeEvictionOfExpiredEntryReportsExpiration(t *testing.T) {
+	t.Parallel()
+
+	clk := newNonTickingClock()
+	var pending []func()
+	var deleted, atomicDeleted []DeletionEvent[int, int]
+	c := Must(&Options[int, int]{
+		MaximumSize:      10,
+		Clock:            clk,
+		ExpiryCalculator: ExpiryWriting[int, int](20 * time.Millisecond),
+		OnDeletion: func(e DeletionEvent[int, int]) {
+			deleted = append(deleted, e)
+		},
+		OnAtomicDeletion: func(e DeletionEvent[int, int]) {
+			atomicDeleted = append(atomicDeleted, e)
+		},
+		Executor: func(fn func()) {
+			pending = append(pending, fn)
+		},
+	})
+	run := func() {
+		for len(pending) > 0 {
+			fn := pending[0]
+			pending = pending[1:]
+			fn()
+		}
+	}
+	for k := 0; k < 10; k++ {
+		c.Set(k, k)
+	}
+	run()
+	clk.Sleep(40 * time.Millisecond) // expired, but within the wheel's current tick
+
+	c.SetMaximum(5)
+	run()
+	require.Len(t, deleted, 5)
+	for _, e := range deleted {
+		require.Equal(t, CauseExpiration, e.Cause, "key %d", e.Key)
+	}
+	require.ElementsMatch(t, deleted, atomicDeleted)
+	validateCache(t, c)
 }
