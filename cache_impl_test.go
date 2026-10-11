@@ -1715,3 +1715,34 @@ func TestCache_SizeEvictionOfExpiredEntryReportsExpiration(t *testing.T) {
 	require.ElementsMatch(t, deleted, atomicDeleted)
 	validateCache(t, c)
 }
+
+// The OnDeletion listener of an eviction or an expiration sees it counted in the statistics.
+func TestCache_DeletionListenerSeesEvictionCounted(t *testing.T) {
+	t.Parallel()
+
+	for _, expire := range []bool{false, true} {
+		clk := newNonTickingClock()
+		counter := stats.NewCounter()
+		var seen []uint64
+		c := Must(&Options[int, int]{
+			MaximumSize:      1,
+			Clock:            clk,
+			ExpiryCalculator: ExpiryWriting[int, int](time.Minute),
+			StatsRecorder:    counter,
+			OnDeletion: func(e DeletionEvent[int, int]) {
+				seen = append(seen, counter.Snapshot().Evictions)
+			},
+			Executor: func(fn func()) {
+				fn()
+			},
+		})
+		c.Set(1, 1)
+		if expire {
+			clk.Sleep(time.Minute)
+		} else {
+			c.Set(2, 2)
+		}
+		c.CleanUp()
+		require.Equal(t, []uint64{1}, seen, "expire=%v", expire)
+	}
+}

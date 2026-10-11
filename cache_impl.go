@@ -1344,8 +1344,9 @@ func (c *cache[K, V]) removeNode(n node.Node[K, V], nowNanos int64, onlyIfExpire
 	c.makeDead(n)
 
 	if deleted {
-		c.notifyDeletion(n.Key(), n.Value(), cause)
+		// counted first, so that the listener sees the eviction it is told about
 		c.stats.RecordEviction(n.Weight())
+		c.notifyDeletion(n.Key(), n.Value(), cause)
 	}
 	return true
 }
