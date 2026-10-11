@@ -35,7 +35,7 @@ func TestPolicy_SetMaximumSize(t *testing.T) {
 
 // newTestPolicy returns a weighted policy with the given maximum that evicts through evict.
 func newTestPolicy(maximum uint64, evict func(n node.Node[int, int]) bool) *policy[int, int] {
-	p := newPolicy[int, int](true, 0, evict)
+	p := newPolicy(node.NewManager[int, int](node.Config{WithWeight: true}), true, 0, evict)
 	p.setMaximumSize(maximum)
 	return p
 }
@@ -285,7 +285,7 @@ func TestPolicy_SetMaximumSizeRestartsClimber(t *testing.T) {
 
 	nm := node.NewManager[int, int](node.Config{WithSize: true})
 	for _, adjustment := range []int64{5250, -5250} {
-		p := newPolicy[int, int](false, 100_000, removeAll)
+		p := newPolicy(nm, false, 100_000, removeAll)
 		p.setMaximumSize(100_000)
 		for k := range 1000 {
 			p.add(nm.Create(k, k, 0, 0, 1))

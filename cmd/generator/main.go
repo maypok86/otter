@@ -84,6 +84,12 @@ func hasState(features map[feature]bool) bool {
 	return false
 }
 
+// isBounded reports whether nodes of the features are in the eviction policy's queues, so that
+// they have prev and next links.
+func isBounded(features map[feature]bool) bool {
+	return features[size] || features[weight]
+}
+
 // A node of a feature set is allocated as one of the layouts below: the node type, which is the
 // header and implements Node, followed by the value. The header of a node with state records its
 // layout, so that the value accessors can find the value, while everything else only deals with

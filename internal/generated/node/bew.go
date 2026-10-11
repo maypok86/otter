@@ -133,36 +133,6 @@ func (n *BEW[K, V]) SetNext(v Node[K, V]) {
 	n.next = (*BEW[K, V])(v.AsPointer())
 }
 
-func (n *BEW[K, V]) PrevExp() Node[K, V] {
-	if n.prevExp == nil {
-		return nil
-	}
-	return n.prevExp
-}
-
-func (n *BEW[K, V]) SetPrevExp(v Node[K, V]) {
-	if v == nil {
-		n.prevExp = nil
-		return
-	}
-	n.prevExp = (*BEW[K, V])(v.AsPointer())
-}
-
-func (n *BEW[K, V]) NextExp() Node[K, V] {
-	if n.nextExp == nil {
-		return nil
-	}
-	return n.nextExp
-}
-
-func (n *BEW[K, V]) SetNextExp(v Node[K, V]) {
-	if v == nil {
-		n.nextExp = nil
-		return
-	}
-	n.nextExp = (*BEW[K, V])(v.AsPointer())
-}
-
 func (n *BEW[K, V]) HasExpired(now int64) bool {
 	return n.ExpiresAt() <= now
 }

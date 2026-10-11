@@ -127,22 +127,6 @@ func (n *BSR[K, V]) SetNext(v Node[K, V]) {
 	n.next = (*BSR[K, V])(v.AsPointer())
 }
 
-func (n *BSR[K, V]) PrevExp() Node[K, V] {
-	panic("not implemented")
-}
-
-func (n *BSR[K, V]) SetPrevExp(v Node[K, V]) {
-	panic("not implemented")
-}
-
-func (n *BSR[K, V]) NextExp() Node[K, V] {
-	panic("not implemented")
-}
-
-func (n *BSR[K, V]) SetNextExp(v Node[K, V]) {
-	panic("not implemented")
-}
-
 func (n *BSR[K, V]) HasExpired(now int64) bool {
 	return false
 }
