@@ -2332,3 +2332,115 @@ func TestCache_ComputeCancelOverExpiredEntryKeepsLoad(t *testing.T) {
 		}
 	}
 }
+
+type getResult struct {
+	value int
+	err   error
+}
+
+func TestCache_GetWaiterReturnsWhenItsContextIsDone(t *testing.T) {
+	t.Parallel()
+
+	// A Get that joins another goroutine's load stops waiting when its own context is done.
+	// The load goes on and caches its value.
+	c := Must(&Options[int, int]{MaximumSize: 100})
+	started := make(chan struct{})
+	release := make(chan struct{})
+	releaseLoad := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(releaseLoad)
+	tl := newTestLoader[int, int](func(_ context.Context, key int) (int, error) {
+		close(started)
+		<-release
+		return key * 10, nil
+	})
+
+	owner := make(chan getResult, 1)
+	go func() {
+		v, err := c.Get(context.Background(), 1, tl)
+		owner <- getResult{v, err}
+	}()
+	<-started
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	waiter := make(chan getResult, 1)
+	go func() {
+		v, err := c.Get(ctx, 1, tl)
+		waiter <- getResult{v, err}
+	}()
+	select {
+	case r := <-waiter:
+		require.ErrorIs(t, r.err, context.Canceled)
+		require.Zero(t, r.value)
+	case <-time.After(5 * time.Second):
+		t.Fatal("Get waits for the joined load after its context is done")
+	}
+
+	releaseLoad()
+	r := <-owner
+	require.NoError(t, r.err)
+	require.Equal(t, 10, r.value)
+	v, ok := c.GetIfPresent(1)
+	require.True(t, ok)
+	require.Equal(t, 10, v)
+	require.Equal(t, uint64(1), tl.loads.Load())
+}
+
+func TestCache_BulkGetWaiterReturnsWhenItsContextIsDone(t *testing.T) {
+	t.Parallel()
+
+	c := Must(&Options[int, int]{MaximumSize: 100})
+	started := make(chan struct{})
+	release := make(chan struct{})
+	releaseLoad := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(releaseLoad)
+	tl := newTestLoader[int, int](func(_ context.Context, key int) (int, error) {
+		close(started)
+		<-release
+		return key * 10, nil
+	})
+	go func() {
+		_, _ = c.Get(context.Background(), 1, tl)
+	}()
+	<-started
+
+	// BulkGet loads key 2 itself and joins the load of key 1.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	tbl := newTestBulkLoader[int, int](func(_ context.Context, keys []int) (map[int]int, error) {
+		res := make(map[int]int, len(keys))
+		for _, k := range keys {
+			res[k] = k * 10
+		}
+		return res, nil
+	})
+	type bulkResult struct {
+		values map[int]int
+		err    error
+	}
+	done := make(chan bulkResult, 1)
+	go func() {
+		values, err := c.BulkGet(ctx, []int{1, 2}, tbl)
+		done <- bulkResult{values, err}
+	}()
+	select {
+	case r := <-done:
+		require.ErrorIs(t, r.err, context.Canceled)
+		// Only the values loaded by then: key 2 if BulkGet saw it first, never key 1.
+		require.NotContains(t, r.values, 1)
+		for k, v := range r.values {
+			require.Equal(t, k*10, v)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("BulkGet waits for the joined load after its context is done")
+	}
+	v, ok := c.GetIfPresent(2)
+	require.True(t, ok)
+	require.Equal(t, 20, v)
+
+	releaseLoad()
+	require.Eventually(t, func() bool {
+		v, ok := c.GetIfPresent(1)
+		return ok && v == 10
+	}, 5*time.Second, time.Millisecond)
+}

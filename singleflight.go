@@ -30,8 +30,9 @@ type call[K comparable, V any] struct {
 	err   error
 	// base is the node a refresh was requested for (nil for an absent key). Its result is
 	// written only if base is still the key's node.
-	base       node.Node[K, V]
-	wg         sync.WaitGroup
+	base node.Node[K, V]
+	// done is closed when the call has finished and its result may be read.
+	done       chan struct{}
 	isRefresh  bool
 	isNotFound bool
 	isFake     bool
@@ -42,8 +43,8 @@ func newCall[K comparable, V any](key K, isRefresh bool, base node.Node[K, V]) *
 		key:       key,
 		isRefresh: isRefresh,
 		base:      base,
+		done:      make(chan struct{}),
 	}
-	c.wg.Add(1)
 	return c
 }
 
@@ -64,11 +65,28 @@ func (c *call[K, V]) cancel() {
 	if c.isFake {
 		return
 	}
-	c.wg.Done()
+	close(c.done)
 }
 
 func (c *call[K, V]) wait() {
-	c.wg.Wait()
+	<-c.done
+}
+
+// waitContext waits for c to finish or for ctx to end, and returns ctx's error in the latter
+// case. A call that has finished by then wins, so its result is not lost to a context that
+// ended at the same moment.
+func (c *call[K, V]) waitContext(ctx context.Context) error {
+	select {
+	case <-c.done:
+		return nil
+	case <-ctx.Done():
+		select {
+		case <-c.done:
+			return nil
+		default:
+			return ctx.Err()
+		}
+	}
 }
 
 // refreshResult is what a manual refresh reports for c once it has finished.

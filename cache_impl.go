@@ -767,7 +767,9 @@ func (c *cache[K, V]) Get(ctx context.Context, key K, loader Loader[K, V]) (V, e
 			return c.singleflight.doCall(ctx, cl, loader.Load)
 		})
 	}
-	cl.wait()
+	if err := cl.waitContext(ctx); err != nil {
+		return zeroValue[V](), err
+	}
 
 	return cl.value, cl.err
 }
@@ -1005,7 +1007,9 @@ func (c *cache[K, V]) BulkGet(ctx context.Context, keys []K, bulkLoader BulkLoad
 	var errsFromCalls []error
 	i = 0
 	for key, cl := range misses {
-		cl.wait()
+		if err := cl.waitContext(ctx); err != nil {
+			return result, err
+		}
 		i++
 
 		if cl.err == nil {

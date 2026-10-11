@@ -111,7 +111,8 @@ reweigh task brings the accounted weight to zero.
 ## Loading and refresh
 
 `group` (`singleflight.go`) owns the lifecycle of a `call`: `Get`/`BulkGet` register one with
-`startLoad`, refreshes with `startRefresh`; waiters block on it. `doCall`/`doBulkCall` run the
+`startLoad`, refreshes with `startRefresh`; waiters block on it until it finishes or their own
+context is done (`waitContext`). `doCall`/`doBulkCall` run the
 loader with its panics and `runtime.Goexit` caught and end in `group.finish`, which commits the
 result through the cache's `commitCall` (a key mutation from a load or refresh), then deletes
 the call, wakes its waiters and publishes. `commitCall` writes only if `group.authoritative`
