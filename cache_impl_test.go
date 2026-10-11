@@ -1606,3 +1606,42 @@ func TestCache_CleanUpAtDeadlineRemovesEntry(t *testing.T) {
 	require.Zero(t, c.EstimatedSize())
 	validateCache(t, c)
 }
+
+// Maintenance replays the read buffer before the write buffer, so the timer wheel sees an access
+// to a node before the node's insertion, or after its removal, and must schedule it exactly once,
+// or not at all.
+func TestCache_ReadsReplayedAroundWrites(t *testing.T) {
+	t.Parallel()
+
+	t.Run("before the insertion", func(t *testing.T) {
+		t.Parallel()
+
+		clk := newNonTickingClock()
+		c, run := newDeferredCache(clk, ExpiryWriting[int, int](time.Minute), nil)
+		c.Set(1, 1)
+		_, ok := c.GetIfPresent(1)
+		require.True(t, ok)
+		run()
+		validateCache(t, c)
+
+		clk.Sleep(time.Minute)
+		c.CleanUp()
+		run()
+		require.Zero(t, c.EstimatedSize())
+		validateCache(t, c)
+	})
+	t.Run("after the removal", func(t *testing.T) {
+		t.Parallel()
+
+		clk := newNonTickingClock()
+		c, run := newDeferredCache(clk, ExpiryWriting[int, int](time.Minute), nil)
+		c.Set(1, 1)
+		run()
+		_, ok := c.GetIfPresent(1)
+		require.True(t, ok)
+		c.Invalidate(1)
+		run()
+		require.Zero(t, c.EstimatedSize())
+		validateCache(t, c)
+	})
+}
