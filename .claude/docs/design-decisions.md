@@ -64,6 +64,13 @@ Audits read this file **after** recording their findings (Phase 1.5 of the audit
   header's padding; a separate header per storage would undo the binary-size win.
 - **Every node type is instantiated for every `(K, V)` shape**, because `NewManager` chooses the
   variant at runtime. The variants share one header type to keep that cost small.
+- **The read buffer pads small objects with whole cache lines**: `Striped`, the table header
+  `striped`, the table of stripes (`newBuffers`) and the space before a ring's `head`. Every
+  read loads them, and without the padding each one shares a cache line with whatever the
+  allocator put next to it. A neighbor written often (in the throughput benchmark,
+  `testing.PB`) made reads of a cache instance about 1.6x slower, so throughput was bimodal
+  between instances. The padding costs about 400 bytes per cache plus 64 bytes per
+  ring, at most 2.4 KB with 32 stripes.
 
 ## Rejected approaches
 

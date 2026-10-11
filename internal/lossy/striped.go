@@ -19,6 +19,7 @@ package lossy
 
 import (
 	"sync/atomic"
+	"unsafe"
 
 	"github.com/maypok86/otter/v2/internal/generated/node"
 	"github.com/maypok86/otter/v2/internal/xruntime"
@@ -28,19 +29,35 @@ const (
 	attempts = 3
 )
 
+// striped is the table of stripes. Every Add reads it, so it is padded on both sides: otherwise
+// it would share a cache line with whatever the allocator put next to it, and a neighbor that is
+// written often would make every Add miss the cache.
 type striped[K comparable, V any] struct {
+	_       [xruntime.CacheLineSize]byte
 	buffers []atomic.Pointer[ring[K, V]]
 	len     int
+	_       [xruntime.CacheLineSize]byte
+}
+
+// newBuffers returns the stripes of a table of length n. They are allocated with a cache line
+// of padding on each side for the same reason as the table itself.
+func newBuffers[K comparable, V any](n int) []atomic.Pointer[ring[K, V]] {
+	pad := int(xruntime.CacheLineSize / unsafe.Sizeof(atomic.Pointer[ring[K, V]]{}))
+	buffers := make([]atomic.Pointer[ring[K, V]], n+2*pad)
+	return buffers[pad : pad+n : pad+n]
 }
 
 // Striped is a multiple-producer / single-consumer buffer that rejects new elements if it is full or
 // fails spuriously due to contention. Unlike a queue and stack, a buffer does not guarantee an
 // ordering of elements in either FIFO or LIFO order.
 type Striped[K comparable, V any] struct {
+	// Every Add loads the table, so the fields are padded like the table itself.
+	_           [xruntime.CacheLineSize]byte
 	nodeManager *node.Manager[K, V]
 	maxLen      int
 	striped     atomic.Pointer[striped[K, V]]
 	busy        atomic.Uint32
+	_           [xruntime.CacheLineSize]byte
 }
 
 func NewStriped[K comparable, V any](maxLen int, nodeManager *node.Manager[K, V]) *Striped[K, V] {
@@ -130,7 +147,7 @@ func (s *Striped[K, V]) expandOrRetry(n node.Node[K, V], h uint32, wasUncontende
 					if s.striped.Load() == bs {
 						length := bs.len << 1
 						striped := &striped[K, V]{
-							buffers: make([]atomic.Pointer[ring[K, V]], length),
+							buffers: newBuffers[K, V](length),
 							len:     length,
 						}
 						for j := 0; j < bs.len; j++ {
@@ -148,7 +165,7 @@ func (s *Striped[K, V]) expandOrRetry(n node.Node[K, V], h uint32, wasUncontende
 			init := false
 			if s.striped.Load() == bs {
 				striped := &striped[K, V]{
-					buffers: make([]atomic.Pointer[ring[K, V]], 1),
+					buffers: newBuffers[K, V](1),
 					len:     1,
 				}
 				striped.buffers[0].Store(newRing(s.nodeManager, n))

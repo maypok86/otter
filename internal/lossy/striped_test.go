@@ -19,6 +19,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"unsafe"
 
 	"github.com/stretchr/testify/require"
 
@@ -191,4 +192,27 @@ func TestStriped_Len(t *testing.T) {
 	ss.buffers[0].Store(r)
 	s.striped.Store(ss)
 	require.Equal(t, 1, s.Len())
+}
+
+func TestPadding(t *testing.T) {
+	t.Parallel()
+
+	line := uintptr(xruntime.CacheLineSize)
+
+	// Every Add reads these fields, so no other object may share their cache lines.
+	var s Striped[int, int]
+	require.GreaterOrEqual(t, unsafe.Offsetof(s.nodeManager), line)
+	require.GreaterOrEqual(t, unsafe.Sizeof(s)-unsafe.Offsetof(s.busy)-unsafe.Sizeof(s.busy), line)
+
+	var bs striped[int, int]
+	require.GreaterOrEqual(t, unsafe.Offsetof(bs.buffers), line)
+	require.GreaterOrEqual(t, unsafe.Sizeof(bs)-unsafe.Offsetof(bs.len)-unsafe.Sizeof(bs.len), line)
+
+	var r ring[int, int]
+	require.GreaterOrEqual(t, unsafe.Offsetof(r.head), line)
+
+	// The padding of the stripes stays out of reach of the slice.
+	buffers := newBuffers[int, int](2)
+	require.Len(t, buffers, 2)
+	require.Equal(t, 2, cap(buffers))
 }

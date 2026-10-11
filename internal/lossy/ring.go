@@ -61,6 +61,9 @@ const (
 // order to discover an available buffer, the producer may retry adding its element to determine
 // whether it found a satisfactory buffer or if resizing is necessary.
 type ring[K comparable, V any] struct {
+	// Producers read head on every add, so it is kept off the cache line of the object that the
+	// allocator put before the ring.
+	_           [xruntime.CacheLineSize]byte
 	head        atomic.Uint64
 	_           [xruntime.CacheLineSize - unsafe.Sizeof(atomic.Uint64{})]byte
 	tail        atomic.Uint64
