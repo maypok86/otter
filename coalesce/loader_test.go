@@ -686,3 +686,167 @@ func TestLoader_WithCacheRefresh(t *testing.T) {
 		require.Equal(t, k*10, v)
 	}
 }
+
+func TestLoader_BulkLoad(t *testing.T) {
+	t.Parallel()
+
+	// The keys of one call leave in one batch, without the keys the bulk loader leaves out.
+	tl := &testBulkLoader{fn: func(_ context.Context, keys []int) (map[int]int, error) {
+		res := make(map[int]int)
+		for _, k := range keys {
+			if k != 2 {
+				res[k] = k * 10
+			}
+		}
+		return res, nil
+	}}
+	l := Must[int, int](tl, nil)
+	res, err := l.BulkLoad(context.Background(), []int{1, 2, 3})
+	require.NoError(t, err)
+	require.Equal(t, map[int]int{1: 10, 3: 30}, res)
+	require.Equal(t, [][]int{{1, 2, 3}}, tl.batches)
+}
+
+func TestLoader_BulkReloadOldValuesLength(t *testing.T) {
+	t.Parallel()
+
+	tl := &testBulkLoader{}
+	l := Must[int, int](tl, nil)
+	_, err := l.BulkReload(context.Background(), []int{1, 2}, []int{10})
+	require.Error(t, err)
+
+	// The loader still works.
+	res, err := l.BulkReload(context.Background(), []int{1, 2}, []int{10, 20})
+	require.NoError(t, err)
+	require.Equal(t, map[int]int{1: 10, 2: 20}, res)
+}
+
+func TestLoader_BulkLoadErrors(t *testing.T) {
+	t.Parallel()
+
+	// Split into two batches that fail, BulkLoad returns both errors, each once.
+	errOdd := errors.New("odd batch failed")
+	errEven := errors.New("even batch failed")
+	tl := &testBulkLoader{fn: func(_ context.Context, keys []int) (map[int]int, error) {
+		if keys[0]%2 == 1 {
+			return nil, errOdd
+		}
+		return nil, errEven
+	}}
+	l := Must[int, int](tl, &Options{MaxBatchSize: 2, MaxInFlight: -1})
+	_, err := l.BulkLoad(context.Background(), []int{1, 3, 2, 4})
+	require.ErrorIs(t, err, errOdd)
+	require.ErrorIs(t, err, errEven)
+	require.Len(t, err.(interface{ Unwrap() []error }).Unwrap(), 2)
+
+	tl.fn = func(context.Context, []int) (map[int]int, error) {
+		panic("bulk boom")
+	}
+	require.PanicsWithValue(t, "bulk boom", func() {
+		_, _ = l.BulkLoad(context.Background(), []int{5})
+	})
+}
+
+func TestLoader_BulkLoadContext(t *testing.T) {
+	t.Parallel()
+
+	// A call that gives up leaves its queued keys, which are then not loaded. Key 5 is asked for
+	// twice, so the call leaves it twice.
+	tl := &testBulkLoader{release: make(chan struct{})}
+	l := Must[int, int](tl, nil)
+	wg := loadAll(t, l, []int{0})
+	waitFor(t, func() bool { return tl.runningCalls() == 1 })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	res := make(chan error, 1)
+	go func() {
+		_, err := l.BulkLoad(ctx, []int{5, 5, 6})
+		res <- err
+	}()
+	waitFor(t, func() bool { return l.queued() == 2 })
+	cancel()
+	require.ErrorIs(t, <-res, context.Canceled)
+	require.Zero(t, l.queued())
+
+	close(tl.release)
+	wg.Wait()
+	waitFor(t, l.idle)
+	require.Equal(t, [][]int{{0}}, tl.batches)
+}
+
+func TestLoader_WithCacheBulkGet(t *testing.T) {
+	t.Parallel()
+
+	// The keys of a BulkGet and of a Get share a batch.
+	tl := &testBulkLoader{release: make(chan struct{})}
+	l := Must[int, int](tl, nil)
+	c := otter.Must(&otter.Options[int, int]{MaximumSize: 1000})
+	go func() {
+		_, _ = c.Get(context.Background(), 0, l)
+	}()
+	waitFor(t, func() bool { return tl.runningCalls() == 1 })
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		res, err := c.BulkGet(context.Background(), []int{1, 2, 3}, l)
+		if err != nil || len(res) != 3 || res[1] != 10 || res[2] != 20 || res[3] != 30 {
+			t.Errorf("BulkGet = %v, %v", res, err)
+		}
+	}()
+	waitFor(t, func() bool { return l.queued() == 3 })
+	go func() {
+		defer wg.Done()
+		v, err := c.Get(context.Background(), 4, l)
+		if err != nil || v != 40 {
+			t.Errorf("Get(4) = %d, %v", v, err)
+		}
+	}()
+	waitFor(t, func() bool { return l.queued() == 4 })
+	close(tl.release)
+	wg.Wait()
+
+	waitFor(t, l.idle)
+	require.Len(t, tl.batches, 2)
+	require.ElementsMatch(t, []int{1, 2, 3, 4}, tl.batches[1])
+}
+
+func TestLoader_WithCacheBulkRefresh(t *testing.T) {
+	t.Parallel()
+
+	// The keys of a BulkRefresh and of a Refresh share a batch of reloads, with their old values.
+	tl := &testBulkLoader{release: make(chan struct{})}
+	l := Must[int, int](tl, nil)
+	c := otter.Must(&otter.Options[int, int]{
+		MaximumSize:       1000,
+		RefreshCalculator: otter.RefreshWriting[int, int](time.Hour),
+	})
+	for _, k := range keysUpTo(5) {
+		c.Set(k, k)
+	}
+
+	first := c.Refresh(context.Background(), 0, l)
+	waitFor(t, func() bool { return tl.runningCalls() == 1 })
+	bulk := c.BulkRefresh(context.Background(), []int{1, 2, 3}, l)
+	waitFor(t, func() bool { return l.queued() == 3 })
+	single := c.Refresh(context.Background(), 4, l)
+	waitFor(t, func() bool { return l.queued() == 4 })
+	close(tl.release)
+
+	require.NoError(t, (<-first).Err)
+	for _, r := range <-bulk {
+		require.NoError(t, r.Err)
+		require.Equal(t, r.Key*10, r.Value)
+	}
+	require.NoError(t, (<-single).Err)
+
+	waitFor(t, l.idle)
+	require.Len(t, tl.reloads, 2)
+	require.ElementsMatch(t, []int{1, 2, 3, 4}, tl.reloads[1])
+	// Each old value is the key's own value.
+	require.ElementsMatch(t, tl.reloads[1], tl.oldValues[1])
+	for i, k := range tl.reloads[1] {
+		require.Equal(t, k, tl.oldValues[1][i])
+	}
+}

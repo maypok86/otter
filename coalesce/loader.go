@@ -27,7 +27,9 @@ import (
 var errLoaderExited = errors.New("coalesce: the bulk loader exited the goroutine (runtime.Goexit) without returning")
 
 // Loader collects the keys that concurrent calls of Load and Reload ask for and loads them with
-// one call of BulkLoad or BulkReload of its [otter.BulkLoader].
+// one call of BulkLoad or BulkReload of its [otter.BulkLoader]. It implements both
+// [otter.Loader] and [otter.BulkLoader], so the keys of [otter.Cache.BulkGet] and of
+// [otter.Cache.Get] can share batches.
 //
 // A key waits in a queue until a call of the bulk loader may start (see [Options.MaxInFlight]);
 // the keys that are waiting then leave together, at most [Options.MaxBatchSize] at a time. A key
@@ -144,6 +146,20 @@ func (l *Loader[K, V]) Reload(ctx context.Context, key K, oldValue V) (V, error)
 	return l.load(ctx, &l.reloads, key, oldValue)
 }
 
+// BulkLoad loads the values for keys with BulkLoad. The keys join the queue together, so they
+// leave in one batch with the keys of other concurrent calls, unless [Options.MaxBatchSize] splits
+// them. A key that the bulk loader leaves out is not in the result. If a batch fails, BulkLoad
+// returns the errors of all its failed batches.
+func (l *Loader[K, V]) BulkLoad(ctx context.Context, keys []K) (map[K]V, error) {
+	return l.bulkLoad(ctx, &l.loads, keys, nil)
+}
+
+// BulkReload loads replacement values for keys with BulkReload, in batches as in BulkLoad.
+// oldValues holds the old value of each key, in the order of keys.
+func (l *Loader[K, V]) BulkReload(ctx context.Context, keys []K, oldValues []V) (map[K]V, error) {
+	return l.bulkLoad(ctx, &l.reloads, keys, oldValues)
+}
+
 // load queues key in q, or joins the request already queued for it, and waits for the result.
 func (l *Loader[K, V]) load(ctx context.Context, q *queue[K, V], key K, oldValue V) (V, error) {
 	if err := ctx.Err(); err != nil {
@@ -151,6 +167,88 @@ func (l *Loader[K, V]) load(ctx context.Context, q *queue[K, V], key K, oldValue
 	}
 
 	l.mu.Lock()
+	r := l.enqueue(ctx, q, key, oldValue)
+	l.dispatch()
+	l.mu.Unlock()
+
+	if err := wait(ctx, r); err != nil {
+		l.leave(r)
+		return zeroValue[V](), err
+	}
+	if r.panicVal != nil {
+		panic(r.panicVal)
+	}
+	if r.err != nil {
+		return zeroValue[V](), r.err
+	}
+	if !r.found {
+		return zeroValue[V](), otter.ErrNotFound
+	}
+	return r.value, nil
+}
+
+// bulkLoad queues keys in q and waits for all their results. oldValues is nil for loads.
+func (l *Loader[K, V]) bulkLoad(ctx context.Context, q *queue[K, V], keys []K, oldValues []V) (map[K]V, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	// Checked before the lock: indexing past oldValues under it would leave it locked.
+	if oldValues != nil && len(oldValues) != len(keys) {
+		return nil, errors.New("coalesce: oldValues and keys differ in length")
+	}
+
+	requests := make([]*request[K, V], len(keys))
+	l.mu.Lock()
+	for i, key := range keys {
+		var oldValue V
+		if oldValues != nil {
+			oldValue = oldValues[i]
+		}
+		requests[i] = l.enqueue(ctx, q, key, oldValue)
+	}
+	l.dispatch()
+	l.mu.Unlock()
+
+	for i, r := range requests {
+		if err := wait(ctx, r); err != nil {
+			l.leave(requests[i:]...)
+			return nil, err
+		}
+	}
+
+	res := make(map[K]V, len(keys))
+	var (
+		errs   []error
+		failed map[*batch]struct{}
+	)
+	for _, r := range requests {
+		if r.panicVal != nil {
+			panic(r.panicVal)
+		}
+		if r.err != nil {
+			// The keys of a failed batch share its error: report it once.
+			if _, ok := failed[r.batch]; !ok {
+				if failed == nil {
+					failed = make(map[*batch]struct{})
+				}
+				failed[r.batch] = struct{}{}
+				errs = append(errs, r.err)
+			}
+			continue
+		}
+		if r.found {
+			res[r.key] = r.value
+		}
+	}
+	if len(errs) > 0 {
+		return nil, errors.Join(errs...)
+	}
+	return res, nil
+}
+
+// enqueue queues key in q, or joins the request already queued for it, and registers the caller.
+// It is called with l.mu held.
+func (l *Loader[K, V]) enqueue(ctx context.Context, q *queue[K, V], key K, oldValue V) *request[K, V] {
 	r := q.waiting[key]
 	if r == nil {
 		r = &request[K, V]{
@@ -164,32 +262,24 @@ func (l *Loader[K, V]) load(ctx context.Context, q *queue[K, V], key K, oldValue
 		q.waiting[key] = r
 	}
 	r.callers++
-	l.dispatch()
-	l.mu.Unlock()
+	return r
+}
 
+// wait waits for r to finish or for ctx to end, and returns ctx's error in the latter case. A
+// request that has finished by then wins, so its result is not lost to a context that ended at
+// the same moment.
+func wait[K comparable, V any](ctx context.Context, r *request[K, V]) error {
 	select {
 	case <-r.done:
+		return nil
 	case <-ctx.Done():
-		// A request that has finished by then wins, so its result is not lost to a context
-		// that ended at the same moment.
 		select {
 		case <-r.done:
+			return nil
 		default:
-			l.leave(r)
-			return zeroValue[V](), ctx.Err()
+			return ctx.Err()
 		}
 	}
-
-	if r.panicVal != nil {
-		panic(r.panicVal)
-	}
-	if r.err != nil {
-		return zeroValue[V](), r.err
-	}
-	if !r.found {
-		return zeroValue[V](), otter.ErrNotFound
-	}
-	return r.value, nil
 }
 
 func zeroValue[V any]() V {
@@ -197,31 +287,39 @@ func zeroValue[V any]() V {
 	return v
 }
 
-// leave unregisters a call that stops waiting for r. A queued request that nobody waits for is
-// abandoned, and a batch that nobody waits for is cancelled.
-func (l *Loader[K, V]) leave(r *request[K, V]) {
+// leave unregisters a call that stops waiting for requests. A queued request that nobody waits
+// for is abandoned, and a batch that nobody waits for is cancelled. A request that has finished
+// is left harmlessly.
+func (l *Loader[K, V]) leave(requests ...*request[K, V]) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	r.callers--
-	if r.callers > 0 {
-		return
-	}
-	if r.batch == nil {
-		delete(r.queue.waiting, r.key)
-		r.queue.compact()
-		return
-	}
-	r.batch.live--
-	if r.batch.live == 0 {
-		r.batch.cancel()
+	for _, r := range requests {
+		r.callers--
+		if r.callers > 0 {
+			continue
+		}
+		if r.batch == nil {
+			delete(r.queue.waiting, r.key)
+			r.queue.compact()
+			continue
+		}
+		r.batch.live--
+		if r.batch.live == 0 {
+			r.batch.cancel()
+		}
 	}
 }
 
-// compact drops the abandoned requests from q once they outnumber the live ones. The queue is
-// cleaned up otherwise only when a batch starts, so while the bulk loader hangs, the callers that
-// give up would pile up in it with their contexts. It is called with Loader.mu held.
+// compact drops the abandoned requests from q once they outnumber the live ones, and all of them
+// once no request is live. The queue is cleaned up otherwise only when a batch starts, so while the
+// bulk loader hangs, the callers that give up would pile up in it with their contexts, and an idle
+// loader would keep the last of them. It is called with Loader.mu held.
 func (q *queue[K, V]) compact() {
+	if len(q.waiting) == 0 {
+		q.requests = nil
+		return
+	}
 	if len(q.requests) <= 2*len(q.waiting)+16 {
 		return
 	}
