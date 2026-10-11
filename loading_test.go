@@ -18,6 +18,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
+	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -2333,6 +2336,42 @@ func TestCache_ComputeCancelOverExpiredEntryKeepsLoad(t *testing.T) {
 	}
 }
 
+// joinedLoadFrame matches the frame of a goroutine that waits for a load another goroutine runs.
+var joinedLoadFrame = regexp.MustCompile(`\(\*call\[[^\]]*\]\)\.wait`)
+
+// waitForJoinedLoad waits until a goroutine started by the running test waits for a load that
+// another goroutine runs. Nothing else tells when a Get has joined a load, and a Get that comes
+// too late does not join it but loads the key itself. Goroutines are told apart by the top-level
+// test, so subtests that use it must not run in parallel.
+func waitForJoinedLoad(t *testing.T) {
+	t.Helper()
+
+	test, _, _ := strings.Cut(t.Name(), "/")
+	createdBy := "otter/v2." + test + "."
+	deadline := time.Now().Add(10 * time.Second)
+	buf := make([]byte, 1<<20)
+	for {
+		size := runtime.Stack(buf, true)
+		if size == len(buf) {
+			buf = make([]byte, 2*len(buf))
+			continue
+		}
+		joined := 0
+		for _, g := range strings.Split(string(buf[:size]), "\n\n") {
+			if strings.Contains(g, createdBy) && joinedLoadFrame.MatchString(g) {
+				joined++
+			}
+		}
+		if joined > 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("no goroutine joined the load")
+		}
+		runtime.Gosched()
+	}
+}
+
 type getResult struct {
 	value int
 	err   error
@@ -2443,4 +2482,205 @@ func TestCache_BulkGetWaiterReturnsWhenItsContextIsDone(t *testing.T) {
 		v, ok := c.GetIfPresent(1)
 		return ok && v == 10
 	}, 5*time.Second, time.Millisecond)
+}
+
+func TestCache_GetReloadsWhenOwnerContextFails(t *testing.T) {
+	t.Parallel()
+
+	// The goroutine that started a load gives up: its context is cancelled and the loader
+	// fails. A joined Get with a live context loads the key again instead of returning that
+	// failure. The loader's error does not wrap context.Canceled, as an RPC client's may not.
+	c := Must(&Options[int, int]{MaximumSize: 100})
+	ownerCtx, cancelOwner := context.WithCancel(context.Background())
+	defer cancelOwner()
+	started := make(chan struct{})
+	errCancelled := errors.New("rpc: cancelled")
+	tl := newTestLoader[int, int](func(ctx context.Context, key int) (int, error) {
+		if ctx == ownerCtx {
+			close(started)
+			<-ctx.Done()
+			return 0, errCancelled
+		}
+		return key * 10, nil
+	})
+
+	owner := make(chan getResult, 1)
+	go func() {
+		v, err := c.Get(ownerCtx, 1, tl)
+		owner <- getResult{v, err}
+	}()
+	<-started
+	waiter := make(chan getResult, 1)
+	go func() {
+		v, err := c.Get(context.Background(), 1, tl)
+		waiter <- getResult{v, err}
+	}()
+	waitForJoinedLoad(t)
+	cancelOwner()
+
+	require.ErrorIs(t, (<-owner).err, errCancelled)
+	r := <-waiter
+	require.NoError(t, r.err)
+	require.Equal(t, 10, r.value)
+	require.Equal(t, uint64(2), tl.loads.Load())
+	v, ok := c.GetIfPresent(1)
+	require.True(t, ok)
+	require.Equal(t, 10, v)
+}
+
+func TestCache_BulkGetReloadsWhenOwnerContextFails(t *testing.T) {
+	t.Parallel()
+
+	c := Must(&Options[int, int]{MaximumSize: 100})
+	ownerCtx, cancelOwner := context.WithCancel(context.Background())
+	defer cancelOwner()
+	started := make(chan struct{})
+	tl := newTestLoader[int, int](func(ctx context.Context, _ int) (int, error) {
+		close(started)
+		<-ctx.Done()
+		return 0, ctx.Err()
+	})
+	owner := make(chan error, 1)
+	go func() {
+		_, err := c.Get(ownerCtx, 1, tl)
+		owner <- err
+	}()
+	<-started
+
+	tbl := newTestBulkLoader[int, int](func(_ context.Context, keys []int) (map[int]int, error) {
+		res := make(map[int]int, len(keys))
+		for _, k := range keys {
+			res[k] = k * 10
+		}
+		return res, nil
+	})
+	type bulkResult struct {
+		values map[int]int
+		err    error
+	}
+	waiter := make(chan bulkResult, 1)
+	go func() {
+		values, err := c.BulkGet(context.Background(), []int{1, 2}, tbl)
+		waiter <- bulkResult{values, err}
+	}()
+	waitForJoinedLoad(t)
+	cancelOwner()
+
+	require.ErrorIs(t, <-owner, context.Canceled)
+	r := <-waiter
+	require.NoError(t, r.err)
+	require.Equal(t, map[int]int{1: 10, 2: 20}, r.values)
+	require.Equal(t, uint64(2), tbl.loads.Load())
+}
+
+func TestCache_GetWaiterSharesFailureOfTheKey(t *testing.T) {
+	// Only a failure after the owner's context is done is retried. A failure while it is live,
+	// and a panic of the loader, belong to the key and are shared with the joined Get. The
+	// subtests are not parallel: waitForJoinedLoad cannot tell their goroutines apart.
+	errLoad := errors.New("load failed")
+	tests := []struct {
+		name        string
+		cancelOwner bool
+		fail        func() error
+		check       func(t *testing.T, err error)
+	}{
+		{
+			name: "live owner context",
+			fail: func() error { return errLoad },
+			check: func(t *testing.T, err error) {
+				t.Helper()
+				require.ErrorIs(t, err, errLoad)
+			},
+		},
+		{
+			name:        "panic after the owner context is done",
+			cancelOwner: true,
+			fail:        func() error { panic("boom") },
+			check: func(t *testing.T, err error) {
+				t.Helper()
+				var pe *panicError
+				require.ErrorAs(t, err, &pe)
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := Must(&Options[int, int]{MaximumSize: 100})
+			ownerCtx, cancelOwner := context.WithCancel(context.Background())
+			defer cancelOwner()
+			started := make(chan struct{})
+			release := make(chan struct{})
+			tl := newTestLoader[int, int](func(context.Context, int) (int, error) {
+				close(started)
+				<-release
+				return 0, tt.fail()
+			})
+			go func() {
+				defer func() { _ = recover() }()
+				_, _ = c.Get(ownerCtx, 1, tl)
+			}()
+			<-started
+			waiter := make(chan getResult, 1)
+			go func() {
+				v, err := c.Get(context.Background(), 1, tl)
+				waiter <- getResult{v, err}
+			}()
+			waitForJoinedLoad(t)
+			if tt.cancelOwner {
+				cancelOwner()
+			}
+			close(release)
+
+			tt.check(t, (<-waiter).err)
+			require.Equal(t, uint64(1), tl.loads.Load())
+		})
+	}
+}
+
+func TestCache_BulkGetRetryTakesValueWrittenDuringFailedLoad(t *testing.T) {
+	t.Parallel()
+
+	// A key written while the joined load ran is in the cache when that load fails for its
+	// owner's context, so BulkGet returns it instead of loading the key again over it.
+	c := Must(&Options[int, int]{MaximumSize: 100})
+	ownerCtx, cancelOwner := context.WithCancel(context.Background())
+	defer cancelOwner()
+	started := make(chan struct{})
+	tl := newTestLoader[int, int](func(ctx context.Context, _ int) (int, error) {
+		close(started)
+		<-ctx.Done()
+		return 0, ctx.Err()
+	})
+	go func() {
+		_, _ = c.Get(ownerCtx, 1, tl)
+	}()
+	<-started
+
+	tbl := newTestBulkLoader[int, int](func(_ context.Context, keys []int) (map[int]int, error) {
+		res := make(map[int]int, len(keys))
+		for _, k := range keys {
+			res[k] = k * 10
+		}
+		return res, nil
+	})
+	type bulkResult struct {
+		values map[int]int
+		err    error
+	}
+	waiter := make(chan bulkResult, 1)
+	go func() {
+		values, err := c.BulkGet(context.Background(), []int{1}, tbl)
+		waiter <- bulkResult{values, err}
+	}()
+	waitForJoinedLoad(t)
+	c.Set(1, 99)
+	cancelOwner()
+
+	r := <-waiter
+	require.NoError(t, r.err)
+	require.Equal(t, map[int]int{1: 99}, r.values)
+	require.Zero(t, tbl.loads.Load())
+	v, ok := c.GetIfPresent(1)
+	require.True(t, ok)
+	require.Equal(t, 99, v)
 }

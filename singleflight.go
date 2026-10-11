@@ -36,6 +36,9 @@ type call[K comparable, V any] struct {
 	isRefresh  bool
 	isNotFound bool
 	isFake     bool
+	// ownerCtxDone reports that the context the loader ran with had ended by the time it
+	// returned.
+	ownerCtxDone bool
 }
 
 func newCall[K comparable, V any](key K, isRefresh bool, base node.Node[K, V]) *call[K, V] {
@@ -87,6 +90,20 @@ func (c *call[K, V]) waitContext(ctx context.Context) error {
 			return ctx.Err()
 		}
 	}
+}
+
+// failedForOwner reports whether c, which has finished, failed after the context of the caller
+// that ran it had ended. The error then most likely comes from that caller's cancellation or
+// deadline, which says nothing about the key, so a waiter with a live context loads the key
+// again rather than return it. Not every loader wraps context.Canceled into its error (an RPC
+// client may return its own status), so any failure counts, except the ones that come from the
+// key itself: not found, a panic and runtime.Goexit.
+func (c *call[K, V]) failedForOwner() bool {
+	if !c.ownerCtxDone || c.err == nil || c.isNotFound || errors.Is(c.err, errLoaderExited) {
+		return false
+	}
+	var pe *panicError
+	return !errors.As(c.err, &pe)
 }
 
 // refreshResult is what a manual refresh reports for c once it has finished.
@@ -197,6 +214,7 @@ func (g *group[K, V]) doCall(
 
 	c.value, err = load(ctx, c.key)
 	returned = true
+	c.ownerCtxDone = ctx.Err() != nil
 	return err
 }
 
@@ -247,6 +265,7 @@ func (g *group[K, V]) doBulkCall(
 
 	res, err := bulkLoad(ctx, keys)
 	returned = true
+	ownerCtxDone := ctx.Err() != nil
 
 	var (
 		isRefresh bool
@@ -257,6 +276,7 @@ func (g *group[K, V]) doBulkCall(
 			isRefresh = cl.isRefresh
 			found = true
 		}
+		cl.ownerCtxDone = ownerCtxDone
 		v, ok := res[k]
 		if ok {
 			cl.value = v
