@@ -15,7 +15,8 @@
 // Package coalesce turns concurrent loads of single keys into bulk loads.
 //
 // A [Loader] implements [otter.Loader] on top of an [otter.BulkLoader]: the keys that
-// concurrent calls of Load ask for are collected and loaded with one call of BulkLoad.
-// Passed to [otter.Cache.Get], it loads the misses of many goroutines with a few bulk
-// requests to the data source instead of one request per key.
+// concurrent calls of Load ask for are collected and loaded with one call of BulkLoad, and
+// those of Reload with one call of BulkReload. Passed to [otter.Cache.Get], it loads the
+// misses and refreshes of many goroutines with a few bulk requests to the data source
+// instead of one request per key.
 package coalesce

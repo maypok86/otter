@@ -29,14 +29,17 @@ import (
 	"github.com/maypok86/otter/v2/internal/xruntime"
 )
 
-// testBulkLoader records the batches it loads. Every call waits until release is closed, if it
-// is set, and then runs fn, which by default returns key*10 for every key.
+// testBulkLoader records the batches it loads and reloads. Every call waits until release is
+// closed, if it is set, and then runs fn, which by default returns key*10 for every key.
 type testBulkLoader struct {
 	release chan struct{}
 	fn      func(ctx context.Context, keys []int) (map[int]int, error)
 
 	mu         sync.Mutex
 	batches    [][]int
+	reloads    [][]int
+	oldValues  [][]int
+	kinds      []string
 	running    int
 	maxRunning int
 }
@@ -44,6 +47,22 @@ type testBulkLoader struct {
 func (tl *testBulkLoader) BulkLoad(ctx context.Context, keys []int) (map[int]int, error) {
 	tl.mu.Lock()
 	tl.batches = append(tl.batches, slices.Clone(keys))
+	tl.kinds = append(tl.kinds, "load")
+	tl.mu.Unlock()
+	return tl.call(ctx, keys)
+}
+
+func (tl *testBulkLoader) BulkReload(ctx context.Context, keys, oldValues []int) (map[int]int, error) {
+	tl.mu.Lock()
+	tl.reloads = append(tl.reloads, slices.Clone(keys))
+	tl.oldValues = append(tl.oldValues, slices.Clone(oldValues))
+	tl.kinds = append(tl.kinds, "reload")
+	tl.mu.Unlock()
+	return tl.call(ctx, keys)
+}
+
+func (tl *testBulkLoader) call(ctx context.Context, keys []int) (map[int]int, error) {
+	tl.mu.Lock()
 	tl.running++
 	tl.maxRunning = max(tl.maxRunning, tl.running)
 	tl.mu.Unlock()
@@ -64,10 +83,6 @@ func (tl *testBulkLoader) BulkLoad(ctx context.Context, keys []int) (map[int]int
 		res[k] = k * 10
 	}
 	return res, nil
-}
-
-func (tl *testBulkLoader) BulkReload(ctx context.Context, keys, _ []int) (map[int]int, error) {
-	return tl.BulkLoad(ctx, keys)
 }
 
 func (tl *testBulkLoader) batchSizes() []int {
@@ -102,13 +117,15 @@ func waitFor(t *testing.T, cond func() bool) {
 func (l *Loader[K, V]) queued() int {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return len(l.waiting)
+	return len(l.loads.waiting) + len(l.reloads.waiting)
 }
 
 func (l *Loader[K, V]) idle() bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return l.inFlight == 0 && len(l.waiting) == 0 && len(l.queue) == 0
+	return l.inFlight == 0 &&
+		len(l.loads.waiting) == 0 && len(l.loads.requests) == 0 &&
+		len(l.reloads.waiting) == 0 && len(l.reloads.requests) == 0
 }
 
 // loadAll calls Load for every key concurrently and checks every result.
@@ -212,7 +229,7 @@ func TestLoader_DuplicateKeys(t *testing.T) {
 	waitFor(t, func() bool {
 		l.mu.Lock()
 		defer l.mu.Unlock()
-		r := l.waiting[7]
+		r := l.loads.waiting[7]
 		return r != nil && r.callers == 2
 	})
 	close(tl.release)
@@ -505,7 +522,7 @@ func TestLoader_CompactsAbandonedRequests(t *testing.T) {
 		require.ErrorIs(t, <-res, context.Canceled)
 	}
 	l.mu.Lock()
-	queueLen := len(l.queue)
+	queueLen := len(l.loads.requests)
 	l.mu.Unlock()
 	require.LessOrEqual(t, queueLen, 16)
 
@@ -557,4 +574,115 @@ func TestLoader_PanicWithoutCallers(t *testing.T) {
 		t.Fatal("the panic was not logged")
 	}
 	waitFor(t, l.idle)
+}
+
+func TestLoader_ReloadBatches(t *testing.T) {
+	t.Parallel()
+
+	// Reloads are batched like loads; a key reloaded twice goes once, with the old value of the
+	// first call.
+	tl := &testBulkLoader{release: make(chan struct{})}
+	l := Must[int, int](tl, nil)
+	reload := func(key, oldValue int) *sync.WaitGroup {
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			v, err := l.Reload(context.Background(), key, oldValue)
+			if err != nil || v != key*10 {
+				t.Errorf("Reload(%d) = %d, %v; want %d, nil", key, v, err, key*10)
+			}
+		}()
+		return &wg
+	}
+
+	wgs := []*sync.WaitGroup{reload(1, 10)}
+	waitFor(t, func() bool { return tl.runningCalls() == 1 })
+	wgs = append(wgs, reload(2, 20))
+	waitFor(t, func() bool { return l.queued() == 1 })
+	wgs = append(wgs, reload(3, 30))
+	waitFor(t, func() bool { return l.queued() == 2 })
+	wgs = append(wgs, reload(2, 99))
+	waitFor(t, func() bool {
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		r := l.reloads.waiting[2]
+		return r != nil && r.callers == 2
+	})
+	close(tl.release)
+	for _, wg := range wgs {
+		wg.Wait()
+	}
+
+	waitFor(t, l.idle)
+	require.Equal(t, [][]int{{1}, {2, 3}}, tl.reloads)
+	require.Equal(t, [][]int{{10}, {20, 30}}, tl.oldValues)
+	require.Empty(t, tl.batches)
+}
+
+func TestLoader_LoadsAndReloadsTakeTurns(t *testing.T) {
+	t.Parallel()
+
+	// With loads and reloads both waiting, the kind that did not go last goes next.
+	tl := &testBulkLoader{release: make(chan struct{})}
+	l := Must[int, int](tl, nil)
+	wg := loadAll(t, l, []int{0})
+	waitFor(t, func() bool { return tl.runningCalls() == 1 })
+	wg2 := loadAll(t, l, []int{1, 2})
+	waitFor(t, func() bool { return l.queued() == 2 })
+	var wg3 sync.WaitGroup
+	wg3.Add(1)
+	go func() {
+		defer wg3.Done()
+		_, _ = l.Reload(context.Background(), 3, 30)
+	}()
+	waitFor(t, func() bool { return l.queued() == 3 })
+	close(tl.release)
+	wg.Wait()
+	wg2.Wait()
+	wg3.Wait()
+
+	waitFor(t, l.idle)
+	require.Equal(t, []string{"load", "reload", "load"}, tl.kinds)
+	require.Len(t, tl.batches, 2)
+	require.ElementsMatch(t, []int{1, 2}, tl.batches[1])
+}
+
+func TestLoader_WithCacheRefresh(t *testing.T) {
+	t.Parallel()
+
+	// Concurrent refreshes of a cache reach the data source in two bulk reloads.
+	const n = 100
+	tl := &testBulkLoader{release: make(chan struct{})}
+	l := Must[int, int](tl, nil)
+	c := otter.Must(&otter.Options[int, int]{
+		MaximumSize:       1000,
+		RefreshCalculator: otter.RefreshWriting[int, int](time.Hour),
+	})
+	for _, k := range keysUpTo(n) {
+		c.Set(k, k)
+	}
+
+	results := make([]<-chan otter.RefreshResult[int, int], 0, n)
+	for _, k := range keysUpTo(n) {
+		results = append(results, c.Refresh(context.Background(), k, l))
+	}
+	waitFor(t, func() bool { return tl.runningCalls() == 1 && l.queued() == n-1 })
+	close(tl.release)
+	for _, ch := range results {
+		r := <-ch
+		require.NoError(t, r.Err)
+		require.Equal(t, r.Key*10, r.Value)
+	}
+
+	sizes := make([]int, 0, len(tl.reloads))
+	for _, keys := range tl.reloads {
+		sizes = append(sizes, len(keys))
+	}
+	require.Equal(t, []int{1, n - 1}, sizes)
+	for _, k := range keysUpTo(n) {
+		v, ok := c.GetIfPresent(k)
+		require.True(t, ok)
+		require.Equal(t, k*10, v)
+	}
 }
