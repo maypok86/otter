@@ -44,6 +44,7 @@ Otter also provides a highly configurable caching API, enabling any combination 
 - Size-based [eviction](https://maypok86.github.io/otter/user-guide/v2/features/eviction/#size-based) when a maximum is exceeded
 - Time-based [expiration](https://maypok86.github.io/otter/user-guide/v2/features/eviction/#time-based) of entries, measured since last access or last write
 - [Automatic loading](https://maypok86.github.io/otter/user-guide/v2/features/loading/) of entries into the cache
+- [Coalescing](https://maypok86.github.io/otter/user-guide/v2/features/coalescing/) of concurrent loads into bulk loads
 - [Asynchronously refresh](https://maypok86.github.io/otter/user-guide/v2/features/refresh/) when the first stale request for an entry occurs
 - [Writes propagated](https://maypok86.github.io/otter/user-guide/v2/features/compute/) to an external resource
 -  Accumulation of cache access [statistics](https://maypok86.github.io/otter/user-guide/v2/features/statistics/)

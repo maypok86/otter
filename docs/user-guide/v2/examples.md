@@ -73,6 +73,12 @@ For more details, see our [user's guide](./getting-started.md).
 --8<-- "./docs/examples/bulk-loading/main.go"
 ```
 
+### Coalescing
+
+```go
+--8<-- "./docs/examples/coalescing/main.go"
+```
+
 ### Loading additional keys
 
 ```go
