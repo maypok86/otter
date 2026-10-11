@@ -83,7 +83,7 @@ type cache[K comparable, V any] struct {
 	nodeManager        *node.Manager[K, V]
 	hashmap            *hashmap.Map[K, V, node.Node[K, V]]
 	evictionPolicy     *policy[K, V]
-	expirationPolicy   *expiration.Variable[K, V]
+	timerWheel         *expiration.Wheel[K, V]
 	stats              stats.Recorder
 	statsSnapshoter    stats.Snapshoter
 	logger             Logger
@@ -180,7 +180,7 @@ func newCache[K comparable, V any](o *Options[K, V]) *cache[K, V] {
 	}
 
 	if o.ExpiryCalculator != nil {
-		c.expirationPolicy = expiration.NewVariable(nodeManager)
+		c.timerWheel = expiration.NewWheel(nodeManager)
 	}
 
 	c.withExpiration = o.ExpiryCalculator != nil
@@ -1332,7 +1332,7 @@ func (c *cache[K, V]) removeNode(n node.Node[K, V], nowNanos int64, onlyIfExpire
 		c.evictionPolicy.delete(n)
 	}
 	if c.withExpiration {
-		c.expirationPolicy.Unschedule(n)
+		c.timerWheel.Unschedule(n)
 	}
 
 	c.makeDead(n)
@@ -1666,7 +1666,7 @@ func (c *cache[K, V]) runTask(t *task[K, V]) {
 	switch t.writeReason {
 	case addReason:
 		if c.withExpiration {
-			c.expirationPolicy.Schedule(n)
+			c.timerWheel.Schedule(n)
 		}
 		if c.withEviction {
 			c.evictionPolicy.add(n, c.evictNode)
@@ -1674,8 +1674,8 @@ func (c *cache[K, V]) runTask(t *task[K, V]) {
 	case updateReason:
 		old := t.oldNode()
 		if c.withExpiration {
-			c.expirationPolicy.Unschedule(old)
-			c.expirationPolicy.Schedule(n)
+			c.timerWheel.Unschedule(old)
+			c.timerWheel.Schedule(n)
 		}
 		if c.withEviction {
 			c.evictionPolicy.update(n, old, c.evictNode)
@@ -1688,11 +1688,11 @@ func (c *cache[K, V]) runTask(t *task[K, V]) {
 			c.evictionPolicy.reweigh(n, c.evictNode)
 		}
 		if c.withExpiration {
-			c.expirationPolicy.Schedule(n)
+			c.timerWheel.Schedule(n)
 		}
 	case deleteReason:
 		if c.withExpiration {
-			c.expirationPolicy.Unschedule(n)
+			c.timerWheel.Unschedule(n)
 		}
 		if c.withEviction {
 			c.evictionPolicy.delete(n)
@@ -1708,13 +1708,13 @@ func (c *cache[K, V]) onAccess(n node.Node[K, V]) {
 		c.evictionPolicy.access(n)
 	}
 	if c.withExpiration {
-		c.expirationPolicy.Schedule(n)
+		c.timerWheel.Schedule(n)
 	}
 }
 
 func (c *cache[K, V]) expireNodes() {
 	if c.withExpiration {
-		c.expirationPolicy.Advance(c.clock.NowNano(), c.expireNode)
+		c.timerWheel.Advance(c.clock.NowNano(), c.expireNode)
 	}
 }
 

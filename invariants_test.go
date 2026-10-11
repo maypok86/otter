@@ -114,7 +114,7 @@ func validateCache[K comparable, V any](t testing.TB, c *Cache[K, V]) {
 	if ci.withExpiration {
 		scheduled := make(map[unsafe.Pointer]bool, len(inMap))
 		walked := 0
-		for n := range ci.expirationPolicy.All() {
+		for n := range ci.timerWheel.All() {
 			// A node linked twice corrupts its bucket's list, which then never leads back to the
 			// bucket's root: stop once the walk passes the number of entries.
 			walked++

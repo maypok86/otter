@@ -43,12 +43,14 @@ var (
 	}
 )
 
-type Variable[K comparable, V any] struct {
+// Wheel is a hierarchical timer wheel: it keeps nodes in buckets by their expiration time and
+// expires them as its time advances.
+type Wheel[K comparable, V any] struct {
 	wheel [][]node.Node[K, V]
 	time  uint64
 }
 
-func NewVariable[K comparable, V any](nodeManager *node.Manager[K, V]) *Variable[K, V] {
+func NewWheel[K comparable, V any](nodeManager *node.Manager[K, V]) *Wheel[K, V] {
 	wheel := make([][]node.Node[K, V], len(buckets))
 	for i := 0; i < len(wheel); i++ {
 		wheel[i] = make([]node.Node[K, V], buckets[i])
@@ -61,31 +63,31 @@ func NewVariable[K comparable, V any](nodeManager *node.Manager[K, V]) *Variable
 			wheel[i][j] = fn
 		}
 	}
-	return &Variable[K, V]{
+	return &Wheel[K, V]{
 		wheel: wheel,
 	}
 }
 
 // findBucket determines the bucket that the timer event should be added to.
-func (v *Variable[K, V]) findBucket(expiration uint64) node.Node[K, V] {
+func (w *Wheel[K, V]) findBucket(expiration uint64) node.Node[K, V] {
 	var duration uint64
-	if expiration > v.time {
-		duration = expiration - v.time
+	if expiration > w.time {
+		duration = expiration - w.time
 	} else {
 		// A deadline that the wheel has already passed (e.g. moved earlier while its task was
 		// pending) goes to the current bucket, which the next advance sweeps. Without this the
 		// unsigned difference wraps and the node lands in the last, ~6.5 day, bucket.
-		expiration = v.time
+		expiration = w.time
 	}
-	length := len(v.wheel) - 1
+	length := len(w.wheel) - 1
 	for i := 0; i < length; i++ {
 		if duration < spans[i+1] {
 			ticks := expiration >> shift[i]
 			index := ticks & (buckets[i] - 1)
-			return v.wheel[i][index]
+			return w.wheel[i][index]
 		}
 	}
-	return v.wheel[length][0]
+	return w.wheel[length][0]
 }
 
 // Schedule puts n in the bucket of its current expiration time, moving it if it is already
@@ -93,20 +95,20 @@ func (v *Variable[K, V]) findBucket(expiration uint64) node.Node[K, V] {
 // Writes and accesses reach the wheel out of order (maintenance replays the read buffer before the
 // write buffer), and Schedule is idempotent, so callers do not need to know whether n is
 // scheduled yet.
-func (v *Variable[K, V]) Schedule(n node.Node[K, V]) {
-	v.Unschedule(n)
+func (w *Wheel[K, V]) Schedule(n node.Node[K, V]) {
+	w.Unschedule(n)
 	if !n.IsAlive() {
 		return
 	}
 	//nolint:gosec // there is no overflow
-	root := v.findBucket(uint64(n.ExpiresAt()))
+	root := w.findBucket(uint64(n.ExpiresAt()))
 	link(root, n)
 }
 
 // All returns an iterator over the entries scheduled in the timer wheel, in no particular order.
-func (v *Variable[K, V]) All() iter.Seq[node.Node[K, V]] {
+func (w *Wheel[K, V]) All() iter.Seq[node.Node[K, V]] {
 	return func(yield func(node.Node[K, V]) bool) {
-		for _, bucket := range v.wheel {
+		for _, bucket := range w.wheel {
 			for _, root := range bucket {
 				for n := root.NextExp(); n != root; n = n.NextExp() {
 					if !yield(n) {
@@ -119,7 +121,7 @@ func (v *Variable[K, V]) All() iter.Seq[node.Node[K, V]] {
 }
 
 // Unschedule removes n from the wheel if it is scheduled.
-func (v *Variable[K, V]) Unschedule(n node.Node[K, V]) {
+func (w *Wheel[K, V]) Unschedule(n node.Node[K, V]) {
 	unlink(n)
 	n.SetNextExp(nil)
 	n.SetPrevExp(nil)
@@ -128,10 +130,10 @@ func (v *Variable[K, V]) Unschedule(n node.Node[K, V]) {
 // Advance moves the wheel's time to nowNanos and calls expire for each node whose expiration time
 // is reached. The wheel reads that time before expire runs, and a writer can extend it in
 // between: expire reports whether it removed the node, and a node it keeps is scheduled again.
-func (v *Variable[K, V]) Advance(nowNanos int64, expire func(n node.Node[K, V], nowNanos int64) bool) {
+func (w *Wheel[K, V]) Advance(nowNanos int64, expire func(n node.Node[K, V], nowNanos int64) bool) {
 	currentTime := uint64(nowNanos)
-	prevTime := v.time
-	v.time = currentTime
+	prevTime := w.time
+	w.time = currentTime
 
 	// If expire panics, the wheel goes back to its previous time, so that the next call sweeps
 	// the buckets this one did not reach. Otherwise they would be skipped until the wheel wraps
@@ -139,7 +141,7 @@ func (v *Variable[K, V]) Advance(nowNanos int64, expire func(n node.Node[K, V], 
 	completed := false
 	defer func() {
 		if !completed {
-			v.time = prevTime
+			w.time = prevTime
 		}
 	}()
 
@@ -151,12 +153,12 @@ func (v *Variable[K, V]) Advance(nowNanos int64, expire func(n node.Node[K, V], 
 			break
 		}
 
-		v.advanceBuckets(i, previousTicks, delta, expire)
+		w.advanceBuckets(i, previousTicks, delta, expire)
 	}
 	completed = true
 }
 
-func (v *Variable[K, V]) advanceBuckets(
+func (w *Wheel[K, V]) advanceBuckets(
 	index int,
 	prevTicks, delta uint64,
 	expire func(n node.Node[K, V], nowNanos int64) bool,
@@ -165,9 +167,9 @@ func (v *Variable[K, V]) advanceBuckets(
 	steps := min(delta+1, buckets[index])
 	start := prevTicks & mask
 	end := start + steps
-	timerWheel := v.wheel[index]
+	timerWheel := w.wheel[index]
 	for i := start; i < end; i++ {
-		v.sweepBucket(timerWheel[i&mask], expire)
+		w.sweepBucket(timerWheel[i&mask], expire)
 	}
 }
 
@@ -175,7 +177,7 @@ func (v *Variable[K, V]) advanceBuckets(
 // panics, the nodes not yet visited, and the failing node if it is still alive, are scheduled
 // again, so that the wheel keeps every live node it held; one that has expired goes to the level-0
 // bucket of the current tick, which the next Advance sweeps first.
-func (v *Variable[K, V]) sweepBucket(root node.Node[K, V], expire func(n node.Node[K, V], nowNanos int64) bool) {
+func (w *Wheel[K, V]) sweepBucket(root node.Node[K, V], expire func(n node.Node[K, V], nowNanos int64) bool) {
 	n := root.NextExp()
 	root.SetPrevExp(root)
 	root.SetNextExp(root)
@@ -186,14 +188,14 @@ func (v *Variable[K, V]) sweepBucket(root node.Node[K, V], expire func(n node.No
 		if completed {
 			return
 		}
-		v.Schedule(n)
+		w.Schedule(n)
 		for next != root {
 			rest := next
 			next = rest.NextExp()
 			// still linked into the detached chain, which Schedule must not unlink it from
 			rest.SetPrevExp(nil)
 			rest.SetNextExp(nil)
-			v.Schedule(rest)
+			w.Schedule(rest)
 		}
 	}()
 
@@ -203,9 +205,9 @@ func (v *Variable[K, V]) sweepBucket(root node.Node[K, V], expire func(n node.No
 		n.SetNextExp(nil)
 
 		// expired at its deadline, as HasExpired reports it
-		expired := uint64(n.ExpiresAt()) <= v.time
-		if !expired || !expire(n, int64(v.time)) {
-			v.Schedule(n)
+		expired := uint64(n.ExpiresAt()) <= w.time
+		if !expired || !expire(n, int64(w.time)) {
+			w.Schedule(n)
 		}
 
 		n = next
