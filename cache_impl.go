@@ -673,7 +673,7 @@ func (c *cache[K, V]) doCompute(
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
-					panicErr = newPanicError(r)
+					panicErr = xruntime.NewPanicError(r)
 				}
 			}()
 
@@ -1351,7 +1351,7 @@ func (c *cache[K, V]) wrapLoad(fn func() error) (err error) {
 	err = fn()
 	completed = true
 
-	var pe *panicError
+	var pe *xruntime.PanicError
 	if errors.As(err, &pe) {
 		panic(pe)
 	}
@@ -1366,11 +1366,11 @@ func (c *cache[K, V]) wrapLoad(fn func() error) (err error) {
 func (c *cache[K, V]) wrapRefresh(fn func() error) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			if pe, ok := r.(*panicError); ok {
+			if pe, ok := r.(*xruntime.PanicError); ok {
 				err = pe
 				return
 			}
-			err = newPanicError(r)
+			err = xruntime.NewPanicError(r)
 		}
 	}()
 	return c.wrapLoad(fn)
@@ -1934,7 +1934,7 @@ func (c *cache[K, V]) scheduleDrainBuffers() {
 				c.evictionMutex.Unlock()
 			}
 			if r != nil {
-				c.logger.Error(context.Background(), "Maintenance panicked", newPanicError(r))
+				c.logger.Error(context.Background(), "Maintenance panicked", xruntime.NewPanicError(r))
 			}
 		}()
 		c.executor(c.drainBuffersFunc)

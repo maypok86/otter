@@ -119,7 +119,7 @@ func (c *call[K, V]) failedForOwner() bool {
 	if !c.ownerCtxDone || c.err == nil || c.isNotFound || errors.Is(c.err, errLoaderExited) {
 		return false
 	}
-	var pe *panicError
+	var pe *xruntime.PanicError
 	return !errors.As(c.err, &pe)
 }
 
@@ -267,7 +267,7 @@ func (g *group[K, V]) doCall(
 	returned := false
 	defer func() {
 		if r := recover(); r != nil {
-			err = newPanicError(r)
+			err = xruntime.NewPanicError(r)
 		} else if !returned {
 			// The loader called runtime.Goexit: there is no value, and the waiters must not
 			// take the zero value for one.
@@ -305,7 +305,7 @@ func (g *group[K, V]) doBulkCall(
 	returned := false
 	defer func() {
 		if r := recover(); r != nil {
-			err = newPanicError(r)
+			err = xruntime.NewPanicError(r)
 		} else if !returned {
 			err = errLoaderExited
 		}
@@ -413,7 +413,7 @@ func (g *group[K, V]) finish(c *call[K, V]) {
 			g.deleteCall(c)
 		}
 		if r := recover(); r != nil {
-			c.err = newPanicError(r)
+			c.err = xruntime.NewPanicError(r)
 			c.cancel()
 			panic(r)
 		}
@@ -474,7 +474,7 @@ func (g *group[K, V]) submitRefresh(owned []*call[K, V], task func()) {
 			return
 		}
 		if state.CompareAndSwap(submitted, abandoned) {
-			err := newPanicError(r)
+			err := xruntime.NewPanicError(r)
 			for _, cl := range owned {
 				cl.err = err
 				g.deleteCall(cl)

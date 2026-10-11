@@ -14,10 +14,7 @@
 
 package otter
 
-import (
-	"context"
-	"log/slog"
-)
+import "context"
 
 // Logger is the interface used to get log output from otter.
 type Logger interface {
@@ -25,24 +22,6 @@ type Logger interface {
 	Warn(ctx context.Context, msg string, err error)
 	// Error logs a message at the error level with an error.
 	Error(ctx context.Context, msg string, err error)
-}
-
-type defaultLogger struct {
-	log *slog.Logger
-}
-
-func newDefaultLogger() *defaultLogger {
-	return &defaultLogger{
-		log: slog.Default(),
-	}
-}
-
-func (dl *defaultLogger) Warn(ctx context.Context, msg string, err error) {
-	dl.log.WarnContext(ctx, msg, slog.Any("err", err))
-}
-
-func (dl *defaultLogger) Error(ctx context.Context, msg string, err error) {
-	dl.log.ErrorContext(ctx, msg, slog.Any("err", err))
 }
 
 // NoopLogger is a stub implementation of [Logger] interface. It may be useful if error logging is not necessary.

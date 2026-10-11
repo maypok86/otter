@@ -25,6 +25,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/maypok86/otter/v2/internal/xlog"
 )
 
 func checkLogOutput(t *testing.T, got, wantRegexp string) {
@@ -72,7 +74,7 @@ func TestDefaultLogger(t *testing.T) {
 		b.Reset()
 	}
 
-	dl := newDefaultLogger()
+	dl := xlog.Default()
 	dl.Error(context.Background(), "lololol", ErrNotFound)
 	check("level=ERROR msg=lololol err=\"otter: the entry was not found in the data source\"")
 	dl.Warn(context.Background(), "qokpokp", fmt.Errorf("gol: %w", ErrNotFound))
