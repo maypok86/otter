@@ -30,11 +30,15 @@ type call[K comparable, V any] struct {
 	err   error
 	// base is the node a refresh was requested for (nil for an absent key). Its result is
 	// written only if base is still the key's node.
-	base       node.Node[K, V]
-	wg         sync.WaitGroup
+	base node.Node[K, V]
+	// done is closed when the call has finished and its result may be read.
+	done       chan struct{}
 	isRefresh  bool
 	isNotFound bool
 	isFake     bool
+	// ownerCtxDone reports that the context the loader ran with had ended by the time it
+	// returned.
+	ownerCtxDone bool
 }
 
 func newCall[K comparable, V any](key K, isRefresh bool, base node.Node[K, V]) *call[K, V] {
@@ -42,8 +46,8 @@ func newCall[K comparable, V any](key K, isRefresh bool, base node.Node[K, V]) *
 		key:       key,
 		isRefresh: isRefresh,
 		base:      base,
+		done:      make(chan struct{}),
 	}
-	c.wg.Add(1)
 	return c
 }
 
@@ -64,11 +68,42 @@ func (c *call[K, V]) cancel() {
 	if c.isFake {
 		return
 	}
-	c.wg.Done()
+	close(c.done)
 }
 
 func (c *call[K, V]) wait() {
-	c.wg.Wait()
+	<-c.done
+}
+
+// waitContext waits for c to finish or for ctx to end, and returns ctx's error in the latter
+// case. A call that has finished by then wins, so its result is not lost to a context that
+// ended at the same moment.
+func (c *call[K, V]) waitContext(ctx context.Context) error {
+	select {
+	case <-c.done:
+		return nil
+	case <-ctx.Done():
+		select {
+		case <-c.done:
+			return nil
+		default:
+			return ctx.Err()
+		}
+	}
+}
+
+// failedForOwner reports whether c, which has finished, failed after the context of the caller
+// that ran it had ended. The error then most likely comes from that caller's cancellation or
+// deadline, which says nothing about the key, so a waiter with a live context loads the key
+// again rather than return it. Not every loader wraps context.Canceled into its error (an RPC
+// client may return its own status), so any failure counts, except the ones that come from the
+// key itself: not found, a panic and runtime.Goexit.
+func (c *call[K, V]) failedForOwner() bool {
+	if !c.ownerCtxDone || c.err == nil || c.isNotFound || errors.Is(c.err, errLoaderExited) {
+		return false
+	}
+	var pe *panicError
+	return !errors.As(c.err, &pe)
 }
 
 // refreshResult is what a manual refresh reports for c once it has finished.
@@ -179,6 +214,7 @@ func (g *group[K, V]) doCall(
 
 	c.value, err = load(ctx, c.key)
 	returned = true
+	c.ownerCtxDone = ctx.Err() != nil
 	return err
 }
 
@@ -229,6 +265,7 @@ func (g *group[K, V]) doBulkCall(
 
 	res, err := bulkLoad(ctx, keys)
 	returned = true
+	ownerCtxDone := ctx.Err() != nil
 
 	var (
 		isRefresh bool
@@ -239,6 +276,7 @@ func (g *group[K, V]) doBulkCall(
 			isRefresh = cl.isRefresh
 			found = true
 		}
+		cl.ownerCtxDone = ownerCtxDone
 		v, ok := res[k]
 		if ok {
 			cl.value = v

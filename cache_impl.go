@@ -748,6 +748,24 @@ func (c *cache[K, V]) Get(ctx context.Context, key K, loader Loader[K, V]) (V, e
 		return value, nil
 	}
 
+	for {
+		value, retry, err := c.loadOrJoin(ctx, key, loader, nowNano)
+		if !retry {
+			return value, err
+		}
+		nowNano = c.clock.NowNano()
+	}
+}
+
+// loadOrJoin loads the value for key, which Get has not found, or waits for the load already
+// running for it. retry reports that the joined load failed for its owner's context while ctx
+// is live, so the key must be loaded again.
+func (c *cache[K, V]) loadOrJoin(
+	ctx context.Context,
+	key K,
+	loader Loader[K, V],
+	nowNano int64,
+) (value V, retry bool, err error) {
 	cl, shouldLoad := c.singleflight.startLoad(key)
 	if shouldLoad {
 		// Re-check the map before loading. The getNode above runs before this
@@ -760,16 +778,22 @@ func (c *cache[K, V]) Get(ctx context.Context, key K, loader Loader[K, V]) (V, e
 		if n := c.getNodeQuietly(key, nowNano); n != nil {
 			value := n.Value()
 			c.singleflight.adopt(cl, value)
-			return value, nil
+			return value, false, nil
 		}
 		//nolint:errcheck // there is no need to check error
 		_ = c.wrapLoad(func() error {
 			return c.singleflight.doCall(ctx, cl, loader.Load)
 		})
+		return cl.value, false, cl.err
 	}
-	cl.wait()
 
-	return cl.value, cl.err
+	if err := cl.waitContext(ctx); err != nil {
+		return zeroValue[V](), false, err
+	}
+	if cl.failedForOwner() && ctx.Err() == nil {
+		return zeroValue[V](), true, nil
+	}
+	return cl.value, false, cl.err
 }
 
 // commitCall writes the result of a finished load or refresh, if it may still be written, for
@@ -974,14 +998,57 @@ func (c *cache[K, V]) BulkGet(ctx context.Context, keys []K, bulkLoader BulkLoad
 	}
 
 	c.bulkRefreshKeys(ctx, toRefresh, bulkLoader, false)
-	if len(misses) == 0 {
-		return result, nil
+
+	var errsFromCalls []error
+	for retrying := false; len(misses) > 0; retrying = true {
+		var err error
+		misses, errsFromCalls, err = c.bulkLoadOrJoin(ctx, misses, bulkLoader, result, errsFromCalls, retrying)
+		if err != nil {
+			return result, err
+		}
 	}
 
+	var err error
+	if len(errsFromCalls) > 0 {
+		err = errors.Join(errsFromCalls...)
+	}
+
+	return result, err
+}
+
+// bulkLoadOrJoin loads the values for misses, the keys BulkGet has not found, and waits for the
+// loads already running for some of them. It adds the loaded values to result and the errors of
+// joined loads to errsFromCalls. It returns the keys whose joined load failed for its owner's
+// context while ctx is live, which must be loaded again, and an error that ends BulkGet: the bulk
+// load failed or ctx is done. retrying reports that misses are such keys: as in Get, a key that
+// was written while the failed load ran is taken from the cache instead of being loaded again.
+func (c *cache[K, V]) bulkLoadOrJoin(
+	ctx context.Context,
+	misses map[K]*call[K, V],
+	bulkLoader BulkLoader[K, V],
+	result map[K]V,
+	errsFromCalls []error,
+	retrying bool,
+) (map[K]*call[K, V], []error, error) {
+	var nowNano int64
+	if retrying {
+		nowNano = c.clock.NowNano()
+	}
 	var toLoadCalls map[K]*call[K, V]
 	i := 0
 	for key := range misses {
 		cl, shouldLoad := c.singleflight.startLoad(key)
+		if shouldLoad && retrying {
+			// Winning the call slot means that a value written before is visible, see Get.
+			if n := c.getNodeQuietly(key, nowNano); n != nil {
+				value := n.Value()
+				c.singleflight.adopt(cl, value)
+				result[key] = value
+				delete(misses, key)
+				i++
+				continue
+			}
+		}
 		if shouldLoad {
 			if toLoadCalls == nil {
 				toLoadCalls = make(map[K]*call[K, V], len(misses)-i)
@@ -999,13 +1066,15 @@ func (c *cache[K, V]) BulkGet(ctx context.Context, keys []K, bulkLoader BulkLoad
 		})
 	}
 	if loadErr != nil {
-		return result, loadErr
+		return nil, errsFromCalls, loadErr
 	}
 
-	var errsFromCalls []error
+	var retry map[K]*call[K, V]
 	i = 0
 	for key, cl := range misses {
-		cl.wait()
+		if err := cl.waitContext(ctx); err != nil {
+			return nil, errsFromCalls, err
+		}
 		i++
 
 		if cl.err == nil {
@@ -1015,18 +1084,20 @@ func (c *cache[K, V]) BulkGet(ctx context.Context, keys []K, bulkLoader BulkLoad
 		if _, ok := toLoadCalls[key]; ok || cl.isNotFound {
 			continue
 		}
+		if cl.failedForOwner() && ctx.Err() == nil {
+			if retry == nil {
+				retry = make(map[K]*call[K, V], len(misses)-i+1)
+			}
+			retry[key] = nil
+			continue
+		}
 		if errsFromCalls == nil {
 			errsFromCalls = make([]error, 0, len(misses)-i+1)
 		}
 		errsFromCalls = append(errsFromCalls, cl.err)
 	}
 
-	var err error
-	if len(errsFromCalls) > 0 {
-		err = errors.Join(errsFromCalls...)
-	}
-
-	return result, err
+	return retry, errsFromCalls, nil
 }
 
 func (c *cache[K, V]) wrapLoad(fn func() error) (err error) {
