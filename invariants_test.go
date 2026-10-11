@@ -113,7 +113,15 @@ func validateCache[K comparable, V any](t testing.TB, c *Cache[K, V]) {
 
 	if ci.withExpiration {
 		scheduled := make(map[unsafe.Pointer]bool, len(inMap))
+		walked := 0
 		for n := range ci.expirationPolicy.All() {
+			// A node linked twice corrupts its bucket's list, which then never leads back to the
+			// bucket's root: stop once the walk passes the number of entries.
+			walked++
+			if walked > len(inMap) {
+				report("the timer wheel holds more nodes than the hash table: a bucket's list is corrupted")
+				break
+			}
 			if scheduled[n.AsPointer()] {
 				report("key %v: the node is scheduled in the timer wheel twice", n.Key())
 			}
