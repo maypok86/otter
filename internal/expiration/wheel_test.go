@@ -31,8 +31,8 @@ func scheduledAt[K comparable, V any](w *Wheel[K, V], n node.Node[K, V]) []int {
 	var levels []int
 	for level, bucket := range w.wheel {
 		for _, root := range bucket {
-			for f := root.NextExp(); f != root; f = f.NextExp() {
-				if f == n {
+			for f := w.links(root).Next; f != root; f = w.links(f).Next {
+				if f == n.AsPointer() {
 					levels = append(levels, level)
 				}
 			}

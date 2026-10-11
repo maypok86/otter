@@ -49,7 +49,7 @@ func checkLinkedPtrs[K comparable, V any](t *testing.T, d *Linked[K, V], nodes [
 		if i > 0 {
 			prev = nodes[i-1]
 		}
-		if p := d.getPrev(n); p != prev {
+		if p := prevOf(d, n); p != prev {
 			t.Errorf("elt[%d](%p).prev = %p, want %p", i, n, p, prev)
 		}
 
@@ -57,21 +57,32 @@ func checkLinkedPtrs[K comparable, V any](t *testing.T, d *Linked[K, V], nodes [
 		if i < len(nodes)-1 {
 			next = nodes[i+1]
 		}
-		if nn := d.getNext(n); nn != next {
+		if nn := nextOf(d, n); nn != next {
 			t.Errorf("nodes[%d](%p).next = %p, want %p", i, n, nn, next)
 		}
 	}
 }
 
+func prevOf[K comparable, V any](d *Linked[K, V], n node.Node[K, V]) node.Node[K, V] {
+	return d.nodeManager.FromPointer(d.links(n.AsPointer()).Prev)
+}
+
+func nextOf[K comparable, V any](d *Linked[K, V], n node.Node[K, V]) node.Node[K, V] {
+	return d.nodeManager.FromPointer(d.links(n.AsPointer()).Next)
+}
+
+func testManager[K comparable]() *node.Manager[K, K] {
+	return node.NewManager[K, K](node.Config{WithWeight: true, WithExpiration: true})
+}
+
 func newNode[K comparable](e K) node.Node[K, K] {
-	m := node.NewManager[K, K](node.Config{WithWeight: true, WithExpiration: true})
-	return m.Create(e, e, 0, 0, 0)
+	return testManager[K]().Create(e, e, 0, 0, 0)
 }
 
 func TestLinked(t *testing.T) {
 	t.Parallel()
 
-	d := NewLinked[string, string](false)
+	d := NewLinked(testManager[string](), false)
 	checkLinkedPtrs(t, d, []node.Node[string, string]{})
 
 	// Single element Linked
@@ -116,7 +127,7 @@ func TestLinked(t *testing.T) {
 
 	// Check standard iteration.
 	sum := 0
-	for e := d.head; e != nil; e = d.getNext(e) {
+	for e := d.Head(); e != nil; e = nextOf(d, e) {
 		i, err := strconv.Atoi(e.Value())
 		if err != nil {
 			continue
@@ -129,8 +140,8 @@ func TestLinked(t *testing.T) {
 
 	// Clear all elements by iterating
 	var next node.Node[string, string]
-	for e := d.head; e != nil; e = next {
-		next = d.getNext(e)
+	for e := d.Head(); e != nil; e = next {
+		next = nextOf(d, e)
 		d.Delete(e)
 	}
 	checkLinkedPtrs(t, d, []node.Node[string, string]{})
@@ -139,14 +150,16 @@ func TestLinked(t *testing.T) {
 func TestLinked_Delete(t *testing.T) {
 	t.Parallel()
 
-	d := NewLinked[int, int](true)
+	// nodes with expiration links only, so that the list must not look for the policy's
+	m := node.NewManager[int, int](node.Config{WithExpiration: true})
+	d := NewLinked(m, true)
 
-	e1 := newNode(1)
-	e2 := newNode(2)
+	e1 := m.Create(1, 1, 0, 0, 0)
+	e2 := m.Create(2, 2, 0, 0, 0)
 	d.PushBack(e1)
 	d.PushBack(e2)
 	checkLinkedPtrs(t, d, []node.Node[int, int]{e1, e2})
-	e := d.head
+	e := d.Head()
 	d.Delete(e)
 	checkLinkedPtrs(t, d, []node.Node[int, int]{e2})
 	d.Delete(e)

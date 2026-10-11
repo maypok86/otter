@@ -179,7 +179,7 @@ func newCache[K comparable, V any](o *Options[K, V]) *cache[K, V] {
 			//nolint:gosec // there's no overflow
 			expectedSize = min(maximum, uint64(o.getInitialCapacity()))
 		}
-		c.evictionPolicy = newPolicy[K, V](withWeight, expectedSize, c.evictNode)
+		c.evictionPolicy = newPolicy[K, V](nodeManager, withWeight, expectedSize, c.evictNode)
 	}
 
 	if o.ExpiryCalculator != nil {

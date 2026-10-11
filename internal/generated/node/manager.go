@@ -126,6 +126,19 @@ type Manager[K comparable, V any] struct {
 	valueStorage     string
 	createdVariant   uint8
 	updatableVariant uint8
+	linksOffset      uintptr
+	expLinksOffset   uintptr
+	hasLinks         bool
+	hasExpLinks      bool
+}
+
+// Links is the pair of pointers that links a node into a list: prev and next of the eviction
+// policy, or prevExp and nextExp of the timer wheel. They are adjacent in every node type, so a
+// list can follow them through a raw pointer to the node at the offset the manager reports,
+// without calling the node's methods.
+type Links struct {
+	Prev unsafe.Pointer
+	Next unsafe.Pointer
 }
 
 func NewManager[K comparable, V any](c Config) *Manager[K, V] {
@@ -157,36 +170,74 @@ func NewManager[K comparable, V any](c Config) *Manager[K, V] {
 	case "be":
 		m.create = NewBE[K, V]
 		m.fromPointer = CastPointerToBE[K, V]
+		var n BE[K, V]
+		m.expLinksOffset = unsafe.Offsetof(n.prevExp)
+		m.hasExpLinks = true
 	case "ber":
 		m.create = NewBER[K, V]
 		m.fromPointer = CastPointerToBER[K, V]
+		var n BER[K, V]
+		m.expLinksOffset = unsafe.Offsetof(n.prevExp)
+		m.hasExpLinks = true
 	case "berw":
 		m.create = NewBERW[K, V]
 		m.fromPointer = CastPointerToBERW[K, V]
+		var n BERW[K, V]
+		m.linksOffset = unsafe.Offsetof(n.prev)
+		m.hasLinks = true
+		m.expLinksOffset = unsafe.Offsetof(n.prevExp)
+		m.hasExpLinks = true
 	case "bew":
 		m.create = NewBEW[K, V]
 		m.fromPointer = CastPointerToBEW[K, V]
+		var n BEW[K, V]
+		m.linksOffset = unsafe.Offsetof(n.prev)
+		m.hasLinks = true
+		m.expLinksOffset = unsafe.Offsetof(n.prevExp)
+		m.hasExpLinks = true
 	case "br":
 		m.create = NewBR[K, V]
 		m.fromPointer = CastPointerToBR[K, V]
 	case "brw":
 		m.create = NewBRW[K, V]
 		m.fromPointer = CastPointerToBRW[K, V]
+		var n BRW[K, V]
+		m.linksOffset = unsafe.Offsetof(n.prev)
+		m.hasLinks = true
 	case "bs":
 		m.create = NewBS[K, V]
 		m.fromPointer = CastPointerToBS[K, V]
+		var n BS[K, V]
+		m.linksOffset = unsafe.Offsetof(n.prev)
+		m.hasLinks = true
 	case "bse":
 		m.create = NewBSE[K, V]
 		m.fromPointer = CastPointerToBSE[K, V]
+		var n BSE[K, V]
+		m.linksOffset = unsafe.Offsetof(n.prev)
+		m.hasLinks = true
+		m.expLinksOffset = unsafe.Offsetof(n.prevExp)
+		m.hasExpLinks = true
 	case "bser":
 		m.create = NewBSER[K, V]
 		m.fromPointer = CastPointerToBSER[K, V]
+		var n BSER[K, V]
+		m.linksOffset = unsafe.Offsetof(n.prev)
+		m.hasLinks = true
+		m.expLinksOffset = unsafe.Offsetof(n.prevExp)
+		m.hasExpLinks = true
 	case "bsr":
 		m.create = NewBSR[K, V]
 		m.fromPointer = CastPointerToBSR[K, V]
+		var n BSR[K, V]
+		m.linksOffset = unsafe.Offsetof(n.prev)
+		m.hasLinks = true
 	case "bw":
 		m.create = NewBW[K, V]
 		m.fromPointer = CastPointerToBW[K, V]
+		var n BW[K, V]
+		m.linksOffset = unsafe.Offsetof(n.prev)
+		m.hasLinks = true
 	default:
 		panic("not valid nodeType")
 	}
@@ -213,6 +264,25 @@ func (m *Manager[K, V]) ValueStorage() string {
 
 func (m *Manager[K, V]) FromPointer(ptr unsafe.Pointer) Node[K, V] {
 	return m.fromPointer(ptr)
+}
+
+// LinksOffset returns the offset of the eviction policy's Links in a node. It panics for nodes
+// of an unbounded cache, which have no such links: a list writing at a made-up offset would
+// overwrite the node's other fields.
+func (m *Manager[K, V]) LinksOffset() uintptr {
+	if !m.hasLinks {
+		panic("node: the nodes have no eviction policy links")
+	}
+	return m.linksOffset
+}
+
+// ExpLinksOffset returns the offset of the timer wheel's Links in a node. It panics for nodes
+// without expiration, which have no such links.
+func (m *Manager[K, V]) ExpLinksOffset() uintptr {
+	if !m.hasExpLinks {
+		panic("node: the nodes have no expiration links")
+	}
+	return m.expLinksOffset
 }
 
 // variantsOfStorage returns the layouts of the nodes of a value storage: the one a new entry is

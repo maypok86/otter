@@ -19,6 +19,7 @@ import (
 	"math"
 	"math/bits"
 	"time"
+	"unsafe"
 
 	"github.com/maypok86/otter/v2/internal/generated/node"
 	"github.com/maypok86/otter/v2/internal/xmath"
@@ -44,32 +45,43 @@ var (
 )
 
 // Wheel is a hierarchical timer wheel: it keeps nodes in buckets by their expiration time and
-// expires them as its time advances.
+// expires them as its time advances. Each bucket is a circular list behind a sentinel node; the
+// wheel follows the nodes' expiration links through raw pointers (see node.Links), so linking
+// and unlinking do not call the nodes' methods.
 type Wheel[K comparable, V any] struct {
-	wheel [][]node.Node[K, V]
-	time  uint64
+	wheel       [][]unsafe.Pointer
+	time        uint64
+	offset      uintptr
+	nodeManager *node.Manager[K, V]
 }
 
 func NewWheel[K comparable, V any](nodeManager *node.Manager[K, V]) *Wheel[K, V] {
-	wheel := make([][]node.Node[K, V], len(buckets))
-	for i := 0; i < len(wheel); i++ {
-		wheel[i] = make([]node.Node[K, V], buckets[i])
-		for j := 0; j < len(wheel[i]); j++ {
+	w := &Wheel[K, V]{
+		wheel:       make([][]unsafe.Pointer, len(buckets)),
+		offset:      nodeManager.ExpLinksOffset(),
+		nodeManager: nodeManager,
+	}
+	for i := 0; i < len(w.wheel); i++ {
+		w.wheel[i] = make([]unsafe.Pointer, buckets[i])
+		for j := 0; j < len(w.wheel[i]); j++ {
 			var k K
 			var v V
-			fn := nodeManager.Create(k, v, math.MaxInt64, math.MaxInt64, 1)
-			fn.SetPrevExp(fn)
-			fn.SetNextExp(fn)
-			wheel[i][j] = fn
+			root := nodeManager.Create(k, v, math.MaxInt64, math.MaxInt64, 1).AsPointer()
+			l := w.links(root)
+			l.Prev = root
+			l.Next = root
+			w.wheel[i][j] = root
 		}
 	}
-	return &Wheel[K, V]{
-		wheel: wheel,
-	}
+	return w
+}
+
+func (w *Wheel[K, V]) links(p unsafe.Pointer) *node.Links {
+	return (*node.Links)(unsafe.Add(p, w.offset))
 }
 
 // findBucket determines the bucket that the timer event should be added to.
-func (w *Wheel[K, V]) findBucket(expiration uint64) node.Node[K, V] {
+func (w *Wheel[K, V]) findBucket(expiration uint64) unsafe.Pointer {
 	var duration uint64
 	if expiration > w.time {
 		duration = expiration - w.time
@@ -96,13 +108,18 @@ func (w *Wheel[K, V]) findBucket(expiration uint64) node.Node[K, V] {
 // write buffer), and Schedule is idempotent, so callers do not need to know whether n is
 // scheduled yet.
 func (w *Wheel[K, V]) Schedule(n node.Node[K, V]) {
-	w.Unschedule(n)
+	w.schedule(n, n.AsPointer())
+}
+
+// schedule is Schedule for a node whose pointer the caller already has.
+func (w *Wheel[K, V]) schedule(n node.Node[K, V], p unsafe.Pointer) {
+	w.unschedule(p)
 	if !n.IsAlive() {
 		return
 	}
 	//nolint:gosec // there is no overflow
 	root := w.findBucket(uint64(n.ExpiresAt()))
-	link(root, n)
+	w.link(root, p)
 }
 
 // All returns an iterator over the entries scheduled in the timer wheel, in no particular order.
@@ -110,8 +127,8 @@ func (w *Wheel[K, V]) All() iter.Seq[node.Node[K, V]] {
 	return func(yield func(node.Node[K, V]) bool) {
 		for _, bucket := range w.wheel {
 			for _, root := range bucket {
-				for n := root.NextExp(); n != root; n = n.NextExp() {
-					if !yield(n) {
+				for p := w.links(root).Next; p != root; p = w.links(p).Next {
+					if !yield(w.nodeManager.FromPointer(p)) {
 						return
 					}
 				}
@@ -122,9 +139,17 @@ func (w *Wheel[K, V]) All() iter.Seq[node.Node[K, V]] {
 
 // Unschedule removes n from the wheel if it is scheduled.
 func (w *Wheel[K, V]) Unschedule(n node.Node[K, V]) {
-	unlink(n)
-	n.SetNextExp(nil)
-	n.SetPrevExp(nil)
+	w.unschedule(n.AsPointer())
+}
+
+func (w *Wheel[K, V]) unschedule(p unsafe.Pointer) {
+	l := w.links(p)
+	if l.Next != nil {
+		w.links(l.Next).Prev = l.Prev
+		w.links(l.Prev).Next = l.Next
+	}
+	l.Next = nil
+	l.Prev = nil
 }
 
 // Advance moves the wheel's time to nowNanos and calls expire for each node whose expiration time
@@ -177,59 +202,55 @@ func (w *Wheel[K, V]) advanceBuckets(
 // panics, the nodes not yet visited, and the failing node if it is still alive, are scheduled
 // again, so that the wheel keeps every live node it held; one that has expired goes to the level-0
 // bucket of the current tick, which the next Advance sweeps first.
-func (w *Wheel[K, V]) sweepBucket(root node.Node[K, V], expire func(n node.Node[K, V], nowNanos int64) bool) {
-	n := root.NextExp()
-	root.SetPrevExp(root)
-	root.SetNextExp(root)
+func (w *Wheel[K, V]) sweepBucket(root unsafe.Pointer, expire func(n node.Node[K, V], nowNanos int64) bool) {
+	rl := w.links(root)
+	p := rl.Next
+	rl.Prev = root
+	rl.Next = root
 
-	var next node.Node[K, V]
+	var next unsafe.Pointer
 	completed := false
 	defer func() {
 		if completed {
 			return
 		}
-		w.Schedule(n)
+		w.schedule(w.nodeManager.FromPointer(p), p)
 		for next != root {
 			rest := next
-			next = rest.NextExp()
-			// still linked into the detached chain, which Schedule must not unlink it from
-			rest.SetPrevExp(nil)
-			rest.SetNextExp(nil)
-			w.Schedule(rest)
+			l := w.links(rest)
+			next = l.Next
+			// still linked into the detached chain, which schedule must not unlink it from
+			l.Prev = nil
+			l.Next = nil
+			w.schedule(w.nodeManager.FromPointer(rest), rest)
 		}
 	}()
 
-	for n != root {
-		next = n.NextExp()
-		n.SetPrevExp(nil)
-		n.SetNextExp(nil)
+	for p != root {
+		l := w.links(p)
+		next = l.Next
+		l.Prev = nil
+		l.Next = nil
 
+		n := w.nodeManager.FromPointer(p)
 		// expired at its deadline, as HasExpired reports it
 		expired := uint64(n.ExpiresAt()) <= w.time
 		if !expired || !expire(n, int64(w.time)) {
-			w.Schedule(n)
+			w.schedule(n, p)
 		}
 
-		n = next
+		p = next
 	}
 	completed = true
 }
 
 // link adds the entry at the tail of the bucket's list.
-func link[K comparable, V any](root, n node.Node[K, V]) {
-	n.SetPrevExp(root.PrevExp())
-	n.SetNextExp(root)
+func (w *Wheel[K, V]) link(root, p unsafe.Pointer) {
+	rl := w.links(root)
+	l := w.links(p)
+	l.Prev = rl.Prev
+	l.Next = root
 
-	root.PrevExp().SetNextExp(n)
-	root.SetPrevExp(n)
-}
-
-// unlink removes the entry from its bucket, if scheduled.
-func unlink[K comparable, V any](n node.Node[K, V]) {
-	next := n.NextExp()
-	if next != nil {
-		prev := n.PrevExp()
-		next.SetPrevExp(prev)
-		prev.SetNextExp(next)
-	}
+	w.links(rl.Prev).Next = p
+	rl.Prev = p
 }

@@ -35,7 +35,7 @@ func TestPolicy_SetMaximumSize(t *testing.T) {
 
 // newTestPolicy returns a weighted policy with the given maximum that evicts through evict.
 func newTestPolicy(maximum uint64, evict func(n node.Node[int, int]) bool) *policy[int, int] {
-	p := newPolicy[int, int](true, 0, evict)
+	p := newPolicy(node.NewManager[int, int](node.Config{WithWeight: true}), true, 0, evict)
 	p.setMaximumSize(maximum)
 	return p
 }

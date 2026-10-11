@@ -70,15 +70,16 @@ type policy[K comparable, V any] struct {
 // newPolicy returns a policy that evicts through evict. A positive expectedSize sizes the
 // frequency sketch up front.
 func newPolicy[K comparable, V any](
+	nodeManager *node.Manager[K, V],
 	isWeighted bool,
 	expectedSize uint64,
 	evict func(n node.Node[K, V]) bool,
 ) *policy[K, V] {
 	p := &policy[K, V]{
 		sketch:     newSketch[K](),
-		window:     deque.NewLinked[K, V](isExp),
-		probation:  deque.NewLinked[K, V](isExp),
-		protected:  deque.NewLinked[K, V](isExp),
+		window:     deque.NewLinked(nodeManager, isExp),
+		probation:  deque.NewLinked(nodeManager, isExp),
+		protected:  deque.NewLinked(nodeManager, isExp),
 		isWeighted: isWeighted,
 		rand:       xruntime.Fastrand,
 		evict:      evict,
