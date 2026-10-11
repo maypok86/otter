@@ -6,14 +6,15 @@ Throughput benchmarks are a Go port of the Caffeine [benchmarks](https://github.
 
 | | |
 |---|---|
-| CPU | Apple M4 Pro: 8 performance cores in two clusters of 4, each cluster with a shared 16 MB L2, and 4 efficiency cores |
+| CPU | AMD Ryzen 7 7840H: 8 Zen 4 cores with SMT, a private 1 MB L2 per core and a shared 16 MB L3 |
+| OS | Linux (NixOS), the `performance` power profile |
 | Go | 1.27.1 |
 | Caches | otter (main), theine v0.6.2, ristretto v2.4.2, phuslu/lru v1.0.24, go-freelru v0.16.0, sturdyc v1.1.6, ccache v3.0.8, ttlcache v3.4.1, golang-lru v2.0.7 |
-| Method | 8 rounds, each running every cache once, so a slowdown of the machine is spread over all of them. The charts show the median. |
+| Method | 8 rounds, each running every cache once, so a slowdown of the machine is spread over all of them. The charts show the median. The run is pinned to one hardware thread per core, so two benchmark threads never share a core. |
 
 Every cache is bounded by the number of entries. sturdyc and ccache always expire entries, so they run with a 1 hour TTL everywhere; the others get a TTL only in the expiration benchmark. All benchmarks except the thread scaling run on 8 threads. The benchmark also reports the hit ratio, so a cache that drops entries can't look faster than it is.
 
-The source code is [here](https://github.com/maypok86/otter/blob/main/benchmarks/throughput/bench_test.go). To reproduce the results, run `benchmarks/throughput/bench.sh`.
+The source code is [here](https://github.com/maypok86/otter/blob/main/benchmarks/throughput/bench_test.go). To reproduce the results, run `bash bench.sh` from `benchmarks/throughput`: the script writes its results to `./results`. On a CPU with SMT, pin it to one hardware thread per core, for example `taskset -c 0,2,4,6,8,10,12,14 bash bench.sh` when the siblings are numbered in pairs.
 
 ## Classic benchmark
 
@@ -49,9 +50,9 @@ The read/write mix is split by threads: with 75% reads, 6 threads read and 2 thr
 
 ## Thread scaling
 
-The classic benchmark on 1, 2, 4 and 8 threads. At least 8 goroutines always run, so that the read/write split stays the same on fewer cores. The efficiency cores are left out: they are slower, so they would show the difference between the cores rather than how the caches scale.
+The classic benchmark on 1, 2, 4 and 8 threads. At least 8 goroutines always run, so that the read/write split stays the same on fewer cores. Every thread gets a core of its own: SMT siblings share the execution units of their core, so they would show that sharing rather than how the caches scale.
 
-Up to 4 threads, all of them can run in one cluster and share its L2. From 4 to 8 the second cluster joins, and every cache line that both clusters write has to travel between them. On pure reads, only otter and theine grow noticeably from 4 to 8 threads. With 75% reads, only otter does. With writes only, every cache peaks at 4 threads or fewer.
+All 8 cores share one L3, so there is no point at which cache lines start to travel between clusters of cores. On pure reads, otter and theine grow almost linearly, about 7x from 1 to 8 threads, while the sharded LRUs (phuslu/lru, go-freelru) grow 2.5–3x. With writes only, otter grows 5.5x and the sharded LRUs 2.5–3x, while theine, ristretto and ccache, which apply writes to their policy under one lock, don't grow at all. The caches that guard an LRU list with a single mutex (ttlcache, golang-lru) peak on one thread and lose a quarter to more than half of that once a second thread joins.
 
 === "reads=100%"
 
@@ -81,15 +82,15 @@ Hit ratio with 75% reads:
 
 | Cache | zipf | uniform |
 |---|---|---|
-| otter | 72.7% | 56.6% |
-| theine | 71.8% | 56.0% |
-| ristretto | 72.0% | 55.4% |
-| phuslu/lru | 70.7% | 53.9% |
-| go-freelru | 70.2% | 50.8% |
-| sturdyc | 65.2% | 45.7% |
-| ccache | 69.0% | 52.7% |
-| ttlcache | 63.0% | 42.9% |
-| golang-lru | 68.6% | 51.9% |
+| otter | 72.2% | 55.5% |
+| theine | 69.8% | 52.6% |
+| ristretto | 72.4% | 55.4% |
+| phuslu/lru | 68.8% | 50.5% |
+| go-freelru | 68.0% | 49.6% |
+| sturdyc | 65.5% | 45.6% |
+| ccache | 70.0% | 52.5% |
+| ttlcache | 66.7% | 44.9% |
+| golang-lru | 69.3% | 48.2% |
 
 ### Zipf
 
@@ -191,8 +192,10 @@ Every request goes through the loading API of the caches that have one, on the z
 
 ## Conclusion
 
-Otter is the fastest cache on reads, and on every workload with at least half reads, in every benchmark. On pure reads it is 1.5–2.2x faster than the next cache. It also keeps scaling when the second cluster of cores joins in: from 4 to 8 threads it grows on pure reads, as theine does, and with 75% reads, where no other cache does. Under eviction, its hit ratio is the highest or within a point of it.
+Otter is the fastest cache on pure reads in every benchmark except the large cache: 1.5x ahead of the next cache in the classic benchmark (165M ops/s against 113M for theine) and 1.4–1.5x under eviction, but only 6% ahead of theine with expiration. With 75% reads it is still the fastest in the classic benchmark (126M ops/s against 92M for phuslu/lru) and under eviction, and about even with phuslu/lru with expiration. It also scales the best, about 7x from 1 to 8 threads on reads and 5.5x on writes. Under eviction, its hit ratio is the highest or within a quarter of a point of it.
 
-On write-heavy workloads, phuslu/lru is faster. Its sharded, array-backed LRU makes an insert cheap, while otter also updates its eviction policy and buffers. The gap is the largest when every write is an insert that evicts: about 40M ops/s for phuslu/lru against 8–11M for otter. Such workloads are uncommon for caches, since they mean a low hit ratio, but if that's your workload, a sharded LRU will serve it faster. With a single thread and only writes, a mutex-guarded LRU (golang-lru) is also faster than otter, because there is no contention to save on.
+On writes, phuslu/lru is faster. With half reads, otter is about even with it in the classic benchmark (95M ops/s against 91M) and slower under eviction and expiration; with fewer reads, phuslu/lru is faster in every benchmark. Its sharded, array-backed LRU makes a write cheap, while otter also updates its eviction policy and buffers. The gap is the largest when every write is an insert that evicts: 65–69M ops/s for phuslu/lru against 6.5–9.4M for otter. Such workloads are uncommon for caches, since they mean a low hit ratio, but if that's your workload, a sharded LRU will serve it faster.
 
-The caches that guard an LRU list with a single mutex (ttlcache, golang-lru) stay at 1.7–6M ops/s on any workload from 2 threads up.
+On a single thread, otter is slower than phuslu/lru, go-freelru and golang-lru on every mix: with pure reads, it does 22M ops/s against 24–36M for them. With a million entries, the hash table no longer fits in the CPU caches. There, otter falls behind ristretto on pure reads (31M ops/s against 36M), is level with phuslu/lru, and is behind phuslu/lru on every other mix.
+
+The caches that guard an LRU list with a single mutex (ttlcache, golang-lru) do at most 13M ops/s on any workload from 2 threads up.
