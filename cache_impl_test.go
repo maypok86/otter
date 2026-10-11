@@ -1630,6 +1630,30 @@ func TestCache_ReadsReplayedAroundWrites(t *testing.T) {
 		require.Zero(t, c.EstimatedSize())
 		validateCache(t, c)
 	})
+	t.Run("expired before the insertion", func(t *testing.T) {
+		t.Parallel()
+
+		// An access schedules a node whose insertion is still in the write buffer, and the wheel
+		// can expire it before the insertion is replayed (a drain replays a bounded number of
+		// writes). The insertion then finds the node dead and leaves it out of the policies.
+		clk := newNonTickingClock()
+		c, run := newDeferredCache(clk, ExpiryWriting[int, int](time.Minute), nil)
+		c.Set(1, 1)
+		n := c.cache.hashmap.Get(1)
+
+		ci := c.cache
+		ci.evictionMutex.Lock()
+		ci.onAccess(n)
+		clk.Sleep(time.Minute)
+		ci.expireNodes()
+		require.Zero(t, c.EstimatedSize())
+		ci.drainWriteBuffer()
+		ci.evictionMutex.Unlock()
+
+		run()
+		require.Zero(t, c.EstimatedSize())
+		validateCache(t, c)
+	})
 	t.Run("after the removal", func(t *testing.T) {
 		t.Parallel()
 

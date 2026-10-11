@@ -1306,27 +1306,25 @@ func (c *cache[K, V]) evictNode(n node.Node[K, V], nowNanos int64) {
 	c.removeNode(n, nowNanos, false)
 }
 
-// expireNode is called by the timer wheel for a node whose expiration time has passed. The
-// wheel reads that time before the hash table's lock is taken, and a writer can update the
-// node in place in between, extending its lifetime. Such a node stays in the cache and is
-// scheduled again; the wheel has already unlinked it.
-func (c *cache[K, V]) expireNode(n node.Node[K, V], nowNanos int64) {
-	c.removeNode(n, nowNanos, true)
+// expireNode is called by the timer wheel for a node whose expiration time has passed, and
+// reports whether it removed the node. The wheel reads that time before the hash table's lock is
+// taken, and a writer can update the node in place in between, extending its lifetime. Such a
+// node stays in the cache, and the wheel schedules it again.
+func (c *cache[K, V]) expireNode(n node.Node[K, V], nowNanos int64) bool {
+	return c.removeNode(n, nowNanos, true)
 }
 
-func (c *cache[K, V]) removeNode(n node.Node[K, V], nowNanos int64, onlyIfExpired bool) {
+// removeNode removes n from the cache and the policies, unless n turns out to be extended or its
+// eviction is declined under the bucket lock, and reports whether it did.
+func (c *cache[K, V]) removeNode(n node.Node[K, V], nowNanos int64, onlyIfExpired bool) bool {
 	cause := CauseOverflow
 	if onlyIfExpired || n.HasExpired(nowNanos) {
 		cause = CauseExpiration
 	}
 
 	d, cause, extended, declined := c.deleteNodeFromMap(n, nowNanos, cause, onlyIfExpired)
-	if extended {
-		c.expirationPolicy.Add(n)
-		return
-	}
-	if declined {
-		return
+	if extended || declined {
+		return false
 	}
 	deleted := d != nil
 
@@ -1334,7 +1332,7 @@ func (c *cache[K, V]) removeNode(n node.Node[K, V], nowNanos int64, onlyIfExpire
 		c.evictionPolicy.delete(n)
 	}
 	if c.withExpiration {
-		c.expirationPolicy.Delete(n)
+		c.expirationPolicy.Unschedule(n)
 	}
 
 	c.makeDead(n)
@@ -1343,6 +1341,7 @@ func (c *cache[K, V]) removeNode(n node.Node[K, V], nowNanos int64, onlyIfExpire
 		c.notifyDeletion(n.Key(), n.Value(), cause)
 		c.stats.RecordEviction(n.Weight())
 	}
+	return true
 }
 
 func (c *cache[K, V]) nodes() iter.Seq[node.Node[K, V]] {
@@ -1666,8 +1665,8 @@ func (c *cache[K, V]) runTask(t *task[K, V]) {
 	n := t.node()
 	switch t.writeReason {
 	case addReason:
-		if c.withExpiration && n.IsAlive() {
-			c.expirationPolicy.Add(n)
+		if c.withExpiration {
+			c.expirationPolicy.Schedule(n)
 		}
 		if c.withEviction {
 			c.evictionPolicy.add(n, c.evictNode)
@@ -1675,10 +1674,8 @@ func (c *cache[K, V]) runTask(t *task[K, V]) {
 	case updateReason:
 		old := t.oldNode()
 		if c.withExpiration {
-			c.expirationPolicy.Delete(old)
-			if n.IsAlive() {
-				c.expirationPolicy.Add(n)
-			}
+			c.expirationPolicy.Unschedule(old)
+			c.expirationPolicy.Schedule(n)
 		}
 		if c.withEviction {
 			c.evictionPolicy.update(n, old, c.evictNode)
@@ -1690,15 +1687,12 @@ func (c *cache[K, V]) runTask(t *task[K, V]) {
 		if c.withEviction {
 			c.evictionPolicy.reweigh(n, c.evictNode)
 		}
-		if c.withExpiration && n.IsAlive() && n.NextExp() != nil {
-			// scheduled in the timer wheel: move it to the bucket of its current expiration time
-			// (a node that is not scheduled yet is added with that time by its insertion)
-			c.expirationPolicy.Delete(n)
-			c.expirationPolicy.Add(n)
+		if c.withExpiration {
+			c.expirationPolicy.Schedule(n)
 		}
 	case deleteReason:
 		if c.withExpiration {
-			c.expirationPolicy.Delete(n)
+			c.expirationPolicy.Unschedule(n)
 		}
 		if c.withEviction {
 			c.evictionPolicy.delete(n)
@@ -1713,17 +1707,14 @@ func (c *cache[K, V]) onAccess(n node.Node[K, V]) {
 	if c.withEviction {
 		c.evictionPolicy.access(n)
 	}
-	if c.withExpiration && n.NextExp() != nil {
-		c.expirationPolicy.Delete(n)
-		if n.IsAlive() {
-			c.expirationPolicy.Add(n)
-		}
+	if c.withExpiration {
+		c.expirationPolicy.Schedule(n)
 	}
 }
 
 func (c *cache[K, V]) expireNodes() {
 	if c.withExpiration {
-		c.expirationPolicy.DeleteExpired(c.clock.NowNano(), c.expireNode)
+		c.expirationPolicy.Advance(c.clock.NowNano(), c.expireNode)
 	}
 }
 

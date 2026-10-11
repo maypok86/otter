@@ -89,9 +89,16 @@ buffer (`runTask`), run the caller's task, expire (`expireNodes`), evict (`evict
 `drainStatus` (`idle`, `required`, `processingToIdle`, `processingToRequired`) decides whether
 another drain must be scheduled.
 
-The timer wheel reads a node's deadline before taking the bucket lock, so `expireNode`
-re-checks expiration under the lock (`deleteNodeFromMap(..., onlyIfExpired)`) and reschedules a
-node that a writer extended in the meantime.
+The timer wheel (`internal/expiration`) decides where a node is scheduled: `Schedule` puts a live
+node in the bucket of its current deadline, moving it if it is already scheduled, and unschedules
+a node that is not alive. Because it is idempotent, accesses and writes can reach it out of order:
+an access replayed before the node's insertion schedules it early, and the insertion only moves
+it. The wheel can then expire the node before the insertion is replayed; the policy's `add` skips
+a node that is not alive.
+
+The wheel reads a node's deadline before taking the bucket lock, so `expireNode` re-checks
+expiration under the lock (`deleteNodeFromMap(..., onlyIfExpired)`) and returns false for a node
+that a writer extended in the meantime; `Advance` then schedules it again.
 
 ## Loading and refresh
 

@@ -179,14 +179,14 @@ func TestCache_ExpireNodeRechecksExpiration(t *testing.T) {
 
 		ci := c.cache
 		ci.evictionMutex.Lock()
-		// what the wheel does before calling expireNode: it found n expired and unlinked it
-		ci.expirationPolicy.Delete(n)
 		if extended {
-			// a writer extends n in place before expireNode takes the hash table's lock
+			// a writer extends n in place after the wheel found it expired, before expireNode
+			// takes the hash table's lock
 			n.SetExpiresAt(now + int64(time.Minute))
 		}
-		ci.expireNode(n, now)
+		removed := ci.expireNode(n, now)
 		ci.evictionMutex.Unlock()
+		require.Equal(t, !extended, removed, "extended=%v", extended)
 
 		v, ok := c.GetIfPresent(1)
 		require.Equal(t, extended, ok, "extended=%v", extended)
