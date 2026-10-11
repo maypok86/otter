@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"time"
 
 	"github.com/maypok86/otter/v2"
 	"github.com/maypok86/otter/v2/internal/xruntime"
@@ -31,8 +32,9 @@ var errLoaderExited = errors.New("coalesce: the bulk loader exited the goroutine
 // [otter.Loader] and [otter.BulkLoader], so the keys of [otter.Cache.BulkGet] and of
 // [otter.Cache.Get] can share batches.
 //
-// A key waits in a queue until a call of the bulk loader may start (see [Options.MaxInFlight]);
-// the keys that are waiting then leave together, at most [Options.MaxBatchSize] at a time. A key
+// A key waits in a queue until a call of the bulk loader may start (see [Options.MaxInFlight])
+// and, if [Options.MaxDelay] is set, until the batch has waited that long or is full; the keys
+// that are waiting then leave together, at most [Options.MaxBatchSize] at a time. A key
 // that several calls wait for is loaded once; for Reload, with the old value of the first call.
 // Loads and reloads go in separate batches that share the calls of the bulk loader, and when
 // both are waiting, they take turns.
@@ -51,7 +53,10 @@ type Loader[K comparable, V any] struct {
 	bulkLoader   otter.BulkLoader[K, V]
 	maxBatchSize int
 	maxInFlight  int
+	maxDelay     time.Duration
 	logger       otter.Logger
+	// afterFunc is time.AfterFunc. Tests replace it.
+	afterFunc func(d time.Duration, f func()) *time.Timer
 
 	mu      sync.Mutex
 	loads   queue[K, V]
@@ -68,6 +73,14 @@ type queue[K comparable, V any] struct {
 	requests []*request[K, V]
 	// waiting maps the key of every request in requests that is not abandoned to it.
 	waiting map[K]*request[K, V]
+	// window counts the waits for more keys (see Options.MaxDelay); due reports that the
+	// current one is over. A timer of an earlier window that has already started finds window
+	// changed and does nothing.
+	window uint64
+	due    bool
+	// timer ends the current wait. It is stopped when the wait ends early, so that the timers
+	// of waits cut short by full batches do not pile up until they fire.
+	timer *time.Timer
 }
 
 // request is the load or reload of one key that one or more calls wait for.
@@ -120,9 +133,11 @@ func New[K comparable, V any](bulkLoader otter.BulkLoader[K, V], o *Options) (*L
 		bulkLoader:   bulkLoader,
 		maxBatchSize: o.MaxBatchSize,
 		maxInFlight:  o.getMaxInFlight(),
+		maxDelay:     o.MaxDelay,
 		logger:       o.getLogger(),
 		loads:        queue[K, V]{waiting: make(map[K]*request[K, V])},
 		reloads:      queue[K, V]{isReload: true, waiting: make(map[K]*request[K, V])},
+		afterFunc:    time.AfterFunc,
 	}, nil
 }
 
@@ -251,6 +266,9 @@ func (l *Loader[K, V]) bulkLoad(ctx context.Context, q *queue[K, V], keys []K, o
 func (l *Loader[K, V]) enqueue(ctx context.Context, q *queue[K, V], key K, oldValue V) *request[K, V] {
 	r := q.waiting[key]
 	if r == nil {
+		if len(q.waiting) == 0 && l.maxDelay > 0 {
+			l.startWindow(q)
+		}
 		r = &request[K, V]{
 			key:      key,
 			oldValue: oldValue,
@@ -318,6 +336,7 @@ func (l *Loader[K, V]) leave(requests ...*request[K, V]) {
 func (q *queue[K, V]) compact() {
 	if len(q.waiting) == 0 {
 		q.requests = nil
+		q.endWindow()
 		return
 	}
 	if len(q.requests) <= 2*len(q.waiting)+16 {
@@ -355,17 +374,54 @@ func (q *queue[K, V]) take(maxBatchSize int) []*request[K, V] {
 	}
 	clear(q.requests[:taken])
 	q.requests = q.requests[taken:]
-	if len(q.requests) == 0 {
+	if len(q.waiting) == 0 {
+		// Only abandoned requests, if any, are left.
 		q.requests = nil
+		q.endWindow()
 	}
 	return requests
 }
 
-// next returns the queue to take the next batch from, or nil if both are empty. When both have
-// keys, they take turns, so that a steady stream of loads does not starve the reloads, nor the
+// startWindow starts the wait of q for more keys, for its first live key. It is called with l.mu
+// held.
+func (l *Loader[K, V]) startWindow(q *queue[K, V]) {
+	q.window++
+	window := q.window
+	q.due = false
+	q.timer = l.afterFunc(l.maxDelay, func() {
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		if q.window != window {
+			return
+		}
+		q.due = true
+		l.dispatch()
+	})
+}
+
+// endWindow ends the wait of q for more keys once it has no live key left. It is called with
+// Loader.mu held.
+func (q *queue[K, V]) endWindow() {
+	q.window++
+	q.due = false
+	if q.timer != nil {
+		q.timer.Stop()
+		q.timer = nil
+	}
+}
+
+// ready reports whether a batch may be taken from q: it has keys, and, if batches wait for more
+// keys, its wait is over or the batch is full. It is called with l.mu held.
+func (l *Loader[K, V]) ready(q *queue[K, V]) bool {
+	n := len(q.waiting)
+	return n > 0 && (l.maxDelay == 0 || q.due || (l.maxBatchSize > 0 && n >= l.maxBatchSize))
+}
+
+// next returns the queue to take the next batch from, or nil if neither is ready. When both are
+// ready, they take turns, so that a steady stream of loads does not starve the reloads, nor the
 // other way round. It is called with l.mu held.
 func (l *Loader[K, V]) next() *queue[K, V] {
-	hasLoads, hasReloads := len(l.loads.waiting) > 0, len(l.reloads.waiting) > 0
+	hasLoads, hasReloads := l.ready(&l.loads), l.ready(&l.reloads)
 	switch {
 	case hasLoads && hasReloads:
 		if l.reloadedLast {

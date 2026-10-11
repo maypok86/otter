@@ -161,6 +161,8 @@ func TestNew(t *testing.T) {
 	require.Error(t, err)
 	_, err = New[int, int](tl, &Options{MaxBatchSize: -1})
 	require.Error(t, err)
+	_, err = New[int, int](tl, &Options{MaxDelay: -time.Second})
+	require.Error(t, err)
 	require.Panics(t, func() {
 		Must[int, int](nil, nil)
 	})
@@ -849,4 +851,152 @@ func TestLoader_WithCacheBulkRefresh(t *testing.T) {
 	for i, k := range tl.reloads[1] {
 		require.Equal(t, k, tl.oldValues[1][i])
 	}
+}
+
+// fakeTimers records the functions a Loader schedules with afterFunc, for the test to fire. Each
+// one gets a timer that never fires on its own, so the test can see whether the Loader stopped it.
+type fakeTimers struct {
+	mu     sync.Mutex
+	fns    []func()
+	timers []*time.Timer
+}
+
+func (ft *fakeTimers) afterFunc(_ time.Duration, f func()) *time.Timer {
+	ft.mu.Lock()
+	defer ft.mu.Unlock()
+	ft.fns = append(ft.fns, f)
+	t := time.NewTimer(time.Hour)
+	ft.timers = append(ft.timers, t)
+	return t
+}
+
+// stopped reports whether the Loader stopped the i-th timer.
+func (ft *fakeTimers) stopped(i int) bool {
+	ft.mu.Lock()
+	t := ft.timers[i]
+	ft.mu.Unlock()
+	return !t.Stop()
+}
+
+func (ft *fakeTimers) count() int {
+	ft.mu.Lock()
+	defer ft.mu.Unlock()
+	return len(ft.fns)
+}
+
+func (ft *fakeTimers) fire(i int) {
+	ft.mu.Lock()
+	f := ft.fns[i]
+	ft.mu.Unlock()
+	f()
+}
+
+// newDelayed returns a Loader whose waits for more keys are fired by the test.
+func newDelayed(tl *testBulkLoader, o Options) (*Loader[int, int], *fakeTimers) {
+	o.MaxDelay = time.Minute
+	l := Must[int, int](tl, &o)
+	ft := &fakeTimers{}
+	l.afterFunc = ft.afterFunc
+	return l, ft
+}
+
+func TestLoader_DelayCollectsKeys(t *testing.T) {
+	t.Parallel()
+
+	// With no limit on calls, the keys that come during the wait leave together.
+	tl := &testBulkLoader{}
+	l, ft := newDelayed(tl, Options{MaxInFlight: -1})
+	wg := loadAll(t, l, []int{1, 2, 3})
+	waitFor(t, func() bool { return l.queued() == 3 })
+	require.Equal(t, 1, ft.count())
+	require.Zero(t, tl.runningCalls())
+
+	ft.fire(0)
+	wg.Wait()
+	waitFor(t, l.idle)
+	require.Len(t, tl.batches, 1)
+	require.ElementsMatch(t, []int{1, 2, 3}, tl.batches[0])
+}
+
+func TestLoader_DelayEndsWhenBatchIsFull(t *testing.T) {
+	t.Parallel()
+
+	// A full batch leaves before the wait is over; the next key starts a wait of its own.
+	tl := &testBulkLoader{}
+	l, ft := newDelayed(tl, Options{MaxInFlight: -1, MaxBatchSize: 2})
+	wg := loadAll(t, l, []int{1, 2})
+	wg.Wait()
+	require.Len(t, tl.batches, 1)
+	require.ElementsMatch(t, []int{1, 2}, tl.batches[0])
+	// The wait cut short by the full batch has its timer stopped.
+	require.True(t, ft.stopped(0))
+
+	wg = loadAll(t, l, []int{3})
+	waitFor(t, func() bool { return l.queued() == 1 && ft.count() == 2 })
+	// The wait of the first batch is over already and does not send key 3.
+	ft.fire(0)
+	require.Equal(t, 1, l.queued())
+	ft.fire(1)
+	wg.Wait()
+	require.Equal(t, [][]int{{3}}, tl.batches[1:])
+}
+
+func TestLoader_DelayOverWhileCallsAreBusy(t *testing.T) {
+	t.Parallel()
+
+	// Keys whose wait is over leave as soon as a call is free.
+	tl := &testBulkLoader{release: make(chan struct{})}
+	l, ft := newDelayed(tl, Options{})
+	wg := loadAll(t, l, []int{0})
+	waitFor(t, func() bool { return ft.count() == 1 })
+	ft.fire(0)
+	waitFor(t, func() bool { return tl.runningCalls() == 1 })
+
+	wg2 := loadAll(t, l, []int{1, 2})
+	waitFor(t, func() bool { return l.queued() == 2 && ft.count() == 2 })
+	ft.fire(1)
+	require.Equal(t, 1, tl.runningCalls())
+	require.Equal(t, 2, l.queued())
+
+	close(tl.release)
+	wg.Wait()
+	wg2.Wait()
+	waitFor(t, l.idle)
+	require.Len(t, tl.batches, 2)
+	require.ElementsMatch(t, []int{1, 2}, tl.batches[1])
+}
+
+func TestLoader_DelayOfAbandonedKeys(t *testing.T) {
+	t.Parallel()
+
+	// When every queued key is abandoned, its wait is dropped: a later key waits on its own.
+	tl := &testBulkLoader{}
+	l, ft := newDelayed(tl, Options{})
+	ctx, cancel := context.WithCancel(context.Background())
+	res := make(chan error, 1)
+	go func() {
+		_, err := l.Load(ctx, 1)
+		res <- err
+	}()
+	waitFor(t, func() bool { return l.queued() == 1 })
+	cancel()
+	require.ErrorIs(t, <-res, context.Canceled)
+
+	wg := loadAll(t, l, []int{2})
+	waitFor(t, func() bool { return l.queued() == 1 && ft.count() == 2 })
+	ft.fire(0)
+	require.Equal(t, 1, l.queued())
+	ft.fire(1)
+	wg.Wait()
+	require.Equal(t, [][]int{{2}}, tl.batches)
+}
+
+func TestLoader_DelayWithRealTimer(t *testing.T) {
+	t.Parallel()
+
+	tl := &testBulkLoader{}
+	l := Must[int, int](tl, &Options{MaxDelay: time.Millisecond})
+	v, err := l.Load(context.Background(), 1)
+	require.NoError(t, err)
+	require.Equal(t, 10, v)
 }
