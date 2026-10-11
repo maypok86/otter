@@ -1645,6 +1645,7 @@ func TestCache_ReadsReplayedAroundWrites(t *testing.T) {
 		ci.evictionMutex.Lock()
 		ci.onAccess(n)
 		clk.Sleep(time.Minute)
+		ci.readMaintenanceTime()
 		ci.expireNodes()
 		require.Zero(t, c.EstimatedSize())
 		ci.drainWriteBuffer()
@@ -1668,4 +1669,136 @@ func TestCache_ReadsReplayedAroundWrites(t *testing.T) {
 		require.Zero(t, c.EstimatedSize())
 		validateCache(t, c)
 	})
+}
+
+// An entry that has expired, but that the timer wheel has not reached yet, is reported as expired
+// when it is evicted for size, as every other path reports it.
+func TestCache_SizeEvictionOfExpiredEntryReportsExpiration(t *testing.T) {
+	t.Parallel()
+
+	clk := newNonTickingClock()
+	var pending []func()
+	var deleted, atomicDeleted []DeletionEvent[int, int]
+	c := Must(&Options[int, int]{
+		MaximumSize:      10,
+		Clock:            clk,
+		ExpiryCalculator: ExpiryWriting[int, int](20 * time.Millisecond),
+		OnDeletion: func(e DeletionEvent[int, int]) {
+			deleted = append(deleted, e)
+		},
+		OnAtomicDeletion: func(e DeletionEvent[int, int]) {
+			atomicDeleted = append(atomicDeleted, e)
+		},
+		Executor: func(fn func()) {
+			pending = append(pending, fn)
+		},
+	})
+	run := func() {
+		for len(pending) > 0 {
+			fn := pending[0]
+			pending = pending[1:]
+			fn()
+		}
+	}
+	for k := 0; k < 10; k++ {
+		c.Set(k, k)
+	}
+	run()
+	clk.Sleep(40 * time.Millisecond) // expired, but within the wheel's current tick
+
+	c.SetMaximum(5)
+	run()
+	require.Len(t, deleted, 5)
+	for _, e := range deleted {
+		require.Equal(t, CauseExpiration, e.Cause, "key %d", e.Key)
+	}
+	require.ElementsMatch(t, deleted, atomicDeleted)
+	validateCache(t, c)
+}
+
+// The OnDeletion listener of an eviction or an expiration sees it counted in the statistics.
+func TestCache_DeletionListenerSeesEvictionCounted(t *testing.T) {
+	t.Parallel()
+
+	for _, expire := range []bool{false, true} {
+		clk := newNonTickingClock()
+		counter := stats.NewCounter()
+		var seen []uint64
+		c := Must(&Options[int, int]{
+			MaximumSize:      1,
+			Clock:            clk,
+			ExpiryCalculator: ExpiryWriting[int, int](time.Minute),
+			StatsRecorder:    counter,
+			OnDeletion: func(e DeletionEvent[int, int]) {
+				seen = append(seen, counter.Snapshot().Evictions)
+			},
+			Executor: func(fn func()) {
+				fn()
+			},
+		})
+		c.Set(1, 1)
+		if expire {
+			clk.Sleep(time.Minute)
+		} else {
+			c.Set(2, 2)
+		}
+		c.CleanUp()
+		require.Equal(t, []uint64{1}, seen, "expire=%v", expire)
+	}
+}
+
+// The policy can choose a node that a write has already replaced, while the replacement's task is
+// still in the write buffer. Evicting it only drops it from the policy: the replaced value is
+// reported once, as replaced, and nothing is counted as an eviction for it.
+func TestCache_EvictionOfReplacedNodeReportsNothing(t *testing.T) {
+	t.Parallel()
+
+	counter := stats.NewCounter()
+	var deleted []DeletionEvent[int, string]
+	c := Must(&Options[int, string]{
+		MaximumSize:   2,
+		StatsRecorder: counter,
+		OnDeletion: func(e DeletionEvent[int, string]) {
+			deleted = append(deleted, e)
+		},
+		Executor: func(fn func()) {
+			fn()
+		},
+	})
+	ci := c.cache
+	c.Set(1, "a") // a string is kept inline, so the next write replaces the node
+	c.Set(2, "x")
+	c.CleanUp()
+	n1 := ci.hashmap.Get(1)
+	require.True(t, n1.InMainProbation())
+
+	ci.evictionMutex.Lock()
+	ci.drainReadBuffer()
+	ci.drainWriteBuffer()
+	c.Set(3, "y")
+	ci.drainWriteBuffer() // over the maximum now: 3 entries for 2
+	c.Set(1, "b")         // replaces n1; the update task stays in the buffer
+	require.True(t, n1.IsRetired())
+	require.Equal(t, n1.AsPointer(), ci.evictionPolicy.probation.Head().AsPointer())
+	ci.evictNodes()
+	require.True(t, n1.IsDead())
+	ci.evictionMutex.Unlock()
+	c.CleanUp()
+
+	replaced, evictions := 0, 0
+	for _, e := range deleted {
+		if e.Value == "a" {
+			require.Equal(t, CauseReplacement, e.Cause)
+			replaced++
+		}
+		if e.Cause == CauseOverflow {
+			evictions++
+		}
+	}
+	require.Equal(t, 1, replaced)
+	require.Equal(t, uint64(evictions), counter.Snapshot().Evictions)
+	v, ok := c.GetIfPresent(1)
+	require.True(t, ok)
+	require.Equal(t, "b", v)
+	validateCache(t, c)
 }

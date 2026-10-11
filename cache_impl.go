@@ -15,7 +15,6 @@
 package otter
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -31,7 +30,6 @@ import (
 	"github.com/maypok86/otter/v2/internal/generated/node"
 	"github.com/maypok86/otter/v2/internal/hashmap"
 	"github.com/maypok86/otter/v2/internal/lossy"
-	"github.com/maypok86/otter/v2/internal/xiter"
 	"github.com/maypok86/otter/v2/internal/xmath"
 	"github.com/maypok86/otter/v2/internal/xruntime"
 	"github.com/maypok86/otter/v2/stats"
@@ -112,6 +110,10 @@ type cache[K comparable, V any] struct {
 	// whether a read may change the expiration time: ExpireAfterRead is not called for the
 	// built-in calculators whose reads always keep it
 	withReadExpiry bool
+	// the time of the current maintenance pass, read once when it starts (with expiration only),
+	// so that the timer wheel and size eviction agree on what has expired; guarded by
+	// evictionMutex
+	maintenanceNanos int64
 }
 
 // newCache returns a new cache instance based on the settings from Options.
@@ -172,11 +174,12 @@ func newCache[K comparable, V any](o *Options[K, V]) *cache[K, V] {
 
 	c.withEviction = withEviction
 	if c.withEviction {
-		c.evictionPolicy = newPolicy[K, V](withWeight)
+		var expectedSize uint64
 		if o.hasInitialCapacity() {
 			//nolint:gosec // there's no overflow
-			c.evictionPolicy.sketch.ensureCapacity(min(maximum, uint64(o.getInitialCapacity())))
+			expectedSize = min(maximum, uint64(o.getInitialCapacity()))
 		}
+		c.evictionPolicy = newPolicy[K, V](withWeight, expectedSize, c.evictNode)
 	}
 
 	if o.ExpiryCalculator != nil {
@@ -1164,32 +1167,60 @@ func (c *cache[K, V]) Invalidate(key K) (value V, invalidated bool) {
 	return zeroValue[V](), false
 }
 
+// nodeRemoval is why maintenance removes a given node, rather than whatever its key holds.
+type nodeRemoval uint8
+
+const (
+	// removeForSize: the eviction policy chose the node. The node is kept if a writer has set its
+	// weight to zero in place since then: a zero-weight entry is never evicted for size.
+	removeForSize nodeRemoval = iota
+	// removeExpired: the timer wheel found the node expired. The node is kept if a writer has
+	// updated it in place since then, extending its lifetime.
+	removeExpired
+	// removeInvalidated: InvalidateAll discards the node, and cancels the key's pending loads.
+	removeInvalidated
+)
+
+// cause is the deletion cause of a removal, unless the node turns out to have expired.
+func (r nodeRemoval) cause() DeletionCause {
+	switch r {
+	case removeForSize:
+		return CauseOverflow
+	case removeExpired:
+		return CauseExpiration
+	default:
+		return CauseInvalidation
+	}
+}
+
 // deleteNodeFromMap removes n from the hash table if it is still there, and returns the cause
-// reported to the synchronous listener. With onlyIfExpired, n stays if it is no longer expired,
-// and extended reports that.
+// reported to the synchronous listener. kept reports that n stays, as described by removal.
 func (c *cache[K, V]) deleteNodeFromMap(
 	n node.Node[K, V],
 	nowNano int64,
-	cause DeletionCause,
-	onlyIfExpired bool,
-) (deleted node.Node[K, V], deletedCause DeletionCause, extended, declined bool) {
+	removal nodeRemoval,
+) (deleted node.Node[K, V], deletedCause DeletionCause, kept bool) {
 	c.hashmap.Compute(n.Key(), func(current node.Node[K, V]) node.Node[K, V] {
-		if onlyIfExpired && current != nil && n == current && !current.HasExpired(nowNano) {
-			// updated in place, extending its lifetime, after it was found expired
-			extended = true
-			return current
+		// n is not nil, so a current n is in the table
+		isCurrent := n == current
+		if isCurrent {
+			switch {
+			case removal == removeExpired && !current.HasExpired(nowNano):
+				// updated in place, extending its lifetime, after it was found expired
+				kept = true
+				return current
+			case removal == removeForSize && c.isWeighted && current.Weight() == 0 &&
+				!current.HasExpired(nowNano):
+				// The policy chose the node by the weight it accounted, but a writer has since set
+				// its weight to zero in place. The node stays linked until its reweigh task brings
+				// the accounted weight to zero.
+				kept = true
+				return current
+			}
 		}
-		if cause == CauseOverflow && c.isWeighted && current != nil && n == current &&
-			current.Weight() == 0 && !current.HasExpired(nowNano) {
-			// The policy chose the node by the weight it accounted, but a writer has since set
-			// its weight to zero in place, and a zero-weight entry is never evicted for size.
-			// The node stays linked until its reweigh task brings the accounted weight to zero.
-			declined = true
-			return current
-		}
-		if cause == CauseInvalidation {
+		if removal == removeInvalidated {
 			c.singleflight.delete(n.Key())
-		} else if current != nil && n == current {
+		} else if isCurrent {
 			// An eviction must not cancel an in-flight load: it was most likely started
 			// because this very node has expired, and dropping it would make the loaded
 			// value silently disappear. Only a pending refresh of the evicted value is discarded,
@@ -1197,23 +1228,20 @@ func (c *cache[K, V]) deleteNodeFromMap(
 			// already replaced, and the refresh then belongs to the value that replaced it.
 			c.singleflight.deleteRefresh(n.Key())
 		}
-		if current == nil {
-			return nil
+		if !isCurrent {
+			return current
 		}
-		if n == current {
-			deleted = current
-			deletedCause = getCause(deleted, nowNano, cause)
-			c.makeRetired(deleted)
-			c.notifyAtomicDeletion(deleted.Key(), deleted.Value(), deletedCause)
-			return nil
-		}
-		return current
+		deleted = current
+		deletedCause = getCause(deleted, nowNano, removal.cause())
+		c.makeRetired(deleted)
+		c.notifyAtomicDeletion(deleted.Key(), deleted.Value(), deletedCause)
+		return nil
 	})
-	return deleted, deletedCause, extended, declined
+	return deleted, deletedCause, kept
 }
 
 func (c *cache[K, V]) deleteNode(n node.Node[K, V], nowNano int64) bool {
-	deleted, cause, _, _ := c.deleteNodeFromMap(n, nowNano, CauseInvalidation, false)
+	deleted, cause, _ := c.deleteNodeFromMap(n, nowNano, removeInvalidated)
 	c.afterDelete(deleted, cause, true, false)
 	return deleted != nil
 }
@@ -1301,9 +1329,12 @@ func (c *cache[K, V]) periodicCleanUp() {
 	}
 }
 
-// evictNode removes n from the cache and the policies.
-func (c *cache[K, V]) evictNode(n node.Node[K, V], nowNanos int64) {
-	c.removeNode(n, nowNanos, false)
+// evictNode removes n, which the eviction policy chose to evict for size, and reports whether n
+// leaves the policy, which then unlinks it. The policy has no clock, so the time of the
+// maintenance pass is used: an entry that has expired, but that the timer wheel has not reached
+// yet, is reported as expired, as every other path reports it.
+func (c *cache[K, V]) evictNode(n node.Node[K, V]) bool {
+	return c.removeNode(n, c.maintenanceNanos, removeForSize)
 }
 
 // expireNode is called by the timer wheel for a node whose expiration time has passed, and
@@ -1311,35 +1342,29 @@ func (c *cache[K, V]) evictNode(n node.Node[K, V], nowNanos int64) {
 // taken, and a writer can update the node in place in between, extending its lifetime. Such a
 // node stays in the cache, and the wheel schedules it again.
 func (c *cache[K, V]) expireNode(n node.Node[K, V], nowNanos int64) bool {
-	return c.removeNode(n, nowNanos, true)
-}
-
-// removeNode removes n from the cache and the policies, unless n turns out to be extended or its
-// eviction is declined under the bucket lock, and reports whether it did.
-func (c *cache[K, V]) removeNode(n node.Node[K, V], nowNanos int64, onlyIfExpired bool) bool {
-	cause := CauseOverflow
-	if onlyIfExpired || n.HasExpired(nowNanos) {
-		cause = CauseExpiration
-	}
-
-	d, cause, extended, declined := c.deleteNodeFromMap(n, nowNanos, cause, onlyIfExpired)
-	if extended || declined {
+	if !c.removeNode(n, nowNanos, removeExpired) {
 		return false
 	}
-	deleted := d != nil
+	c.makeDead(n)
+	return true
+}
 
-	if c.withEviction {
-		c.evictionPolicy.delete(n)
+// removeNode removes n from the hash table and the timer wheel, and reports the removal unless n
+// had already left the table (it was replaced or removed, and that is reported by its own task).
+// It returns false if n is kept, as described by removal. The caller unlinks n from the eviction
+// policy.
+func (c *cache[K, V]) removeNode(n node.Node[K, V], nowNanos int64, removal nodeRemoval) bool {
+	deleted, cause, kept := c.deleteNodeFromMap(n, nowNanos, removal)
+	if kept {
+		return false
 	}
 	if c.withExpiration {
 		c.timerWheel.Unschedule(n)
 	}
-
-	c.makeDead(n)
-
-	if deleted {
-		c.notifyDeletion(n.Key(), n.Value(), cause)
+	if deleted != nil {
+		// counted first, so that the listener sees the eviction it is told about
 		c.stats.RecordEviction(n.Weight())
+		c.notifyDeletion(n.Key(), n.Value(), cause)
 	}
 	return true
 }
@@ -1433,6 +1458,8 @@ func (c *cache[K, V]) invalidateAllLocked() []node.Node[K, V] {
 	defer c.evictionMutex.Unlock()
 
 	if c.withMaintenance {
+		// the replayed writes can evict
+		c.readMaintenanceTime()
 		c.readBuffer.DrainTo(func(n node.Node[K, V]) {})
 		for {
 			t := c.writeBuffer.TryPop()
@@ -1613,6 +1640,7 @@ func (c *cache[K, V]) rescheduleCleanUpIfIncomplete() {
 
 func (c *cache[K, V]) maintenance(t *task[K, V]) {
 	c.drainStatus.Store(processingToIdle)
+	c.readMaintenanceTime()
 	completed := false
 	defer func() {
 		if !completed {
@@ -1631,6 +1659,14 @@ func (c *cache[K, V]) maintenance(t *task[K, V]) {
 
 	if c.drainStatus.Load() != processingToIdle || !c.drainStatus.CompareAndSwap(processingToIdle, idle) {
 		c.drainStatus.Store(required)
+	}
+}
+
+// readMaintenanceTime reads the time of a maintenance pass, under evictionMutex. Reading the clock
+// once per pass rather than per eviction keeps it off the single-threaded maintenance path.
+func (c *cache[K, V]) readMaintenanceTime() {
+	if c.withExpiration {
+		c.maintenanceNanos = c.clock.NowNano()
 	}
 }
 
@@ -1669,7 +1705,7 @@ func (c *cache[K, V]) runTask(t *task[K, V]) {
 			c.timerWheel.Schedule(n)
 		}
 		if c.withEviction {
-			c.evictionPolicy.add(n, c.evictNode)
+			c.evictionPolicy.add(n)
 		}
 	case updateReason:
 		old := t.oldNode()
@@ -1678,14 +1714,14 @@ func (c *cache[K, V]) runTask(t *task[K, V]) {
 			c.timerWheel.Schedule(n)
 		}
 		if c.withEviction {
-			c.evictionPolicy.update(n, old, c.evictNode)
+			c.evictionPolicy.update(n, old)
 		}
 		c.notifyDeletion(old.Key(), old.Value(), t.deletionCause)
 	case reconcileReason:
 		// A weight or an expiration time changed in place. Both are brought in line with the
 		// node's current state, so replaying the task late, twice or out of order is harmless.
 		if c.withEviction {
-			c.evictionPolicy.reweigh(n, c.evictNode)
+			c.evictionPolicy.reweigh(n)
 		}
 		if c.withExpiration {
 			c.timerWheel.Schedule(n)
@@ -1695,7 +1731,7 @@ func (c *cache[K, V]) runTask(t *task[K, V]) {
 			c.timerWheel.Unschedule(n)
 		}
 		if c.withEviction {
-			c.evictionPolicy.delete(n)
+			c.evictionPolicy.makeDead(n)
 		}
 		c.notifyDeletion(n.Key(), n.Value(), t.deletionCause)
 	default:
@@ -1714,7 +1750,7 @@ func (c *cache[K, V]) onAccess(n node.Node[K, V]) {
 
 func (c *cache[K, V]) expireNodes() {
 	if c.withExpiration {
-		c.timerWheel.Advance(c.clock.NowNano(), c.expireNode)
+		c.timerWheel.Advance(c.maintenanceNanos, c.expireNode)
 	}
 }
 
@@ -1722,7 +1758,7 @@ func (c *cache[K, V]) evictNodes() {
 	if !c.withEviction {
 		return
 	}
-	c.evictionPolicy.evictNodes(c.evictNode)
+	c.evictionPolicy.evictNodes()
 }
 
 func (c *cache[K, V]) climb() {
@@ -1866,40 +1902,9 @@ func (c *cache[K, V]) evictionOrder(hottest bool) iter.Seq[Entry[K, V]] {
 	}
 
 	return func(yield func(Entry[K, V]) bool) {
-		// MergeFunc yields the lesser head first, so the hottest order merges by descending
-		// frequency and the coldest by ascending frequency. On equal frequencies the first
-		// sequence goes first.
-		ascending := func(a node.Node[K, V], b node.Node[K, V]) int {
-			return cmp.Compare(
-				c.evictionPolicy.sketch.frequency(a.Key()),
-				c.evictionPolicy.sketch.frequency(b.Key()),
-			)
-		}
-
-		var seq iter.Seq[node.Node[K, V]]
+		seq := c.evictionPolicy.coldest()
 		if hottest {
-			secondary := xiter.MergeFunc(
-				c.evictionPolicy.probation.Backward(),
-				c.evictionPolicy.window.Backward(),
-				func(a node.Node[K, V], b node.Node[K, V]) int {
-					return -ascending(a, b)
-				},
-			)
-			seq = xiter.Concat(
-				c.evictionPolicy.protected.Backward(),
-				secondary,
-			)
-		} else {
-			primary := xiter.MergeFunc(
-				c.evictionPolicy.window.All(),
-				c.evictionPolicy.probation.All(),
-				ascending,
-			)
-
-			seq = xiter.Concat(
-				primary,
-				c.evictionPolicy.protected.All(),
-			)
+			seq = c.evictionPolicy.hottest()
 		}
 
 		c.evictionMutex.Lock()

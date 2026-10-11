@@ -97,8 +97,16 @@ it. The wheel can then expire the node before the insertion is replayed; the pol
 a node that is not alive.
 
 The wheel reads a node's deadline before taking the bucket lock, so `expireNode` re-checks
-expiration under the lock (`deleteNodeFromMap(..., onlyIfExpired)`) and returns false for a node
+expiration under the lock (`deleteNodeFromMap(..., removeExpired)`) and returns false for a node
 that a writer extended in the meantime; `Advance` then schedules it again.
+
+The eviction policy evicts through the `evict` callback it is built with (`cache.evictNode`). The
+cache removes the node from the hash table and the wheel and reports it, and the policy unlinks
+the node when the callback returns true; the cache does not call back into the policy during its
+walk. The callback returns false for a node whose weight a writer has set to zero in place since
+the policy accounted it (`removeForSize`): a zero-weight entry is never evicted for size, and that
+must be decided under the bucket lock, atomically with the writer. The node stays linked until its
+reweigh task brings the accounted weight to zero.
 
 ## Loading and refresh
 

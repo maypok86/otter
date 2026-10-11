@@ -15,6 +15,7 @@
 package otter
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -31,6 +32,16 @@ func TestPolicy_SetMaximumSize(t *testing.T) {
 		p.setMaximumSize(10)
 	})
 }
+
+// newTestPolicy returns a weighted policy with the given maximum that evicts through evict.
+func newTestPolicy(maximum uint64, evict func(n node.Node[int, int]) bool) *policy[int, int] {
+	p := newPolicy[int, int](true, 0, evict)
+	p.setMaximumSize(maximum)
+	return p
+}
+
+// removeAll is an evict callback for a cache that removes every node the policy evicts.
+func removeAll(node.Node[int, int]) bool { return true }
 
 // requireAccounted checks that exactly the given nodes are linked into the policy and that
 // the weighted sizes are the sums of their weights.
@@ -68,17 +79,6 @@ func TestPolicy_OutOfOrderTasks(t *testing.T) {
 	t.Parallel()
 
 	nm := node.NewManager[int, int](node.Config{WithWeight: true})
-	newPolicyWithMaximum := func() *policy[int, int] {
-		p := newPolicy[int, int](true)
-		p.setMaximumSize(100)
-		return p
-	}
-	// what the cache's evictNode does to the policy
-	evictNode := func(p *policy[int, int]) func(n node.Node[int, int], nowNanos int64) {
-		return func(n node.Node[int, int], nowNanos int64) {
-			p.delete(n)
-		}
-	}
 	moveToProtected := func(p *policy[int, int], n node.Node[int, int]) {
 		p.window.Delete(n)
 		p.windowWeightedSize -= uint64(n.Weight())
@@ -91,9 +91,9 @@ func TestPolicy_OutOfOrderTasks(t *testing.T) {
 		t.Parallel()
 
 		for _, inProtected := range []bool{false, true} {
-			p := newPolicyWithMaximum()
+			p := newTestPolicy(100, removeAll)
 			n1 := nm.Create(1, 1, 0, 0, 3)
-			p.add(n1, evictNode(p))
+			p.add(n1)
 			if inProtected {
 				moveToProtected(p, n1)
 			}
@@ -103,8 +103,8 @@ func TestPolicy_OutOfOrderTasks(t *testing.T) {
 			n2 := nm.Create(1, 2, 0, 0, 5)
 			n1.Retire()
 			n2.Retire()
-			p.delete(n2)
-			p.update(n2, n1, evictNode(p))
+			p.makeDead(n2)
+			p.update(n2, n1)
 
 			requireAccounted(t, p)
 			require.True(t, n1.IsDead())
@@ -114,16 +114,16 @@ func TestPolicy_OutOfOrderTasks(t *testing.T) {
 	t.Run("update of the replacement before its own update", func(t *testing.T) {
 		t.Parallel()
 
-		p := newPolicyWithMaximum()
+		p := newTestPolicy(100, removeAll)
 		n1 := nm.Create(1, 1, 0, 0, 3)
-		p.add(n1, evictNode(p))
+		p.add(n1)
 
 		n2 := nm.Create(1, 2, 0, 0, 5)
 		n3 := nm.Create(1, 3, 0, 0, 7)
 		n1.Retire()
 		n2.Retire()
-		p.update(n3, n2, evictNode(p))
-		p.update(n2, n1, evictNode(p))
+		p.update(n3, n2)
+		p.update(n2, n1)
 
 		requireAccounted(t, p, n3)
 		require.True(t, n1.IsDead())
@@ -132,21 +132,21 @@ func TestPolicy_OutOfOrderTasks(t *testing.T) {
 	t.Run("insertion replayed after its replacement", func(t *testing.T) {
 		t.Parallel()
 
-		p := newPolicyWithMaximum()
+		p := newTestPolicy(100, removeAll)
 		n1 := nm.Create(1, 1, 0, 0, 3)
 		n2 := nm.Create(1, 2, 0, 0, 5)
 		n1.Retire()
-		p.update(n2, n1, evictNode(p))
-		p.add(n1, evictNode(p))
+		p.update(n2, n1)
+		p.add(n1)
 
 		requireAccounted(t, p, n2)
 	})
 	t.Run("oversized insertion", func(t *testing.T) {
 		t.Parallel()
 
-		p := newPolicyWithMaximum()
+		p := newTestPolicy(100, removeAll)
 		n := nm.Create(1, 1, 0, 0, 1000)
-		p.add(n, evictNode(p))
+		p.add(n)
 
 		requireAccounted(t, p)
 		require.True(t, n.IsDead())
@@ -159,38 +159,28 @@ func TestPolicy_Reweigh(t *testing.T) {
 	t.Parallel()
 
 	nm := node.NewManager[int, int](node.Config{WithWeight: true})
-	newPolicyWithMaximum := func() *policy[int, int] {
-		p := newPolicy[int, int](true)
-		p.setMaximumSize(100)
-		return p
-	}
-	evictNode := func(p *policy[int, int]) func(n node.Node[int, int], nowNanos int64) {
-		return func(n node.Node[int, int], nowNanos int64) {
-			p.delete(n)
-		}
-	}
 
 	t.Run("in the window", func(t *testing.T) {
 		t.Parallel()
 
-		p := newPolicyWithMaximum()
+		p := newTestPolicy(100, removeAll)
 		n := nm.Create(1, 1, 0, 0, 3)
-		p.add(n, evictNode(p))
+		p.add(n)
 
 		n.SetWeight(7)
-		p.reweigh(n, evictNode(p))
+		p.reweigh(n)
 		requireAccounted(t, p, n)
 
 		// replaying it again changes nothing
-		p.reweigh(n, evictNode(p))
+		p.reweigh(n)
 		requireAccounted(t, p, n)
 	})
 	t.Run("in the protected queue", func(t *testing.T) {
 		t.Parallel()
 
-		p := newPolicyWithMaximum()
+		p := newTestPolicy(100, removeAll)
 		n := nm.Create(1, 1, 0, 0, 3)
-		p.add(n, evictNode(p))
+		p.add(n)
 		p.window.Delete(n)
 		p.windowWeightedSize -= uint64(n.PolicyWeight())
 		n.MakeMainProtected()
@@ -198,44 +188,90 @@ func TestPolicy_Reweigh(t *testing.T) {
 		p.mainProtectedWeightedSize += uint64(n.PolicyWeight())
 
 		n.SetWeight(1)
-		p.reweigh(n, evictNode(p))
+		p.reweigh(n)
 		requireAccounted(t, p, n)
 	})
 	t.Run("before its insertion is replayed", func(t *testing.T) {
 		t.Parallel()
 
-		p := newPolicyWithMaximum()
+		p := newTestPolicy(100, removeAll)
 		n := nm.Create(1, 1, 0, 0, 3)
 		n.SetWeight(8)
-		p.reweigh(n, evictNode(p))
+		p.reweigh(n)
 		requireAccounted(t, p)
 
-		p.add(n, evictNode(p)) // takes the current weight
+		p.add(n) // takes the current weight
 		requireAccounted(t, p, n)
 	})
 	t.Run("after its removal", func(t *testing.T) {
 		t.Parallel()
 
-		p := newPolicyWithMaximum()
+		p := newTestPolicy(100, removeAll)
 		n := nm.Create(1, 1, 0, 0, 3)
-		p.add(n, evictNode(p))
+		p.add(n)
 		n.Retire()
-		p.delete(n)
+		p.makeDead(n)
 
 		n.SetWeight(8)
-		p.reweigh(n, evictNode(p))
+		p.reweigh(n)
 		requireAccounted(t, p)
 	})
 	t.Run("above the maximum", func(t *testing.T) {
 		t.Parallel()
 
-		p := newPolicyWithMaximum()
+		p := newTestPolicy(100, removeAll)
 		n := nm.Create(1, 1, 0, 0, 3)
-		p.add(n, evictNode(p))
+		p.add(n)
 
 		n.SetWeight(1000)
-		p.reweigh(n, evictNode(p))
+		p.reweigh(n)
 		requireAccounted(t, p)
 		require.True(t, n.IsDead())
 	})
+}
+
+// A node the cache keeps when the policy evicts it stays linked and accounted, and the policy moves
+// on to other victims; a node the cache removes is unlinked by the policy.
+func TestPolicy_EvictionKeptByTheCache(t *testing.T) {
+	t.Parallel()
+
+	nm := node.NewManager[int, int](node.Config{WithWeight: true})
+	for _, keep := range []bool{false, true} {
+		var asked []int
+		p := newTestPolicy(2, func(n node.Node[int, int]) bool {
+			asked = append(asked, n.Key())
+			return !keep
+		})
+		nodes := []node.Node[int, int]{
+			nm.Create(1, 1, 0, 0, 1),
+			nm.Create(2, 2, 0, 0, 1),
+			nm.Create(3, 3, 0, 0, 1),
+		}
+		for _, n := range nodes {
+			p.add(n)
+		}
+
+		p.evictNodes()
+		if keep {
+			// every node was offered (a window node can be both a candidate and a victim), and
+			// the walk ended when the queues ran out
+			slices.Sort(asked)
+			require.Equal(t, []int{1, 2, 3}, slices.Compact(asked))
+			requireAccounted(t, p, nodes...)
+			for _, n := range nodes {
+				require.False(t, n.IsDead(), "key %d", n.Key())
+			}
+			continue
+		}
+		require.Len(t, asked, 1)
+		evicted := nodes[asked[0]-1]
+		require.True(t, evicted.IsDead())
+		var rest []node.Node[int, int]
+		for _, n := range nodes {
+			if n != evicted {
+				rest = append(rest, n)
+			}
+		}
+		requireAccounted(t, p, rest...)
+	}
 }

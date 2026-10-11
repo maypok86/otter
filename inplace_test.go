@@ -845,8 +845,16 @@ func TestCache_DeletionListenersAgreeOnCause(t *testing.T) {
 func TestCache_InPlaceZeroWeightIsNotEvicted(t *testing.T) {
 	t.Parallel()
 
+	counter := stats.NewCounter()
+	var evicted []DeletionEvent[int, int]
 	c := Must(&Options[int, int]{
 		MaximumWeight: 10,
+		StatsRecorder: counter,
+		OnDeletion: func(e DeletionEvent[int, int]) {
+			if e.Cause == CauseOverflow {
+				evicted = append(evicted, e)
+			}
+		},
 		// a negative value pins the entry: it weighs nothing
 		Weigher: func(_ int, v int) uint32 {
 			if v < 0 {
@@ -889,6 +897,11 @@ func TestCache_InPlaceZeroWeightIsNotEvicted(t *testing.T) {
 	require.True(t, ok, "the zero-weight entry %d was evicted for size", victim)
 	require.Equal(t, -1, v)
 	require.LessOrEqual(t, c.WeightedSize(), uint64(10))
+	// the declined eviction is neither reported nor counted
+	for _, e := range evicted {
+		require.NotEqual(t, victim, e.Key)
+	}
+	require.Equal(t, uint64(len(evicted)), counter.Snapshot().Evictions)
 	validateCache(t, c)
 }
 

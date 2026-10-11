@@ -1720,7 +1720,7 @@ func TestCache_EvictionDropsRefreshOfEvictedValue(t *testing.T) {
 	<-started
 
 	ci.evictionMutex.Lock()
-	ci.evictNode(ci.hashmap.Get(1), 0)
+	ci.evictionPolicy.evictNode(ci.hashmap.Get(1))
 	ci.evictionMutex.Unlock()
 
 	got := make(chan int, 1)
