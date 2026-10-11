@@ -40,6 +40,16 @@ type Options struct {
 	// The wait adds up to MaxDelay to the time of a load. Use it when the keys come too spread
 	// out for MaxInFlight alone to batch them, typically with no limit on MaxInFlight.
 	MaxDelay time.Duration
+	// LoadsPerReload is how many batches of loads may go ahead of waiting reloads before a
+	// batch of reloads goes. Zero means one, so they take turns. A negative value means loads
+	// always go first: a reload then waits until no load is waiting, and under a steady stream
+	// of misses refreshes may never happen while their calls wait: one goroutine per stale key
+	// with the default executor, and the Get that found the stale entry with an executor that
+	// runs refreshes on the calling goroutine.
+	//
+	// Loads are misses that a caller waits for, while a refresh serves the old value until it
+	// is done, so giving loads more turns shortens the wait of misses.
+	LoadsPerReload int
 	// Logger reports a panic of BulkLoad that no call of Load waits for any more, so that it is
 	// not lost. By default, slog.Default() is used.
 	Logger otter.Logger
@@ -60,6 +70,16 @@ func (o *Options) getLogger() otter.Logger {
 		return xlog.Default()
 	}
 	return o.Logger
+}
+
+func (o *Options) getLoadsPerReload() int {
+	if o.LoadsPerReload == 0 {
+		return 1
+	}
+	if o.LoadsPerReload < 0 {
+		return -1
+	}
+	return o.LoadsPerReload
 }
 
 func (o *Options) getMaxInFlight() int {

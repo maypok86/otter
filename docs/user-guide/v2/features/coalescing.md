@@ -35,3 +35,6 @@ You can tune batching with `coalesce.Options`:
 - `MaxBatchSize`: the most keys in one call of the bulk loader. Zero means no limit.
 - `MaxInFlight`: how many calls of the bulk loader run at once. Zero means one, and `-1` means no limit. While every call is busy, new keys wait and leave together in the next batch.
 - `MaxDelay`: how long a batch waits for more keys after its first key comes. It adds up to `MaxDelay` to a load, so it is off by default.
+- `LoadsPerReload`: how many batches of misses may go ahead of waiting refreshes.
+    - `0` means one, so they take turns.
+    - `-1` means misses always go first. Under a steady stream of misses, refreshes may then never happen while their calls wait: one goroutine per stale key with the default executor, and the `Get` that found the stale entry with an executor that runs refreshes on the calling goroutine.

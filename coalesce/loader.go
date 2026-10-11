@@ -36,8 +36,8 @@ var errLoaderExited = errors.New("coalesce: the bulk loader exited the goroutine
 // and, if [Options.MaxDelay] is set, until the batch has waited that long or is full; the keys
 // that are waiting then leave together, at most [Options.MaxBatchSize] at a time. A key
 // that several calls wait for is loaded once; for Reload, with the old value of the first call.
-// Loads and reloads go in separate batches that share the calls of the bulk loader, and when
-// both are waiting, they take turns.
+// Loads and reloads go in separate batches that share the calls of the bulk loader. When both
+// are waiting, up to [Options.LoadsPerReload] batches of loads go before a batch of reloads.
 //
 // A batch runs with the values of the context of its first call, but not with its cancellation:
 // the batch is cancelled only when every call waiting for it has returned. Each call returns as
@@ -53,17 +53,20 @@ type Loader[K comparable, V any] struct {
 	bulkLoader   otter.BulkLoader[K, V]
 	maxBatchSize int
 	maxInFlight  int
-	maxDelay     time.Duration
-	logger       otter.Logger
+	// loadsPerReload is Options.LoadsPerReload, with -1 for no limit.
+	loadsPerReload int
+	maxDelay       time.Duration
+	logger         otter.Logger
 	// afterFunc is time.AfterFunc. Tests replace it.
 	afterFunc func(d time.Duration, f func()) *time.Timer
 
 	mu      sync.Mutex
 	loads   queue[K, V]
 	reloads queue[K, V]
-	// reloadedLast reports that the last batch started was a batch of reloads.
-	reloadedLast bool
-	inFlight     int
+	// loadsAhead is the number of batches of loads that have gone ahead of waiting reloads since
+	// the last batch of reloads.
+	loadsAhead int
+	inFlight   int
 }
 
 // queue holds the requests of one kind waiting for a batch, in the order they came. A request
@@ -130,14 +133,15 @@ func New[K comparable, V any](bulkLoader otter.BulkLoader[K, V], o *Options) (*L
 		return nil, err
 	}
 	return &Loader[K, V]{
-		bulkLoader:   bulkLoader,
-		maxBatchSize: o.MaxBatchSize,
-		maxInFlight:  o.getMaxInFlight(),
-		maxDelay:     o.MaxDelay,
-		logger:       o.getLogger(),
-		loads:        queue[K, V]{waiting: make(map[K]*request[K, V])},
-		reloads:      queue[K, V]{isReload: true, waiting: make(map[K]*request[K, V])},
-		afterFunc:    time.AfterFunc,
+		bulkLoader:     bulkLoader,
+		maxBatchSize:   o.MaxBatchSize,
+		maxInFlight:    o.getMaxInFlight(),
+		loadsPerReload: o.getLoadsPerReload(),
+		maxDelay:       o.MaxDelay,
+		logger:         o.getLogger(),
+		loads:          queue[K, V]{waiting: make(map[K]*request[K, V])},
+		reloads:        queue[K, V]{isReload: true, waiting: make(map[K]*request[K, V])},
+		afterFunc:      time.AfterFunc,
 	}, nil
 }
 
@@ -418,19 +422,24 @@ func (l *Loader[K, V]) ready(q *queue[K, V]) bool {
 }
 
 // next returns the queue to take the next batch from, or nil if neither is ready. When both are
-// ready, they take turns, so that a steady stream of loads does not starve the reloads, nor the
-// other way round. It is called with l.mu held.
+// ready, loads go first for up to l.loadsPerReload batches, then reloads go once, so that a steady
+// stream of misses does not starve the refreshes unless asked to. A batch of loads counts only
+// when reloads wait for it: one that goes while no reload waits does not delay any. The caller
+// takes a batch from the queue it returns. It is called with l.mu held.
 func (l *Loader[K, V]) next() *queue[K, V] {
 	hasLoads, hasReloads := l.ready(&l.loads), l.ready(&l.reloads)
 	switch {
 	case hasLoads && hasReloads:
-		if l.reloadedLast {
+		if l.loadsPerReload < 0 || l.loadsAhead < l.loadsPerReload {
+			l.loadsAhead++
 			return &l.loads
 		}
+		l.loadsAhead = 0
 		return &l.reloads
 	case hasLoads:
 		return &l.loads
 	case hasReloads:
+		l.loadsAhead = 0
 		return &l.reloads
 	default:
 		return nil
@@ -446,7 +455,6 @@ func (l *Loader[K, V]) dispatch() {
 			return
 		}
 		requests := q.take(l.maxBatchSize)
-		l.reloadedLast = q.isReload
 
 		ctx, cancel := context.WithCancel(context.WithoutCancel(requests[0].ctx))
 		b := &batch{live: len(requests), cancel: cancel}

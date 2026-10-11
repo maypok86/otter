@@ -17,6 +17,7 @@ package coalesce
 import (
 	"context"
 	"errors"
+	"fmt"
 	"runtime"
 	"slices"
 	"sync"
@@ -166,6 +167,19 @@ func TestNew(t *testing.T) {
 	require.Panics(t, func() {
 		Must[int, int](nil, nil)
 	})
+
+	for _, tt := range []struct {
+		loadsPerReload int
+		want           int
+	}{
+		{loadsPerReload: 0, want: 1},
+		{loadsPerReload: 4, want: 4},
+		{loadsPerReload: -1, want: -1},
+		{loadsPerReload: -3, want: -1},
+	} {
+		l := Must[int, int](tl, &Options{LoadsPerReload: tt.loadsPerReload})
+		require.Equal(t, tt.want, l.loadsPerReload, "LoadsPerReload %d", tt.loadsPerReload)
+	}
 
 	for _, tt := range []struct {
 		maxInFlight int
@@ -622,32 +636,78 @@ func TestLoader_ReloadBatches(t *testing.T) {
 	require.Empty(t, tl.batches)
 }
 
-func TestLoader_LoadsAndReloadsTakeTurns(t *testing.T) {
+// sequence returns the batches in the order they went, as "L<key>" for loads and "R<key>" for
+// reloads of one key each.
+func (tl *testBulkLoader) sequence() []string {
+	tl.mu.Lock()
+	defer tl.mu.Unlock()
+	seq := make([]string, 0, len(tl.kinds))
+	loads, reloads := 0, 0
+	for _, kind := range tl.kinds {
+		if kind == "load" {
+			seq = append(seq, fmt.Sprintf("L%d", tl.batches[loads][0]))
+			loads++
+			continue
+		}
+		seq = append(seq, fmt.Sprintf("R%d", tl.reloads[reloads][0]))
+		reloads++
+	}
+	return seq
+}
+
+func TestLoader_LoadsPerReload(t *testing.T) {
 	t.Parallel()
 
-	// With loads and reloads both waiting, the kind that did not go last goes next.
-	tl := &testBulkLoader{release: make(chan struct{})}
-	l := Must[int, int](tl, nil)
-	wg := loadAll(t, l, []int{0})
-	waitFor(t, func() bool { return tl.runningCalls() == 1 })
-	wg2 := loadAll(t, l, []int{1, 2})
-	waitFor(t, func() bool { return l.queued() == 2 })
-	var wg3 sync.WaitGroup
-	wg3.Add(1)
-	go func() {
-		defer wg3.Done()
-		_, _ = l.Reload(context.Background(), 3, 30)
-	}()
-	waitFor(t, func() bool { return l.queued() == 3 })
-	close(tl.release)
-	wg.Wait()
-	wg2.Wait()
-	wg3.Wait()
+	// While load 0 runs, loads 1-5 and reloads 10 and 11 queue up, one key per batch. Load 0
+	// went with no reload waiting, so it does not count.
+	tests := []struct {
+		name           string
+		loadsPerReload int
+		want           []string
+	}{
+		{name: "turns", want: []string{"L0", "L1", "R10", "L2", "R11", "L3", "L4", "L5"}},
+		{name: "three", loadsPerReload: 3, want: []string{"L0", "L1", "L2", "L3", "R10", "L4", "L5", "R11"}},
+		{name: "loads first", loadsPerReload: -1, want: []string{"L0", "L1", "L2", "L3", "L4", "L5", "R10", "R11"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	waitFor(t, l.idle)
-	require.Equal(t, []string{"load", "reload", "load"}, tl.kinds)
-	require.Len(t, tl.batches, 2)
-	require.ElementsMatch(t, []int{1, 2}, tl.batches[1])
+			tl := &testBulkLoader{release: make(chan struct{})}
+			l := Must[int, int](tl, &Options{MaxBatchSize: 1, LoadsPerReload: tt.loadsPerReload})
+			var wg sync.WaitGroup
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				_, _ = l.Load(context.Background(), 0)
+			}()
+			waitFor(t, func() bool { return tl.runningCalls() == 1 })
+
+			queue := func(key int, reload bool) {
+				queued := l.queued()
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					if reload {
+						_, _ = l.Reload(context.Background(), key, key)
+						return
+					}
+					_, _ = l.Load(context.Background(), key)
+				}()
+				waitFor(t, func() bool { return l.queued() == queued+1 })
+			}
+			for k := 1; k <= 5; k++ {
+				queue(k, false)
+			}
+			queue(10, true)
+			queue(11, true)
+			close(tl.release)
+			wg.Wait()
+
+			waitFor(t, l.idle)
+			require.Equal(t, tt.want, tl.sequence())
+		})
+	}
 }
 
 func TestLoader_WithCacheRefresh(t *testing.T) {
