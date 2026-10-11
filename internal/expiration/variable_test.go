@@ -178,6 +178,29 @@ func TestVariable_AddPassedDeadline(t *testing.T) {
 	match(t, expired, []string{"k1"})
 }
 
+// A node is expired by the sweep that reaches its deadline, as HasExpired reports it, and not
+// kept for another bucket.
+func TestVariable_DeleteExpiredAtDeadline(t *testing.T) {
+	t.Parallel()
+
+	nm := node.NewManager[string, string](node.Config{
+		WithExpiration: true,
+	})
+	now := time.Now().UnixNano()
+	var expired []node.Node[string, string]
+	expireNode := func(n node.Node[string, string], nowNanos int64) {
+		expired = append(expired, n)
+	}
+	v := NewVariable(nm)
+	v.time = uint64(now)
+
+	deadline := now + getTestExp(2)
+	v.Add(nm.Create("k1", "", deadline, 0, 1))
+
+	v.DeleteExpired(deadline, expireNode)
+	match(t, expired, []string{"k1"})
+}
+
 func TestVariable_All(t *testing.T) {
 	t.Parallel()
 

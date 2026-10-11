@@ -1588,3 +1588,21 @@ func TestCache_CreationOverExpiredEntrySeesNoDeadlines(t *testing.T) {
 	run()
 	validateCache(t, c)
 }
+
+// The timer wheel removes an entry at its deadline, when reads stop seeing it, not a bucket later.
+func TestCache_CleanUpAtDeadlineRemovesEntry(t *testing.T) {
+	t.Parallel()
+
+	clk := newNonTickingClock()
+	c, run := newDeferredCache(clk, ExpiryWriting[int, int](time.Minute), nil)
+	c.Set(1, 1)
+	run()
+	clk.Sleep(time.Minute) // exactly the deadline
+
+	_, ok := c.GetIfPresent(1)
+	require.False(t, ok)
+	c.CleanUp()
+	run()
+	require.Zero(t, c.EstimatedSize())
+	validateCache(t, c)
+}

@@ -203,7 +203,8 @@ func (v *Variable[K, V]) sweepBucket(root node.Node[K, V], expireNode func(n nod
 		n.SetPrevExp(nil)
 		n.SetNextExp(nil)
 
-		if uint64(n.ExpiresAt()) < v.time {
+		// expired at its deadline, as HasExpired reports it
+		if uint64(n.ExpiresAt()) <= v.time {
 			expireNode(n, int64(v.time))
 		} else {
 			v.Add(n)
