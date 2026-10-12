@@ -694,7 +694,7 @@ func (c *cache[K, V]) refreshKey(
 	}
 	if !isManual {
 		if n := c.refreshedMeanwhile(rk.key, nowNano); n != nil {
-			c.singleflight.adopt(cl, n.Value())
+			c.singleflight.adopt(cl, n.Value(), c.expiresAtOf(n))
 			return ch
 		}
 	}
@@ -796,7 +796,7 @@ func (c *cache[K, V]) loadOrJoin(
 		// getNode above already recorded the miss for this request.
 		if n := c.getNodeQuietly(key, nowNano); n != nil {
 			value := n.Value()
-			c.singleflight.adopt(cl, value)
+			c.singleflight.adopt(cl, value, c.expiresAtOf(n))
 			return value, false, nil
 		}
 		//nolint:errcheck // there is no need to check error
@@ -819,6 +819,11 @@ func (c *cache[K, V]) loadOrJoin(
 		}
 		return zeroValue[V](), true, nil
 	}
+	if cl.expiredBefore(nowNano) {
+		// The Get joined a load after its value had been committed and had expired: a Get that
+		// started after the expiration loads the key again.
+		return zeroValue[V](), true, nil
+	}
 	if cl.failedForOwner() && ctx.Err() == nil {
 		return zeroValue[V](), true, nil
 	}
@@ -834,7 +839,7 @@ func (c *cache[K, V]) commitCall(cl *call[K, V]) mutation[K, V] {
 		from = fromRefresh
 	}
 	nowNano := c.clock.NowNano()
-	return c.mutate(cl.key, nowNano, from, func(prev previous[K, V]) (mutationOp, V) {
+	m := c.mutate(cl.key, nowNano, from, func(prev previous[K, V]) (mutationOp, V) {
 		// From here on, an eviction or expiration of the key drops the call (see
 		// group.deleteOnRemoval): it can no longer bring the removed value back.
 		cl.committed = true
@@ -845,6 +850,7 @@ func (c *cache[K, V]) commitCall(cl *call[K, V]) mutation[K, V] {
 			// cancelled. The value stays, and the load returns it, whatever it loaded, as a Get that
 			// ran after the write would.
 			cl.value, cl.err, cl.isNotFound = prev.value, nil, false
+			cl.expiresAt = c.expiresAtOf(prev.node)
 			return opKeep, cl.value
 		}
 		authoritative := c.singleflight.authoritative(cl, prev, nowNano)
@@ -865,6 +871,19 @@ func (c *cache[K, V]) commitCall(cl *call[K, V]) mutation[K, V] {
 		}
 		return opWrite, cl.value
 	})
+	if m.op == opWrite {
+		// The node is created after the decision. It is read before the waiters are woken.
+		cl.expiresAt = c.expiresAtOf(m.next)
+	}
+	return m
+}
+
+// expiresAtOf returns when n expires, or 0 if entries do not expire (see call.expiresAt).
+func (c *cache[K, V]) expiresAtOf(n node.Node[K, V]) int64 {
+	if !c.withExpiration {
+		return 0
+	}
+	return n.ExpiresAt()
 }
 
 // refreshedMeanwhile returns the node of key if it is live and fresh, so that a refresh that a
@@ -915,7 +934,7 @@ func (c *cache[K, V]) bulkRefreshKeys(
 		cl, shouldLoad := c.singleflight.startRefresh(rk.key, rk.old)
 		if shouldLoad && !isManual {
 			if n := c.refreshedMeanwhile(rk.key, nowNano); n != nil {
-				c.singleflight.adopt(cl, n.Value())
+				c.singleflight.adopt(cl, n.Value(), c.expiresAtOf(n))
 				continue
 			}
 		}
@@ -1121,7 +1140,7 @@ func (c *cache[K, V]) bulkLoadOrJoin(
 			// Winning the call slot means that a value written before is visible, see Get.
 			if n := c.getNodeQuietly(key, nowNano); n != nil {
 				value := n.Value()
-				c.singleflight.adopt(cl, value)
+				c.singleflight.adopt(cl, value, c.expiresAtOf(n))
 				result[key] = value
 				delete(misses, key)
 				i++
@@ -1160,6 +1179,14 @@ func (c *cache[K, V]) bulkLoadOrJoin(
 				result[key] = n.Value()
 				continue
 			}
+			if retry == nil {
+				retry = make(map[K]*call[K, V], len(misses)-i+1)
+			}
+			retry[key] = nil
+			continue
+		}
+		if _, own := toLoadCalls[key]; !own && cl.expiredBefore(nowNano) {
+			// a value that expired before this load, see loadOrJoin
 			if retry == nil {
 				retry = make(map[K]*call[K, V], len(misses)-i+1)
 			}

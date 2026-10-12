@@ -46,6 +46,11 @@ type call[K comparable, V any] struct {
 	// refused reports that the cache has not written the result of a refresh. It is written
 	// under the key's bucket lock, before done is closed.
 	refused bool
+	// expiresAt is when the value that the call hands to its waiters from the cache, the one it
+	// wrote or the live one it found, expires; 0 if it hands none or entries do not expire. A
+	// waiter whose Get started after that does not take the value. It is written before done is
+	// closed.
+	expiresAt int64
 	// invalidations is group.invalidations when the bulk load that returned a fake call started.
 	invalidations uint64
 }
@@ -113,6 +118,12 @@ func (c *call[K, V]) failedForOwner() bool {
 	}
 	var pe *panicError
 	return !errors.As(c.err, &pe)
+}
+
+// expiredBefore reports whether c, which has finished, hands its waiters a value from the cache
+// that had expired by nowNano.
+func (c *call[K, V]) expiredBefore(nowNano int64) bool {
+	return c.expiresAt != 0 && c.expiresAt <= nowNano
 }
 
 // refreshResult is what a manual refresh reports for c once it has finished.
@@ -216,9 +227,10 @@ func (g *group[K, V]) superseded(c *call[K, V]) bool {
 }
 
 // adopt finishes c, which the caller registered, with a value that is already in the cache,
-// without loading it.
-func (g *group[K, V]) adopt(c *call[K, V], value V) {
+// without loading it. The value expires at expiresAt (see call.expiresAt).
+func (g *group[K, V]) adopt(c *call[K, V], value V, expiresAt int64) {
 	c.value = value
+	c.expiresAt = expiresAt
 	g.deleteCall(c)
 	c.cancel()
 }

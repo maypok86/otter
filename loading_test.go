@@ -3144,7 +3144,7 @@ func TestCache_CallSupersedesRefreshOfRemovedNode(t *testing.T) {
 				require.True(t, shouldLoad)
 				require.NotSame(t, doomed, cl)
 				require.Same(t, cl, c.cache.singleflight.getCall(1))
-				c.cache.singleflight.adopt(cl, n.Value())
+				c.cache.singleflight.adopt(cl, n.Value(), 0)
 			},
 		},
 	}
@@ -3353,6 +3353,96 @@ func TestCache_GetJoinedRefreshNotWritten(t *testing.T) {
 			v, ok := c.GetIfPresent(1)
 			require.True(t, ok, "%s, bulk=%v", tt.name, bulk)
 			require.Equal(t, tt.want, v, "%s, bulk=%v", tt.name, bulk)
+		}
+	}
+}
+
+func TestCache_GetDoesNotTakeLoadedValueExpiredBeforeIt(t *testing.T) {
+	t.Parallel()
+
+	// A load hands its waiters a value from the cache before its call is deleted: the value it
+	// wrote, the value written during the load, or one written by another load before it started
+	// (adopt). A Get that misses the key in between, because the value has already expired,
+	// joins the call: it must not return a value that expired before it started.
+	ctx := context.Background()
+	tests := []struct {
+		name string
+		// start registers the load and runs the part of it that finds or writes its value; the
+		// returned func finishes it
+		start func(c *Cache[int, int]) (finish func())
+	}{
+		{
+			name: "written",
+			start: func(c *Cache[int, int]) func() {
+				cl, _ := c.cache.singleflight.startLoad(1)
+				cl.value = 1
+				m := c.cache.commitCall(cl)
+				return func() {
+					c.cache.singleflight.deleteCall(cl)
+					cl.cancel()
+					c.cache.publish(m)
+				}
+			},
+		},
+		{
+			name: "written during the load",
+			start: func(c *Cache[int, int]) func() {
+				c.Set(1, 3)
+				cl, _ := c.cache.singleflight.startLoad(1)
+				cl.value = 1
+				m := c.cache.commitCall(cl)
+				return func() {
+					c.cache.singleflight.deleteCall(cl)
+					cl.cancel()
+					c.cache.publish(m)
+				}
+			},
+		},
+		{
+			name: "adopted",
+			start: func(c *Cache[int, int]) func() {
+				c.Set(1, 3)
+				cl, _ := c.cache.singleflight.startLoad(1)
+				n := c.cache.getNodeQuietly(1, c.cache.clock.NowNano())
+				return func() {
+					c.cache.singleflight.adopt(cl, n.Value(), c.cache.expiresAtOf(n))
+				}
+			},
+		},
+	}
+	for _, tt := range tests {
+		for _, bulk := range []bool{false, true} {
+			clock := newNonTickingClock()
+			c := Must(&Options[int, int]{
+				ExpiryCalculator: ExpiryWriting[int, int](time.Minute),
+				Clock:            clock,
+				// the tasks never run: maintenance would remove the expired entry, and with it the call
+				Executor: func(func()) {},
+			})
+			c.cache.singleflight.init()
+			finish := tt.start(c)
+			clock.Sleep(2 * time.Minute)
+
+			got := make(chan getResult, 1)
+			go func() {
+				if bulk {
+					res, err := c.BulkGet(ctx, []int{1}, newTestBulkLoader[int, int](func(context.Context, []int) (map[int]int, error) {
+						return map[int]int{1: 5}, nil
+					}))
+					got <- getResult{res[1], err}
+					return
+				}
+				v, err := c.Get(ctx, 1, newTestLoader[int, int](func(context.Context, int) (int, error) {
+					return 5, nil
+				}))
+				got <- getResult{v, err}
+			}()
+			waitForJoinedLoad(t)
+			finish()
+
+			r := <-got
+			require.NoError(t, r.err, "%s, bulk=%v", tt.name, bulk)
+			require.Equal(t, 5, r.value, "%s, bulk=%v", tt.name, bulk)
 		}
 	}
 }
