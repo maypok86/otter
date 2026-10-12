@@ -100,6 +100,22 @@ buffer (`runTask`), run the caller's task, expire (`expireNodes`), evict (`evict
 `drainStatus` (`idle`, `required`, `processingToIdle`, `processingToRequired`) decides whether
 another drain must be scheduled.
 
+`scheduleDrainBuffers` takes `evictionMutex` with `TryLock` and hands `drainBuffers` to the
+executor, which may run it inline or later. Who releases the mutex is decided by `drainToken`:
+the scheduler stores a new even value while it holds the mutex, and whoever makes it odd with a
+CAS releases the mutex. A drain that runs inline finds the mutex held and the token even, takes
+the release over and runs maintenance under the scheduler's lock; the scheduler's own CAS then
+fails, and it does not release the mutex a second time. Otherwise the scheduler releases it once
+the executor returns, and the drain takes the mutex itself (`TryLock`, or `performCleanUp` if it
+is held by then). The token is even only while a scheduler holds the mutex and has not released
+it, since the other holders (`performCleanUp`, `CleanUp`, `SetMaximum`) never change it. Each
+schedule takes a new value, so a scheduler that resumes late cannot release the mutex of a later
+schedule. Only a drain can take over another schedule's release, for example a late async drain
+that runs while a newer scheduler holds the mutex, and the mutex is still released once. If the
+executor panics, the scheduler releases the mutex unless a drain has taken it over, and leaves
+the drain `required`. `drainBuffersFunc` is the method value bound once: taking `c.drainBuffers`
+on every schedule would allocate.
+
 The timer wheel (`internal/expiration`) decides where a node is scheduled: `Schedule` puts a live
 node in the bucket of its current deadline, moving it if it is already scheduled, and unschedules
 a node that is not alive. Because it is idempotent, accesses and writes can reach it out of order:
