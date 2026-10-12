@@ -1466,3 +1466,103 @@ func (h *optimalHeap) Pop() any {
 	*h = old[0 : n-1]
 	return x
 }
+
+func TestCache_IterationVisitsKeysReplacedDuringIt(t *testing.T) {
+	t.Parallel()
+
+	// A string is kept in its node until the entry is updated, so the first update of an entry
+	// replaces its node. A key replaced while it is iterated over is present before and after the
+	// replacement: the iteration visits it, exactly once.
+	const keys = 100
+	expiring := func() *Cache[int, string] {
+		return Must(&Options[int, string]{ExpiryCalculator: ExpiryWriting[int, string](time.Hour)})
+	}
+	bounded := func() *Cache[int, string] {
+		return Must(&Options[int, string]{MaximumSize: 1000})
+	}
+	entryKeys := func(seq func(*Cache[int, string]) func(func(Entry[int, string]) bool)) func(*Cache[int, string]) func(func(int) bool) {
+		return func(c *Cache[int, string]) func(func(int) bool) {
+			return func(yield func(int) bool) {
+				for e := range seq(c) {
+					if !yield(e.Key) {
+						return
+					}
+				}
+			}
+		}
+	}
+	tests := []struct {
+		name  string
+		cache func() *Cache[int, string]
+		keys  func(c *Cache[int, string]) func(func(int) bool)
+	}{
+		{name: "All", cache: expiring, keys: func(c *Cache[int, string]) func(func(int) bool) {
+			return func(yield func(int) bool) {
+				for k := range c.All() {
+					if !yield(k) {
+						return
+					}
+				}
+			}
+		}},
+		{name: "Keys", cache: expiring, keys: func(c *Cache[int, string]) func(func(int) bool) { return c.Keys() }},
+		{name: "Hottest", cache: bounded, keys: entryKeys(func(c *Cache[int, string]) func(func(Entry[int, string]) bool) {
+			return c.Hottest()
+		})},
+		{name: "Coldest", cache: bounded, keys: entryKeys(func(c *Cache[int, string]) func(func(Entry[int, string]) bool) {
+			return c.Coldest()
+		})},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// The keys replaced after their bucket was copied are the other keys of the first
+			// bucket: with about three keys per bucket, several rounds make sure there are some.
+			for round := range 10 {
+				c := tt.cache()
+				for k := range keys {
+					c.Set(k, "a")
+				}
+				seen := make(map[int]int, keys)
+				for k := range tt.keys(c) {
+					if len(seen) == 0 {
+						for k := range keys {
+							c.Set(k, "b")
+						}
+					}
+					seen[k]++
+				}
+				require.Len(t, seen, keys, "round %d", round)
+				for k, n := range seen {
+					require.Equal(t, 1, n, "round %d, key %d", round, k)
+				}
+			}
+		})
+	}
+}
+
+func TestCache_GetEntryQuietlyDuringReplacement(t *testing.T) {
+	t.Parallel()
+
+	// OnAtomicDeletion runs while a write replaces the node: the key still holds the old value.
+	var (
+		c     *Cache[int, string]
+		got   string
+		found bool
+	)
+	c = Must(&Options[int, string]{
+		ExpiryCalculator: ExpiryWriting[int, string](time.Hour),
+		OnAtomicDeletion: func(e DeletionEvent[int, string]) {
+			if e.Cause == CauseReplacement {
+				var entry Entry[int, string]
+				entry, found = c.GetEntryQuietly(1)
+				got = entry.Value
+			}
+		},
+	})
+	c.Set(1, "a")
+	c.Set(1, "b")
+	require.True(t, found)
+	require.Equal(t, "a", got)
+}

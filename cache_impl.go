@@ -320,10 +320,11 @@ func (c *cache[K, V]) getNode(key K, nowNano int64) node.Node[K, V] {
 // getNodeQuietly returns the node associated with the key in this cache.
 //
 // Unlike getNode, this function does not produce any side effects
-// such as updating statistics or the eviction policy.
+// such as updating statistics or the eviction policy. As in getNode, a node that a write is
+// replacing or removing is the key's node until the write changes the table.
 func (c *cache[K, V]) getNodeQuietly(key K, nowNano int64) node.Node[K, V] {
 	n := c.hashmap.Get(key)
-	if n == nil || !n.IsAlive() || n.HasExpired(nowNano) {
+	if n == nil || n.HasExpired(nowNano) {
 		return nil
 	}
 
@@ -1588,11 +1589,25 @@ func (c *cache[K, V]) removeNode(n node.Node[K, V], nowNanos int64, removal node
 	return true
 }
 
+// current returns the key's node for n, a node that an iteration found before it reports it:
+// n itself while it is the key's node, also while a write is replacing or removing it; the node
+// that replaced it; or nil if the key has been removed. A replaced node would otherwise be skipped,
+// and its key with it: the hash table's Range copies a bucket's nodes and reports them after
+// releasing its lock, and in a bounded cache the node that replaced it is not in the policy until
+// its task runs. Each key is reported once: Range copies a bucket with all of its keys at once, and
+// a replacing node is not linked into the policy while it is walked under evictionMutex.
+func (c *cache[K, V]) current(n node.Node[K, V]) node.Node[K, V] {
+	if n.IsAlive() {
+		return n
+	}
+	return c.hashmap.Get(n.Key())
+}
+
 func (c *cache[K, V]) nodes() iter.Seq[node.Node[K, V]] {
 	return func(yield func(node.Node[K, V]) bool) {
 		c.hashmap.Range(func(n node.Node[K, V]) bool {
 			nowNano := c.clock.NowNano()
-			if !n.IsAlive() || n.HasExpired(nowNano) {
+			if n = c.current(n); n == nil || n.HasExpired(nowNano) {
 				c.scheduleDrainBuffers()
 				return true
 			}
@@ -2132,7 +2147,7 @@ func (c *cache[K, V]) evictionOrder(hottest bool) iter.Seq[Entry[K, V]] {
 
 		for n := range seq {
 			nowNano := c.clock.NowNano()
-			if !n.IsAlive() || n.HasExpired(nowNano) {
+			if n = c.current(n); n == nil || n.HasExpired(nowNano) {
 				continue
 			}
 			if !yield(c.nodeToEntry(n, nowNano)) {
