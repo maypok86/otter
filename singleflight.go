@@ -476,26 +476,32 @@ func (g *group[K, V]) delete(key K) {
 }
 
 // deleteOnRemoval removes the call registered for key when the key's entry is evicted or expires,
-// unless it is a load still in flight: a refresh of the removed value, or a load that has already
-// committed its value. A committed load stays registered until it finishes, and a Get that
+// unless it is a load still in flight: a refresh of an existing node, or a call that has already
+// committed its value. A committed call stays registered until it finishes, and a Get that
 // joined it after the removal would get back the value just removed. An in-flight load is kept:
-// it was most likely started because this very entry has expired.
+// it was most likely started because this very entry has expired. So is a refresh of an absent
+// key, which loads it in the same way: an expired entry that was still in the table when the
+// refresh was requested is not a value of the key.
 //
 // It is called under the key's bucket lock in the cache's hash table, which guards committed.
-// Every eviction comes here, so as in delete a lookup without the lock comes first; isRefresh is
-// set before the call is registered and never changes.
+// Every eviction comes here, so as in delete a lookup without the lock comes first; isRefresh and
+// base are set before the call is registered and never change.
 func (g *group[K, V]) deleteOnRemoval(key K) {
 	if !g.isInitialized.Load() {
 		return
 	}
-	if cl := g.getCall(key); cl == nil || !(cl.isRefresh || cl.committed) {
+	if cl := g.getCall(key); cl == nil || !droppedOnRemoval(cl) {
 		return
 	}
 
 	g.calls.Compute(key, func(prevCall *call[K, V]) *call[K, V] {
-		if prevCall != nil && (prevCall.isRefresh || prevCall.committed) {
+		if prevCall != nil && droppedOnRemoval(prevCall) {
 			return nil
 		}
 		return prevCall
 	})
+}
+
+func droppedOnRemoval[K comparable, V any](c *call[K, V]) bool {
+	return (c.isRefresh && c.base != nil) || c.committed
 }

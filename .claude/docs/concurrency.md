@@ -124,8 +124,9 @@ waiters, whatever it loaded, so the `Get` is a hit at the commit. A write cancel
 before a new node is stored (`hashmap.Compute` stores it after the callback), so a load
 registered in between is not cancelled, and only this rule keeps it from overwriting the write.
 `Invalidate`, `Set` and `Compute` cancel a
-pending call for the key; eviction and expiration drop refresh calls and loads that have
-already committed (`deleteOnRemoval`), but not a load in flight. A committed load stays
+pending call for the key; eviction and expiration drop refreshes of an existing
+node and calls that have already committed (`deleteOnRemoval`), but not a load in flight or a
+refresh of an absent key, which loads it just the same. A committed load stays
 registered until `finish` deletes it, and a `Get` that joined it after the removal would return
 the removed value; `committed` is set by `commitCall` under the key's bucket lock, which the
 removal holds too. A refresh registered after the write or removal that would have cancelled it

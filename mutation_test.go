@@ -76,6 +76,7 @@ type mutationHarness struct {
 	nodeID   func(key int) any
 	// startRefresh requests a refresh that loads value and leaves it queued on the executor.
 	startRefresh func(key, value int)
+	cleanUp      func()
 	validate     func(t *testing.T)
 
 	mu            sync.Mutex
@@ -176,6 +177,7 @@ func newMutationHarness[V comparable](toV func(int) V, fromV func(V) int) *mutat
 			return toV(value), nil
 		}))
 	}
+	m.cleanUp = c.CleanUp
 	m.nodeID = func(key int) any {
 		n := c.cache.hashmap.Get(key)
 		if n == nil {
@@ -515,9 +517,12 @@ func TestCache_KeyMutationsCancelPendingRefresh(t *testing.T) {
 			m.compute(1, func(int, bool) (int, ComputeOp) { return 0, CancelOp })
 		}, want: 2},
 		{name: "SetIfAbsent", state: prevLive, op: func(m *mutationHarness) { m.setIfAbs(1, 3) }, want: 2},
+		// The removal of an expired entry is not a change of the key: the refresh of the absent
+		// key loads it, as a Get would.
 		{name: "Compute/CancelOp/expired", state: prevExpired, op: func(m *mutationHarness) {
 			m.compute(1, func(int, bool) (int, ComputeOp) { return 0, CancelOp })
-		}},
+		}, want: 2},
+		{name: "expiration", state: prevExpired, op: func(m *mutationHarness) { m.cleanUp() }, want: 2},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
