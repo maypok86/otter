@@ -333,6 +333,33 @@ func TestCache_GetCoalescesConcurrentLoads(t *testing.T) {
 	}
 }
 
+func TestCache_GetDoesNotOverwriteConcurrentSet(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	c := Must(&Options[int, int]{})
+	for key := range 10_000 {
+		setDone := make(chan struct{})
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			c.Set(key, 1)
+			close(setDone)
+		}()
+		go func() {
+			defer wg.Done()
+			_, _ = c.Get(ctx, key, LoaderFunc[int, int](func(context.Context, int) (int, error) {
+				<-setDone
+				return 2, nil
+			}))
+		}()
+		wg.Wait()
+		v, _ := c.GetIfPresent(key)
+		require.Equalf(t, 1, v, "key %d: a load overwrote a Set that returned before the load did", key)
+	}
+}
+
 func TestCache_GetWithNotFoundLoad(t *testing.T) {
 	t.Parallel()
 

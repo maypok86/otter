@@ -263,8 +263,8 @@ func (c *cache[K, V]) atomicSet(
 // cancelCalls cancels the pending load or refresh of key when a write from the cache's API
 // changes it. It runs after the new value is published, including the OnAtomicDeletion call
 // before that: a refresh requested from the previous value while the write was in progress is
-// cancelled too. A refresh requested after this point either sees the new value or, if the node
-// is replaced, finds that its base node is gone.
+// cancelled too. A load or refresh requested after this point either sees the new value or, if
+// the node is replaced, finds that its base node is gone.
 func (c *cache[K, V]) cancelCalls(key K, from origin) {
 	if from == fromCaller {
 		c.singleflight.delete(key)

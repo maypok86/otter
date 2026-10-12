@@ -127,10 +127,10 @@ A refresh must lose to any write that follows its request, so three things hold 
   them if the executor panics);
 - `atomicSet` cancels pending calls only after publishing the new value (`cancelCalls`), so a
   refresh requested during an in-place write, e.g. from `OnAtomicDeletion`, is cancelled too;
-- a refresh call records the node it was requested for (`call.base`), and its result is
+- a call records the node it was started for (`call.base`, nil for a load), and its result is
   written only if that node is still the key's node and has not expired (`isRefreshBase` in
   `group.authoritative`), which covers a replacement or removal published after the write's
-  callback returns.
+  callback returns. A load therefore never writes over a live value.
 
 `isRefreshBase` compares node identity, so it does not see the base updated in place. While a
 refresh is registered, only a write from the API changes the base's value in place, and that

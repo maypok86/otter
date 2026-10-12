@@ -28,8 +28,8 @@ type call[K comparable, V any] struct {
 	key   K
 	value V
 	err   error
-	// base is the node a refresh was requested for (nil for an absent key). Its result is
-	// written only if base is still the key's node.
+	// base is the node a refresh was requested for (nil for a load or an absent key). The
+	// call's result is written only if base is still the key's node.
 	base node.Node[K, V]
 	// done is closed when the call has finished and its result may be read.
 	done       chan struct{}
@@ -338,16 +338,16 @@ func (g *group[K, V]) finish(c *call[K, V]) {
 // authoritative reports whether the result of c may be written over prev, the key's entry when
 // c finishes. It runs under the key's bucket lock, before c is deleted.
 //
-// A call is stale once a write or an invalidation has deleted it. A refresh is also stale if the
-// node it was requested for was replaced, removed or has expired in the meantime. A key the bulk
-// loader returned without being asked for was not registered before the load, so a write during
-// the load could not cancel it: it only fills a gap, where the key has no live value and no
-// load of its own.
+// A call is stale once a write or an invalidation has deleted it. It is also stale if its base
+// node was replaced, removed or has expired in the meantime, so a load, whose base is nil, never
+// writes over a live value. A key the bulk loader returned without being asked for was not
+// registered before the load, so a write during the load could not cancel it: it only fills a
+// gap, where the key has no live value and no load of its own.
 func (g *group[K, V]) authoritative(c *call[K, V], prev previous[K, V], nowNano int64) bool {
 	if c.isFake {
 		return !prev.live && g.getCall(c.key) == nil
 	}
-	return g.getCall(c.key) == c && (!c.isRefresh || isRefreshBase(c.base, prev.node, nowNano))
+	return g.getCall(c.key) == c && isRefreshBase(c.base, prev.node, nowNano)
 }
 
 // isRefreshBase reports whether current, the key's node when a refresh completes, is still the
