@@ -21,6 +21,7 @@ singleflight, and lock-free reads.
 | `internal/generated/node` | **Generated** node types. Never edit; change `cmd/generator` and run `make generate` |
 | `cmd/generator` | Node generator (`main.go`, `node.go`, `manager.go`) |
 | `benchmarks/` | Separate module: throughput, memory, eviction benchmarks and the hit-rate simulator |
+| `lincheck/` | Separate module: checks histories of random concurrent operations for linearizability with porcupine |
 | `docs/` | mkdocs site |
 
 ## Commands
@@ -31,6 +32,7 @@ make lint                  # golangci-lint (CI pins v2.13.2 on Go 1.25)
 make test                  # race tests with coverage
 go test -race ./...        # the whole suite runs in ~10 s
 GOOS=linux GOARCH=386 go vet ./...  # CI also runs the suite on 386 (darwin has no 386 port)
+cd lincheck && LINCHECK_DURATION=5m go test .  # linearizability check (default 2s); not run by CI
 ```
 
 golangci-lint must be built with a Go version at least as new as the one it analyzes; an
