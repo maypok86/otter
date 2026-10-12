@@ -1802,3 +1802,68 @@ func TestCache_EvictionOfReplacedNodeReportsNothing(t *testing.T) {
 	require.Equal(t, "b", v)
 	validateCache(t, c)
 }
+
+func TestCache_ScheduleDrainBuffersDoesNotAllocate(t *testing.T) {
+	c := Must(&Options[int, int]{
+		MaximumSize: 10,
+		Executor:    func(fn func()) { fn() },
+	})
+
+	allocs := testing.AllocsPerRun(100, func() {
+		c.cache.drainStatus.Store(required)
+		c.cache.scheduleDrainBuffers()
+	})
+	require.Zero(t, allocs)
+	require.Equal(t, idle, c.cache.drainStatus.Load())
+}
+
+// A scheduler that resumes late must not release the lock of the next schedule: if the next
+// executor then panics, that schedule must still leave the drain required.
+func TestCache_LateSchedulerKeepsNextDrainRequired(t *testing.T) {
+	t.Parallel()
+
+	var calls atomic.Int32
+	firstRan, firstResume := make(chan struct{}), make(chan struct{})
+	secondEntered, secondPanic := make(chan struct{}), make(chan struct{})
+	c := Must(&Options[int, int]{
+		MaximumSize: 10,
+		Executor: func(fn func()) {
+			switch calls.Add(1) {
+			case 1:
+				fn()
+				close(firstRan)
+				<-firstResume
+			case 2:
+				close(secondEntered)
+				<-secondPanic
+				panic("executor rejected the task")
+			default:
+				fn()
+			}
+		},
+	})
+
+	c.cache.drainStatus.Store(required)
+	firstDone, secondDone := make(chan struct{}), make(chan struct{})
+	go func() {
+		c.cache.scheduleDrainBuffers()
+		close(firstDone)
+	}()
+	<-firstRan
+	go func() {
+		c.cache.scheduleDrainBuffers()
+		close(secondDone)
+	}()
+	<-secondEntered
+	close(firstResume)
+	<-firstDone
+	close(secondPanic)
+	<-secondDone
+
+	require.True(t, c.cache.evictionMutex.TryLock())
+	c.cache.evictionMutex.Unlock()
+	for i := 0; i < 100; i++ {
+		c.Set(i, i)
+	}
+	require.LessOrEqual(t, c.EstimatedSize(), 10)
+}
