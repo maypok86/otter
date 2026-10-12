@@ -8,28 +8,46 @@ on:
     paths-ignore:
       - docs/**
 
+permissions: {}
+
+# A new push to a pull request cancels the run of the previous one. Every push to a branch gets a
+# group of its own: a group keeps one pending run, so a series of pushes would cancel the middle
+# ones.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
   test:
     strategy:
+      fail-fast: false
       matrix:
         go-version: [ 1.25.x ]
+        # arm64 has a weaker memory model than amd64: a missing barrier or a wrong order of atomic
+        # operations shows up there first.
+        platform: [ ubuntu-latest, ubuntu-24.04-arm ]
 
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.platform }}
+
+    permissions:
+      contents: read
 
     steps:
+      - name: Check out code into the Go module directory
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
       - name: Set up Go 1.x
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: ${{ matrix.go-version }}
-        id: go
-
-      - name: Check out code into the Go module directory
-        uses: actions/checkout@v7
 
       - name: Unit tests
         run: make test.unit
 
       - name: Process coverage report
+        if: matrix.platform == 'ubuntu-latest'
         run: bash ./.github/workflows/scripts/coverage-report.sh
         env:
           INPUT_COVERAGE: coverage.txt
@@ -38,6 +56,7 @@ jobs:
         uses: popsiclestick/gist-sync-action@88f8633178625914f2a01abf1a765f7272a580fa # v1.2.0
         if: >
           success()
+          && matrix.platform == 'ubuntu-latest'
           && hashFiles('coverage.svg') != ''
           && !github.event.repository.fork
           && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
@@ -52,6 +71,7 @@ jobs:
         uses: popsiclestick/gist-sync-action@88f8633178625914f2a01abf1a765f7272a580fa # v1.2.0
         if: >
           success()
+          && matrix.platform == 'ubuntu-latest'
           && hashFiles('coverage.html') != ''
           && !github.event.repository.fork
           && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
