@@ -2742,3 +2742,80 @@ func TestCache_BulkGetRetryTakesValueWrittenDuringFailedLoad(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, 99, v)
 }
+
+func TestCache_ReadDoesNotRefreshAgain(t *testing.T) {
+	t.Parallel()
+
+	// A read sees a node stale and requests a refresh, but by the time the refresh wins its call
+	// slot, the node has been refreshed by another read, or replaced: the refresh is skipped. A
+	// removed key has no value to give, so it is refreshed as before.
+	tests := []struct {
+		name      string
+		change    func(c *Cache[int, int], loader Loader[int, int])
+		wantCalls uint64
+	}{
+		{
+			name: "refreshed",
+			change: func(c *Cache[int, int], loader Loader[int, int]) {
+				<-c.Refresh(context.Background(), 1, loader)
+			},
+		},
+		{
+			name: "replaced",
+			change: func(c *Cache[int, int], _ Loader[int, int]) {
+				c.Invalidate(1)
+				c.Set(1, 5)
+			},
+		},
+		{
+			name: "removed",
+			change: func(c *Cache[int, int], _ Loader[int, int]) {
+				c.Invalidate(1)
+			},
+			wantCalls: 1,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			for _, bulk := range []bool{false, true} {
+				clock := newNonTickingClock()
+				c := Must(&Options[int, int]{
+					MaximumSize:       100,
+					RefreshCalculator: RefreshWriting[int, int](time.Minute),
+					Clock:             clock,
+					Executor:          func(fn func()) { fn() },
+				})
+				c.cache.singleflight.init()
+				tl := newTestLoader[int, int](func(_ context.Context, key int) (int, error) {
+					return key * 10, nil
+				})
+				tbl := newTestBulkLoader[int, int](func(_ context.Context, keys []int) (map[int]int, error) {
+					res := make(map[int]int, len(keys))
+					for _, k := range keys {
+						res[k] = k * 10
+					}
+					return res, nil
+				})
+
+				c.Set(1, 1)
+				clock.Sleep(2 * time.Minute)
+				stale := c.cache.getNodeQuietly(1, c.cache.clock.NowNano())
+				require.NotNil(t, stale)
+				require.False(t, stale.IsFresh(c.cache.clock.NowNano()))
+
+				tt.change(c, tl)
+				before := tl.calls.Load() + tbl.calls.Load()
+				rk := refreshableKey[int, int]{key: 1, old: stale}
+				if bulk {
+					c.cache.bulkRefreshKeys(context.Background(), []refreshableKey[int, int]{rk}, tbl, false)
+				} else {
+					c.cache.refreshKey(context.Background(), rk, tl, false)
+				}
+				require.Equal(t, before+tt.wantCalls, tl.calls.Load()+tbl.calls.Load(), "bulk=%v", bulk)
+				require.Nil(t, c.cache.singleflight.getCall(1), "bulk=%v", bulk)
+			}
+		})
+	}
+}

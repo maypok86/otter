@@ -674,6 +674,12 @@ func (c *cache[K, V]) refreshKey(
 	// follows the request cancels it. Registered by the task, a refresh that the executor starts
 	// after the write would replace the written value or bring an invalidated key back.
 	cl, shouldLoad := c.singleflight.startRefresh(rk.key, rk.old)
+	if shouldLoad && !isManual {
+		if n := c.refreshedMeanwhile(rk.key); n != nil {
+			c.singleflight.adopt(cl, n.Value())
+			return ch
+		}
+	}
 	var owned []*call[K, V]
 	if shouldLoad {
 		owned = []*call[K, V]{cl}
@@ -825,6 +831,23 @@ func (c *cache[K, V]) commitCall(cl *call[K, V]) mutation[K, V] {
 	})
 }
 
+// refreshedMeanwhile returns the node of key if it is live and fresh, so that a refresh that a
+// read requested when it saw the key stale is no longer needed: the node has been refreshed or
+// replaced since. A refresh frees its call slot only after it has published its value, so a
+// refresh that has won the slot sees one that completed meanwhile. Without this check, every read
+// that saw the key stale before the first refresh completed would reload it again.
+//
+// The skipped refresh is finished with the value of the returned node, since a Get of the key
+// may join its call: that is the value the Get would read. A key that has been removed or has
+// expired is refreshed as before, as there is no value to give.
+func (c *cache[K, V]) refreshedMeanwhile(key K) node.Node[K, V] {
+	nowNano := c.clock.NowNano()
+	if n := c.getNodeQuietly(key, nowNano); n != nil && n.IsFresh(nowNano) {
+		return n
+	}
+	return nil
+}
+
 func (c *cache[K, V]) bulkRefreshKeys(
 	ctx context.Context,
 	rks []refreshableKey[K, V],
@@ -854,6 +877,12 @@ func (c *cache[K, V]) bulkRefreshKeys(
 	)
 	for i, rk := range rks {
 		cl, shouldLoad := c.singleflight.startRefresh(rk.key, rk.old)
+		if shouldLoad && !isManual {
+			if n := c.refreshedMeanwhile(rk.key); n != nil {
+				c.singleflight.adopt(cl, n.Value())
+				continue
+			}
+		}
 		if shouldLoad {
 			owned = append(owned, cl)
 			if rk.old != nil {
