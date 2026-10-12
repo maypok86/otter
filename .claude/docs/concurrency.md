@@ -11,7 +11,7 @@ in another order.
 | Lock | Guards | Taken by |
 |---|---|---|
 | `cache.evictionMutex` | the eviction policy (queues, sizes, sketch, climber), the timer wheel, `policyWeight`, `queueType`, node `dead` transition | `maintenance` (`performCleanUp`, `scheduleDrainBuffers` via `TryLock`), `SetMaximum`, `Hottest`/`Coldest`, `WeightedSize`/`GetMaximum` |
-| `hashmap` bucket lock (`internal/hashmap/map.go`, inside `Compute`) | the bucket's slots; every write to a key; node value/weight/deadline changes made in place; the `retired` transition | `set`, `doCompute`, `Invalidate`, `commitCall`, `deleteNodeFromMap` |
+| `hashmap` bucket lock (`internal/hashmap/map.go`, inside `Compute`) | the bucket's slots; every write to a key; node value/weight/deadline/refresh time changes, except a read's `ExpireAfterRead` CAS; the `retired` transition | `set`, `doCompute`, `Invalidate`, `commitCall`, `deleteNodeFromMap`, `SetExpiresAfter`, `SetRefreshableAfter` |
 | singleflight bucket lock | in-flight `call`s per key | `startLoad`, `startRefresh`, `deleteCall`, `delete`, `deleteOnRemoval` |
 
 `hashmap.Get` takes no lock: it reads bucket slots atomically. Readers therefore see a node
@@ -86,6 +86,11 @@ User callbacks under the bucket lock: the weigher, `ExpiryCalculator.ExpireAfter
 the `RefreshCalculator`, `OnAtomicDeletion`, and the `Compute` remapping function (whose panic
 is recovered). `OnDeletion` and loaders run on the executor (default `go fn()`); with a
 synchronous executor they run inline, possibly under `evictionMutex`.
+
+`SetExpiresAfter` and `SetRefreshableAfter` take the bucket lock: a write reads the deadline and
+refresh time before its calculators run and stores the results after them, so a change made
+without the lock in that window would be lost. Like a write, they deadlock when called from a
+callback that holds the lock of the same bucket.
 
 ## Maintenance
 

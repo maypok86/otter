@@ -405,27 +405,44 @@ func (c *cache[K, V]) GetEntryQuietly(key K) (Entry[K, V], bool) {
 // SetExpiresAfter specifies that the entry should be automatically removed from the cache once the duration has
 // elapsed. The expiration policy determines when the entry's age is reset. It has no effect on an absent
 // or expired entry.
+//
+// This call locks a hash table bucket, as a write does. Calling it from a function that runs while the
+// cache holds a bucket lock, such as a Compute function, OnAtomicDeletion, a weigher or a calculator,
+// may deadlock.
 func (c *cache[K, V]) SetExpiresAfter(key K, expiresAfter time.Duration) {
 	if !c.withExpiration || expiresAfter <= 0 {
 		return
 	}
 
 	nowNano := c.clock.NowNano()
-	n := c.hashmap.Get(key)
+	var (
+		n       node.Node[K, V]
+		earlier bool
+	)
+	// The deadline is changed under the key's bucket lock, as a write changes it: a write reads
+	// the deadline before its calculator runs and stores the result after, so a deadline set
+	// without the lock in between would be overwritten with one computed from the former.
+	c.hashmap.Compute(key, func(cur node.Node[K, V]) node.Node[K, V] {
+		if cur == nil {
+			return nil
+		}
+		// An expired entry that is still in the table is absent: a new deadline would bring its
+		// stale value back.
+		expiresAt := cur.ExpiresAt()
+		if expiresAt <= nowNano {
+			return cur
+		}
+		n = cur
+		// The caller asked for this deadline, so it is set exactly.
+		if next, ok := moveDeadline(expiresAt, nowNano, expiresAfter, 0); ok {
+			cur.SetExpiresAt(next)
+			earlier = next < expiresAt
+		}
+		return cur
+	})
 	if n == nil {
 		return
 	}
-	// An expired entry that is still in the table is absent: a new deadline would bring its
-	// stale value back. The deadline is changed only from the one checked here, so a concurrent
-	// writer's deadline is not overwritten either.
-	expiresAt := n.ExpiresAt()
-	if !n.IsAlive() || expiresAt <= nowNano {
-		return
-	}
-
-	// The caller asked for this deadline, so it is set exactly.
-	next, ok := moveDeadline(expiresAt, nowNano, expiresAfter, 0)
-	earlier := ok && n.CASExpiresAt(expiresAt, next) && next < expiresAt
 	c.afterRead(n, nowNano, false, false)
 	if earlier {
 		// The read buffer may drop the access, and the node would then wait in the timer wheel's
@@ -438,21 +455,27 @@ func (c *cache[K, V]) SetExpiresAfter(key K, expiresAfter time.Duration) {
 
 // SetRefreshableAfter specifies that each entry should be eligible for reloading once a fixed duration has elapsed.
 // The refresh policy determines when the entry's age is reset.
+//
+// This call locks a hash table bucket, as a write does. Calling it from a function that runs while the
+// cache holds a bucket lock, such as a Compute function, OnAtomicDeletion, a weigher or a calculator,
+// may deadlock.
 func (c *cache[K, V]) SetRefreshableAfter(key K, refreshableAfter time.Duration) {
 	if !c.withRefresh || refreshableAfter <= 0 {
 		return
 	}
 
 	nowNano := c.clock.NowNano()
-	n := c.hashmap.Get(key)
-	if n == nil {
-		return
-	}
-
-	refreshableAt := n.RefreshableAt()
-	if next := nextDeadline(refreshableAt, nowNano, refreshableAfter); next != refreshableAt {
-		n.SetRefreshableAt(next)
-	}
+	// Under the key's bucket lock, as for SetExpiresAfter.
+	c.hashmap.Compute(key, func(n node.Node[K, V]) node.Node[K, V] {
+		if n == nil {
+			return nil
+		}
+		refreshableAt := n.RefreshableAt()
+		if next := nextDeadline(refreshableAt, nowNano, refreshableAfter); next != refreshableAt {
+			n.SetRefreshableAt(next)
+		}
+		return n
+	})
 }
 
 func (c *cache[K, V]) set(key K, value V, onlyIfAbsent bool) (V, bool) {

@@ -217,12 +217,20 @@ func (c *Cache[K, V]) ComputeIfPresent(
 // SetExpiresAfter specifies that the entry should be automatically removed from the cache once the duration has
 // elapsed. The expiration policy determines when the entry's age is reset. It has no effect on an absent
 // or expired entry.
+//
+// This call locks a hash table bucket, as a write does. Calling it from a function that runs while the
+// cache holds a bucket lock, such as a Compute function, OnAtomicDeletion, a weigher or a calculator,
+// may deadlock.
 func (c *Cache[K, V]) SetExpiresAfter(key K, expiresAfter time.Duration) {
 	c.cache.SetExpiresAfter(key, expiresAfter)
 }
 
 // SetRefreshableAfter specifies that each entry should be eligible for reloading once a fixed duration has elapsed.
 // The refresh policy determines when the entry's age is reset.
+//
+// This call locks a hash table bucket, as a write does. Calling it from a function that runs while the
+// cache holds a bucket lock, such as a Compute function, OnAtomicDeletion, a weigher or a calculator,
+// may deadlock.
 func (c *Cache[K, V]) SetRefreshableAfter(key K, refreshableAfter time.Duration) {
 	c.cache.SetRefreshableAfter(key, refreshableAfter)
 }
