@@ -129,6 +129,9 @@ committed and had expired before the `Get` started (`call.expiresAt`): the call 
 until `finish` deletes it, after the commit. A write cancels the calls
 before a new node is stored (`hashmap.Compute` stores it after the callback), so a load
 registered in between is not cancelled, and only this rule keeps it from overwriting the write.
+Such a call can also find the old value on its re-check and adopt it, so `mutate` cancels the
+key's calls a second time once the write or invalidation from the API is visible: a `Get` that
+starts after it returned does not join a call that holds the old value.
 `Invalidate`, `Set` and `Compute` cancel a
 pending call for the key; eviction and expiration drop refreshes of an existing
 node and calls that have already committed (`deleteOnRemoval`), but not a load in flight or a

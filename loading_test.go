@@ -3516,3 +3516,53 @@ func TestCache_GetDoesNotReturnLoadOfInvalidatedKey(t *testing.T) {
 		require.Equal(t, 2, v, tt.name)
 	}
 }
+
+func TestCache_WriteCancelsCallRegisteredWhileItIsApplied(t *testing.T) {
+	t.Parallel()
+
+	// An invalidation cancels the calls of its key before the hash table removes the node. A
+	// Get that registers a load in between still finds the old value on its re-check and adopts
+	// it, and a Get that starts after the invalidation returned would join that call and get
+	// the invalidated value. The call is cancelled again once the change is visible.
+	tests := []struct {
+		name       string
+		invalidate func(c *Cache[int, int])
+	}{
+		{name: "Invalidate", invalidate: func(c *Cache[int, int]) { c.Invalidate(1) }},
+		{name: "Compute", invalidate: func(c *Cache[int, int]) {
+			c.Compute(1, func(int, bool) (int, ComputeOp) { return 0, InvalidateOp })
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var (
+				c        *Cache[int, int]
+				adopting *call[int, int]
+				sawOld   bool
+			)
+			c = Must(&Options[int, int]{
+				OnAtomicDeletion: func(DeletionEvent[int, int]) {
+					// A Get registers its load and re-checks the table: the node is still there.
+					// The listener runs under the bucket lock, so nothing here may fail the test.
+					adopting, _ = c.cache.singleflight.startLoad(1)
+					sawOld = c.cache.getNodeQuietly(1, c.cache.clock.NowNano()) != nil
+				},
+			})
+			c.cache.singleflight.init()
+			c.Set(1, 1)
+			tt.invalidate(c)
+			require.NotNil(t, adopting)
+			defer c.cache.singleflight.adopt(adopting, 1, 0)
+			require.True(t, sawOld)
+
+			require.Nil(t, c.cache.singleflight.getCall(1))
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			v, err := c.Get(ctx, 1, LoaderFunc[int, int](func(context.Context, int) (int, error) { return 5, nil }))
+			require.NoError(t, err)
+			require.Equal(t, 5, v)
+		})
+	}
+}
