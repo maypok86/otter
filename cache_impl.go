@@ -1356,7 +1356,7 @@ func (c *cache[K, V]) deleteNodeFromMap(
 			}
 		}
 		if removal == removeInvalidated {
-			c.singleflight.delete(n.Key())
+			c.singleflight.invalidate(n.Key())
 		} else if isCurrent {
 			// An eviction must not cancel an in-flight load: it was most likely started
 			// because this very node has expired, and dropping it would make the loaded

@@ -20,6 +20,7 @@ import (
 
 	"github.com/maypok86/otter/v2/internal/generated/node"
 	"github.com/maypok86/otter/v2/internal/hashmap"
+	"github.com/maypok86/otter/v2/internal/xruntime"
 )
 
 // call is a load or refresh of one key that its waiters share. Its fields are written only
@@ -42,6 +43,8 @@ type call[K comparable, V any] struct {
 	// committed reports that the cache has decided what the call writes. It is written and
 	// read under the key's bucket lock in the cache's hash table.
 	committed bool
+	// invalidations is group.invalidations when the bulk load that returned a fake call started.
+	invalidations uint64
 }
 
 func newCall[K comparable, V any](key K, isRefresh bool, base node.Node[K, V]) *call[K, V] {
@@ -142,6 +145,15 @@ type group[K comparable, V any] struct {
 	executor func(fn func())
 	// nodeOf returns the key's node in the cache's hash table, or nil.
 	nodeOf func(key K) node.Node[K, V]
+
+	// The counters below change on bulk loads and invalidations, while the fields above are read
+	// on every Get and write: they are kept off their cache line.
+	_ [xruntime.CacheLineSize]byte
+	// bulkLoads is the number of bulk loads in flight, and invalidations counts the invalidations
+	// made while there was one, so that a fake call is not written over an invalidation that
+	// followed the start of its load (see authoritative).
+	bulkLoads     atomic.Int64
+	invalidations atomic.Uint64
 }
 
 func (g *group[K, V]) init() {
@@ -239,6 +251,13 @@ func (g *group[K, V]) doBulkCall(
 	callsInBulk map[K]*call[K, V],
 	bulkLoad func(ctx context.Context, keys []K) (map[K]V, error),
 ) (err error) {
+	// Counted before the invalidations are read, and until the calls are finished. An invalidation
+	// that does not see this load came before it, so the load reads the data source after the
+	// change that the invalidation follows.
+	g.bulkLoads.Add(1)
+	defer g.bulkLoads.Add(-1)
+	invalidations := g.invalidations.Load()
+
 	returned := false
 	defer func() {
 		if r := recover(); r != nil {
@@ -310,10 +329,11 @@ func (g *group[K, V]) doBulkCall(
 			continue
 		}
 		callsInBulk[k] = &call[K, V]{
-			key:       k,
-			value:     v,
-			isFake:    true,
-			isRefresh: isRefresh,
+			key:           k,
+			value:         v,
+			isFake:        true,
+			isRefresh:     isRefresh,
+			invalidations: invalidations,
 		}
 	}
 
@@ -358,10 +378,12 @@ func (g *group[K, V]) finish(c *call[K, V]) {
 // node was replaced, removed or has expired in the meantime, so a load, whose base is nil, never
 // writes over a live value. A key the bulk loader returned without being asked for was not
 // registered before the load, so a write during the load could not cancel it: it only fills a
-// gap, where the key has no live value and no load of its own.
+// gap, where the key has no live value and no load of its own, and only if no key has been
+// invalidated since the load started, since the value may have been read from the data source
+// before the invalidation.
 func (g *group[K, V]) authoritative(c *call[K, V], prev previous[K, V], nowNano int64) bool {
 	if c.isFake {
-		return !prev.live && g.getCall(c.key) == nil
+		return !prev.live && g.getCall(c.key) == nil && g.invalidations.Load() == c.invalidations
 	}
 	return g.getCall(c.key) == c && isRefreshBase(c.base, prev.node, nowNano)
 }
@@ -432,6 +454,17 @@ func (g *group[K, V]) deleteCall(c *call[K, V]) (deleted bool) {
 // that has loaded at least once comes here, and there is rarely a call to remove, so the lock-free
 // lookup skips taking the bucket lock. A call registered concurrently can be missed by the lookup
 // just as by Compute, which sees the bucket at one moment too.
+// invalidate deletes the call registered for key, as delete does, for an invalidation of key.
+// While a bulk load is in flight, it also counts the invalidation, which keeps the fake calls of
+// that load from being written. It is called under the key's bucket lock in the cache's hash
+// table, as is authoritative for a fake call of key.
+func (g *group[K, V]) invalidate(key K) {
+	if g.bulkLoads.Load() > 0 {
+		g.invalidations.Add(1)
+	}
+	g.delete(key)
+}
+
 func (g *group[K, V]) delete(key K) {
 	if !g.isInitialized.Load() || g.getCall(key) == nil {
 		return

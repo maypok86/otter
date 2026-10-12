@@ -3171,3 +3171,71 @@ func TestCache_CallSupersedesRefreshOfRemovedNode(t *testing.T) {
 		})
 	}
 }
+
+func TestCache_ExtraBulkEntryKeepsInvalidation(t *testing.T) {
+	t.Parallel()
+
+	// A bulk loader may return keys that were not asked for. They have no call of their own for an
+	// invalidation to cancel, so an extra value that the loader read before the key was
+	// invalidated must not be cached after the invalidation has returned.
+	tests := []struct {
+		name    string
+		present bool
+		bulk    func(ctx context.Context, c *Cache[int, int], bl BulkLoader[int, int])
+	}{
+		{
+			name: "BulkGet, absent",
+			bulk: func(ctx context.Context, c *Cache[int, int], bl BulkLoader[int, int]) {
+				_, _ = c.BulkGet(ctx, []int{1}, bl)
+			},
+		},
+		{
+			name:    "BulkGet, present",
+			present: true,
+			bulk: func(ctx context.Context, c *Cache[int, int], bl BulkLoader[int, int]) {
+				_, _ = c.BulkGet(ctx, []int{1}, bl)
+			},
+		},
+		{
+			name: "BulkRefresh",
+			bulk: func(ctx context.Context, c *Cache[int, int], bl BulkLoader[int, int]) {
+				<-c.BulkRefresh(ctx, []int{1}, bl)
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			c := Must(&Options[int, int]{
+				RefreshCalculator: RefreshWriting[int, int](time.Minute),
+			})
+			if tt.present {
+				c.Set(2, 1)
+			}
+			started := make(chan struct{})
+			proceed := make(chan struct{})
+			bl := newTestBulkLoader[int, int](func(context.Context, []int) (map[int]int, error) {
+				close(started)
+				<-proceed
+				return map[int]int{1: 10, 2: 20}, nil
+			})
+
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				tt.bulk(context.Background(), c, bl)
+			}()
+			<-started
+			c.Invalidate(2)
+			close(proceed)
+			<-done
+
+			v, ok := c.GetIfPresent(1)
+			require.True(t, ok)
+			require.Equal(t, 10, v)
+			v, ok = c.GetIfPresent(2)
+			require.False(t, ok, "the invalidated key holds %d", v)
+		})
+	}
+}

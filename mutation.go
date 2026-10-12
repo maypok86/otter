@@ -115,7 +115,7 @@ func (c *cache[K, V]) mutate(
 			return n
 		case opInvalidate:
 			if from == fromCaller {
-				c.singleflight.delete(key)
+				c.singleflight.invalidate(key)
 			}
 			m.cause = c.retireRemoved(current, nowNano)
 			return nil

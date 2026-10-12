@@ -132,6 +132,9 @@ removal holds too. A refresh registered after the write or removal that would ha
 cannot write once its base is removed or replaced, so the next call for the key replaces it
 instead of joining it (`group.superseded`); a read that finds a node being removed does not
 refresh it.
+A fake call (a key the bulk loader returned without being asked) has no call for an invalidation
+to cancel: it fills only a key without a live value or a call, and only if no key has been
+invalidated since its bulk load started (`group.invalidations`).
 
 A refresh must lose to any write that follows its request, so three things hold together:
 - refresh calls are registered on the requesting goroutine, before the task goes to the
