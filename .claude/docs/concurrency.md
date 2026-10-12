@@ -11,7 +11,7 @@ in another order.
 | Lock | Guards | Taken by |
 |---|---|---|
 | `cache.evictionMutex` | the eviction policy (queues, sizes, sketch, climber), the timer wheel, `policyWeight`, `queueType`, node `dead` transition | `maintenance` (`performCleanUp`, `scheduleDrainBuffers` via `TryLock`), `SetMaximum`, `Hottest`/`Coldest`, `WeightedSize`/`GetMaximum` |
-| `hashmap` bucket lock (`internal/hashmap/map.go`, inside `Compute`) | the bucket's slots; every write to a key; node value/weight/deadline changes made in place; the `retired` transition | `set`, `doCompute`, `Invalidate`, `commitCall`, `deleteNodeFromMap` |
+| `hashmap` bucket lock (`internal/hashmap/map.go`, inside `Compute`) | the bucket's slots; every write to a key; node value/weight/deadline/refresh time changes, except a read's `ExpireAfterRead` CAS; the `retired` transition | `set`, `doCompute`, `Invalidate`, `commitCall`, `deleteNodeFromMap`, `SetExpiresAfter`, `SetRefreshableAfter` |
 | singleflight bucket lock | in-flight `call`s per key | `startLoad`, `startRefresh`, `deleteCall`, `delete`, `deleteOnRemoval` |
 
 `hashmap.Get` takes no lock: it reads bucket slots atomically. Readers therefore see a node
@@ -87,6 +87,11 @@ the `RefreshCalculator`, `OnAtomicDeletion`, and the `Compute` remapping functio
 is recovered). `OnDeletion` and loaders run on the executor (default `go fn()`); with a
 synchronous executor they run inline, possibly under `evictionMutex`.
 
+`SetExpiresAfter` and `SetRefreshableAfter` take the bucket lock: a write reads the deadline and
+refresh time before its calculators run and stores the results after them, so a change made
+without the lock in that window would be lost. Like a write, they deadlock when called from a
+callback that holds the lock of the same bucket.
+
 ## Maintenance
 
 `maintenance` (under `evictionMutex`): drain the read buffer (`onAccess`), drain the write
@@ -131,7 +136,9 @@ cancelled or whose node is gone) does not take that value either: it returns the
 value, or loads the key again. A load cancelled by an invalidation may have read the data
 source before the change, and `Invalidate` has reported the key absent. Nor does a `Get` that joined a load after its value was
 committed and had expired before the `Get` started (`call.expiresAt`): the call stays registered
-until `finish` deletes it, after the commit. A write cancels the calls
+until `finish` deletes it, after the commit. The call also records the value's node (`call.node`),
+whose deadline counts as well: `SetExpiresAfter` or `ExpireAfterRead` can move it earlier while
+the call is registered. A write cancels the calls
 before a new node is stored (`hashmap.Compute` stores it after the callback), so a load
 registered in between is not cancelled, and only this rule keeps it from overwriting the write.
 Such a call can also find the old value on its re-check and adopt it, so `mutate` cancels the

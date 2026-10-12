@@ -405,27 +405,44 @@ func (c *cache[K, V]) GetEntryQuietly(key K) (Entry[K, V], bool) {
 // SetExpiresAfter specifies that the entry should be automatically removed from the cache once the duration has
 // elapsed. The expiration policy determines when the entry's age is reset. It has no effect on an absent
 // or expired entry.
+//
+// This call locks a hash table bucket, as a write does. Calling it from a function that runs while the
+// cache holds a bucket lock, such as a Compute function, OnAtomicDeletion, a weigher or a calculator,
+// may deadlock.
 func (c *cache[K, V]) SetExpiresAfter(key K, expiresAfter time.Duration) {
 	if !c.withExpiration || expiresAfter <= 0 {
 		return
 	}
 
 	nowNano := c.clock.NowNano()
-	n := c.hashmap.Get(key)
+	var (
+		n       node.Node[K, V]
+		earlier bool
+	)
+	// The deadline is changed under the key's bucket lock, as a write changes it: a write reads
+	// the deadline before its calculator runs and stores the result after, so a deadline set
+	// without the lock in between would be overwritten with one computed from the former.
+	c.hashmap.Compute(key, func(cur node.Node[K, V]) node.Node[K, V] {
+		if cur == nil {
+			return nil
+		}
+		// An expired entry that is still in the table is absent: a new deadline would bring its
+		// stale value back.
+		expiresAt := cur.ExpiresAt()
+		if expiresAt <= nowNano {
+			return cur
+		}
+		n = cur
+		// The caller asked for this deadline, so it is set exactly.
+		if next, ok := moveDeadline(expiresAt, nowNano, expiresAfter, 0); ok {
+			cur.SetExpiresAt(next)
+			earlier = next < expiresAt
+		}
+		return cur
+	})
 	if n == nil {
 		return
 	}
-	// An expired entry that is still in the table is absent: a new deadline would bring its
-	// stale value back. The deadline is changed only from the one checked here, so a concurrent
-	// writer's deadline is not overwritten either.
-	expiresAt := n.ExpiresAt()
-	if !n.IsAlive() || expiresAt <= nowNano {
-		return
-	}
-
-	// The caller asked for this deadline, so it is set exactly.
-	next, ok := moveDeadline(expiresAt, nowNano, expiresAfter, 0)
-	earlier := ok && n.CASExpiresAt(expiresAt, next) && next < expiresAt
 	c.afterRead(n, nowNano, false, false)
 	if earlier {
 		// The read buffer may drop the access, and the node would then wait in the timer wheel's
@@ -438,21 +455,27 @@ func (c *cache[K, V]) SetExpiresAfter(key K, expiresAfter time.Duration) {
 
 // SetRefreshableAfter specifies that each entry should be eligible for reloading once a fixed duration has elapsed.
 // The refresh policy determines when the entry's age is reset.
+//
+// This call locks a hash table bucket, as a write does. Calling it from a function that runs while the
+// cache holds a bucket lock, such as a Compute function, OnAtomicDeletion, a weigher or a calculator,
+// may deadlock.
 func (c *cache[K, V]) SetRefreshableAfter(key K, refreshableAfter time.Duration) {
 	if !c.withRefresh || refreshableAfter <= 0 {
 		return
 	}
 
 	nowNano := c.clock.NowNano()
-	n := c.hashmap.Get(key)
-	if n == nil {
-		return
-	}
-
-	refreshableAt := n.RefreshableAt()
-	if next := nextDeadline(refreshableAt, nowNano, refreshableAfter); next != refreshableAt {
-		n.SetRefreshableAt(next)
-	}
+	// Under the key's bucket lock, as for SetExpiresAfter.
+	c.hashmap.Compute(key, func(n node.Node[K, V]) node.Node[K, V] {
+		if n == nil {
+			return nil
+		}
+		refreshableAt := n.RefreshableAt()
+		if next := nextDeadline(refreshableAt, nowNano, refreshableAfter); next != refreshableAt {
+			n.SetRefreshableAt(next)
+		}
+		return n
+	})
 }
 
 func (c *cache[K, V]) set(key K, value V, onlyIfAbsent bool) (V, bool) {
@@ -695,7 +718,7 @@ func (c *cache[K, V]) refreshKey(
 	}
 	if !isManual {
 		if n := c.refreshedMeanwhile(rk.key, nowNano); n != nil {
-			c.singleflight.adopt(cl, n.Value(), c.expiresAtOf(n))
+			c.singleflight.adopt(cl, n.Value(), c.expiresAtOf(n), n)
 			return ch
 		}
 	}
@@ -796,8 +819,8 @@ func (c *cache[K, V]) loadOrJoin(
 		// value is already visible here; adopt it rather than loading it again. Quiet lookup: the
 		// getNode above already recorded the miss for this request.
 		if c.getNodeQuietly(key, nowNano) != nil {
-			if value, expiresAt, ok := c.readForAdoption(cl, nowNano); ok {
-				c.singleflight.adopt(cl, value, expiresAt)
+			if value, expiresAt, n := c.readForAdoption(cl, nowNano); n != nil {
+				c.singleflight.adopt(cl, value, expiresAt, n)
 				return value, false, nil
 			}
 		}
@@ -850,7 +873,7 @@ func (c *cache[K, V]) commitCall(cl *call[K, V]) mutation[K, V] {
 			// cancelled. The value stays, and the load returns it, whatever it loaded, as a Get that
 			// ran after the write would.
 			cl.value, cl.err, cl.isNotFound = prev.value, nil, false
-			cl.expiresAt = c.expiresAtOf(prev.node)
+			cl.expiresAt, cl.node = c.expiresAtOf(prev.node), prev.node
 			return opKeep, cl.value
 		}
 		authoritative := c.singleflight.authoritative(cl, prev, nowNano)
@@ -873,28 +896,33 @@ func (c *cache[K, V]) commitCall(cl *call[K, V]) mutation[K, V] {
 		return opWrite, cl.value
 	})
 	if m.op == opWrite {
-		// The node is created after the decision. It is read before the waiters are woken.
-		cl.expiresAt = c.expiresAtOf(m.next)
+		// The node is created after the decision. The expiration time is the one the write gave
+		// the value: a write that follows can update the node in place before this line. Both
+		// are set before the waiters are woken.
+		cl.node = m.next
+		if c.withExpiration {
+			cl.expiresAt = m.expiresAt
+		}
 	}
 	return m
 }
 
-// readForAdoption returns the key's live value, and when it expires, for cl, a load that the
+// readForAdoption returns the key's live value, when it expires and its node, for cl, a load that the
 // caller registered and finishes with them (group.adopt) instead of loading. The value is read
 // under the key's bucket lock, where cl is marked committed: an eviction or expiration of the
 // value after that drops cl (group.deleteOnRemoval), so that a Get that starts after the removal
 // does not join cl and get the removed value. Read without the lock, the value could be removed
-// before cl is finished, and cl would stay registered with it. ok is false if the key has no
-// live value any more.
-func (c *cache[K, V]) readForAdoption(cl *call[K, V], nowNano int64) (value V, expiresAt int64, ok bool) {
+// before cl is finished, and cl would stay registered with it. The node is nil if the key has
+// no live value any more.
+func (c *cache[K, V]) readForAdoption(cl *call[K, V], nowNano int64) (value V, expiresAt int64, live node.Node[K, V]) {
 	c.hashmap.Compute(cl.key, func(n node.Node[K, V]) node.Node[K, V] {
 		if n != nil && !n.HasExpired(nowNano) {
-			value, expiresAt, ok = n.Value(), c.expiresAtOf(n), true
+			value, expiresAt, live = n.Value(), c.expiresAtOf(n), n
 			cl.committed = true
 		}
 		return n
 	})
-	return value, expiresAt, ok
+	return value, expiresAt, live
 }
 
 // valueAfterRefusal returns the value that a Get or BulkGet takes from a call whose value the
@@ -966,7 +994,7 @@ func (c *cache[K, V]) bulkRefreshKeys(
 		cl, shouldLoad := c.singleflight.startRefresh(rk.key, rk.old)
 		if shouldLoad && !isManual {
 			if n := c.refreshedMeanwhile(rk.key, nowNano); n != nil {
-				c.singleflight.adopt(cl, n.Value(), c.expiresAtOf(n))
+				c.singleflight.adopt(cl, n.Value(), c.expiresAtOf(n), n)
 				continue
 			}
 		}
@@ -1171,8 +1199,8 @@ func (c *cache[K, V]) bulkLoadOrJoin(
 		if shouldLoad {
 			// Winning the call slot means that a value written before is visible, see Get.
 			if c.getNodeQuietly(key, nowNano) != nil {
-				if value, expiresAt, ok := c.readForAdoption(cl, nowNano); ok {
-					c.singleflight.adopt(cl, value, expiresAt)
+				if value, expiresAt, n := c.readForAdoption(cl, nowNano); n != nil {
+					c.singleflight.adopt(cl, value, expiresAt, n)
 					result[key] = value
 					delete(misses, key)
 					i++

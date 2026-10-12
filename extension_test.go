@@ -15,10 +15,13 @@
 package otter
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"math/rand/v2"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -576,4 +579,141 @@ func TestCache_EarlierDeadlineReachesTheTimerWheel(t *testing.T) {
 	}
 	require.Zero(t, survivors, "expired entries stayed in the table after CleanUp")
 	require.Zero(t, c.EstimatedSize())
+}
+
+// setBesideHeldWrite calls set while a write of the same key is held between reading the key's
+// deadline and refresh time and storing them back (the write is held at entered until proceed is
+// closed). set is given time to complete before the write continues: without the bucket lock, it
+// changed the node in that window, and the write then stored the times it had read over the change.
+func setBesideHeldWrite(entered, proceed chan struct{}, writeDone <-chan struct{}, set func()) {
+	<-entered
+	setDone := make(chan struct{})
+	go func() {
+		defer close(setDone)
+		set()
+	}()
+	select {
+	case <-setDone:
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(proceed)
+	<-writeDone
+	<-setDone
+}
+
+// SetExpiresAfter and SetRefreshableAfter are not undone by a concurrent update. The calculators
+// keep the deadline and refresh time on update, so in either order of the two calls the entry
+// ends up with the times the setter asked for.
+func TestCache_DeadlineSettersSurviveConcurrentUpdate(t *testing.T) {
+	t.Parallel()
+
+	for _, refresh := range []bool{false, true} {
+		t.Run(fmt.Sprintf("refresh=%v", refresh), func(t *testing.T) {
+			t.Parallel()
+
+			t.Run("in place", func(t *testing.T) {
+				t.Parallel()
+				testDeadlineSetterSurvivesUpdate(t, 1, 2, refresh)
+			})
+			t.Run("replacement", func(t *testing.T) {
+				t.Parallel()
+				// the first update of an inline value replaces the node
+				testDeadlineSetterSurvivesUpdate(t, "a", "b", refresh)
+			})
+		})
+	}
+}
+
+func testDeadlineSetterSurvivesUpdate[V any](t *testing.T, v1, v2 V, refresh bool) {
+	t.Helper()
+
+	const d = time.Minute
+	clk := newNonTickingClock()
+	entered, proceed := make(chan struct{}), make(chan struct{})
+	var armed atomic.Bool
+	o := &Options[int, V]{
+		Clock: clk,
+		OnAtomicDeletion: func(e DeletionEvent[int, V]) {
+			if armed.CompareAndSwap(true, false) {
+				close(entered)
+				<-proceed
+			}
+		},
+	}
+	if refresh {
+		o.RefreshCalculator = RefreshCreating[int, V](time.Hour)
+	} else {
+		o.ExpiryCalculator = ExpiryCreating[int, V](time.Hour)
+	}
+	c := Must(o)
+	c.Set(1, v1)
+
+	armed.Store(true)
+	writeDone := make(chan struct{})
+	go func() {
+		defer close(writeDone)
+		c.Set(1, v2)
+	}()
+	setBesideHeldWrite(entered, proceed, writeDone, func() {
+		if refresh {
+			c.SetRefreshableAfter(1, d)
+		} else {
+			c.SetExpiresAfter(1, d)
+		}
+	})
+
+	e, ok := c.GetEntryQuietly(1)
+	require.True(t, ok)
+	require.Equal(t, v2, e.Value)
+	got := e.ExpiresAtNano
+	if refresh {
+		got = e.RefreshableAtNano
+	}
+	require.Equal(t, clk.NowNano()+int64(d), got, "the update stored the time it read before the setter changed it")
+}
+
+// heldReloadFailure holds RefreshAfterReloadFailure, which runs under the bucket lock between
+// reading the refresh time and storing the one it returns.
+type heldReloadFailure[K comparable, V any] struct {
+	RefreshCalculator[K, V]
+	entered, proceed chan struct{}
+}
+
+func (h *heldReloadFailure[K, V]) RefreshAfterReloadFailure(entry Entry[K, V], err error) time.Duration {
+	close(h.entered)
+	<-h.proceed
+	return h.RefreshCalculator.RefreshAfterReloadFailure(entry, err)
+}
+
+// SetRefreshableAfter is not undone by a concurrent failed reload, which keeps the refresh time.
+func TestCache_SetRefreshableAfterSurvivesFailedReload(t *testing.T) {
+	t.Parallel()
+
+	const d = time.Minute
+	clk := newNonTickingClock()
+	calc := &heldReloadFailure[int, int]{
+		RefreshCalculator: RefreshWriting[int, int](time.Hour),
+		entered:           make(chan struct{}),
+		proceed:           make(chan struct{}),
+	}
+	c := Must(&Options[int, int]{
+		Clock:             clk,
+		RefreshCalculator: calc,
+	})
+	c.Set(1, 1)
+
+	writeDone := make(chan struct{})
+	go func() {
+		defer close(writeDone)
+		<-c.Refresh(context.Background(), 1, LoaderFunc[int, int](func(ctx context.Context, key int) (int, error) {
+			return 0, errors.New("reload failed")
+		}))
+	}()
+	setBesideHeldWrite(calc.entered, calc.proceed, writeDone, func() {
+		c.SetRefreshableAfter(1, d)
+	})
+
+	e, ok := c.GetEntryQuietly(1)
+	require.True(t, ok)
+	require.Equal(t, clk.NowNano()+int64(d), e.RefreshableAtNano, "the failed reload stored the refresh time it read before SetRefreshableAfter changed it")
 }

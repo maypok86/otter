@@ -84,7 +84,8 @@ type mutation[K comparable, V any] struct {
 	// next is the key's node afterwards, or nil if it is absent. After an update in place it is
 	// previous.node.
 	next node.Node[K, V]
-	// writeResult is what the write or removal decided about the previous value.
+	// writeResult is what the write or removal decided about the previous value and, for a
+	// write, the new one.
 	writeResult
 }
 
@@ -237,6 +238,7 @@ func (c *cache[K, V]) atomicSet(
 			inPlace: true,
 			reconcile: weight != old.Weight() ||
 				(c.withExpiration && entry.ExpiresAtNano < old.ExpiresAt()),
+			expiresAt: entry.ExpiresAtNano,
 		}
 		// The synchronous listener runs before the new value is published, as it does when the
 		// node is replaced: readers see the previous value until the write completes.
@@ -258,7 +260,7 @@ func (c *cache[K, V]) atomicSet(
 
 	n := c.newNode(key, value, weight, entry.ExpiresAtNano, entry.RefreshableAtNano, c.isLiveNode(old, nowNano))
 	c.makeRetired(old)
-	var written writeResult
+	written := writeResult{expiresAt: entry.ExpiresAtNano}
 	if old != nil {
 		written.cause = getCause(old, nowNano, CauseReplacement)
 		c.notifyAtomicDeletion(old.Key(), oldValue, written.cause)
@@ -279,7 +281,8 @@ func (c *cache[K, V]) cancelCalls(key K, from origin) {
 }
 
 // writeResult is what a write or a removal decided under the bucket lock about the previous
-// value, so that the work done after the lock is released agrees with it.
+// value and, for a write, the new one, so that the work done after the lock is released agrees
+// with it.
 type writeResult struct {
 	// cause is why the previous value left the cache: CauseReplacement or CauseInvalidation, or
 	// CauseExpiration when it had expired. It is reported to both deletion listeners; recomputing it later could
@@ -291,6 +294,9 @@ type writeResult struct {
 	// reconcile reports a changed weight or an earlier expiration time of an in-place update,
 	// which the policies cannot pick up from an access.
 	reconcile bool
+	// expiresAt is the expiration time a write gave the new value. Once the lock is released,
+	// another write can update the node again, so it is not read back from the node.
+	expiresAt int64
 }
 
 // isLiveNode reports whether n is in the hash table and has not expired.
