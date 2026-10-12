@@ -3566,3 +3566,47 @@ func TestCache_WriteCancelsCallRegisteredWhileItIsApplied(t *testing.T) {
 		})
 	}
 }
+
+func TestCache_EvictionDropsLoadThatAdoptedItsValue(t *testing.T) {
+	t.Parallel()
+
+	// A load that wins its call slot and finds a value in the cache adopts it. If the value is
+	// evicted before the call is finished, a Get that starts after the eviction must not join
+	// the call and get the evicted value.
+	ctx := context.Background()
+	load99 := LoaderFunc[int, int](func(context.Context, int) (int, error) { return 99, nil })
+
+	t.Run("evicted after the read", func(t *testing.T) {
+		t.Parallel()
+
+		c := Must(&Options[int, int]{MaximumSize: 100})
+		c.cache.singleflight.init()
+		c.Set(1, 1)
+		n := c.cache.getNodeQuietly(1, c.cache.clock.NowNano())
+		cl, _ := c.cache.singleflight.startLoad(1)
+		value, expiresAt, ok := c.cache.readForAdoption(cl, c.cache.clock.NowNano())
+		require.True(t, ok)
+		require.Equal(t, 1, value)
+
+		c.cache.evictNode(n) // before the call is finished
+		require.Nil(t, c.cache.singleflight.getCall(1))
+		v, err := c.Get(ctx, 1, load99)
+		require.NoError(t, err)
+		require.Equal(t, 99, v)
+		c.cache.singleflight.adopt(cl, value, expiresAt)
+	})
+	t.Run("evicted before the read", func(t *testing.T) {
+		t.Parallel()
+
+		c := Must(&Options[int, int]{MaximumSize: 100})
+		c.cache.singleflight.init()
+		c.Set(1, 1)
+		n := c.cache.getNodeQuietly(1, c.cache.clock.NowNano())
+		cl, _ := c.cache.singleflight.startLoad(1)
+		c.cache.evictNode(n) // after the lock-free check found the value
+		_, _, ok := c.cache.readForAdoption(cl, c.cache.clock.NowNano())
+		require.False(t, ok)
+		c.cache.singleflight.deleteCall(cl)
+		cl.cancel()
+	})
+}

@@ -794,10 +794,11 @@ func (c *cache[K, V]) loadOrJoin(
 		// committing the value to the table, so winning the slot means any such
 		// value is already visible here; adopt it rather than loading it again. Quiet lookup: the
 		// getNode above already recorded the miss for this request.
-		if n := c.getNodeQuietly(key, nowNano); n != nil {
-			value := n.Value()
-			c.singleflight.adopt(cl, value, c.expiresAtOf(n))
-			return value, false, nil
+		if c.getNodeQuietly(key, nowNano) != nil {
+			if value, expiresAt, ok := c.readForAdoption(cl, nowNano); ok {
+				c.singleflight.adopt(cl, value, expiresAt)
+				return value, false, nil
+			}
 		}
 		//nolint:errcheck // there is no need to check error
 		_ = c.wrapLoad(func() error {
@@ -875,6 +876,24 @@ func (c *cache[K, V]) commitCall(cl *call[K, V]) mutation[K, V] {
 		cl.expiresAt = c.expiresAtOf(m.next)
 	}
 	return m
+}
+
+// readForAdoption returns the key's live value, and when it expires, for cl, a load that the
+// caller registered and finishes with them (group.adopt) instead of loading. The value is read
+// under the key's bucket lock, where cl is marked committed: an eviction or expiration of the
+// value after that drops cl (group.deleteOnRemoval), so that a Get that starts after the removal
+// does not join cl and get the removed value. Read without the lock, the value could be removed
+// before cl is finished, and cl would stay registered with it. ok is false if the key has no
+// live value any more.
+func (c *cache[K, V]) readForAdoption(cl *call[K, V], nowNano int64) (value V, expiresAt int64, ok bool) {
+	c.hashmap.Compute(cl.key, func(n node.Node[K, V]) node.Node[K, V] {
+		if n != nil && !n.HasExpired(nowNano) {
+			value, expiresAt, ok = n.Value(), c.expiresAtOf(n), true
+			cl.committed = true
+		}
+		return n
+	})
+	return value, expiresAt, ok
 }
 
 // valueAfterRefusal returns the value that a Get or BulkGet takes from a call whose value the
@@ -1150,13 +1169,14 @@ func (c *cache[K, V]) bulkLoadOrJoin(
 		cl, shouldLoad := c.singleflight.startLoad(key)
 		if shouldLoad {
 			// Winning the call slot means that a value written before is visible, see Get.
-			if n := c.getNodeQuietly(key, nowNano); n != nil {
-				value := n.Value()
-				c.singleflight.adopt(cl, value, c.expiresAtOf(n))
-				result[key] = value
-				delete(misses, key)
-				i++
-				continue
+			if c.getNodeQuietly(key, nowNano) != nil {
+				if value, expiresAt, ok := c.readForAdoption(cl, nowNano); ok {
+					c.singleflight.adopt(cl, value, expiresAt)
+					result[key] = value
+					delete(misses, key)
+					i++
+					continue
+				}
 			}
 			if toLoadCalls == nil {
 				toLoadCalls = make(map[K]*call[K, V], len(misses)-i)

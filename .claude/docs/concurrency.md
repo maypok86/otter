@@ -138,7 +138,8 @@ node and calls that have already committed (`deleteOnRemoval`), but not a load i
 refresh of an absent key, which loads it just the same. A committed load stays
 registered until `finish` deletes it, and a `Get` that joined it after the removal would return
 the removed value; `committed` is set by `commitCall` under the key's bucket lock, which the
-removal holds too. A refresh registered after the write or removal that would have cancelled it
+removal holds too. A load that adopts a value it finds after winning its call slot reads it
+under that lock too (`readForAdoption`) and is marked committed there, for the same reason. A refresh registered after the write or removal that would have cancelled it
 cannot write once its base is removed or replaced, so the next call for the key replaces it
 instead of joining it (`group.superseded`); a read that finds a node being removed does not
 refresh it.
