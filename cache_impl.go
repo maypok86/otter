@@ -818,6 +818,15 @@ func (c *cache[K, V]) commitCall(cl *call[K, V]) mutation[K, V] {
 		// From here on, an eviction or expiration of the key drops the call (see
 		// group.deleteOnRemoval): it can no longer bring the removed value back.
 		cl.committed = true
+		if !cl.isRefresh && prev.live {
+			// A load starts on a miss, so a write has given the key a value during the load. The
+			// write may not have cancelled the load: a write that inserts or replaces a node
+			// cancels the calls before the node is stored, so a load registered in between is not
+			// cancelled. The value stays, and the load returns it, whatever it loaded, as a Get that
+			// ran after the write would.
+			cl.value, cl.err, cl.isNotFound = prev.value, nil, false
+			return opKeep, cl.value
+		}
 		authoritative := c.singleflight.authoritative(cl, prev, nowNano)
 		if authoritative && cl.isNotFound {
 			return opInvalidate, cl.value

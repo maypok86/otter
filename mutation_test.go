@@ -338,7 +338,8 @@ func mutationCases() []mutationCase {
 			},
 		},
 		{
-			// A write during the load cancels it, and the loaded value is discarded.
+			// A write during the load cancels it: the loaded value is discarded, and Get returns
+			// the written one.
 			name: "Get/stale",
 			run: func(t *testing.T, m *mutationHarness) any {
 				v, err := m.getLoad(1, m.loader(func(context.Context, int) (int, error) {
@@ -348,9 +349,9 @@ func mutationCases() []mutationCase {
 				return loadResult{v, err}
 			},
 			want: map[prevState]mutationOutcome{
-				prevAbsent:  {result: loadResult{2, nil}, value: 3},
+				prevAbsent:  {result: loadResult{3, nil}, value: 3},
 				prevLive:    {result: loadResult{1, nil}, value: 1},
-				prevExpired: {result: loadResult{2, nil}, value: 3, replacedBy: 3, causes: []DeletionCause{exp}},
+				prevExpired: {result: loadResult{3, nil}, value: 3, replacedBy: 3, causes: []DeletionCause{exp}},
 			},
 		},
 		{

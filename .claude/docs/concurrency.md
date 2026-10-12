@@ -118,7 +118,12 @@ run with `context.WithoutCancel`, so their failures are always shared. `doCall`/
 loader with its panics and `runtime.Goexit` caught and end in `group.finish`, which commits the
 result through the cache's `commitCall` (a key mutation from a load or refresh), then deletes
 the call, wakes its waiters and publishes. `commitCall` writes only if `group.authoritative`
-says the call is still the current one for the key. `Invalidate`, `Set` and `Compute` cancel a
+says the call is still the current one for the key. A load writes only over a key without a
+live value: a live value was written during the load, and the load returns it to its owner and
+waiters, whatever it loaded, so the `Get` is a hit at the commit. A write cancels the calls
+before a new node is stored (`hashmap.Compute` stores it after the callback), so a load
+registered in between is not cancelled, and only this rule keeps it from overwriting the write.
+`Invalidate`, `Set` and `Compute` cancel a
 pending call for the key; eviction and expiration drop refresh calls and loads that have
 already committed (`deleteOnRemoval`), but not a load in flight. A committed load stays
 registered until `finish` deletes it, and a `Get` that joined it after the removal would return
@@ -129,8 +134,9 @@ A refresh must lose to any write that follows its request, so three things hold 
 - refresh calls are registered on the requesting goroutine, before the task goes to the
   executor (`startRefresh` in `refreshKey`, `bulkRefreshKeys`; `group.submitRefresh` finishes
   them if the executor panics);
-- `atomicSet` cancels pending calls only after publishing the new value (`cancelCalls`), so a
-  refresh requested during an in-place write, e.g. from `OnAtomicDeletion`, is cancelled too;
+- `atomicSet` cancels pending calls only after an in-place update has published the new value
+  (`cancelCalls`), so a refresh requested during the write, e.g. from `OnAtomicDeletion`, is
+  cancelled too; a replacing node is stored only after the callback, which the next point covers;
 - a call records the node it was started for (`call.base`, nil for a load), and its result is
   written only if that node is still the key's node and has not expired (`isRefreshBase` in
   `group.authoritative`), which covers a replacement or removal published after the write's

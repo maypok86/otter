@@ -1545,8 +1545,8 @@ func TestCache_ConcurrentGetAndSet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get error = %v", err)
 	}
-	if v != v2 {
-		t.Fatalf("Get is not linerazable. want = %v, got = %v", v2, v)
+	if v != v1 {
+		t.Fatalf("Get is not linerazable. want = %v, got = %v", v1, v)
 	}
 
 	e, ok := c.GetEntryQuietly(k1)
@@ -2947,5 +2947,57 @@ func TestCache_ClockPanicDoesNotStrandRefresh(t *testing.T) {
 		}, "bulk=%v", bulk)
 		clock.panics.Store(false)
 		require.Nil(t, c.cache.singleflight.getCall(1), "bulk=%v", bulk)
+	}
+}
+
+func TestCache_LoadKeepsValueWrittenBeforeItsRegistration(t *testing.T) {
+	t.Parallel()
+
+	// A write cancels the loads registered for its key before it stores its value, so a Get
+	// that misses the key and registers a load in between is not cancelled. The load then finds
+	// the written value when it completes: the value stays, and the load returns it.
+	tests := []struct {
+		name    string
+		loadErr error
+	}{
+		{name: "loaded"},
+		{name: "not found", loadErr: ErrNotFound},
+		{name: "failed", loadErr: errors.New("load failed")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			for _, bulk := range []bool{false, true} {
+				c := Must(&Options[int, int]{})
+				c.cache.singleflight.init()
+
+				// The load is registered after the write: as if the Get had missed the key before
+				// the write stored its value.
+				c.Set(1, 2)
+				cl, shouldLoad := c.cache.singleflight.startLoad(1)
+				require.True(t, shouldLoad)
+
+				if bulk {
+					_ = c.cache.singleflight.doBulkCall(context.Background(), map[int]*call[int, int]{1: cl},
+						func(context.Context, []int) (map[int]int, error) {
+							if tt.loadErr != nil {
+								return nil, tt.loadErr
+							}
+							return map[int]int{1: 1}, nil
+						})
+				} else {
+					_ = c.cache.singleflight.doCall(context.Background(), cl, func(context.Context, int) (int, error) {
+						return 1, tt.loadErr
+					})
+				}
+
+				v, ok := c.GetIfPresent(1)
+				require.True(t, ok, "bulk=%v", bulk)
+				require.Equal(t, 2, v, "bulk=%v", bulk)
+				require.NoError(t, cl.err, "bulk=%v", bulk)
+				require.Equal(t, 2, cl.value, "bulk=%v", bulk)
+			}
+		})
 	}
 }
