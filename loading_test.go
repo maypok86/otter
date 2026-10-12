@@ -3446,3 +3446,73 @@ func TestCache_GetDoesNotTakeLoadedValueExpiredBeforeIt(t *testing.T) {
 		}
 	}
 }
+
+func TestCache_GetDoesNotReturnLoadOfInvalidatedKey(t *testing.T) {
+	t.Parallel()
+
+	// An invalidation cancels the load of its key. When the load completes, the key has no
+	// value, so the loaded value is not written, and it is not returned either: it was never in
+	// the cache, and Invalidate has reported the key absent. The key is loaded again.
+	ctx := context.Background()
+	tests := []struct {
+		name string
+		get  func(c *Cache[int, int], load LoaderFunc[int, int]) (int, error)
+		// waiter makes another goroutine own the load, so that the Get waits for it
+		waiter bool
+	}{
+		{name: "Get", get: func(c *Cache[int, int], load LoaderFunc[int, int]) (int, error) {
+			return c.Get(ctx, 1, load)
+		}},
+		{name: "BulkGet", get: func(c *Cache[int, int], load LoaderFunc[int, int]) (int, error) {
+			res, err := c.BulkGet(ctx, []int{1}, BulkLoaderFunc[int, int](func(ctx context.Context, keys []int) (map[int]int, error) {
+				v, err := load(ctx, keys[0])
+				return map[int]int{keys[0]: v}, err
+			}))
+			return res[1], err
+		}},
+		{name: "waiting Get", waiter: true, get: func(c *Cache[int, int], load LoaderFunc[int, int]) (int, error) {
+			return c.Get(ctx, 1, load)
+		}},
+	}
+	for _, tt := range tests {
+		c := Must(&Options[int, int]{})
+		started := make(chan struct{})
+		release := make(chan struct{})
+		var loads atomic.Int64
+		load := LoaderFunc[int, int](func(context.Context, int) (int, error) {
+			if loads.Add(1) == 1 {
+				close(started)
+				<-release
+				return 1, nil
+			}
+			return 2, nil
+		})
+
+		got := make(chan getResult, 1)
+		if tt.waiter {
+			go func() { _, _ = c.Get(ctx, 1, load) }()
+			<-started
+			go func() {
+				v, err := tt.get(c, load)
+				got <- getResult{v, err}
+			}()
+			waitForJoinedLoad(t)
+		} else {
+			go func() {
+				v, err := tt.get(c, load)
+				got <- getResult{v, err}
+			}()
+			<-started
+		}
+		_, invalidated := c.Invalidate(1)
+		require.False(t, invalidated, tt.name)
+		close(release)
+
+		r := <-got
+		require.NoError(t, r.err, tt.name)
+		require.Equal(t, 2, r.value, tt.name)
+		v, ok := c.GetIfPresent(1)
+		require.True(t, ok, tt.name)
+		require.Equal(t, 2, v, tt.name)
+	}
+}

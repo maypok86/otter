@@ -803,6 +803,10 @@ func (c *cache[K, V]) loadOrJoin(
 		_ = c.wrapLoad(func() error {
 			return c.singleflight.doCall(ctx, cl, loader.Load)
 		})
+		if cl.refused {
+			value, ok := c.valueAfterRefusal(key)
+			return value, !ok, nil
+		}
 		return cl.value, false, cl.err
 	}
 
@@ -810,14 +814,8 @@ func (c *cache[K, V]) loadOrJoin(
 		return zeroValue[V](), false, err
 	}
 	if cl.refused {
-		// The Get joined a refresh whose result the cache has not written: the key was written
-		// or invalidated meanwhile, or its node expired, so the result is not a value of the key.
-		// The key's value is returned as a hit would return it, and if there is none, the key is
-		// loaded again.
-		if n := c.getNodeQuietly(key, c.clock.NowNano()); n != nil {
-			return n.Value(), false, nil
-		}
-		return zeroValue[V](), true, nil
+		value, ok := c.valueAfterRefusal(key)
+		return value, !ok, nil
 	}
 	if cl.expiredBefore(nowNano) {
 		// The Get joined a load after its value had been committed and had expired: a Get that
@@ -854,7 +852,8 @@ func (c *cache[K, V]) commitCall(cl *call[K, V]) mutation[K, V] {
 			return opKeep, cl.value
 		}
 		authoritative := c.singleflight.authoritative(cl, prev, nowNano)
-		cl.refused = cl.isRefresh && !authoritative
+		// A failed load reports its error: no value of the key is involved.
+		cl.refused = !authoritative && (cl.isRefresh || cl.err == nil)
 		if authoritative && cl.isNotFound {
 			return opInvalidate, cl.value
 		}
@@ -876,6 +875,19 @@ func (c *cache[K, V]) commitCall(cl *call[K, V]) mutation[K, V] {
 		cl.expiresAt = c.expiresAtOf(m.next)
 	}
 	return m
+}
+
+// valueAfterRefusal returns the value that a Get or BulkGet takes from a call whose value the
+// cache refused (call.refused): a write or an invalidation cancelled it, or the node a refresh
+// was requested for was replaced or expired, so the value is not one the key had. The key's live
+// value is returned, as a hit would return it; ok is false if there is none, and the key is
+// loaded again. A load that an invalidation cancelled may have read its data source before the
+// change that the invalidation follows.
+func (c *cache[K, V]) valueAfterRefusal(key K) (value V, ok bool) {
+	if n := c.getNodeQuietly(key, c.clock.NowNano()); n != nil {
+		return n.Value(), true
+	}
+	return zeroValue[V](), false
 }
 
 // expiresAtOf returns when n expires, or 0 if entries do not expire (see call.expiresAt).
@@ -1174,9 +1186,8 @@ func (c *cache[K, V]) bulkLoadOrJoin(
 		i++
 
 		if cl.refused {
-			// a refresh whose result was not written, see loadOrJoin
-			if n := c.getNodeQuietly(key, c.clock.NowNano()); n != nil {
-				result[key] = n.Value()
+			if value, ok := c.valueAfterRefusal(key); ok {
+				result[key] = value
 				continue
 			}
 			if retry == nil {
