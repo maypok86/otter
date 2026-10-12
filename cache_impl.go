@@ -812,6 +812,9 @@ func (c *cache[K, V]) commitCall(cl *call[K, V]) mutation[K, V] {
 	}
 	nowNano := c.clock.NowNano()
 	return c.mutate(cl.key, nowNano, from, func(prev previous[K, V]) (mutationOp, V) {
+		// From here on, an eviction or expiration of the key drops the call (see
+		// group.deleteOnRemoval): it can no longer bring the removed value back.
+		cl.committed = true
 		authoritative := c.singleflight.authoritative(cl, prev, nowNano)
 		if authoritative && cl.isNotFound {
 			return opInvalidate, cl.value
@@ -1316,10 +1319,11 @@ func (c *cache[K, V]) deleteNodeFromMap(
 		} else if isCurrent {
 			// An eviction must not cancel an in-flight load: it was most likely started
 			// because this very node has expired, and dropping it would make the loaded
-			// value silently disappear. Only a pending refresh of the evicted value is discarded,
-			// and only if n is still the key's node: the policy may evict a node that was
-			// already replaced, and the refresh then belongs to the value that replaced it.
-			c.singleflight.deleteRefresh(n.Key())
+			// value silently disappear. Only a pending refresh of the evicted value, or a load
+			// that has already committed it, is dropped, and only if n is still the key's node:
+			// the policy may evict a node that was already replaced, and the call then belongs
+			// to the value that replaced it.
+			c.singleflight.deleteOnRemoval(n.Key())
 		}
 		if !isCurrent {
 			return current

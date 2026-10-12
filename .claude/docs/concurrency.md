@@ -12,7 +12,7 @@ in another order.
 |---|---|---|
 | `cache.evictionMutex` | the eviction policy (queues, sizes, sketch, climber), the timer wheel, `policyWeight`, `queueType`, node `dead` transition | `maintenance` (`performCleanUp`, `scheduleDrainBuffers` via `TryLock`), `SetMaximum`, `Hottest`/`Coldest`, `WeightedSize`/`GetMaximum` |
 | `hashmap` bucket lock (`internal/hashmap/map.go`, inside `Compute`) | the bucket's slots; every write to a key; node value/weight/deadline changes made in place; the `retired` transition | `set`, `doCompute`, `Invalidate`, `commitCall`, `deleteNodeFromMap` |
-| singleflight bucket lock | in-flight `call`s per key | `startLoad`, `startRefresh`, `deleteCall`, `delete`, `deleteRefresh` |
+| singleflight bucket lock | in-flight `call`s per key | `startLoad`, `startRefresh`, `deleteCall`, `delete`, `deleteOnRemoval` |
 
 `hashmap.Get` takes no lock: it reads bucket slots atomically. Readers therefore see a node
 that a writer may be changing or replacing at that moment.
@@ -119,7 +119,11 @@ loader with its panics and `runtime.Goexit` caught and end in `group.finish`, wh
 result through the cache's `commitCall` (a key mutation from a load or refresh), then deletes
 the call, wakes its waiters and publishes. `commitCall` writes only if `group.authoritative`
 says the call is still the current one for the key. `Invalidate`, `Set` and `Compute` cancel a
-pending call for the key; eviction and expiration drop only refresh calls (`deleteRefresh`).
+pending call for the key; eviction and expiration drop refresh calls and loads that have
+already committed (`deleteOnRemoval`), but not a load in flight. A committed load stays
+registered until `finish` deletes it, and a `Get` that joined it after the removal would return
+the removed value; `committed` is set by `commitCall` under the key's bucket lock, which the
+removal holds too.
 
 A refresh must lose to any write that follows its request, so three things hold together:
 - refresh calls are registered on the requesting goroutine, before the task goes to the

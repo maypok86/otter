@@ -120,7 +120,7 @@ func (c *cache[K, V]) mutate(
 			m.cause = c.retireRemoved(current, nowNano)
 			return nil
 		case opRemoveExpired:
-			c.singleflight.deleteRefresh(key)
+			c.singleflight.deleteOnRemoval(key)
 			m.cause = c.retireRemoved(current, nowNano)
 			return nil
 		default:

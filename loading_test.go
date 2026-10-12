@@ -2819,3 +2819,77 @@ func TestCache_ReadDoesNotRefreshAgain(t *testing.T) {
 		})
 	}
 }
+
+func TestCache_RemovalDropsCommittedLoad(t *testing.T) {
+	t.Parallel()
+
+	// A load has written its value but is still registered when the entry is evicted or
+	// expires. A Get after the removal must load the key again instead of joining the finished
+	// load and getting back the removed value.
+	tests := []struct {
+		name   string
+		remove func(c *Cache[int, int], clock *nonTickingClock)
+	}{
+		{
+			name: "evicted",
+			remove: func(c *Cache[int, int], _ *nonTickingClock) {
+				c.cache.evictNode(c.cache.hashmap.Get(1))
+			},
+		},
+		{
+			name: "expired",
+			remove: func(c *Cache[int, int], clock *nonTickingClock) {
+				clock.Sleep(2 * time.Minute)
+				c.cache.expireNode(c.cache.hashmap.Get(1), c.cache.clock.NowNano())
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			clock := newNonTickingClock()
+			c := Must(&Options[int, int]{
+				MaximumSize:      100,
+				ExpiryCalculator: ExpiryWriting[int, int](time.Minute),
+				Clock:            clock,
+			})
+			c.cache.singleflight.init()
+
+			// The load writes its value; its call is deleted and its waiters woken only after.
+			cl, shouldLoad := c.cache.singleflight.startLoad(1)
+			require.True(t, shouldLoad)
+			cl.value = 10
+			c.cache.commitCall(cl)
+			require.NotNil(t, c.cache.hashmap.Get(1))
+
+			tt.remove(c, clock)
+			require.Nil(t, c.cache.hashmap.Get(1))
+			require.Nil(t, c.cache.singleflight.getCall(1), "the committed load is still registered")
+			cl.cancel()
+
+			tl := newTestLoader[int, int](func(_ context.Context, key int) (int, error) {
+				return key * 20, nil
+			})
+			v, err := c.Get(context.Background(), 1, tl)
+			require.NoError(t, err)
+			require.Equal(t, 20, v)
+			require.Equal(t, uint64(1), tl.loads.Load())
+		})
+	}
+}
+
+func TestCache_RemovalKeepsLoadInFlight(t *testing.T) {
+	t.Parallel()
+
+	// A load that has not committed yet is kept when the entry it replaces is evicted.
+	c := Must(&Options[int, int]{MaximumSize: 100})
+	c.Set(1, 1)
+	c.cache.singleflight.init()
+	cl, shouldLoad := c.cache.singleflight.startLoad(1)
+	require.True(t, shouldLoad)
+
+	c.cache.evictNode(c.cache.hashmap.Get(1))
+	require.Same(t, cl, c.cache.singleflight.getCall(1))
+	cl.cancel()
+}

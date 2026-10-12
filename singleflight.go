@@ -39,6 +39,9 @@ type call[K comparable, V any] struct {
 	// ownerCtxDone reports that the context the loader ran with had ended by the time it
 	// returned.
 	ownerCtxDone bool
+	// committed reports that the cache has decided what the call writes. It is written and
+	// read under the key's bucket lock in the cache's hash table.
+	committed bool
 }
 
 func newCall[K comparable, V any](key K, isRefresh bool, base node.Node[K, V]) *call[K, V] {
@@ -426,19 +429,25 @@ func (g *group[K, V]) delete(key K) {
 	})
 }
 
-// deleteRefresh removes the call registered for key if it is a refresh. Every eviction comes here,
-// so as in delete a lookup without the lock comes first; isRefresh is set before the call is
-// registered and never changes.
-func (g *group[K, V]) deleteRefresh(key K) {
+// deleteOnRemoval removes the call registered for key when the key's entry is evicted or expires,
+// unless it is a load still in flight: a refresh of the removed value, or a load that has already
+// committed its value. A committed load stays registered until it finishes, and a Get that
+// joined it after the removal would get back the value just removed. An in-flight load is kept:
+// it was most likely started because this very entry has expired.
+//
+// It is called under the key's bucket lock in the cache's hash table, which guards committed.
+// Every eviction comes here, so as in delete a lookup without the lock comes first; isRefresh is
+// set before the call is registered and never changes.
+func (g *group[K, V]) deleteOnRemoval(key K) {
 	if !g.isInitialized.Load() {
 		return
 	}
-	if cl := g.getCall(key); cl == nil || !cl.isRefresh {
+	if cl := g.getCall(key); cl == nil || !(cl.isRefresh || cl.committed) {
 		return
 	}
 
 	g.calls.Compute(key, func(prevCall *call[K, V]) *call[K, V] {
-		if prevCall != nil && prevCall.isRefresh {
+		if prevCall != nil && (prevCall.isRefresh || prevCall.committed) {
 			return nil
 		}
 		return prevCall
