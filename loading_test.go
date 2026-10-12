@@ -3001,3 +3001,57 @@ func TestCache_LoadKeepsValueWrittenBeforeItsRegistration(t *testing.T) {
 		})
 	}
 }
+
+func TestCache_ReadsDuringRefreshSubmitNoTasks(t *testing.T) {
+	t.Parallel()
+
+	// While a refresh of a key is in flight, a read that finds the key stale has nothing to do.
+	// A task that only waited for the refresh would take an executor slot for the whole reload:
+	// with an executor that runs a bounded number of tasks, enough stale reads take every slot,
+	// the reads block on the submission, and so does the refresh queued behind them.
+	ctx := context.Background()
+	clock := newNonTickingClock()
+	var submitted atomic.Int64
+	c := Must(&Options[int, int]{
+		RefreshCalculator: RefreshWriting[int, int](time.Minute),
+		Clock:             clock,
+		Executor: func(fn func()) {
+			submitted.Add(1)
+			go fn()
+		},
+	})
+	release := make(chan struct{})
+	tl := newTestLoader[int, int](func(context.Context, int) (int, error) {
+		<-release
+		return 2, nil
+	})
+	tbl := newTestBulkLoader[int, int](func(context.Context, []int) (map[int]int, error) {
+		<-release
+		return map[int]int{1: 2}, nil
+	})
+
+	c.Set(1, 1)
+	clock.Sleep(2 * time.Minute)
+	v, err := c.Get(ctx, 1, tl)
+	require.NoError(t, err)
+	require.Equal(t, 1, v)
+	require.Equal(t, int64(1), submitted.Load())
+
+	for range 10 {
+		v, err := c.Get(ctx, 1, tl)
+		require.NoError(t, err)
+		require.Equal(t, 1, v)
+		res, err := c.BulkGet(ctx, []int{1}, tbl)
+		require.NoError(t, err)
+		require.Equal(t, map[int]int{1: 1}, res)
+	}
+	// A manual refresh that joins the in-flight one still reports its result.
+	single := c.Refresh(ctx, 1, tl)
+	bulk := c.BulkRefresh(ctx, []int{1}, tbl)
+	require.Equal(t, int64(1), submitted.Load())
+
+	close(release)
+	require.Equal(t, RefreshResult[int, int]{Key: 1, Value: 2}, <-single)
+	require.Equal(t, []RefreshResult[int, int]{{Key: 1, Value: 2}}, <-bulk)
+	require.Equal(t, uint64(1), tl.calls.Load()+tbl.calls.Load())
+}

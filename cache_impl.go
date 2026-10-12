@@ -677,18 +677,28 @@ func (c *cache[K, V]) refreshKey(
 	// call would never be finished, and every later refresh of the key would join it.
 	nowNano := c.clock.NowNano()
 	cl, shouldLoad := c.singleflight.startRefresh(rk.key, rk.old)
-	if shouldLoad && !isManual {
+	if !shouldLoad {
+		// A load or refresh of the key is in flight, and its result is all there is to report.
+		// A task that waited for it would take an executor slot for the whole load: with an
+		// executor that runs a bounded number of tasks, enough stale reads of one key would take
+		// every slot and block, and so would the task they wait for. A manual refresh waits in a
+		// goroutine of its own, and the error is logged by the call's owner.
+		if isManual {
+			go func() {
+				cl.wait()
+				ch <- cl.refreshResult()
+			}()
+		}
+		return ch
+	}
+	if !isManual {
 		if n := c.refreshedMeanwhile(rk.key, nowNano); n != nil {
 			c.singleflight.adopt(cl, n.Value())
 			return ch
 		}
 	}
-	var owned []*call[K, V]
-	if shouldLoad {
-		owned = []*call[K, V]{cl}
-	}
 
-	c.singleflight.submitRefresh(owned, func() {
+	c.singleflight.submitRefresh([]*call[K, V]{cl}, func() {
 		var refresher func(ctx context.Context, key K) (V, error)
 		if rk.old != nil {
 			refresher = func(ctx context.Context, key K) (V, error) {
@@ -698,14 +708,11 @@ func (c *cache[K, V]) refreshKey(
 			refresher = loader.Load
 		}
 
-		if shouldLoad {
-			//nolint:errcheck // there is no need to check error
-			_ = c.wrapRefresh(func() error {
-				loadCtx := context.WithoutCancel(ctx)
-				return c.singleflight.doCall(loadCtx, cl, refresher)
-			})
-		}
-		cl.wait()
+		//nolint:errcheck // there is no need to check error
+		_ = c.wrapRefresh(func() error {
+			loadCtx := context.WithoutCancel(ctx)
+			return c.singleflight.doCall(loadCtx, cl, refresher)
+		})
 
 		if cl.err != nil && !cl.isNotFound {
 			c.logger.Error(ctx, "Returned an error during the refreshing", cl.err)
@@ -911,12 +918,19 @@ func (c *cache[K, V]) bulkRefreshKeys(
 				}
 				toLoadCalls[rk.key] = cl
 			}
-		} else {
+		} else if isManual {
 			if foundCalls == nil {
 				foundCalls = make([]*call[K, V], 0, len(rks)-i)
 			}
 			foundCalls = append(foundCalls, cl)
 		}
+	}
+	if len(owned) == 0 {
+		// Every key is loading or refreshing already: nothing to submit, see refreshKey.
+		if isManual {
+			sendAfterJoined(ch, make([]RefreshResult[K, V], 0, len(foundCalls)), foundCalls)
+		}
+		return ch
 	}
 
 	c.singleflight.submitRefresh(owned, func() {
@@ -971,18 +985,29 @@ func (c *cache[K, V]) bulkRefreshKeys(
 				}
 			}
 		}
-		for _, cl := range foundCalls {
-			cl.wait()
-			if isManual {
-				results = append(results, cl.refreshResult())
-			}
-		}
 		if isManual {
-			ch <- results
+			sendAfterJoined(ch, results, foundCalls)
 		}
 	})
 
 	return ch
+}
+
+// sendAfterJoined sends results to ch with the results of joined, calls that other loads or
+// refreshes own, appended once they have finished. They are waited for in a goroutine of its
+// own, not in an executor task, for the reason given in refreshKey.
+func sendAfterJoined[K comparable, V any](ch chan<- []RefreshResult[K, V], results []RefreshResult[K, V], joined []*call[K, V]) {
+	if len(joined) == 0 {
+		ch <- results
+		return
+	}
+	go func() {
+		for _, cl := range joined {
+			cl.wait()
+			results = append(results, cl.refreshResult())
+		}
+		ch <- results
+	}()
 }
 
 // BulkGet returns the value associated with key in this cache, obtaining that value from loader if necessary.
