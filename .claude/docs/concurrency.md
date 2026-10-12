@@ -55,8 +55,9 @@ layouts whose first field is that header; an immutable `variant` byte records wh
 ## Read path
 
 `GetIfPresent` → `getNode`: lock-free `hashmap.Get`, `HasExpired`, then `afterRead`, which
-recalculates the deadline (`ExpireAfterRead`, CAS on `expiresAt`; skipped for `ExpiryCreating`
-and `ExpiryWriting`, whose reads keep it, see `withReadExpiry`) and offers the node to the
+recalculates the deadline (`ExpireAfterRead`, CAS on `expiresAt`, refused if the entry expired
+while the calculator ran; skipped for `ExpiryCreating` and `ExpiryWriting`, whose reads keep it,
+see `withReadExpiry`) and offers the node to the
 lossy read buffer. A full buffer drops the access; it never blocks.
 
 ## Write path
@@ -64,8 +65,8 @@ lossy read buffer. A full buffer drops the access; it never blocks.
 Every change decided from a key's current value (`set`, `doCompute`, `Invalidate`,
 `commitCall`) is a key mutation (`mutation.go`):
 
-1. `mutate` locks the bucket (`hashmap.Compute`), reads the current node once (absent, live or
-   expired) and asks the caller's `decide` for an op: keep, write, invalidate or remove an
+1. `mutate` locks the bucket (`hashmap.Compute`), reads the clock and the current node once
+   (absent, live or expired) and asks the caller's `decide` for an op: keep, write, invalidate or remove an
    expired entry. Its `origin` (caller, load or refresh) decides which pending calls are
    cancelled and whether a write is a reload.
 2. Under the lock, `atomicSet` decides between an **in-place update** (old node alive and

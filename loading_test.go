@@ -2397,11 +2397,21 @@ func TestCache_ComputeCancelOverExpiredEntryKeepsLoad(t *testing.T) {
 // joinedLoadFrame matches the frame of a goroutine that waits for a load another goroutine runs.
 var joinedLoadFrame = regexp.MustCompile(`\(\*call\[[^\]]*\]\)\.wait`)
 
+// bucketLockFrame matches the frames of a goroutine that waits for a bucket lock of the hash table.
+var bucketLockFrame = regexp.MustCompile(`\(\*Mutex\)\.Lock[\s\S]*hashmap\.\(\*Map\[[^\]]*\]\)\.Compute`)
+
 // waitForJoinedLoad waits until a goroutine started by the running test waits for a load that
 // another goroutine runs. Nothing else tells when a Get has joined a load, and a Get that comes
 // too late does not join it but loads the key itself. Goroutines are told apart by the top-level
 // test, so subtests that use it must not run in parallel.
 func waitForJoinedLoad(t *testing.T) {
+	t.Helper()
+	waitForFrame(t, joinedLoadFrame, "no goroutine joined the load")
+}
+
+// waitForFrame waits until a goroutine started by the running test has a stack that frame
+// matches, and fails with msg if none has after 10 seconds.
+func waitForFrame(t *testing.T, frame *regexp.Regexp, msg string) {
 	t.Helper()
 
 	test, _, _ := strings.Cut(t.Name(), "/")
@@ -2414,17 +2424,13 @@ func waitForJoinedLoad(t *testing.T) {
 			buf = make([]byte, 2*len(buf))
 			continue
 		}
-		joined := 0
 		for _, g := range strings.Split(string(buf[:size]), "\n\n") {
-			if strings.Contains(g, createdBy) && joinedLoadFrame.MatchString(g) {
-				joined++
+			if strings.Contains(g, createdBy) && frame.MatchString(g) {
+				return
 			}
 		}
-		if joined > 0 {
-			return
-		}
 		if time.Now().After(deadline) {
-			t.Fatal("no goroutine joined the load")
+			t.Fatal(msg)
 		}
 		runtime.Gosched()
 	}

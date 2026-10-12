@@ -64,6 +64,10 @@ const (
 
 // previous is the key's entry when a mutation is decided.
 type previous[K comparable, V any] struct {
+	// nowNano is the time the mutation is decided at. It is read under the bucket lock: read
+	// before, it could be older than a removal that the key's readers have already seen, if the
+	// entry expired while the mutation waited for the lock.
+	nowNano int64
 	// node is the key's node, or nil if the key is absent.
 	node node.Node[K, V]
 	// value is node's value, read under the lock.
@@ -79,8 +83,6 @@ type mutation[K comparable, V any] struct {
 	op mutationOp
 	// from is where the mutation came from.
 	from origin
-	// nowNano is the time the mutation was decided at.
-	nowNano int64
 	// next is the key's node afterwards, or nil if it is absent. After an update in place it is
 	// previous.node.
 	next node.Node[K, V]
@@ -90,17 +92,19 @@ type mutation[K comparable, V any] struct {
 }
 
 // mutate changes what key holds as decide says, under the key's bucket lock. decide is given
-// the key's current entry and returns the op and, for opWrite, the value; it runs under the
-// lock, may change the deadlines of the entry it was given, and returns opRemoveExpired only
-// for an expired entry. The caller passes the result to publish once mutate returns.
+// the key's current entry and the time, and returns the op and, for opWrite, the value; it runs
+// under the lock, may change the deadlines of the entry it was given, and returns
+// opRemoveExpired only for an expired entry. The caller passes the result to publish once mutate
+// returns.
 func (c *cache[K, V]) mutate(
 	key K,
-	nowNano int64,
 	from origin,
 	decide func(prev previous[K, V]) (mutationOp, V),
 ) mutation[K, V] {
-	m := mutation[K, V]{from: from, nowNano: nowNano}
+	m := mutation[K, V]{from: from}
 	m.next = c.hashmap.Compute(key, func(current node.Node[K, V]) node.Node[K, V] {
+		nowNano := c.clock.NowNano()
+		m.nowNano = nowNano
 		m.node = current
 		if current != nil {
 			m.value = current.Value()
