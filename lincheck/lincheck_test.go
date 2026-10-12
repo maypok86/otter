@@ -17,9 +17,11 @@
 // return, explains every result. It records histories of random operations on a few keys and
 // checks them with porcupine against a sequential model of the cache, key by key.
 //
-// The cache has no size bound and its clock never moves, so nothing removes a key on its own,
-// and every expiration and refresh time is the clock's time plus the duration a calculator or a
-// setter gave it: the model is exact. Values written by the test are positive, values the loader
+// The cache's clock never moves, so no entry expires, and every expiration and refresh time is
+// the clock's time plus the duration a calculator or a setter gave it. Some histories run on a
+// cache that holds one entry and evicts all the time: each eviction is recorded as an operation
+// of its own, which starts when OnAtomicDeletion reports it, before the entry is removed, and
+// ends when OnDeletion does, after. So the model is exact. Values written by the test are positive, values the loader
 // returns are negative, and both are unique, so the model tells a loaded value from a written one.
 package lincheck
 
@@ -66,7 +68,10 @@ const (
 	// reads one of them.
 	opExpiresAt
 	opRefreshableAt
+	// opCount is the number of operations that clients run.
 	opCount
+	// opEvict is the eviction of value by the cache's size bound; the cache runs it on its own.
+	opEvict = opCount
 )
 
 var opNames = [...]string{
@@ -84,6 +89,7 @@ var opNames = [...]string{
 	opSetRefreshableAfter: "SetRefreshableAfter",
 	opExpiresAt:           "ExpiresAt",
 	opRefreshableAt:       "RefreshableAt",
+	opEvict:               "Evict",
 }
 
 // result is how a load ended, as its caller saw it.
@@ -220,6 +226,8 @@ func newModel(expiry bool) porcupine.NondeterministicModel {
 				return when(o.ok && o.value == s.refreshableIn, s)
 			}
 			return when(!o.ok, s)
+		case opEvict:
+			return when(s.value == i.value, state{})
 		}
 		return nil
 	}
@@ -246,6 +254,8 @@ func newModel(expiry bool) porcupine.NondeterministicModel {
 				return fmt.Sprintf("Set(%d, %d)", i.key, i.value)
 			case opSetExpiresAfter, opSetRefreshableAfter:
 				return fmt.Sprintf("%s(%d, %dh)", opNames[i.op], i.key, i.value)
+			case opEvict:
+				return fmt.Sprintf("Evict(%d, %d)", i.key, i.value)
 			case opSetIfAbsent, opComputeIfAbsent, opComputeIfPresent:
 				return fmt.Sprintf("%s(%d, %d) -> %d, %t", opNames[i.op], i.key, i.value, o.value, o.ok)
 			case opGet, opBulkGet, opRefresh:
@@ -315,24 +325,102 @@ type recorder struct {
 	written atomic.Int64 // the last positive value handed out
 	loads   atomic.Int64 // the last negative value handed out, negated
 	keys    int
+
+	mu sync.Mutex
+	// evicting holds the call time of each eviction whose OnDeletion has not run yet.
+	evicting map[input]int64
+	// evictions are the evictions that have ended.
+	evictions []porcupine.Operation
+	// sealed is set once the history is taken; later evictions are not observed by any operation.
+	sealed bool
 }
 
-// newRecorder returns a recorder for a cache with or without expiration. Without it, the cache
-// replaces the node on every write; with it, a live entry is updated in place.
-func newRecorder(keys int, expiry bool) *recorder {
+// config is the cache that a history runs on.
+type config struct {
+	name string
+	// expiry gives entries an expiration time. Without it or a size bound, the cache replaces
+	// the node on every write; with either, a live entry is updated in place.
+	expiry bool
+	// bounded limits the cache to one entry.
+	bounded bool
+}
+
+var configs = [...]config{
+	{name: "plain"},
+	{name: "expiry", expiry: true},
+	{name: "evicting", bounded: true},
+	{name: "evicting_expiry", expiry: true, bounded: true},
+}
+
+func newRecorder(keys int, cfg config) *recorder {
+	r := &recorder{keys: keys, evicting: make(map[input]int64)}
 	o := &otter.Options[int, int]{
 		Clock:             frozenClock{},
 		RefreshCalculator: otter.RefreshCreating[int, int](refreshableAfter * time.Hour),
 		// failed refreshes are expected
 		Logger: discardLogger{},
 	}
-	if expiry {
+	if cfg.expiry {
 		o.ExpiryCalculator = otter.ExpiryCreating[int, int](expiresAfter * time.Hour)
 	}
-	return &recorder{
-		cache: otter.Must(o),
-		keys:  keys,
+	if cfg.bounded {
+		o.MaximumSize = 1
+		// Under the bucket lock, before the entry is removed.
+		o.OnAtomicDeletion = func(e otter.DeletionEvent[int, int]) {
+			if e.Cause == otter.CauseOverflow {
+				r.startEviction(input{op: opEvict, key: e.Key, value: e.Value})
+			}
+		}
+		// On the executor, after the entry is removed.
+		o.OnDeletion = func(e otter.DeletionEvent[int, int]) {
+			if e.Cause == otter.CauseOverflow {
+				r.endEviction(input{op: opEvict, key: e.Key, value: e.Value})
+			}
+		}
 	}
+	r.cache = otter.Must(o)
+	return r
+}
+
+func (r *recorder) startEviction(in input) {
+	call := r.clock.Add(1)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.sealed {
+		r.evicting[in] = call
+	}
+}
+
+func (r *recorder) endEviction(in input) {
+	ret := r.clock.Add(1)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if call, ok := r.evicting[in]; ok && !r.sealed {
+		delete(r.evicting, in)
+		r.evictions = append(r.evictions, porcupine.Operation{Input: in, Output: output{}, Call: call, Return: ret})
+	}
+}
+
+// takeEvictions returns the evictions once the clients are done. It waits a little for the
+// OnDeletion calls of the evictions in flight; one that has not come by then ends now, since the
+// entry has already been removed or is removed later, after every operation of the clients.
+func (r *recorder) takeEvictions() []porcupine.Operation {
+	for deadline := time.Now().Add(time.Second); time.Now().Before(deadline); {
+		r.mu.Lock()
+		n := len(r.evicting)
+		r.mu.Unlock()
+		if n == 0 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.sealed = true
+	for in, call := range r.evicting {
+		r.evictions = append(r.evictions, porcupine.Operation{Input: in, Output: output{}, Call: call, Return: r.clock.Add(1)})
+	}
+	return r.evictions
 }
 
 // load returns a fresh loaded value, or ends the load with not found or an error.
@@ -473,8 +561,8 @@ func (r *recorder) run(client int, ops int, seed uint64) []porcupine.Operation {
 }
 
 // record runs clients goroutines, each with ops operations, and returns their history.
-func record(keys, clients, ops int, seed uint64, expiry bool) []porcupine.Operation {
-	r := newRecorder(keys, expiry)
+func record(keys, clients, ops int, seed uint64, cfg config) []porcupine.Operation {
+	r := newRecorder(keys, cfg)
 	histories := make([][]porcupine.Operation, clients)
 	var start, wg sync.WaitGroup
 	start.Add(1)
@@ -489,16 +577,20 @@ func record(keys, clients, ops int, seed uint64, expiry bool) []porcupine.Operat
 	start.Done()
 	wg.Wait()
 
-	var history []porcupine.Operation
+	// the evictions are the operations of one more client
+	history := r.takeEvictions()
+	for i := range history {
+		history[i].ClientId = clients
+	}
 	for _, h := range histories {
 		history = append(history, h...)
 	}
 	return history
 }
 
-// TestLinearizability records histories until LINCHECK_DURATION (default 2s) has passed and
-// checks each of them. A history that is not linearizable is written as an HTML visualization
-// to LINCHECK_OUT (default the test's temporary directory).
+// TestLinearizability records histories for each configuration, for an equal share of
+// LINCHECK_DURATION (default 2s) each, and checks them. A history that is not linearizable is
+// written as an HTML visualization to LINCHECK_OUT (default the test's temporary directory).
 func TestLinearizability(t *testing.T) {
 	duration := 2 * time.Second
 	if d := os.Getenv("LINCHECK_DURATION"); d != "" {
@@ -511,25 +603,29 @@ func TestLinearizability(t *testing.T) {
 	if out == "" {
 		out = t.TempDir()
 	}
+	for _, cfg := range configs {
+		t.Run(cfg.name, func(t *testing.T) {
+			check(t, cfg, duration/time.Duration(len(configs)), out)
+		})
+	}
+}
+
+// check records histories on a cache with cfg until duration has passed and checks each of them.
+func check(t *testing.T, cfg config, duration time.Duration, out string) {
+	t.Helper()
 
 	const (
 		keys    = 2
 		clients = 8
 		ops     = 200
 	)
-	var models [2]porcupine.Model
-	for i, expiry := range []bool{false, true} {
-		nm := newModel(expiry)
-		models[i] = nm.ToModel()
-	}
+	nm := newModel(cfg.expiry)
+	m := nm.ToModel()
 	seed := uint64(time.Now().UnixNano())
 	deadline := time.Now().Add(duration)
 	histories, unknown := 0, 0
 	for ; time.Now().Before(deadline); seed++ {
-		// every other history is of a cache with expiration
-		expiry := seed%2 == 1
-		m := models[seed%2]
-		history := record(keys, clients, ops, seed, expiry)
+		history := record(keys, clients, ops, seed, cfg)
 		histories++
 		res, info := porcupine.CheckOperationsVerbose(m, history, 10*time.Second)
 		switch res {
@@ -537,11 +633,11 @@ func TestLinearizability(t *testing.T) {
 		case porcupine.Unknown:
 			unknown++
 		case porcupine.Illegal:
-			path := filepath.Join(out, fmt.Sprintf("lincheck-%d.html", seed))
+			path := filepath.Join(out, fmt.Sprintf("lincheck-%s-%d.html", cfg.name, seed))
 			if err := porcupine.VisualizePath(m, info, path); err != nil {
 				t.Logf("visualization: %v", err)
 			}
-			t.Fatalf("history %d (expiry=%v) is not linearizable (visualization: %s)\n%s", histories, expiry, path, explain(m, history, info))
+			t.Fatalf("history %d is not linearizable (visualization: %s)\n%s", histories, path, explain(m, history, info))
 		}
 	}
 	t.Logf("%d histories of %d operations checked, %d timed out", histories, clients*ops, unknown)
