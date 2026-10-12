@@ -381,6 +381,12 @@ func (c *cache[K, V]) calcExpiresAtAfterRead(n node.Node[K, V], nowNano int64) {
 	// that entry's deadline. A writer can store a new deadline in place in the meantime, and
 	// comparing against a fresh read of the node would revert it to one derived from the old value.
 	if next, ok := expiresAtAfterRead(c.expiryCalculator, entry, nowNano); ok {
+		// The entry may expire while the calculator runs, and a reader may then find the key
+		// absent: moving the deadline of an expired entry would bring it back. The clock is
+		// read again only here, since the deadline rarely moves (see expireTolerance).
+		if entry.ExpiresAtNano <= c.clock.NowNano() {
+			return
+		}
 		n.CASExpiresAt(entry.ExpiresAtNano, next)
 	}
 }

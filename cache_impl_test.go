@@ -1867,3 +1867,56 @@ func TestCache_LateSchedulerKeepsNextDrainRequired(t *testing.T) {
 	}
 	require.LessOrEqual(t, c.EstimatedSize(), 10)
 }
+
+// heldReadExpiry gives entries a minute, an hour after a read, and holds the read that is armed
+// in ExpireAfterRead.
+type heldReadExpiry struct {
+	armed            atomic.Bool
+	entered, proceed chan struct{}
+}
+
+func (*heldReadExpiry) ExpireAfterCreate(Entry[int, int]) time.Duration { return time.Minute }
+
+func (*heldReadExpiry) ExpireAfterUpdate(Entry[int, int], int) time.Duration { return time.Minute }
+
+func (h *heldReadExpiry) ExpireAfterRead(Entry[int, int]) time.Duration {
+	if h.armed.CompareAndSwap(true, false) {
+		close(h.entered)
+		<-h.proceed
+	}
+	return time.Hour
+}
+
+// A read moves the deadline only if the entry has not expired while ExpireAfterRead ran. The
+// entry expires during the read, a read in between finds the key absent, and the held read then
+// moved the deadline an hour ahead: the key came back without a write.
+func TestCache_ReadDoesNotReviveEntryThatExpiredDuringIt(t *testing.T) {
+	t.Parallel()
+
+	clk := newNonTickingClock()
+	calc := &heldReadExpiry{entered: make(chan struct{}), proceed: make(chan struct{})}
+	c := Must(&Options[int, int]{
+		Clock:            clk,
+		ExpiryCalculator: calc,
+		// the tasks never run: maintenance would remove the expired entry
+		Executor: func(func()) {},
+	})
+	c.Set(1, 1) // expires at 60s
+	clk.Sleep(50 * time.Second)
+
+	calc.armed.Store(true)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		c.GetIfPresent(1) // live at 50s
+	}()
+	<-calc.entered
+	clk.Sleep(20 * time.Second)
+	_, ok := c.GetIfPresent(1)
+	require.False(t, ok)
+	close(calc.proceed)
+	<-done
+
+	_, ok = c.GetIfPresent(1)
+	require.False(t, ok, "the read brought back the entry that expired while it ran")
+}
