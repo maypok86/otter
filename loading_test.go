@@ -697,6 +697,37 @@ func TestCache_BulkGetWithSuccessLoad(t *testing.T) {
 	}
 }
 
+func TestCache_BulkGetCoalescesConcurrentLoads(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	c := Must(&Options[int, int]{MaximumSize: 1000})
+
+	const (
+		concurrency = 64
+		rounds      = 50
+	)
+	for round := range rounds {
+		key := round
+		tbl := newTestBulkLoader[int, int](func(_ context.Context, keys []int) (map[int]int, error) {
+			return map[int]int{key: key * 10}, nil
+		})
+		var wg sync.WaitGroup
+		wg.Add(concurrency)
+		for range concurrency {
+			go func() {
+				defer wg.Done()
+				res, err := c.BulkGet(ctx, []int{key}, tbl)
+				require.NoError(t, err)
+				require.Equal(t, key*10, res[key])
+			}()
+		}
+		wg.Wait()
+		require.Equalf(t, uint64(1), tbl.loads.Load(),
+			"round %d: concurrent first-time bulk loads for the same key must coalesce to one", round)
+	}
+}
+
 func TestCache_BulkGetWithSuccessRefresh(t *testing.T) {
 	t.Parallel()
 
