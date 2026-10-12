@@ -24,6 +24,11 @@ that a writer may be changing or replacing at that moment.
 - `retired`: removed from the hash table (`makeRetired`, under the bucket lock).
 - `dead`: removed from the policy and the wheel (`makeDead`, under `evictionMutex`).
 
+A node is retired inside the hash table callback, before the table stores its replacement or
+clears its slot, so a retired node can still be the key's node for a moment. Readers that look a
+key up treat it as present (`getNode`, `getNodeQuietly`); iterations, which find a node before
+they report it, report the key's current node instead (`cache.current`).
+
 A node's **weight is accounted in the policy if and only if the node is linked into a queue**
 (`policy.adjustAccounted`). Weighted nodes keep two weights: `weight` (writer's view, atomic,
 set under the bucket lock) and `policyWeight` (what the policy accounted, under

@@ -15,6 +15,7 @@
 package otter
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -107,4 +108,50 @@ func TestSaveLoadCache(t *testing.T) {
 			require.Equal(t, refreshableAfter+1-sl, entry.RefreshableAfter())
 		}
 	})
+}
+
+func TestSaveCacheTo_KeysReplacedDuringIt(t *testing.T) {
+	t.Parallel()
+
+	// SaveCacheTo may run concurrently with writes: a key replaced while the cache is saved is
+	// saved too. The first update of a string replaces its node.
+	const keys = 100
+	for _, opts := range []*Options[int, string]{
+		{ExpiryCalculator: ExpiryWriting[int, string](time.Hour)},
+		{MaximumSize: 1000, ExpiryCalculator: ExpiryWriting[int, string](time.Hour)},
+	} {
+		// several rounds, see TestCache_IterationVisitsKeysReplacedDuringIt
+		for round := range 10 {
+			c := Must(opts)
+			for k := range keys {
+				c.Set(k, "a")
+			}
+			w := &updatingWriter{update: func() {
+				for k := range keys {
+					c.Set(k, "b")
+				}
+			}}
+			require.NoError(t, SaveCacheTo(c, w))
+
+			loaded := Must(&Options[int, string]{})
+			require.NoError(t, LoadCacheFrom(loaded, &w.buf))
+			require.Equal(t, keys, loaded.EstimatedSize(), "MaximumSize=%d, round %d", opts.MaximumSize, round)
+		}
+	}
+}
+
+// updatingWriter calls update before its second write: the first one is the maximum, which
+// SaveCacheTo writes before it iterates over the cache.
+type updatingWriter struct {
+	buf    bytes.Buffer
+	update func()
+	writes int
+}
+
+func (w *updatingWriter) Write(p []byte) (int, error) {
+	w.writes++
+	if w.writes == 2 {
+		w.update()
+	}
+	return w.buf.Write(p)
 }
