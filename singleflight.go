@@ -43,6 +43,9 @@ type call[K comparable, V any] struct {
 	// committed reports that the cache has decided what the call writes. It is written and
 	// read under the key's bucket lock in the cache's hash table.
 	committed bool
+	// refused reports that the cache has not written the result of a refresh. It is written
+	// under the key's bucket lock, before done is closed.
+	refused bool
 	// invalidations is group.invalidations when the bulk load that returned a fake call started.
 	invalidations uint64
 }

@@ -120,7 +120,9 @@ result through the cache's `commitCall` (a key mutation from a load or refresh),
 the call, wakes its waiters and publishes. `commitCall` writes only if `group.authoritative`
 says the call is still the current one for the key. A load writes only over a key without a
 live value: a live value was written during the load, and the load returns it to its owner and
-waiters, whatever it loaded, so the `Get` is a hit at the commit. A write cancels the calls
+waiters, whatever it loaded, so the `Get` is a hit at the commit. A `Get` that joined a refresh
+whose result the cache refuses (`call.refused`) does not take that result either: it returns
+the key's live value, or loads the key again. A write cancels the calls
 before a new node is stored (`hashmap.Compute` stores it after the callback), so a load
 registered in between is not cancelled, and only this rule keeps it from overwriting the write.
 `Invalidate`, `Set` and `Compute` cancel a

@@ -3239,3 +3239,120 @@ func TestCache_ExtraBulkEntryKeepsInvalidation(t *testing.T) {
 		})
 	}
 }
+
+type splitLoader struct {
+	load   func(ctx context.Context, key int) (int, error)
+	reload func(ctx context.Context, key, oldValue int) (int, error)
+}
+
+func (l splitLoader) Load(ctx context.Context, key int) (int, error) { return l.load(ctx, key) }
+
+func (l splitLoader) Reload(ctx context.Context, key, oldValue int) (int, error) {
+	return l.reload(ctx, key, oldValue)
+}
+
+func TestCache_GetJoinedRefreshNotWritten(t *testing.T) {
+	t.Parallel()
+
+	// A Get that misses a key may join a refresh of it. If the cache does not write the
+	// refresh's result, the Get returns the key's value in the cache, or loads the key itself:
+	// the result it waited for is not a value of the key.
+	ctx := context.Background()
+	load5 := func(context.Context, int) (int, error) { return 5, nil }
+	tests := []struct {
+		name string
+		// start registers a refresh, and change, called once a Get has joined it, makes the cache
+		// refuse its result
+		start  func(c *Cache[int, int], clock *nonTickingClock)
+		change func(c *Cache[int, int], clock *nonTickingClock)
+		want   int
+	}{
+		{
+			name: "refresh of an absent key, cancelled by SetIfAbsent",
+			start: func(c *Cache[int, int], _ *nonTickingClock) {
+				c.Refresh(ctx, 1, splitLoader{load: func(context.Context, int) (int, error) {
+					return 2, nil
+				}})
+			},
+			change: func(c *Cache[int, int], _ *nonTickingClock) {
+				_, inserted := c.SetIfAbsent(1, 3)
+				require.True(t, inserted)
+			},
+			want: 3,
+		},
+		{
+			name: "refresh whose node expires",
+			start: func(c *Cache[int, int], clock *nonTickingClock) {
+				c.Set(1, 1)
+				clock.Sleep(30 * time.Second)
+				v, err := c.Get(ctx, 1, splitLoader{reload: func(context.Context, int, int) (int, error) {
+					return 2, nil
+				}})
+				require.NoError(t, err)
+				require.Equal(t, 1, v)
+				clock.Sleep(time.Minute)
+			},
+			change: func(*Cache[int, int], *nonTickingClock) {},
+			want:   5,
+		},
+	}
+	for _, tt := range tests {
+		for _, bulk := range []bool{false, true} {
+			// Tasks wait in a queue until run: the refresh until a Get has joined it, and the
+			// maintenance, which would remove an expired node and drop its refresh before the Get
+			// joins it.
+			var (
+				mu    sync.Mutex
+				tasks []func()
+			)
+			run := func() {
+				for {
+					mu.Lock()
+					if len(tasks) == 0 {
+						mu.Unlock()
+						return
+					}
+					fn := tasks[0]
+					tasks = tasks[1:]
+					mu.Unlock()
+					fn()
+				}
+			}
+			clock := newNonTickingClock()
+			c := Must(&Options[int, int]{
+				ExpiryCalculator:  ExpiryWriting[int, int](time.Minute),
+				RefreshCalculator: RefreshWriting[int, int](10 * time.Second),
+				Clock:             clock,
+				Executor: func(fn func()) {
+					mu.Lock()
+					defer mu.Unlock()
+					tasks = append(tasks, fn)
+				},
+			})
+			tt.start(c, clock)
+
+			got := make(chan getResult, 1)
+			go func() {
+				if bulk {
+					res, err := c.BulkGet(ctx, []int{1}, newTestBulkLoader[int, int](func(context.Context, []int) (map[int]int, error) {
+						return map[int]int{1: 5}, nil
+					}))
+					got <- getResult{res[1], err}
+					return
+				}
+				v, err := c.Get(ctx, 1, splitLoader{load: load5})
+				got <- getResult{v, err}
+			}()
+			waitForJoinedLoad(t)
+			tt.change(c, clock)
+			run()
+
+			r := <-got
+			require.NoError(t, r.err, "%s, bulk=%v", tt.name, bulk)
+			require.Equal(t, tt.want, r.value, "%s, bulk=%v", tt.name, bulk)
+			v, ok := c.GetIfPresent(1)
+			require.True(t, ok, "%s, bulk=%v", tt.name, bulk)
+			require.Equal(t, tt.want, v, "%s, bulk=%v", tt.name, bulk)
+		}
+	}
+}

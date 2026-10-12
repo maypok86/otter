@@ -809,6 +809,16 @@ func (c *cache[K, V]) loadOrJoin(
 	if err := cl.waitContext(ctx); err != nil {
 		return zeroValue[V](), false, err
 	}
+	if cl.refused {
+		// The Get joined a refresh whose result the cache has not written: the key was written
+		// or invalidated meanwhile, or its node expired, so the result is not a value of the key.
+		// The key's value is returned as a hit would return it, and if there is none, the key is
+		// loaded again.
+		if n := c.getNodeQuietly(key, c.clock.NowNano()); n != nil {
+			return n.Value(), false, nil
+		}
+		return zeroValue[V](), true, nil
+	}
 	if cl.failedForOwner() && ctx.Err() == nil {
 		return zeroValue[V](), true, nil
 	}
@@ -838,6 +848,7 @@ func (c *cache[K, V]) commitCall(cl *call[K, V]) mutation[K, V] {
 			return opKeep, cl.value
 		}
 		authoritative := c.singleflight.authoritative(cl, prev, nowNano)
+		cl.refused = cl.isRefresh && !authoritative
 		if authoritative && cl.isNotFound {
 			return opInvalidate, cl.value
 		}
@@ -1143,6 +1154,18 @@ func (c *cache[K, V]) bulkLoadOrJoin(
 		}
 		i++
 
+		if cl.refused {
+			// a refresh whose result was not written, see loadOrJoin
+			if n := c.getNodeQuietly(key, c.clock.NowNano()); n != nil {
+				result[key] = n.Value()
+				continue
+			}
+			if retry == nil {
+				retry = make(map[K]*call[K, V], len(misses)-i+1)
+			}
+			retry[key] = nil
+			continue
+		}
 		if cl.err == nil {
 			result[key] = cl.Value()
 			continue
