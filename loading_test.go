@@ -2893,3 +2893,59 @@ func TestCache_RemovalKeepsLoadInFlight(t *testing.T) {
 	require.Same(t, cl, c.cache.singleflight.getCall(1))
 	cl.cancel()
 }
+
+type panickingClock struct {
+	*nonTickingClock
+	panics atomic.Bool
+}
+
+func (c *panickingClock) NowNano() int64 {
+	if c.panics.Load() {
+		panic("clock")
+	}
+	return c.nonTickingClock.NowNano()
+}
+
+func TestCache_ClockPanicDoesNotStrandRefresh(t *testing.T) {
+	t.Parallel()
+
+	// The clock is user code. If it panics while a read requests a refresh, the refresh must not
+	// stay registered: every later refresh of the key would join it, and none would ever run.
+	for _, bulk := range []bool{false, true} {
+		clock := &panickingClock{nonTickingClock: newNonTickingClock()}
+		c := Must(&Options[int, int]{
+			MaximumSize:       100,
+			RefreshCalculator: RefreshWriting[int, int](time.Minute),
+			Clock:             clock,
+			Executor:          func(fn func()) { fn() },
+		})
+		c.cache.singleflight.init()
+		tl := newTestLoader[int, int](func(_ context.Context, key int) (int, error) {
+			return key * 10, nil
+		})
+		tbl := newTestBulkLoader[int, int](func(_ context.Context, keys []int) (map[int]int, error) {
+			res := make(map[int]int, len(keys))
+			for _, k := range keys {
+				res[k] = k * 10
+			}
+			return res, nil
+		})
+
+		c.Set(1, 1)
+		clock.Sleep(2 * time.Minute)
+		stale := c.cache.getNodeQuietly(1, c.cache.clock.NowNano())
+		require.NotNil(t, stale)
+
+		clock.panics.Store(true)
+		rk := refreshableKey[int, int]{key: 1, old: stale}
+		require.Panics(t, func() {
+			if bulk {
+				c.cache.bulkRefreshKeys(context.Background(), []refreshableKey[int, int]{rk}, tbl, false)
+			} else {
+				c.cache.refreshKey(context.Background(), rk, tl, false)
+			}
+		}, "bulk=%v", bulk)
+		clock.panics.Store(false)
+		require.Nil(t, c.cache.singleflight.getCall(1), "bulk=%v", bulk)
+	}
+}

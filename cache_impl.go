@@ -673,9 +673,12 @@ func (c *cache[K, V]) refreshKey(
 	// The refresh is registered before it is handed to the executor, so that a write that
 	// follows the request cancels it. Registered by the task, a refresh that the executor starts
 	// after the write would replace the written value or bring an invalidated key back.
+	// The clock is user code, so it is read before: if it panicked after the registration, the
+	// call would never be finished, and every later refresh of the key would join it.
+	nowNano := c.clock.NowNano()
 	cl, shouldLoad := c.singleflight.startRefresh(rk.key, rk.old)
 	if shouldLoad && !isManual {
-		if n := c.refreshedMeanwhile(rk.key); n != nil {
+		if n := c.refreshedMeanwhile(rk.key, nowNano); n != nil {
 			c.singleflight.adopt(cl, n.Value())
 			return ch
 		}
@@ -843,8 +846,7 @@ func (c *cache[K, V]) commitCall(cl *call[K, V]) mutation[K, V] {
 // The skipped refresh is finished with the value of the returned node, since a Get of the key
 // may join its call: that is the value the Get would read. A key that has been removed or has
 // expired is refreshed as before, as there is no value to give.
-func (c *cache[K, V]) refreshedMeanwhile(key K) node.Node[K, V] {
-	nowNano := c.clock.NowNano()
+func (c *cache[K, V]) refreshedMeanwhile(key K, nowNano int64) node.Node[K, V] {
 	if n := c.getNodeQuietly(key, nowNano); n != nil && n.IsFresh(nowNano) {
 		return n
 	}
@@ -871,7 +873,8 @@ func (c *cache[K, V]) bulkRefreshKeys(
 		return ch
 	}
 
-	// Registered before the task is submitted, as in refreshKey.
+	// Registered before the task is submitted, with the clock read before, as in refreshKey.
+	nowNano := c.clock.NowNano()
 	var (
 		toLoadCalls   map[K]*call[K, V]
 		toReloadCalls map[K]*call[K, V]
@@ -881,7 +884,7 @@ func (c *cache[K, V]) bulkRefreshKeys(
 	for i, rk := range rks {
 		cl, shouldLoad := c.singleflight.startRefresh(rk.key, rk.old)
 		if shouldLoad && !isManual {
-			if n := c.refreshedMeanwhile(rk.key); n != nil {
+			if n := c.refreshedMeanwhile(rk.key, nowNano); n != nil {
 				c.singleflight.adopt(cl, n.Value())
 				continue
 			}
