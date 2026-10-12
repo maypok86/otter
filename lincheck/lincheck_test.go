@@ -17,9 +17,10 @@
 // return, explains every result. It records histories of random operations on a few keys and
 // checks them with porcupine against a sequential model of the cache, key by key.
 //
-// The cache has no size bound and no expiration, so nothing removes a key on its own and the
-// model is exact. Values written by the test are positive, values the loader returns are
-// negative, and both are unique, so the model tells a loaded value from a written one.
+// The cache has no size bound and its clock never moves, so nothing removes a key on its own,
+// and every expiration and refresh time is the clock's time plus the duration a calculator or a
+// setter gave it: the model is exact. Values written by the test are positive, values the loader
+// returns are negative, and both are unique, so the model tells a loaded value from a written one.
 package lincheck
 
 import (
@@ -57,20 +58,32 @@ const (
 	// opComputeDelete invalidates the key if it is present.
 	opComputeDelete
 	opRefresh
+	// opSetExpiresAfter and opSetRefreshableAfter set the time to value hours from now.
+	opSetExpiresAfter
+	opSetRefreshableAfter
+	// opExpiresAt and opRefreshableAt read the time from GetEntryQuietly, in hours from now. An
+	// entry's fields are read one at a time and may come from different writes, so each op
+	// reads one of them.
+	opExpiresAt
+	opRefreshableAt
 	opCount
 )
 
 var opNames = [...]string{
-	opGet:              "Get",
-	opBulkGet:          "BulkGet",
-	opGetIfPresent:     "GetIfPresent",
-	opSet:              "Set",
-	opSetIfAbsent:      "SetIfAbsent",
-	opInvalidate:       "Invalidate",
-	opComputeIfAbsent:  "ComputeIfAbsent",
-	opComputeIfPresent: "ComputeIfPresent",
-	opComputeDelete:    "ComputeDelete",
-	opRefresh:          "Refresh",
+	opGet:                 "Get",
+	opBulkGet:             "BulkGet",
+	opGetIfPresent:        "GetIfPresent",
+	opSet:                 "Set",
+	opSetIfAbsent:         "SetIfAbsent",
+	opInvalidate:          "Invalidate",
+	opComputeIfAbsent:     "ComputeIfAbsent",
+	opComputeIfPresent:    "ComputeIfPresent",
+	opComputeDelete:       "ComputeDelete",
+	opRefresh:             "Refresh",
+	opSetExpiresAfter:     "SetExpiresAfter",
+	opSetRefreshableAfter: "SetRefreshableAfter",
+	opExpiresAt:           "ExpiresAt",
+	opRefreshableAt:       "RefreshableAt",
 }
 
 // result is how a load ended, as its caller saw it.
@@ -85,7 +98,7 @@ const (
 type input struct {
 	op    opKind
 	key   int
-	value int // the value written, for writes
+	value int // the value written, for writes; hours, for the setters
 }
 
 type output struct {
@@ -94,69 +107,169 @@ type output struct {
 	result result // for loads and refreshes
 }
 
-// state is the value of one key; 0 means absent.
-type state int
+// The calculators keep both times on update and reload (ExpiryCreating, RefreshCreating), so
+// only a creation and the setters change them.
+const (
+	expiresAfter     = 100 // hours
+	refreshableAfter = 200 // hours
+)
+
+// state is one key: its value, 0 if it is absent, and its expiration and refresh times in hours
+// from now, 0 if there are none.
+type state struct {
+	value         int
+	expiresIn     int
+	refreshableIn int
+}
 
 func isLoaded(v int) bool { return v < 0 }
 
-// step returns the states that op can lead to from s, if it can return out; none if it cannot.
-func step(st, in, out any) []any {
-	s, i, o := st.(state), in.(input), out.(output)
-	present := s != 0
-	switch i.op {
-	case opGet, opBulkGet:
-		if present {
-			// a hit: neither the loader nor its errors are involved
-			return when(o.result == loaded && o.value == int(s), s)
+// newModel returns the model of a cache with or without expiration; refresh is always on.
+func newModel(expiry bool) porcupine.NondeterministicModel {
+	created := func(v int) state {
+		s := state{value: v, refreshableIn: refreshableAfter}
+		if expiry {
+			s.expiresIn = expiresAfter
 		}
-		switch o.result {
-		case loaded:
-			return when(isLoaded(o.value), state(o.value))
-		case notFound, failed:
-			return []any{s}
-		}
-	case opGetIfPresent:
-		if present {
-			return when(o.ok && o.value == int(s), s)
-		}
-		return when(!o.ok && o.value == 0, s)
-	case opSet:
-		return []any{state(i.value)}
-	case opSetIfAbsent:
-		if present {
-			return when(!o.ok && o.value == int(s), s)
-		}
-		return when(o.ok && o.value == i.value, state(i.value))
-	case opInvalidate:
-		if present {
-			return when(o.ok && o.value == int(s), state(0))
-		}
-		return when(!o.ok && o.value == 0, s)
-	case opComputeIfAbsent:
-		if present {
-			return when(o.ok && o.value == int(s), s)
-		}
-		return when(o.ok && o.value == i.value, state(i.value))
-	case opComputeIfPresent:
-		if present {
-			return when(o.ok && o.value == i.value, state(i.value))
-		}
-		return when(!o.ok && o.value == 0, s)
-	case opComputeDelete:
-		return when(!o.ok && o.value == 0, state(0))
-	case opRefresh:
-		// The refresh is discarded if the key was written or invalidated after it was requested,
-		// which depends on the history, not on the state: either outcome is allowed.
-		switch o.result {
-		case loaded:
-			return []any{s, state(o.value)}
-		case notFound:
-			return []any{s, state(0)}
-		case failed:
-			return []any{s}
-		}
+		return s
 	}
-	return nil
+	updated := func(s state, v int) state {
+		s.value = v
+		return s
+	}
+	written := func(s state, v int) state {
+		if s.value == 0 {
+			return created(v)
+		}
+		return updated(s, v)
+	}
+
+	// step returns the states that op can lead to from s, if it can return out; none if it cannot.
+	step := func(st, in, out any) []any {
+		s, i, o := st.(state), in.(input), out.(output)
+		present := s.value != 0
+		switch i.op {
+		case opGet, opBulkGet:
+			if present {
+				// a hit: neither the loader nor its errors are involved
+				return when(o.result == loaded && o.value == s.value, s)
+			}
+			switch o.result {
+			case loaded:
+				return when(isLoaded(o.value), created(o.value))
+			case notFound, failed:
+				return []any{s}
+			}
+		case opGetIfPresent:
+			if present {
+				return when(o.ok && o.value == s.value, s)
+			}
+			return when(!o.ok && o.value == 0, s)
+		case opSet:
+			return []any{written(s, i.value)}
+		case opSetIfAbsent:
+			if present {
+				return when(!o.ok && o.value == s.value, s)
+			}
+			return when(o.ok && o.value == i.value, created(i.value))
+		case opInvalidate:
+			if present {
+				return when(o.ok && o.value == s.value, state{})
+			}
+			return when(!o.ok && o.value == 0, s)
+		case opComputeIfAbsent:
+			if present {
+				return when(o.ok && o.value == s.value, s)
+			}
+			return when(o.ok && o.value == i.value, created(i.value))
+		case opComputeIfPresent:
+			if present {
+				return when(o.ok && o.value == i.value, updated(s, i.value))
+			}
+			return when(!o.ok && o.value == 0, s)
+		case opComputeDelete:
+			return when(!o.ok && o.value == 0, state{})
+		case opRefresh:
+			// The refresh is discarded if the key was written or invalidated after it was requested,
+			// which depends on the history, not on the state: either outcome is allowed.
+			switch o.result {
+			case loaded:
+				return []any{s, written(s, o.value)}
+			case notFound:
+				return []any{s, state{}}
+			case failed:
+				return []any{s}
+			}
+		case opSetExpiresAfter:
+			if present && expiry {
+				s.expiresIn = i.value
+			}
+			return []any{s}
+		case opSetRefreshableAfter:
+			if present {
+				s.refreshableIn = i.value
+			}
+			return []any{s}
+		case opExpiresAt:
+			if present {
+				return when(o.ok && o.value == s.expiresIn, s)
+			}
+			return when(!o.ok, s)
+		case opRefreshableAt:
+			if present {
+				return when(o.ok && o.value == s.refreshableIn, s)
+			}
+			return when(!o.ok, s)
+		}
+		return nil
+	}
+
+	return porcupine.NondeterministicModel{
+		Partition: func(history []porcupine.Operation) [][]porcupine.Operation {
+			byKey := make(map[int][]porcupine.Operation)
+			for _, op := range history {
+				k := op.Input.(input).key
+				byKey[k] = append(byKey[k], op)
+			}
+			partitions := make([][]porcupine.Operation, 0, len(byKey))
+			for _, ops := range byKey {
+				partitions = append(partitions, ops)
+			}
+			return partitions
+		},
+		Init: func() []any { return []any{state{}} },
+		Step: step,
+		DescribeOperation: func(in, out any) string {
+			i, o := in.(input), out.(output)
+			switch i.op {
+			case opSet:
+				return fmt.Sprintf("Set(%d, %d)", i.key, i.value)
+			case opSetExpiresAfter, opSetRefreshableAfter:
+				return fmt.Sprintf("%s(%d, %dh)", opNames[i.op], i.key, i.value)
+			case opSetIfAbsent, opComputeIfAbsent, opComputeIfPresent:
+				return fmt.Sprintf("%s(%d, %d) -> %d, %t", opNames[i.op], i.key, i.value, o.value, o.ok)
+			case opGet, opBulkGet, opRefresh:
+				return fmt.Sprintf("%s(%d) -> %d, %s", opNames[i.op], i.key, o.value, [...]string{"loaded", "not found", "failed"}[o.result])
+			case opExpiresAt, opRefreshableAt:
+				return fmt.Sprintf("%s(%d) -> %dh, %t", opNames[i.op], i.key, o.value, o.ok)
+			default:
+				return fmt.Sprintf("%s(%d) -> %d, %t", opNames[i.op], i.key, o.value, o.ok)
+			}
+		},
+		DescribeState: func(st any) string {
+			s := st.(state)
+			if s.value == 0 {
+				return "absent"
+			}
+			in := func(hours int) string {
+				if hours == 0 {
+					return "never"
+				}
+				return fmt.Sprintf("in %dh", hours)
+			}
+			return fmt.Sprintf("%d (expires %s, refreshable %s)", s.value, in(s.expiresIn), in(s.refreshableIn))
+		},
+	}
 }
 
 func when(ok bool, s state) []any {
@@ -166,40 +279,26 @@ func when(ok bool, s state) []any {
 	return []any{s}
 }
 
-var model = porcupine.NondeterministicModel{
-	Partition: func(history []porcupine.Operation) [][]porcupine.Operation {
-		byKey := make(map[int][]porcupine.Operation)
-		for _, op := range history {
-			k := op.Input.(input).key
-			byKey[k] = append(byKey[k], op)
-		}
-		partitions := make([][]porcupine.Operation, 0, len(byKey))
-		for _, ops := range byKey {
-			partitions = append(partitions, ops)
-		}
-		return partitions
-	},
-	Init: func() []any { return []any{state(0)} },
-	Step: step,
-	DescribeOperation: func(in, out any) string {
-		i, o := in.(input), out.(output)
-		switch i.op {
-		case opSet:
-			return fmt.Sprintf("Set(%d, %d)", i.key, i.value)
-		case opSetIfAbsent, opComputeIfAbsent, opComputeIfPresent:
-			return fmt.Sprintf("%s(%d, %d) -> %d, %t", opNames[i.op], i.key, i.value, o.value, o.ok)
-		case opGet, opBulkGet, opRefresh:
-			return fmt.Sprintf("%s(%d) -> %d, %s", opNames[i.op], i.key, o.value, [...]string{"loaded", "not found", "failed"}[o.result])
-		default:
-			return fmt.Sprintf("%s(%d) -> %d, %t", opNames[i.op], i.key, o.value, o.ok)
-		}
-	},
-	DescribeState: func(st any) string {
-		if st.(state) == 0 {
-			return "absent"
-		}
-		return fmt.Sprint(int(st.(state)))
-	},
+// frozenClock is a clock that never moves: no entry expires or becomes stale.
+type frozenClock struct{}
+
+// now is the time of frozenClock; any positive value works.
+const now = int64(time.Hour)
+
+func (frozenClock) NowNano() int64                      { return now }
+func (frozenClock) Tick(time.Duration) <-chan time.Time { return nil }
+
+// hoursFromNow converts an expiration or refresh time to hours from now, 0 if there is none and
+// -1 if it is not a whole number of hours, which no operation sets.
+func hoursFromNow(nanos int64) int {
+	if nanos > now+int64(1000*time.Hour) {
+		return 0
+	}
+	d := nanos - now
+	if d%int64(time.Hour) != 0 {
+		return -1
+	}
+	return int(d / int64(time.Hour))
 }
 
 var errLoad = errors.New("load failed")
@@ -218,15 +317,21 @@ type recorder struct {
 	keys    int
 }
 
-func newRecorder(keys int) *recorder {
+// newRecorder returns a recorder for a cache with or without expiration. Without it, the cache
+// replaces the node on every write; with it, a live entry is updated in place.
+func newRecorder(keys int, expiry bool) *recorder {
+	o := &otter.Options[int, int]{
+		Clock:             frozenClock{},
+		RefreshCalculator: otter.RefreshCreating[int, int](refreshableAfter * time.Hour),
+		// failed refreshes are expected
+		Logger: discardLogger{},
+	}
+	if expiry {
+		o.ExpiryCalculator = otter.ExpiryCreating[int, int](expiresAfter * time.Hour)
+	}
 	return &recorder{
-		cache: otter.Must(&otter.Options[int, int]{
-			// a refresh calculator is needed for Refresh; no entry ever becomes stale
-			RefreshCalculator: otter.RefreshWriting[int, int](time.Hour),
-			// failed refreshes are expected
-			Logger: discardLogger{},
-		}),
-		keys: keys,
+		cache: otter.Must(o),
+		keys:  keys,
 	}
 }
 
@@ -291,6 +396,8 @@ func (r *recorder) run(client int, ops int, seed uint64) []porcupine.Operation {
 		switch in.op {
 		case opSet, opSetIfAbsent, opComputeIfAbsent, opComputeIfPresent:
 			in.value = int(r.written.Add(1))
+		case opSetExpiresAfter, opSetRefreshableAfter:
+			in.value = 1 + rnd.IntN(8)
 		}
 		var out output
 		call := r.clock.Add(1)
@@ -341,6 +448,18 @@ func (r *recorder) run(client int, ops int, seed uint64) []porcupine.Operation {
 		case opRefresh:
 			rr := <-r.cache.Refresh(ctx, in.key, loader)
 			out = output{value: rr.Value, result: loadResult(rr.Err)}
+		case opSetExpiresAfter:
+			r.cache.SetExpiresAfter(in.key, time.Duration(in.value)*time.Hour)
+		case opSetRefreshableAfter:
+			r.cache.SetRefreshableAfter(in.key, time.Duration(in.value)*time.Hour)
+		case opExpiresAt:
+			if e, ok := r.cache.GetEntryQuietly(in.key); ok {
+				out = output{value: hoursFromNow(e.ExpiresAtNano), ok: true}
+			}
+		case opRefreshableAt:
+			if e, ok := r.cache.GetEntryQuietly(in.key); ok {
+				out = output{value: hoursFromNow(e.RefreshableAtNano), ok: true}
+			}
 		}
 		history = append(history, porcupine.Operation{
 			ClientId: client,
@@ -354,8 +473,8 @@ func (r *recorder) run(client int, ops int, seed uint64) []porcupine.Operation {
 }
 
 // record runs clients goroutines, each with ops operations, and returns their history.
-func record(keys, clients, ops int, seed uint64) []porcupine.Operation {
-	r := newRecorder(keys)
+func record(keys, clients, ops int, seed uint64, expiry bool) []porcupine.Operation {
+	r := newRecorder(keys, expiry)
 	histories := make([][]porcupine.Operation, clients)
 	var start, wg sync.WaitGroup
 	start.Add(1)
@@ -398,12 +517,19 @@ func TestLinearizability(t *testing.T) {
 		clients = 8
 		ops     = 200
 	)
-	m := model.ToModel()
+	var models [2]porcupine.Model
+	for i, expiry := range []bool{false, true} {
+		nm := newModel(expiry)
+		models[i] = nm.ToModel()
+	}
 	seed := uint64(time.Now().UnixNano())
 	deadline := time.Now().Add(duration)
 	histories, unknown := 0, 0
 	for ; time.Now().Before(deadline); seed++ {
-		history := record(keys, clients, ops, seed)
+		// every other history is of a cache with expiration
+		expiry := seed%2 == 1
+		m := models[seed%2]
+		history := record(keys, clients, ops, seed, expiry)
 		histories++
 		res, info := porcupine.CheckOperationsVerbose(m, history, 10*time.Second)
 		switch res {
@@ -415,7 +541,7 @@ func TestLinearizability(t *testing.T) {
 			if err := porcupine.VisualizePath(m, info, path); err != nil {
 				t.Logf("visualization: %v", err)
 			}
-			t.Fatalf("history %d is not linearizable (visualization: %s)\n%s", histories, path, explain(m, history, info))
+			t.Fatalf("history %d (expiry=%v) is not linearizable (visualization: %s)\n%s", histories, expiry, path, explain(m, history, info))
 		}
 	}
 	t.Logf("%d histories of %d operations checked, %d timed out", histories, clients*ops, unknown)
