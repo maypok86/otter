@@ -167,6 +167,7 @@ func newCache[K comparable, V any](o *Options[K, V]) *cache[K, V] {
 	c.singleflight.publish = c.publish
 	// read on every refresh, so that tests can replace the executor
 	c.singleflight.executor = func(fn func()) { c.executor(fn) }
+	c.singleflight.nodeOf = func(key K) node.Node[K, V] { return c.hashmap.Get(key) }
 
 	if withStats {
 		c.statsClock.Init()
@@ -755,7 +756,9 @@ func (c *cache[K, V]) Get(ctx context.Context, key K, loader Loader[K, V]) (V, e
 		// Read before the refresh starts: the node may be updated in place by then (with a
 		// synchronous executor, by the refresh itself).
 		value := n.Value()
-		if !n.IsFresh(nowNano) {
+		// A node that is being removed is not fresh either, but there is nothing to refresh. It is
+		// checked after IsFresh: a node retired in between would pass the check before.
+		if !n.IsFresh(nowNano) && n.IsAlive() {
 			c.refreshKey(ctx, refreshableKey[K, V]{
 				key: n.Key(),
 				old: n,
@@ -1045,7 +1048,8 @@ func (c *cache[K, V]) BulkGet(ctx context.Context, keys []K, bulkLoader BulkLoad
 
 		n := c.getNode(key, nowNano)
 		if n != nil {
-			if !n.IsFresh(nowNano) {
+			// a node that is being removed is not refreshed, see Get
+			if !n.IsFresh(nowNano) && n.IsAlive() {
 				if toRefresh == nil {
 					toRefresh = make([]refreshableKey[K, V], 0, len(keys)-len(result))
 				}

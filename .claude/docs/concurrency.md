@@ -128,7 +128,10 @@ pending call for the key; eviction and expiration drop refresh calls and loads t
 already committed (`deleteOnRemoval`), but not a load in flight. A committed load stays
 registered until `finish` deletes it, and a `Get` that joined it after the removal would return
 the removed value; `committed` is set by `commitCall` under the key's bucket lock, which the
-removal holds too.
+removal holds too. A refresh registered after the write or removal that would have cancelled it
+cannot write once its base is removed or replaced, so the next call for the key replaces it
+instead of joining it (`group.superseded`); a read that finds a node being removed does not
+refresh it.
 
 A refresh must lose to any write that follows its request, so three things hold together:
 - refresh calls are registered on the requesting goroutine, before the task goes to the

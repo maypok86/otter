@@ -3055,3 +3055,119 @@ func TestCache_ReadsDuringRefreshSubmitNoTasks(t *testing.T) {
 	require.Equal(t, []RefreshResult[int, int]{{Key: 1, Value: 2}}, <-bulk)
 	require.Equal(t, uint64(1), tl.calls.Load()+tbl.calls.Load())
 }
+
+func TestCache_ReadDuringInvalidateStartsNoRefresh(t *testing.T) {
+	t.Parallel()
+
+	// A read that finds the node while an invalidation removes it sees the node stale, since a
+	// removed node is not fresh. A refresh of it would be discarded anyway, and it would hold
+	// the key's call slot for loads that start after the invalidation.
+	ctx := context.Background()
+	release := make(chan struct{})
+	defer close(release)
+	tl := newTestLoader[int, int](func(context.Context, int) (int, error) {
+		<-release
+		return 2, nil
+	})
+	tbl := newTestBulkLoader[int, int](func(context.Context, []int) (map[int]int, error) {
+		<-release
+		return map[int]int{1: 2}, nil
+	})
+	for _, bulk := range []bool{false, true} {
+		var c *Cache[int, int]
+		c = Must(&Options[int, int]{
+			// nodes are retired on removal only in a cache with maintenance
+			MaximumSize:       100,
+			RefreshCalculator: RefreshWriting[int, int](time.Minute),
+			OnAtomicDeletion: func(e DeletionEvent[int, int]) {
+				if e.Cause != CauseInvalidation {
+					return
+				}
+				if bulk {
+					_, _ = c.BulkGet(ctx, []int{e.Key}, tbl)
+				} else {
+					_, _ = c.Get(ctx, e.Key, tl)
+				}
+			},
+		})
+
+		c.Set(1, 1)
+		c.Invalidate(1)
+		require.Nil(t, c.cache.singleflight.getCall(1), "bulk=%v", bulk)
+		require.Zero(t, tl.calls.Load()+tbl.calls.Load(), "bulk=%v", bulk)
+	}
+}
+
+func TestCache_CallSupersedesRefreshOfRemovedNode(t *testing.T) {
+	t.Parallel()
+
+	// A refresh that was registered after its base had been removed or replaced cannot write
+	// its result, so it is not joined: the next call for the key replaces it. A Get after an
+	// invalidation would otherwise get the reload of the invalidated value, and a stale
+	// replacing node would not be refreshed until the doomed refresh had finished.
+	tests := []struct {
+		name string
+		// replaced writes the key again before the doomed refresh is registered
+		replaced bool
+		run      func(t *testing.T, c *Cache[int, int], doomed *call[int, int])
+	}{
+		{
+			name: "Get",
+			run: func(t *testing.T, c *Cache[int, int], _ *call[int, int]) {
+				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+				defer cancel()
+				v, err := c.Get(ctx, 1, newTestLoader[int, int](func(context.Context, int) (int, error) {
+					return 5, nil
+				}))
+				require.NoError(t, err)
+				require.Equal(t, 5, v)
+			},
+		},
+		{
+			name: "BulkGet",
+			run: func(t *testing.T, c *Cache[int, int], _ *call[int, int]) {
+				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+				defer cancel()
+				res, err := c.BulkGet(ctx, []int{1}, newTestBulkLoader[int, int](func(context.Context, []int) (map[int]int, error) {
+					return map[int]int{1: 5}, nil
+				}))
+				require.NoError(t, err)
+				require.Equal(t, map[int]int{1: 5}, res)
+			},
+		},
+		{
+			name:     "refresh of the replacing node",
+			replaced: true,
+			run: func(t *testing.T, c *Cache[int, int], doomed *call[int, int]) {
+				n := c.cache.getNodeQuietly(1, c.cache.clock.NowNano())
+				cl, shouldLoad := c.cache.singleflight.startRefresh(1, n)
+				require.True(t, shouldLoad)
+				require.NotSame(t, doomed, cl)
+				require.Same(t, cl, c.cache.singleflight.getCall(1))
+				c.cache.singleflight.adopt(cl, n.Value())
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			c := Must(&Options[int, int]{
+				RefreshCalculator: RefreshWriting[int, int](time.Minute),
+			})
+			c.cache.singleflight.init()
+			c.Set(1, 1)
+			base := c.cache.getNodeQuietly(1, c.cache.clock.NowNano())
+			c.Invalidate(1)
+			if tt.replaced {
+				c.Set(1, 3)
+			}
+			// The writes have run before the refresh was registered, so they did not cancel it.
+			doomed, shouldLoad := c.cache.singleflight.startRefresh(1, base)
+			require.True(t, shouldLoad)
+			defer doomed.cancel()
+
+			tt.run(t, c, doomed)
+		})
+	}
+}

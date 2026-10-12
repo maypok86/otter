@@ -124,8 +124,8 @@ func (m *mapCallManager[K, V]) FromPointer(ptr unsafe.Pointer) *call[K, V] {
 	return (*call[K, V])(ptr)
 }
 
-// group runs loads and refreshes so that each key has at most one at a time, and owns their
-// lifecycle: a call is registered before it runs, runs with its panics and runtime.Goexit
+// group runs loads and refreshes so that each key has at most one registered at a time (a
+// superseded refresh keeps running for the callers that joined it), and owns their lifecycle: a call is registered before it runs, runs with its panics and runtime.Goexit
 // caught, and is finished exactly once, whatever fails: its result is committed, then the call
 // is deleted and its waiters woken, then the commit is published.
 type group[K comparable, V any] struct {
@@ -140,6 +140,8 @@ type group[K comparable, V any] struct {
 	publish func(m mutation[K, V])
 	// executor runs refresh tasks.
 	executor func(fn func())
+	// nodeOf returns the key's node in the cache's hash table, or nil.
+	nodeOf func(key K) node.Node[K, V]
 }
 
 func (g *group[K, V]) init() {
@@ -173,18 +175,29 @@ func (g *group[K, V]) startRefresh(key K, base node.Node[K, V]) (c *call[K, V], 
 
 func (g *group[K, V]) startCall(key K, isRefresh bool, base node.Node[K, V]) (c *call[K, V], shouldLoad bool) {
 	// fast path
-	if c := g.getCall(key); c != nil {
+	if c := g.getCall(key); c != nil && !g.superseded(c) {
 		return c, shouldLoad
 	}
 
 	return g.calls.Compute(key, func(prevCall *call[K, V]) *call[K, V] {
 		// double check
-		if prevCall != nil {
+		if prevCall != nil && !g.superseded(prevCall) {
 			return prevCall
 		}
 		shouldLoad = true
 		return newCall[K, V](key, isRefresh, base)
 	}), shouldLoad
+}
+
+// superseded reports whether c is a refresh whose base has been removed or replaced, so that its
+// result will not be written (see isRefreshBase). Such a refresh was registered after the write
+// or removal that would have cancelled it. The next call for its key replaces it rather than join
+// it: a Get after an invalidation would get the reload of the invalidated value, and a stale node
+// that replaced the base would not be refreshed until this refresh has finished. The refresh still
+// completes for the callers that joined it before. A removed or replaced node never comes back, so
+// a refresh that is superseded stays so.
+func (g *group[K, V]) superseded(c *call[K, V]) bool {
+	return c.isRefresh && c.base != nil && (!c.base.IsAlive() || g.nodeOf(c.key) != c.base)
 }
 
 // adopt finishes c, which the caller registered, with a value that is already in the cache,
