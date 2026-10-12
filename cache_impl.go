@@ -1000,9 +1000,9 @@ func (c *cache[K, V]) BulkGet(ctx context.Context, keys []K, bulkLoader BulkLoad
 	c.bulkRefreshKeys(ctx, toRefresh, bulkLoader, false)
 
 	var errsFromCalls []error
-	for retrying := false; len(misses) > 0; retrying = true {
+	for len(misses) > 0 {
 		var err error
-		misses, errsFromCalls, err = c.bulkLoadOrJoin(ctx, misses, bulkLoader, result, errsFromCalls, retrying)
+		misses, errsFromCalls, err = c.bulkLoadOrJoin(ctx, misses, bulkLoader, result, errsFromCalls)
 		if err != nil {
 			return result, err
 		}
@@ -1020,25 +1020,20 @@ func (c *cache[K, V]) BulkGet(ctx context.Context, keys []K, bulkLoader BulkLoad
 // loads already running for some of them. It adds the loaded values to result and the errors of
 // joined loads to errsFromCalls. It returns the keys whose joined load failed for its owner's
 // context while ctx is live, which must be loaded again, and an error that ends BulkGet: the bulk
-// load failed or ctx is done. retrying reports that misses are such keys: as in Get, a key that
-// was written while the failed load ran is taken from the cache instead of being loaded again.
+// load failed or ctx is done.
 func (c *cache[K, V]) bulkLoadOrJoin(
 	ctx context.Context,
 	misses map[K]*call[K, V],
 	bulkLoader BulkLoader[K, V],
 	result map[K]V,
 	errsFromCalls []error,
-	retrying bool,
 ) (map[K]*call[K, V], []error, error) {
-	var nowNano int64
-	if retrying {
-		nowNano = c.clock.NowNano()
-	}
+	nowNano := c.clock.NowNano()
 	var toLoadCalls map[K]*call[K, V]
 	i := 0
 	for key := range misses {
 		cl, shouldLoad := c.singleflight.startLoad(key)
-		if shouldLoad && retrying {
+		if shouldLoad {
 			// Winning the call slot means that a value written before is visible, see Get.
 			if n := c.getNodeQuietly(key, nowNano); n != nil {
 				value := n.Value()
@@ -1048,8 +1043,6 @@ func (c *cache[K, V]) bulkLoadOrJoin(
 				i++
 				continue
 			}
-		}
-		if shouldLoad {
 			if toLoadCalls == nil {
 				toLoadCalls = make(map[K]*call[K, V], len(misses)-i)
 			}
