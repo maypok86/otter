@@ -8,27 +8,40 @@ on:
     paths-ignore:
       - docs/**
 
+permissions: {}
+
+# A new push to a pull request cancels the run of the previous one. Every push to a branch gets a
+# group of its own: a group keeps one pending run, so a series of pushes would cancel the middle
+# ones.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
   lint:
     strategy:
       matrix:
-        go-version: [1.25.x]
-        platform: [ubuntu-latest]
+        go-version: [ 1.25.x ]
+        platform: [ ubuntu-latest ]
 
     runs-on: ${{ matrix.platform }}
 
+    permissions:
+      contents: read
+
     steps:
+      - name: Check out code into the Go module directory
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
       - name: Set up Go 1.x
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: ${{ matrix.go-version }}
-        id: go
-
-      - name: Check out code into the Go module directory
-        uses: actions/checkout@v7
 
       - name: lint
-        uses: golangci/golangci-lint-action@v9
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
           version: v2.13.2
           args: --timeout=4m -v

@@ -2,11 +2,26 @@ version: 2
 
 updates:
   - package-ecosystem: "gomod"
-    directory: "/"
+    directories:
+      - "/"
+      - "/lincheck"
     schedule:
-      interval: "daily"
+      interval: "weekly"
+    # A release that turns out to be malicious is usually pulled within days.
+    cooldown:
+      default-days: 7
+    groups:
+      gomod:
+        patterns:
+          - "*"
 
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
-      interval: "daily"
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns:
+          - "*"
