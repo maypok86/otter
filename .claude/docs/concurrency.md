@@ -12,7 +12,7 @@ in another order.
 |---|---|---|
 | `cache.evictionMutex` | the eviction policy (queues, sizes, sketch, climber), the timer wheel, `policyWeight`, `queueType`, node `dead` transition | `maintenance` (`performCleanUp`, `scheduleDrainBuffers` via `TryLock`), `SetMaximum`, `Hottest`/`Coldest`, `WeightedSize`/`GetMaximum` |
 | `hashmap` bucket lock (`internal/hashmap/map.go`, inside `Compute`) | the bucket's slots; every write to a key; node value/weight/deadline changes made in place; the `retired` transition | `set`, `doCompute`, `Invalidate`, `commitCall`, `deleteNodeFromMap` |
-| singleflight bucket lock | in-flight `call`s per key | `startLoad`, `startRefresh`, `deleteCall`, `delete`, `deleteRefresh` |
+| singleflight bucket lock | in-flight `call`s per key | `startLoad`, `startRefresh`, `deleteCall`, `delete`, `deleteOnRemoval` |
 
 `hashmap.Get` takes no lock: it reads bucket slots atomically. Readers therefore see a node
 that a writer may be changing or replacing at that moment.
@@ -118,15 +118,42 @@ run with `context.WithoutCancel`, so their failures are always shared. `doCall`/
 loader with its panics and `runtime.Goexit` caught and end in `group.finish`, which commits the
 result through the cache's `commitCall` (a key mutation from a load or refresh), then deletes
 the call, wakes its waiters and publishes. `commitCall` writes only if `group.authoritative`
-says the call is still the current one for the key. `Invalidate`, `Set` and `Compute` cancel a
-pending call for the key; eviction and expiration drop only refresh calls (`deleteRefresh`).
+says the call is still the current one for the key. A load writes only over a key without a
+live value: a live value was written during the load, and the load returns it to its owner and
+waiters, whatever it loaded, so the `Get` is a hit at the commit. A `Get` that owns or joined a
+call whose value the cache refuses (`call.refused`: a cancelled load, or a refresh that was
+cancelled or whose node is gone) does not take that value either: it returns the key's live
+value, or loads the key again. A load cancelled by an invalidation may have read the data
+source before the change, and `Invalidate` has reported the key absent. Nor does a `Get` that joined a load after its value was
+committed and had expired before the `Get` started (`call.expiresAt`): the call stays registered
+until `finish` deletes it, after the commit. A write cancels the calls
+before a new node is stored (`hashmap.Compute` stores it after the callback), so a load
+registered in between is not cancelled, and only this rule keeps it from overwriting the write.
+Such a call can also find the old value on its re-check and adopt it, so `mutate` cancels the
+key's calls a second time once the write or invalidation from the API is visible: a `Get` that
+starts after it returned does not join a call that holds the old value.
+`Invalidate`, `Set` and `Compute` cancel a
+pending call for the key; eviction and expiration drop refreshes of an existing
+node and calls that have already committed (`deleteOnRemoval`), but not a load in flight or a
+refresh of an absent key, which loads it just the same. A committed load stays
+registered until `finish` deletes it, and a `Get` that joined it after the removal would return
+the removed value; `committed` is set by `commitCall` under the key's bucket lock, which the
+removal holds too. A load that adopts a value it finds after winning its call slot reads it
+under that lock too (`readForAdoption`) and is marked committed there, for the same reason. A refresh registered after the write or removal that would have cancelled it
+cannot write once its base is removed or replaced, so the next call for the key replaces it
+instead of joining it (`group.superseded`); a read that finds a node being removed does not
+refresh it.
+A fake call (a key the bulk loader returned without being asked) has no call for an invalidation
+to cancel: it fills only a key without a live value or a call, and only if no key has been
+invalidated since its bulk load started (`group.invalidations`).
 
 A refresh must lose to any write that follows its request, so three things hold together:
 - refresh calls are registered on the requesting goroutine, before the task goes to the
   executor (`startRefresh` in `refreshKey`, `bulkRefreshKeys`; `group.submitRefresh` finishes
   them if the executor panics);
-- `atomicSet` cancels pending calls only after publishing the new value (`cancelCalls`), so a
-  refresh requested during an in-place write, e.g. from `OnAtomicDeletion`, is cancelled too;
+- `atomicSet` cancels pending calls only after an in-place update has published the new value
+  (`cancelCalls`), so a refresh requested during the write, e.g. from `OnAtomicDeletion`, is
+  cancelled too; a replacing node is stored only after the callback, which the next point covers;
 - a call records the node it was started for (`call.base`, nil for a load), and its result is
   written only if that node is still the key's node and has not expired (`isRefreshBase` in
   `group.authoritative`), which covers a replacement or removal published after the write's

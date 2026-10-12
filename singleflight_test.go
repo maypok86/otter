@@ -236,7 +236,7 @@ func TestGroup_Adopt(t *testing.T) {
 	require.False(t, shouldLoad)
 	require.Same(t, cl, joined)
 
-	g.adopt(cl, 5)
+	g.adopt(cl, 5, 0)
 	joined.wait()
 	require.Equal(t, 5, joined.value)
 	require.NoError(t, joined.err)

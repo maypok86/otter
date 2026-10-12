@@ -20,6 +20,7 @@ import (
 
 	"github.com/maypok86/otter/v2/internal/generated/node"
 	"github.com/maypok86/otter/v2/internal/hashmap"
+	"github.com/maypok86/otter/v2/internal/xruntime"
 )
 
 // call is a load or refresh of one key that its waiters share. Its fields are written only
@@ -39,6 +40,20 @@ type call[K comparable, V any] struct {
 	// ownerCtxDone reports that the context the loader ran with had ended by the time it
 	// returned.
 	ownerCtxDone bool
+	// committed reports that the cache has decided what the call writes. It is written and
+	// read under the key's bucket lock in the cache's hash table.
+	committed bool
+	// refused reports that the cache has not written the value a refresh or a load returned:
+	// the call was cancelled, or a refresh's node was replaced or expired. It is written
+	// under the key's bucket lock, before done is closed.
+	refused bool
+	// expiresAt is when the value that the call hands to its waiters from the cache, the one it
+	// wrote or the live one it found, expires; 0 if it hands none or entries do not expire. A
+	// waiter whose Get started after that does not take the value. It is written before done is
+	// closed.
+	expiresAt int64
+	// invalidations is group.invalidations when the bulk load that returned a fake call started.
+	invalidations uint64
 }
 
 func newCall[K comparable, V any](key K, isRefresh bool, base node.Node[K, V]) *call[K, V] {
@@ -106,6 +121,12 @@ func (c *call[K, V]) failedForOwner() bool {
 	return !errors.As(c.err, &pe)
 }
 
+// expiredBefore reports whether c, which has finished, hands its waiters a value from the cache
+// that had expired by nowNano.
+func (c *call[K, V]) expiredBefore(nowNano int64) bool {
+	return c.expiresAt != 0 && c.expiresAt <= nowNano
+}
+
 // refreshResult is what a manual refresh reports for c once it has finished.
 func (c *call[K, V]) refreshResult() RefreshResult[K, V] {
 	return RefreshResult[K, V]{
@@ -121,8 +142,8 @@ func (m *mapCallManager[K, V]) FromPointer(ptr unsafe.Pointer) *call[K, V] {
 	return (*call[K, V])(ptr)
 }
 
-// group runs loads and refreshes so that each key has at most one at a time, and owns their
-// lifecycle: a call is registered before it runs, runs with its panics and runtime.Goexit
+// group runs loads and refreshes so that each key has at most one registered at a time (a
+// superseded refresh keeps running for the callers that joined it), and owns their lifecycle: a call is registered before it runs, runs with its panics and runtime.Goexit
 // caught, and is finished exactly once, whatever fails: its result is committed, then the call
 // is deleted and its waiters woken, then the commit is published.
 type group[K comparable, V any] struct {
@@ -137,6 +158,17 @@ type group[K comparable, V any] struct {
 	publish func(m mutation[K, V])
 	// executor runs refresh tasks.
 	executor func(fn func())
+	// nodeOf returns the key's node in the cache's hash table, or nil.
+	nodeOf func(key K) node.Node[K, V]
+
+	// The counters below change on bulk loads and invalidations, while the fields above are read
+	// on every Get and write: they are kept off their cache line.
+	_ [xruntime.CacheLineSize]byte
+	// bulkLoads is the number of bulk loads in flight, and invalidations counts the invalidations
+	// made while there was one, so that a fake call is not written over an invalidation that
+	// followed the start of its load (see authoritative).
+	bulkLoads     atomic.Int64
+	invalidations atomic.Uint64
 }
 
 func (g *group[K, V]) init() {
@@ -170,13 +202,13 @@ func (g *group[K, V]) startRefresh(key K, base node.Node[K, V]) (c *call[K, V], 
 
 func (g *group[K, V]) startCall(key K, isRefresh bool, base node.Node[K, V]) (c *call[K, V], shouldLoad bool) {
 	// fast path
-	if c := g.getCall(key); c != nil {
+	if c := g.getCall(key); c != nil && !g.superseded(c) {
 		return c, shouldLoad
 	}
 
 	return g.calls.Compute(key, func(prevCall *call[K, V]) *call[K, V] {
 		// double check
-		if prevCall != nil {
+		if prevCall != nil && !g.superseded(prevCall) {
 			return prevCall
 		}
 		shouldLoad = true
@@ -184,10 +216,22 @@ func (g *group[K, V]) startCall(key K, isRefresh bool, base node.Node[K, V]) (c 
 	}), shouldLoad
 }
 
+// superseded reports whether c is a refresh whose base has been removed or replaced, so that its
+// result will not be written (see isRefreshBase). Such a refresh was registered after the write
+// or removal that would have cancelled it. The next call for its key replaces it rather than join
+// it: a Get after an invalidation would get the reload of the invalidated value, and a stale node
+// that replaced the base would not be refreshed until this refresh has finished. The refresh still
+// completes for the callers that joined it before. A removed or replaced node never comes back, so
+// a refresh that is superseded stays so.
+func (g *group[K, V]) superseded(c *call[K, V]) bool {
+	return c.isRefresh && c.base != nil && (!c.base.IsAlive() || g.nodeOf(c.key) != c.base)
+}
+
 // adopt finishes c, which the caller registered, with a value that is already in the cache,
-// without loading it.
-func (g *group[K, V]) adopt(c *call[K, V], value V) {
+// without loading it. The value expires at expiresAt (see call.expiresAt).
+func (g *group[K, V]) adopt(c *call[K, V], value V, expiresAt int64) {
 	c.value = value
+	c.expiresAt = expiresAt
 	g.deleteCall(c)
 	c.cancel()
 }
@@ -223,6 +267,13 @@ func (g *group[K, V]) doBulkCall(
 	callsInBulk map[K]*call[K, V],
 	bulkLoad func(ctx context.Context, keys []K) (map[K]V, error),
 ) (err error) {
+	// Counted before the invalidations are read, and until the calls are finished. An invalidation
+	// that does not see this load came before it, so the load reads the data source after the
+	// change that the invalidation follows.
+	g.bulkLoads.Add(1)
+	defer g.bulkLoads.Add(-1)
+	invalidations := g.invalidations.Load()
+
 	returned := false
 	defer func() {
 		if r := recover(); r != nil {
@@ -294,10 +345,11 @@ func (g *group[K, V]) doBulkCall(
 			continue
 		}
 		callsInBulk[k] = &call[K, V]{
-			key:       k,
-			value:     v,
-			isFake:    true,
-			isRefresh: isRefresh,
+			key:           k,
+			value:         v,
+			isFake:        true,
+			isRefresh:     isRefresh,
+			invalidations: invalidations,
 		}
 	}
 
@@ -342,10 +394,12 @@ func (g *group[K, V]) finish(c *call[K, V]) {
 // node was replaced, removed or has expired in the meantime, so a load, whose base is nil, never
 // writes over a live value. A key the bulk loader returned without being asked for was not
 // registered before the load, so a write during the load could not cancel it: it only fills a
-// gap, where the key has no live value and no load of its own.
+// gap, where the key has no live value and no load of its own, and only if no key has been
+// invalidated since the load started, since the value may have been read from the data source
+// before the invalidation.
 func (g *group[K, V]) authoritative(c *call[K, V], prev previous[K, V], nowNano int64) bool {
 	if c.isFake {
-		return !prev.live && g.getCall(c.key) == nil
+		return !prev.live && g.getCall(c.key) == nil && g.invalidations.Load() == c.invalidations
 	}
 	return g.getCall(c.key) == c && isRefreshBase(c.base, prev.node, nowNano)
 }
@@ -416,6 +470,17 @@ func (g *group[K, V]) deleteCall(c *call[K, V]) (deleted bool) {
 // that has loaded at least once comes here, and there is rarely a call to remove, so the lock-free
 // lookup skips taking the bucket lock. A call registered concurrently can be missed by the lookup
 // just as by Compute, which sees the bucket at one moment too.
+// invalidate deletes the call registered for key, as delete does, for an invalidation of key.
+// While a bulk load is in flight, it also counts the invalidation, which keeps the fake calls of
+// that load from being written. It is called under the key's bucket lock in the cache's hash
+// table, as is authoritative for a fake call of key.
+func (g *group[K, V]) invalidate(key K) {
+	if g.bulkLoads.Load() > 0 {
+		g.invalidations.Add(1)
+	}
+	g.delete(key)
+}
+
 func (g *group[K, V]) delete(key K) {
 	if !g.isInitialized.Load() || g.getCall(key) == nil {
 		return
@@ -426,21 +491,33 @@ func (g *group[K, V]) delete(key K) {
 	})
 }
 
-// deleteRefresh removes the call registered for key if it is a refresh. Every eviction comes here,
-// so as in delete a lookup without the lock comes first; isRefresh is set before the call is
-// registered and never changes.
-func (g *group[K, V]) deleteRefresh(key K) {
+// deleteOnRemoval removes the call registered for key when the key's entry is evicted or expires,
+// unless it is a load still in flight: a refresh of an existing node, or a call that has already
+// committed its value. A committed call stays registered until it finishes, and a Get that
+// joined it after the removal would get back the value just removed. An in-flight load is kept:
+// it was most likely started because this very entry has expired. So is a refresh of an absent
+// key, which loads it in the same way: an expired entry that was still in the table when the
+// refresh was requested is not a value of the key.
+//
+// It is called under the key's bucket lock in the cache's hash table, which guards committed.
+// Every eviction comes here, so as in delete a lookup without the lock comes first; isRefresh and
+// base are set before the call is registered and never change.
+func (g *group[K, V]) deleteOnRemoval(key K) {
 	if !g.isInitialized.Load() {
 		return
 	}
-	if cl := g.getCall(key); cl == nil || !cl.isRefresh {
+	if cl := g.getCall(key); cl == nil || !droppedOnRemoval(cl) {
 		return
 	}
 
 	g.calls.Compute(key, func(prevCall *call[K, V]) *call[K, V] {
-		if prevCall != nil && prevCall.isRefresh {
+		if prevCall != nil && droppedOnRemoval(prevCall) {
 			return nil
 		}
 		return prevCall
 	})
+}
+
+func droppedOnRemoval[K comparable, V any](c *call[K, V]) bool {
+	return (c.isRefresh && c.base != nil) || c.committed
 }

@@ -167,6 +167,7 @@ func newCache[K comparable, V any](o *Options[K, V]) *cache[K, V] {
 	c.singleflight.publish = c.publish
 	// read on every refresh, so that tests can replace the executor
 	c.singleflight.executor = func(fn func()) { c.executor(fn) }
+	c.singleflight.nodeOf = func(key K) node.Node[K, V] { return c.hashmap.Get(key) }
 
 	if withStats {
 		c.statsClock.Init()
@@ -673,13 +674,32 @@ func (c *cache[K, V]) refreshKey(
 	// The refresh is registered before it is handed to the executor, so that a write that
 	// follows the request cancels it. Registered by the task, a refresh that the executor starts
 	// after the write would replace the written value or bring an invalidated key back.
+	// The clock is user code, so it is read before: if it panicked after the registration, the
+	// call would never be finished, and every later refresh of the key would join it.
+	nowNano := c.clock.NowNano()
 	cl, shouldLoad := c.singleflight.startRefresh(rk.key, rk.old)
-	var owned []*call[K, V]
-	if shouldLoad {
-		owned = []*call[K, V]{cl}
+	if !shouldLoad {
+		// A load or refresh of the key is in flight, and its result is all there is to report.
+		// A task that waited for it would take an executor slot for the whole load: with an
+		// executor that runs a bounded number of tasks, enough stale reads of one key would take
+		// every slot and block, and so would the task they wait for. A manual refresh waits in a
+		// goroutine of its own, and the error is logged by the call's owner.
+		if isManual {
+			go func() {
+				cl.wait()
+				ch <- cl.refreshResult()
+			}()
+		}
+		return ch
+	}
+	if !isManual {
+		if n := c.refreshedMeanwhile(rk.key, nowNano); n != nil {
+			c.singleflight.adopt(cl, n.Value(), c.expiresAtOf(n))
+			return ch
+		}
 	}
 
-	c.singleflight.submitRefresh(owned, func() {
+	c.singleflight.submitRefresh([]*call[K, V]{cl}, func() {
 		var refresher func(ctx context.Context, key K) (V, error)
 		if rk.old != nil {
 			refresher = func(ctx context.Context, key K) (V, error) {
@@ -689,14 +709,11 @@ func (c *cache[K, V]) refreshKey(
 			refresher = loader.Load
 		}
 
-		if shouldLoad {
-			//nolint:errcheck // there is no need to check error
-			_ = c.wrapRefresh(func() error {
-				loadCtx := context.WithoutCancel(ctx)
-				return c.singleflight.doCall(loadCtx, cl, refresher)
-			})
-		}
-		cl.wait()
+		//nolint:errcheck // there is no need to check error
+		_ = c.wrapRefresh(func() error {
+			loadCtx := context.WithoutCancel(ctx)
+			return c.singleflight.doCall(loadCtx, cl, refresher)
+		})
 
 		if cl.err != nil && !cl.isNotFound {
 			c.logger.Error(ctx, "Returned an error during the refreshing", cl.err)
@@ -739,7 +756,9 @@ func (c *cache[K, V]) Get(ctx context.Context, key K, loader Loader[K, V]) (V, e
 		// Read before the refresh starts: the node may be updated in place by then (with a
 		// synchronous executor, by the refresh itself).
 		value := n.Value()
-		if !n.IsFresh(nowNano) {
+		// A node that is being removed is not fresh either, but there is nothing to refresh. It is
+		// checked after IsFresh: a node retired in between would pass the check before.
+		if !n.IsFresh(nowNano) && n.IsAlive() {
 			c.refreshKey(ctx, refreshableKey[K, V]{
 				key: n.Key(),
 				old: n,
@@ -775,20 +794,34 @@ func (c *cache[K, V]) loadOrJoin(
 		// committing the value to the table, so winning the slot means any such
 		// value is already visible here; adopt it rather than loading it again. Quiet lookup: the
 		// getNode above already recorded the miss for this request.
-		if n := c.getNodeQuietly(key, nowNano); n != nil {
-			value := n.Value()
-			c.singleflight.adopt(cl, value)
-			return value, false, nil
+		if c.getNodeQuietly(key, nowNano) != nil {
+			if value, expiresAt, ok := c.readForAdoption(cl, nowNano); ok {
+				c.singleflight.adopt(cl, value, expiresAt)
+				return value, false, nil
+			}
 		}
 		//nolint:errcheck // there is no need to check error
 		_ = c.wrapLoad(func() error {
 			return c.singleflight.doCall(ctx, cl, loader.Load)
 		})
+		if cl.refused {
+			value, ok := c.valueAfterRefusal(key)
+			return value, !ok, nil
+		}
 		return cl.value, false, cl.err
 	}
 
 	if err := cl.waitContext(ctx); err != nil {
 		return zeroValue[V](), false, err
+	}
+	if cl.refused {
+		value, ok := c.valueAfterRefusal(key)
+		return value, !ok, nil
+	}
+	if cl.expiredBefore(nowNano) {
+		// The Get joined a load after its value had been committed and had expired: a Get that
+		// started after the expiration loads the key again.
+		return zeroValue[V](), true, nil
 	}
 	if cl.failedForOwner() && ctx.Err() == nil {
 		return zeroValue[V](), true, nil
@@ -805,8 +838,23 @@ func (c *cache[K, V]) commitCall(cl *call[K, V]) mutation[K, V] {
 		from = fromRefresh
 	}
 	nowNano := c.clock.NowNano()
-	return c.mutate(cl.key, nowNano, from, func(prev previous[K, V]) (mutationOp, V) {
+	m := c.mutate(cl.key, nowNano, from, func(prev previous[K, V]) (mutationOp, V) {
+		// From here on, an eviction or expiration of the key drops the call (see
+		// group.deleteOnRemoval): it can no longer bring the removed value back.
+		cl.committed = true
+		if !cl.isRefresh && prev.live {
+			// A load starts on a miss, so a write has given the key a value during the load. The
+			// write may not have cancelled the load: a write that inserts or replaces a node
+			// cancels the calls before the node is stored, so a load registered in between is not
+			// cancelled. The value stays, and the load returns it, whatever it loaded, as a Get that
+			// ran after the write would.
+			cl.value, cl.err, cl.isNotFound = prev.value, nil, false
+			cl.expiresAt = c.expiresAtOf(prev.node)
+			return opKeep, cl.value
+		}
 		authoritative := c.singleflight.authoritative(cl, prev, nowNano)
+		// A failed load reports its error: no value of the key is involved.
+		cl.refused = !authoritative && (cl.isRefresh || cl.err == nil)
 		if authoritative && cl.isNotFound {
 			return opInvalidate, cl.value
 		}
@@ -823,6 +871,66 @@ func (c *cache[K, V]) commitCall(cl *call[K, V]) mutation[K, V] {
 		}
 		return opWrite, cl.value
 	})
+	if m.op == opWrite {
+		// The node is created after the decision. It is read before the waiters are woken.
+		cl.expiresAt = c.expiresAtOf(m.next)
+	}
+	return m
+}
+
+// readForAdoption returns the key's live value, and when it expires, for cl, a load that the
+// caller registered and finishes with them (group.adopt) instead of loading. The value is read
+// under the key's bucket lock, where cl is marked committed: an eviction or expiration of the
+// value after that drops cl (group.deleteOnRemoval), so that a Get that starts after the removal
+// does not join cl and get the removed value. Read without the lock, the value could be removed
+// before cl is finished, and cl would stay registered with it. ok is false if the key has no
+// live value any more.
+func (c *cache[K, V]) readForAdoption(cl *call[K, V], nowNano int64) (value V, expiresAt int64, ok bool) {
+	c.hashmap.Compute(cl.key, func(n node.Node[K, V]) node.Node[K, V] {
+		if n != nil && !n.HasExpired(nowNano) {
+			value, expiresAt, ok = n.Value(), c.expiresAtOf(n), true
+			cl.committed = true
+		}
+		return n
+	})
+	return value, expiresAt, ok
+}
+
+// valueAfterRefusal returns the value that a Get or BulkGet takes from a call whose value the
+// cache refused (call.refused): a write or an invalidation cancelled it, or the node a refresh
+// was requested for was replaced or expired, so the value is not one the key had. The key's live
+// value is returned, as a hit would return it; ok is false if there is none, and the key is
+// loaded again. A load that an invalidation cancelled may have read its data source before the
+// change that the invalidation follows.
+func (c *cache[K, V]) valueAfterRefusal(key K) (value V, ok bool) {
+	if n := c.getNodeQuietly(key, c.clock.NowNano()); n != nil {
+		return n.Value(), true
+	}
+	return zeroValue[V](), false
+}
+
+// expiresAtOf returns when n expires, or 0 if entries do not expire (see call.expiresAt).
+func (c *cache[K, V]) expiresAtOf(n node.Node[K, V]) int64 {
+	if !c.withExpiration {
+		return 0
+	}
+	return n.ExpiresAt()
+}
+
+// refreshedMeanwhile returns the node of key if it is live and fresh, so that a refresh that a
+// read requested when it saw the key stale is no longer needed: the node has been refreshed or
+// replaced since. A refresh frees its call slot only after it has published its value, so a
+// refresh that has won the slot sees one that completed meanwhile. Without this check, every read
+// that saw the key stale before the first refresh completed would reload it again.
+//
+// The skipped refresh is finished with the value of the returned node, since a Get of the key
+// may join its call: that is the value the Get would read. A key that has been removed or has
+// expired is refreshed as before, as there is no value to give.
+func (c *cache[K, V]) refreshedMeanwhile(key K, nowNano int64) node.Node[K, V] {
+	if n := c.getNodeQuietly(key, nowNano); n != nil && n.IsFresh(nowNano) {
+		return n
+	}
+	return nil
 }
 
 func (c *cache[K, V]) bulkRefreshKeys(
@@ -845,7 +953,8 @@ func (c *cache[K, V]) bulkRefreshKeys(
 		return ch
 	}
 
-	// Registered before the task is submitted, as in refreshKey.
+	// Registered before the task is submitted, with the clock read before, as in refreshKey.
+	nowNano := c.clock.NowNano()
 	var (
 		toLoadCalls   map[K]*call[K, V]
 		toReloadCalls map[K]*call[K, V]
@@ -854,6 +963,12 @@ func (c *cache[K, V]) bulkRefreshKeys(
 	)
 	for i, rk := range rks {
 		cl, shouldLoad := c.singleflight.startRefresh(rk.key, rk.old)
+		if shouldLoad && !isManual {
+			if n := c.refreshedMeanwhile(rk.key, nowNano); n != nil {
+				c.singleflight.adopt(cl, n.Value(), c.expiresAtOf(n))
+				continue
+			}
+		}
 		if shouldLoad {
 			owned = append(owned, cl)
 			if rk.old != nil {
@@ -867,12 +982,19 @@ func (c *cache[K, V]) bulkRefreshKeys(
 				}
 				toLoadCalls[rk.key] = cl
 			}
-		} else {
+		} else if isManual {
 			if foundCalls == nil {
 				foundCalls = make([]*call[K, V], 0, len(rks)-i)
 			}
 			foundCalls = append(foundCalls, cl)
 		}
+	}
+	if len(owned) == 0 {
+		// Every key is loading or refreshing already: nothing to submit, see refreshKey.
+		if isManual {
+			sendAfterJoined(ch, make([]RefreshResult[K, V], 0, len(foundCalls)), foundCalls)
+		}
+		return ch
 	}
 
 	c.singleflight.submitRefresh(owned, func() {
@@ -927,18 +1049,29 @@ func (c *cache[K, V]) bulkRefreshKeys(
 				}
 			}
 		}
-		for _, cl := range foundCalls {
-			cl.wait()
-			if isManual {
-				results = append(results, cl.refreshResult())
-			}
-		}
 		if isManual {
-			ch <- results
+			sendAfterJoined(ch, results, foundCalls)
 		}
 	})
 
 	return ch
+}
+
+// sendAfterJoined sends results to ch with the results of joined, calls that other loads or
+// refreshes own, appended once they have finished. They are waited for in a goroutine of its
+// own, not in an executor task, for the reason given in refreshKey.
+func sendAfterJoined[K comparable, V any](ch chan<- []RefreshResult[K, V], results []RefreshResult[K, V], joined []*call[K, V]) {
+	if len(joined) == 0 {
+		ch <- results
+		return
+	}
+	go func() {
+		for _, cl := range joined {
+			cl.wait()
+			results = append(results, cl.refreshResult())
+		}
+		ch <- results
+	}()
 }
 
 // BulkGet returns the value associated with key in this cache, obtaining that value from loader if necessary.
@@ -976,7 +1109,8 @@ func (c *cache[K, V]) BulkGet(ctx context.Context, keys []K, bulkLoader BulkLoad
 
 		n := c.getNode(key, nowNano)
 		if n != nil {
-			if !n.IsFresh(nowNano) {
+			// a node that is being removed is not refreshed, see Get
+			if !n.IsFresh(nowNano) && n.IsAlive() {
 				if toRefresh == nil {
 					toRefresh = make([]refreshableKey[K, V], 0, len(keys)-len(result))
 				}
@@ -1035,13 +1169,14 @@ func (c *cache[K, V]) bulkLoadOrJoin(
 		cl, shouldLoad := c.singleflight.startLoad(key)
 		if shouldLoad {
 			// Winning the call slot means that a value written before is visible, see Get.
-			if n := c.getNodeQuietly(key, nowNano); n != nil {
-				value := n.Value()
-				c.singleflight.adopt(cl, value)
-				result[key] = value
-				delete(misses, key)
-				i++
-				continue
+			if c.getNodeQuietly(key, nowNano) != nil {
+				if value, expiresAt, ok := c.readForAdoption(cl, nowNano); ok {
+					c.singleflight.adopt(cl, value, expiresAt)
+					result[key] = value
+					delete(misses, key)
+					i++
+					continue
+				}
 			}
 			if toLoadCalls == nil {
 				toLoadCalls = make(map[K]*call[K, V], len(misses)-i)
@@ -1070,6 +1205,25 @@ func (c *cache[K, V]) bulkLoadOrJoin(
 		}
 		i++
 
+		if cl.refused {
+			if value, ok := c.valueAfterRefusal(key); ok {
+				result[key] = value
+				continue
+			}
+			if retry == nil {
+				retry = make(map[K]*call[K, V], len(misses)-i+1)
+			}
+			retry[key] = nil
+			continue
+		}
+		if _, own := toLoadCalls[key]; !own && cl.expiredBefore(nowNano) {
+			// a value that expired before this load, see loadOrJoin
+			if retry == nil {
+				retry = make(map[K]*call[K, V], len(misses)-i+1)
+			}
+			retry[key] = nil
+			continue
+		}
 		if cl.err == nil {
 			result[key] = cl.Value()
 			continue
@@ -1283,14 +1437,15 @@ func (c *cache[K, V]) deleteNodeFromMap(
 			}
 		}
 		if removal == removeInvalidated {
-			c.singleflight.delete(n.Key())
+			c.singleflight.invalidate(n.Key())
 		} else if isCurrent {
 			// An eviction must not cancel an in-flight load: it was most likely started
 			// because this very node has expired, and dropping it would make the loaded
-			// value silently disappear. Only a pending refresh of the evicted value is discarded,
-			// and only if n is still the key's node: the policy may evict a node that was
-			// already replaced, and the refresh then belongs to the value that replaced it.
-			c.singleflight.deleteRefresh(n.Key())
+			// value silently disappear. Only a pending refresh of the evicted value, or a load
+			// that has already committed it, is dropped, and only if n is still the key's node:
+			// the policy may evict a node that was already replaced, and the call then belongs
+			// to the value that replaced it.
+			c.singleflight.deleteOnRemoval(n.Key())
 		}
 		if !isCurrent {
 			return current

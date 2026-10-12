@@ -1545,8 +1545,8 @@ func TestCache_ConcurrentGetAndSet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get error = %v", err)
 	}
-	if v != v2 {
-		t.Fatalf("Get is not linerazable. want = %v, got = %v", v2, v)
+	if v != v1 {
+		t.Fatalf("Get is not linerazable. want = %v, got = %v", v1, v)
 	}
 
 	e, ok := c.GetEntryQuietly(k1)
@@ -2741,4 +2741,872 @@ func TestCache_BulkGetRetryTakesValueWrittenDuringFailedLoad(t *testing.T) {
 	v, ok := c.GetIfPresent(1)
 	require.True(t, ok)
 	require.Equal(t, 99, v)
+}
+
+func TestCache_ReadDoesNotRefreshAgain(t *testing.T) {
+	t.Parallel()
+
+	// A read sees a node stale and requests a refresh, but by the time the refresh wins its call
+	// slot, the node has been refreshed by another read, or replaced: the refresh is skipped. A
+	// removed key has no value to give, so it is refreshed as before.
+	tests := []struct {
+		name      string
+		change    func(c *Cache[int, int], loader Loader[int, int])
+		wantCalls uint64
+	}{
+		{
+			name: "refreshed",
+			change: func(c *Cache[int, int], loader Loader[int, int]) {
+				<-c.Refresh(context.Background(), 1, loader)
+			},
+		},
+		{
+			name: "replaced",
+			change: func(c *Cache[int, int], _ Loader[int, int]) {
+				c.Invalidate(1)
+				c.Set(1, 5)
+			},
+		},
+		{
+			name: "removed",
+			change: func(c *Cache[int, int], _ Loader[int, int]) {
+				c.Invalidate(1)
+			},
+			wantCalls: 1,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			for _, bulk := range []bool{false, true} {
+				clock := newNonTickingClock()
+				c := Must(&Options[int, int]{
+					MaximumSize:       100,
+					RefreshCalculator: RefreshWriting[int, int](time.Minute),
+					Clock:             clock,
+					Executor:          func(fn func()) { fn() },
+				})
+				c.cache.singleflight.init()
+				tl := newTestLoader[int, int](func(_ context.Context, key int) (int, error) {
+					return key * 10, nil
+				})
+				tbl := newTestBulkLoader[int, int](func(_ context.Context, keys []int) (map[int]int, error) {
+					res := make(map[int]int, len(keys))
+					for _, k := range keys {
+						res[k] = k * 10
+					}
+					return res, nil
+				})
+
+				c.Set(1, 1)
+				clock.Sleep(2 * time.Minute)
+				stale := c.cache.getNodeQuietly(1, c.cache.clock.NowNano())
+				require.NotNil(t, stale)
+				require.False(t, stale.IsFresh(c.cache.clock.NowNano()))
+
+				tt.change(c, tl)
+				before := tl.calls.Load() + tbl.calls.Load()
+				rk := refreshableKey[int, int]{key: 1, old: stale}
+				if bulk {
+					c.cache.bulkRefreshKeys(context.Background(), []refreshableKey[int, int]{rk}, tbl, false)
+				} else {
+					c.cache.refreshKey(context.Background(), rk, tl, false)
+				}
+				require.Equal(t, before+tt.wantCalls, tl.calls.Load()+tbl.calls.Load(), "bulk=%v", bulk)
+				require.Nil(t, c.cache.singleflight.getCall(1), "bulk=%v", bulk)
+			}
+		})
+	}
+}
+
+func TestCache_RemovalDropsCommittedLoad(t *testing.T) {
+	t.Parallel()
+
+	// A load has written its value but is still registered when the entry is evicted or
+	// expires. A Get after the removal must load the key again instead of joining the finished
+	// load and getting back the removed value.
+	tests := []struct {
+		name   string
+		remove func(c *Cache[int, int], clock *nonTickingClock)
+	}{
+		{
+			name: "evicted",
+			remove: func(c *Cache[int, int], _ *nonTickingClock) {
+				c.cache.evictNode(c.cache.hashmap.Get(1))
+			},
+		},
+		{
+			name: "expired",
+			remove: func(c *Cache[int, int], clock *nonTickingClock) {
+				clock.Sleep(2 * time.Minute)
+				c.cache.expireNode(c.cache.hashmap.Get(1), c.cache.clock.NowNano())
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			clock := newNonTickingClock()
+			c := Must(&Options[int, int]{
+				MaximumSize:      100,
+				ExpiryCalculator: ExpiryWriting[int, int](time.Minute),
+				Clock:            clock,
+			})
+			c.cache.singleflight.init()
+
+			// The load writes its value; its call is deleted and its waiters woken only after.
+			cl, shouldLoad := c.cache.singleflight.startLoad(1)
+			require.True(t, shouldLoad)
+			cl.value = 10
+			c.cache.commitCall(cl)
+			require.NotNil(t, c.cache.hashmap.Get(1))
+
+			tt.remove(c, clock)
+			require.Nil(t, c.cache.hashmap.Get(1))
+			require.Nil(t, c.cache.singleflight.getCall(1), "the committed load is still registered")
+			cl.cancel()
+
+			tl := newTestLoader[int, int](func(_ context.Context, key int) (int, error) {
+				return key * 20, nil
+			})
+			v, err := c.Get(context.Background(), 1, tl)
+			require.NoError(t, err)
+			require.Equal(t, 20, v)
+			require.Equal(t, uint64(1), tl.loads.Load())
+		})
+	}
+}
+
+func TestCache_RemovalKeepsLoadInFlight(t *testing.T) {
+	t.Parallel()
+
+	// A load that has not committed yet is kept when the entry it replaces is evicted.
+	c := Must(&Options[int, int]{MaximumSize: 100})
+	c.Set(1, 1)
+	c.cache.singleflight.init()
+	cl, shouldLoad := c.cache.singleflight.startLoad(1)
+	require.True(t, shouldLoad)
+
+	c.cache.evictNode(c.cache.hashmap.Get(1))
+	require.Same(t, cl, c.cache.singleflight.getCall(1))
+	cl.cancel()
+}
+
+type panickingClock struct {
+	*nonTickingClock
+	panics atomic.Bool
+}
+
+func (c *panickingClock) NowNano() int64 {
+	if c.panics.Load() {
+		panic("clock")
+	}
+	return c.nonTickingClock.NowNano()
+}
+
+func TestCache_ClockPanicDoesNotStrandRefresh(t *testing.T) {
+	t.Parallel()
+
+	// The clock is user code. If it panics while a read requests a refresh, the refresh must not
+	// stay registered: every later refresh of the key would join it, and none would ever run.
+	for _, bulk := range []bool{false, true} {
+		clock := &panickingClock{nonTickingClock: newNonTickingClock()}
+		c := Must(&Options[int, int]{
+			MaximumSize:       100,
+			RefreshCalculator: RefreshWriting[int, int](time.Minute),
+			Clock:             clock,
+			Executor:          func(fn func()) { fn() },
+		})
+		c.cache.singleflight.init()
+		tl := newTestLoader[int, int](func(_ context.Context, key int) (int, error) {
+			return key * 10, nil
+		})
+		tbl := newTestBulkLoader[int, int](func(_ context.Context, keys []int) (map[int]int, error) {
+			res := make(map[int]int, len(keys))
+			for _, k := range keys {
+				res[k] = k * 10
+			}
+			return res, nil
+		})
+
+		c.Set(1, 1)
+		clock.Sleep(2 * time.Minute)
+		stale := c.cache.getNodeQuietly(1, c.cache.clock.NowNano())
+		require.NotNil(t, stale)
+
+		clock.panics.Store(true)
+		rk := refreshableKey[int, int]{key: 1, old: stale}
+		require.Panics(t, func() {
+			if bulk {
+				c.cache.bulkRefreshKeys(context.Background(), []refreshableKey[int, int]{rk}, tbl, false)
+			} else {
+				c.cache.refreshKey(context.Background(), rk, tl, false)
+			}
+		}, "bulk=%v", bulk)
+		clock.panics.Store(false)
+		require.Nil(t, c.cache.singleflight.getCall(1), "bulk=%v", bulk)
+	}
+}
+
+func TestCache_LoadKeepsValueWrittenBeforeItsRegistration(t *testing.T) {
+	t.Parallel()
+
+	// A write cancels the loads registered for its key before it stores its value, so a Get
+	// that misses the key and registers a load in between is not cancelled. The load then finds
+	// the written value when it completes: the value stays, and the load returns it.
+	tests := []struct {
+		name    string
+		loadErr error
+	}{
+		{name: "loaded"},
+		{name: "not found", loadErr: ErrNotFound},
+		{name: "failed", loadErr: errors.New("load failed")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			for _, bulk := range []bool{false, true} {
+				c := Must(&Options[int, int]{})
+				c.cache.singleflight.init()
+
+				// The load is registered after the write: as if the Get had missed the key before
+				// the write stored its value.
+				c.Set(1, 2)
+				cl, shouldLoad := c.cache.singleflight.startLoad(1)
+				require.True(t, shouldLoad)
+
+				if bulk {
+					_ = c.cache.singleflight.doBulkCall(context.Background(), map[int]*call[int, int]{1: cl},
+						func(context.Context, []int) (map[int]int, error) {
+							if tt.loadErr != nil {
+								return nil, tt.loadErr
+							}
+							return map[int]int{1: 1}, nil
+						})
+				} else {
+					_ = c.cache.singleflight.doCall(context.Background(), cl, func(context.Context, int) (int, error) {
+						return 1, tt.loadErr
+					})
+				}
+
+				v, ok := c.GetIfPresent(1)
+				require.True(t, ok, "bulk=%v", bulk)
+				require.Equal(t, 2, v, "bulk=%v", bulk)
+				require.NoError(t, cl.err, "bulk=%v", bulk)
+				require.Equal(t, 2, cl.value, "bulk=%v", bulk)
+			}
+		})
+	}
+}
+
+func TestCache_ReadsDuringRefreshSubmitNoTasks(t *testing.T) {
+	t.Parallel()
+
+	// While a refresh of a key is in flight, a read that finds the key stale has nothing to do.
+	// A task that only waited for the refresh would take an executor slot for the whole reload:
+	// with an executor that runs a bounded number of tasks, enough stale reads take every slot,
+	// the reads block on the submission, and so does the refresh queued behind them.
+	ctx := context.Background()
+	clock := newNonTickingClock()
+	var submitted atomic.Int64
+	c := Must(&Options[int, int]{
+		RefreshCalculator: RefreshWriting[int, int](time.Minute),
+		Clock:             clock,
+		Executor: func(fn func()) {
+			submitted.Add(1)
+			go fn()
+		},
+	})
+	release := make(chan struct{})
+	tl := newTestLoader[int, int](func(context.Context, int) (int, error) {
+		<-release
+		return 2, nil
+	})
+	tbl := newTestBulkLoader[int, int](func(context.Context, []int) (map[int]int, error) {
+		<-release
+		return map[int]int{1: 2}, nil
+	})
+
+	c.Set(1, 1)
+	clock.Sleep(2 * time.Minute)
+	v, err := c.Get(ctx, 1, tl)
+	require.NoError(t, err)
+	require.Equal(t, 1, v)
+	require.Equal(t, int64(1), submitted.Load())
+
+	for range 10 {
+		v, err := c.Get(ctx, 1, tl)
+		require.NoError(t, err)
+		require.Equal(t, 1, v)
+		res, err := c.BulkGet(ctx, []int{1}, tbl)
+		require.NoError(t, err)
+		require.Equal(t, map[int]int{1: 1}, res)
+	}
+	// A manual refresh that joins the in-flight one still reports its result.
+	single := c.Refresh(ctx, 1, tl)
+	bulk := c.BulkRefresh(ctx, []int{1}, tbl)
+	require.Equal(t, int64(1), submitted.Load())
+
+	close(release)
+	require.Equal(t, RefreshResult[int, int]{Key: 1, Value: 2}, <-single)
+	require.Equal(t, []RefreshResult[int, int]{{Key: 1, Value: 2}}, <-bulk)
+	require.Equal(t, uint64(1), tl.calls.Load()+tbl.calls.Load())
+}
+
+func TestCache_ReadDuringInvalidateStartsNoRefresh(t *testing.T) {
+	t.Parallel()
+
+	// A read that finds the node while an invalidation removes it sees the node stale, since a
+	// removed node is not fresh. A refresh of it would be discarded anyway, and it would hold
+	// the key's call slot for loads that start after the invalidation.
+	ctx := context.Background()
+	release := make(chan struct{})
+	defer close(release)
+	tl := newTestLoader[int, int](func(context.Context, int) (int, error) {
+		<-release
+		return 2, nil
+	})
+	tbl := newTestBulkLoader[int, int](func(context.Context, []int) (map[int]int, error) {
+		<-release
+		return map[int]int{1: 2}, nil
+	})
+	for _, bulk := range []bool{false, true} {
+		var c *Cache[int, int]
+		c = Must(&Options[int, int]{
+			// nodes are retired on removal only in a cache with maintenance
+			MaximumSize:       100,
+			RefreshCalculator: RefreshWriting[int, int](time.Minute),
+			OnAtomicDeletion: func(e DeletionEvent[int, int]) {
+				if e.Cause != CauseInvalidation {
+					return
+				}
+				if bulk {
+					_, _ = c.BulkGet(ctx, []int{e.Key}, tbl)
+				} else {
+					_, _ = c.Get(ctx, e.Key, tl)
+				}
+			},
+		})
+
+		c.Set(1, 1)
+		c.Invalidate(1)
+		require.Nil(t, c.cache.singleflight.getCall(1), "bulk=%v", bulk)
+		require.Zero(t, tl.calls.Load()+tbl.calls.Load(), "bulk=%v", bulk)
+	}
+}
+
+func TestCache_CallSupersedesRefreshOfRemovedNode(t *testing.T) {
+	t.Parallel()
+
+	// A refresh that was registered after its base had been removed or replaced cannot write
+	// its result, so it is not joined: the next call for the key replaces it. A Get after an
+	// invalidation would otherwise get the reload of the invalidated value, and a stale
+	// replacing node would not be refreshed until the doomed refresh had finished.
+	tests := []struct {
+		name string
+		// replaced writes the key again before the doomed refresh is registered
+		replaced bool
+		run      func(t *testing.T, c *Cache[int, int], doomed *call[int, int])
+	}{
+		{
+			name: "Get",
+			run: func(t *testing.T, c *Cache[int, int], _ *call[int, int]) {
+				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+				defer cancel()
+				v, err := c.Get(ctx, 1, newTestLoader[int, int](func(context.Context, int) (int, error) {
+					return 5, nil
+				}))
+				require.NoError(t, err)
+				require.Equal(t, 5, v)
+			},
+		},
+		{
+			name: "BulkGet",
+			run: func(t *testing.T, c *Cache[int, int], _ *call[int, int]) {
+				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+				defer cancel()
+				res, err := c.BulkGet(ctx, []int{1}, newTestBulkLoader[int, int](func(context.Context, []int) (map[int]int, error) {
+					return map[int]int{1: 5}, nil
+				}))
+				require.NoError(t, err)
+				require.Equal(t, map[int]int{1: 5}, res)
+			},
+		},
+		{
+			name:     "refresh of the replacing node",
+			replaced: true,
+			run: func(t *testing.T, c *Cache[int, int], doomed *call[int, int]) {
+				n := c.cache.getNodeQuietly(1, c.cache.clock.NowNano())
+				cl, shouldLoad := c.cache.singleflight.startRefresh(1, n)
+				require.True(t, shouldLoad)
+				require.NotSame(t, doomed, cl)
+				require.Same(t, cl, c.cache.singleflight.getCall(1))
+				c.cache.singleflight.adopt(cl, n.Value(), 0)
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			c := Must(&Options[int, int]{
+				RefreshCalculator: RefreshWriting[int, int](time.Minute),
+			})
+			c.cache.singleflight.init()
+			c.Set(1, 1)
+			base := c.cache.getNodeQuietly(1, c.cache.clock.NowNano())
+			c.Invalidate(1)
+			if tt.replaced {
+				c.Set(1, 3)
+			}
+			// The writes have run before the refresh was registered, so they did not cancel it.
+			doomed, shouldLoad := c.cache.singleflight.startRefresh(1, base)
+			require.True(t, shouldLoad)
+			defer doomed.cancel()
+
+			tt.run(t, c, doomed)
+		})
+	}
+}
+
+func TestCache_ExtraBulkEntryKeepsInvalidation(t *testing.T) {
+	t.Parallel()
+
+	// A bulk loader may return keys that were not asked for. They have no call of their own for an
+	// invalidation to cancel, so an extra value that the loader read before the key was
+	// invalidated must not be cached after the invalidation has returned.
+	tests := []struct {
+		name    string
+		present bool
+		bulk    func(ctx context.Context, c *Cache[int, int], bl BulkLoader[int, int])
+	}{
+		{
+			name: "BulkGet, absent",
+			bulk: func(ctx context.Context, c *Cache[int, int], bl BulkLoader[int, int]) {
+				_, _ = c.BulkGet(ctx, []int{1}, bl)
+			},
+		},
+		{
+			name:    "BulkGet, present",
+			present: true,
+			bulk: func(ctx context.Context, c *Cache[int, int], bl BulkLoader[int, int]) {
+				_, _ = c.BulkGet(ctx, []int{1}, bl)
+			},
+		},
+		{
+			name: "BulkRefresh",
+			bulk: func(ctx context.Context, c *Cache[int, int], bl BulkLoader[int, int]) {
+				<-c.BulkRefresh(ctx, []int{1}, bl)
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			c := Must(&Options[int, int]{
+				RefreshCalculator: RefreshWriting[int, int](time.Minute),
+			})
+			if tt.present {
+				c.Set(2, 1)
+			}
+			started := make(chan struct{})
+			proceed := make(chan struct{})
+			bl := newTestBulkLoader[int, int](func(context.Context, []int) (map[int]int, error) {
+				close(started)
+				<-proceed
+				return map[int]int{1: 10, 2: 20}, nil
+			})
+
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				tt.bulk(context.Background(), c, bl)
+			}()
+			<-started
+			c.Invalidate(2)
+			close(proceed)
+			<-done
+
+			v, ok := c.GetIfPresent(1)
+			require.True(t, ok)
+			require.Equal(t, 10, v)
+			v, ok = c.GetIfPresent(2)
+			require.False(t, ok, "the invalidated key holds %d", v)
+		})
+	}
+}
+
+type splitLoader struct {
+	load   func(ctx context.Context, key int) (int, error)
+	reload func(ctx context.Context, key, oldValue int) (int, error)
+}
+
+func (l splitLoader) Load(ctx context.Context, key int) (int, error) { return l.load(ctx, key) }
+
+func (l splitLoader) Reload(ctx context.Context, key, oldValue int) (int, error) {
+	return l.reload(ctx, key, oldValue)
+}
+
+func TestCache_GetJoinedRefreshNotWritten(t *testing.T) {
+	t.Parallel()
+
+	// A Get that misses a key may join a refresh of it. If the cache does not write the
+	// refresh's result, the Get returns the key's value in the cache, or loads the key itself:
+	// the result it waited for is not a value of the key.
+	ctx := context.Background()
+	load5 := func(context.Context, int) (int, error) { return 5, nil }
+	tests := []struct {
+		name string
+		// start registers a refresh, and change, called once a Get has joined it, makes the cache
+		// refuse its result
+		start  func(c *Cache[int, int], clock *nonTickingClock)
+		change func(c *Cache[int, int], clock *nonTickingClock)
+		want   int
+	}{
+		{
+			name: "refresh of an absent key, cancelled by SetIfAbsent",
+			start: func(c *Cache[int, int], _ *nonTickingClock) {
+				c.Refresh(ctx, 1, splitLoader{load: func(context.Context, int) (int, error) {
+					return 2, nil
+				}})
+			},
+			change: func(c *Cache[int, int], _ *nonTickingClock) {
+				_, inserted := c.SetIfAbsent(1, 3)
+				require.True(t, inserted)
+			},
+			want: 3,
+		},
+		{
+			name: "refresh whose node expires",
+			start: func(c *Cache[int, int], clock *nonTickingClock) {
+				c.Set(1, 1)
+				clock.Sleep(30 * time.Second)
+				v, err := c.Get(ctx, 1, splitLoader{reload: func(context.Context, int, int) (int, error) {
+					return 2, nil
+				}})
+				require.NoError(t, err)
+				require.Equal(t, 1, v)
+				clock.Sleep(time.Minute)
+			},
+			change: func(*Cache[int, int], *nonTickingClock) {},
+			want:   5,
+		},
+	}
+	for _, tt := range tests {
+		for _, bulk := range []bool{false, true} {
+			// Tasks wait in a queue until run: the refresh until a Get has joined it, and the
+			// maintenance, which would remove an expired node and drop its refresh before the Get
+			// joins it.
+			var (
+				mu    sync.Mutex
+				tasks []func()
+			)
+			run := func() {
+				for {
+					mu.Lock()
+					if len(tasks) == 0 {
+						mu.Unlock()
+						return
+					}
+					fn := tasks[0]
+					tasks = tasks[1:]
+					mu.Unlock()
+					fn()
+				}
+			}
+			clock := newNonTickingClock()
+			c := Must(&Options[int, int]{
+				ExpiryCalculator:  ExpiryWriting[int, int](time.Minute),
+				RefreshCalculator: RefreshWriting[int, int](10 * time.Second),
+				Clock:             clock,
+				Executor: func(fn func()) {
+					mu.Lock()
+					defer mu.Unlock()
+					tasks = append(tasks, fn)
+				},
+			})
+			tt.start(c, clock)
+
+			got := make(chan getResult, 1)
+			go func() {
+				if bulk {
+					res, err := c.BulkGet(ctx, []int{1}, newTestBulkLoader[int, int](func(context.Context, []int) (map[int]int, error) {
+						return map[int]int{1: 5}, nil
+					}))
+					got <- getResult{res[1], err}
+					return
+				}
+				v, err := c.Get(ctx, 1, splitLoader{load: load5})
+				got <- getResult{v, err}
+			}()
+			waitForJoinedLoad(t)
+			tt.change(c, clock)
+			run()
+
+			r := <-got
+			require.NoError(t, r.err, "%s, bulk=%v", tt.name, bulk)
+			require.Equal(t, tt.want, r.value, "%s, bulk=%v", tt.name, bulk)
+			v, ok := c.GetIfPresent(1)
+			require.True(t, ok, "%s, bulk=%v", tt.name, bulk)
+			require.Equal(t, tt.want, v, "%s, bulk=%v", tt.name, bulk)
+		}
+	}
+}
+
+func TestCache_GetDoesNotTakeLoadedValueExpiredBeforeIt(t *testing.T) {
+	t.Parallel()
+
+	// A load hands its waiters a value from the cache before its call is deleted: the value it
+	// wrote, the value written during the load, or one written by another load before it started
+	// (adopt). A Get that misses the key in between, because the value has already expired,
+	// joins the call: it must not return a value that expired before it started.
+	ctx := context.Background()
+	tests := []struct {
+		name string
+		// start registers the load and runs the part of it that finds or writes its value; the
+		// returned func finishes it
+		start func(c *Cache[int, int]) (finish func())
+	}{
+		{
+			name: "written",
+			start: func(c *Cache[int, int]) func() {
+				cl, _ := c.cache.singleflight.startLoad(1)
+				cl.value = 1
+				m := c.cache.commitCall(cl)
+				return func() {
+					c.cache.singleflight.deleteCall(cl)
+					cl.cancel()
+					c.cache.publish(m)
+				}
+			},
+		},
+		{
+			name: "written during the load",
+			start: func(c *Cache[int, int]) func() {
+				c.Set(1, 3)
+				cl, _ := c.cache.singleflight.startLoad(1)
+				cl.value = 1
+				m := c.cache.commitCall(cl)
+				return func() {
+					c.cache.singleflight.deleteCall(cl)
+					cl.cancel()
+					c.cache.publish(m)
+				}
+			},
+		},
+		{
+			name: "adopted",
+			start: func(c *Cache[int, int]) func() {
+				c.Set(1, 3)
+				cl, _ := c.cache.singleflight.startLoad(1)
+				n := c.cache.getNodeQuietly(1, c.cache.clock.NowNano())
+				return func() {
+					c.cache.singleflight.adopt(cl, n.Value(), c.cache.expiresAtOf(n))
+				}
+			},
+		},
+	}
+	for _, tt := range tests {
+		for _, bulk := range []bool{false, true} {
+			clock := newNonTickingClock()
+			c := Must(&Options[int, int]{
+				ExpiryCalculator: ExpiryWriting[int, int](time.Minute),
+				Clock:            clock,
+				// the tasks never run: maintenance would remove the expired entry, and with it the call
+				Executor: func(func()) {},
+			})
+			c.cache.singleflight.init()
+			finish := tt.start(c)
+			clock.Sleep(2 * time.Minute)
+
+			got := make(chan getResult, 1)
+			go func() {
+				if bulk {
+					res, err := c.BulkGet(ctx, []int{1}, newTestBulkLoader[int, int](func(context.Context, []int) (map[int]int, error) {
+						return map[int]int{1: 5}, nil
+					}))
+					got <- getResult{res[1], err}
+					return
+				}
+				v, err := c.Get(ctx, 1, newTestLoader[int, int](func(context.Context, int) (int, error) {
+					return 5, nil
+				}))
+				got <- getResult{v, err}
+			}()
+			waitForJoinedLoad(t)
+			finish()
+
+			r := <-got
+			require.NoError(t, r.err, "%s, bulk=%v", tt.name, bulk)
+			require.Equal(t, 5, r.value, "%s, bulk=%v", tt.name, bulk)
+		}
+	}
+}
+
+func TestCache_GetDoesNotReturnLoadOfInvalidatedKey(t *testing.T) {
+	t.Parallel()
+
+	// An invalidation cancels the load of its key. When the load completes, the key has no
+	// value, so the loaded value is not written, and it is not returned either: it was never in
+	// the cache, and Invalidate has reported the key absent. The key is loaded again.
+	ctx := context.Background()
+	tests := []struct {
+		name string
+		get  func(c *Cache[int, int], load LoaderFunc[int, int]) (int, error)
+		// waiter makes another goroutine own the load, so that the Get waits for it
+		waiter bool
+	}{
+		{name: "Get", get: func(c *Cache[int, int], load LoaderFunc[int, int]) (int, error) {
+			return c.Get(ctx, 1, load)
+		}},
+		{name: "BulkGet", get: func(c *Cache[int, int], load LoaderFunc[int, int]) (int, error) {
+			res, err := c.BulkGet(ctx, []int{1}, BulkLoaderFunc[int, int](func(ctx context.Context, keys []int) (map[int]int, error) {
+				v, err := load(ctx, keys[0])
+				return map[int]int{keys[0]: v}, err
+			}))
+			return res[1], err
+		}},
+		{name: "waiting Get", waiter: true, get: func(c *Cache[int, int], load LoaderFunc[int, int]) (int, error) {
+			return c.Get(ctx, 1, load)
+		}},
+	}
+	for _, tt := range tests {
+		c := Must(&Options[int, int]{})
+		started := make(chan struct{})
+		release := make(chan struct{})
+		var loads atomic.Int64
+		load := LoaderFunc[int, int](func(context.Context, int) (int, error) {
+			if loads.Add(1) == 1 {
+				close(started)
+				<-release
+				return 1, nil
+			}
+			return 2, nil
+		})
+
+		got := make(chan getResult, 1)
+		if tt.waiter {
+			go func() { _, _ = c.Get(ctx, 1, load) }()
+			<-started
+			go func() {
+				v, err := tt.get(c, load)
+				got <- getResult{v, err}
+			}()
+			waitForJoinedLoad(t)
+		} else {
+			go func() {
+				v, err := tt.get(c, load)
+				got <- getResult{v, err}
+			}()
+			<-started
+		}
+		_, invalidated := c.Invalidate(1)
+		require.False(t, invalidated, tt.name)
+		close(release)
+
+		r := <-got
+		require.NoError(t, r.err, tt.name)
+		require.Equal(t, 2, r.value, tt.name)
+		v, ok := c.GetIfPresent(1)
+		require.True(t, ok, tt.name)
+		require.Equal(t, 2, v, tt.name)
+	}
+}
+
+func TestCache_WriteCancelsCallRegisteredWhileItIsApplied(t *testing.T) {
+	t.Parallel()
+
+	// An invalidation cancels the calls of its key before the hash table removes the node. A
+	// Get that registers a load in between still finds the old value on its re-check and adopts
+	// it, and a Get that starts after the invalidation returned would join that call and get
+	// the invalidated value. The call is cancelled again once the change is visible.
+	tests := []struct {
+		name       string
+		invalidate func(c *Cache[int, int])
+	}{
+		{name: "Invalidate", invalidate: func(c *Cache[int, int]) { c.Invalidate(1) }},
+		{name: "Compute", invalidate: func(c *Cache[int, int]) {
+			c.Compute(1, func(int, bool) (int, ComputeOp) { return 0, InvalidateOp })
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var (
+				c        *Cache[int, int]
+				adopting *call[int, int]
+				sawOld   bool
+			)
+			c = Must(&Options[int, int]{
+				OnAtomicDeletion: func(DeletionEvent[int, int]) {
+					// A Get registers its load and re-checks the table: the node is still there.
+					// The listener runs under the bucket lock, so nothing here may fail the test.
+					adopting, _ = c.cache.singleflight.startLoad(1)
+					sawOld = c.cache.getNodeQuietly(1, c.cache.clock.NowNano()) != nil
+				},
+			})
+			c.cache.singleflight.init()
+			c.Set(1, 1)
+			tt.invalidate(c)
+			require.NotNil(t, adopting)
+			defer c.cache.singleflight.adopt(adopting, 1, 0)
+			require.True(t, sawOld)
+
+			require.Nil(t, c.cache.singleflight.getCall(1))
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			v, err := c.Get(ctx, 1, LoaderFunc[int, int](func(context.Context, int) (int, error) { return 5, nil }))
+			require.NoError(t, err)
+			require.Equal(t, 5, v)
+		})
+	}
+}
+
+func TestCache_EvictionDropsLoadThatAdoptedItsValue(t *testing.T) {
+	t.Parallel()
+
+	// A load that wins its call slot and finds a value in the cache adopts it. If the value is
+	// evicted before the call is finished, a Get that starts after the eviction must not join
+	// the call and get the evicted value.
+	ctx := context.Background()
+	load99 := LoaderFunc[int, int](func(context.Context, int) (int, error) { return 99, nil })
+
+	t.Run("evicted after the read", func(t *testing.T) {
+		t.Parallel()
+
+		c := Must(&Options[int, int]{MaximumSize: 100})
+		c.cache.singleflight.init()
+		c.Set(1, 1)
+		n := c.cache.getNodeQuietly(1, c.cache.clock.NowNano())
+		cl, _ := c.cache.singleflight.startLoad(1)
+		value, expiresAt, ok := c.cache.readForAdoption(cl, c.cache.clock.NowNano())
+		require.True(t, ok)
+		require.Equal(t, 1, value)
+
+		c.cache.evictNode(n) // before the call is finished
+		require.Nil(t, c.cache.singleflight.getCall(1))
+		v, err := c.Get(ctx, 1, load99)
+		require.NoError(t, err)
+		require.Equal(t, 99, v)
+		c.cache.singleflight.adopt(cl, value, expiresAt)
+	})
+	t.Run("evicted before the read", func(t *testing.T) {
+		t.Parallel()
+
+		c := Must(&Options[int, int]{MaximumSize: 100})
+		c.cache.singleflight.init()
+		c.Set(1, 1)
+		n := c.cache.getNodeQuietly(1, c.cache.clock.NowNano())
+		cl, _ := c.cache.singleflight.startLoad(1)
+		c.cache.evictNode(n) // after the lock-free check found the value
+		_, _, ok := c.cache.readForAdoption(cl, c.cache.clock.NowNano())
+		require.False(t, ok)
+		c.cache.singleflight.deleteCall(cl)
+		cl.cancel()
+	})
 }

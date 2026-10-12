@@ -115,18 +115,25 @@ func (c *cache[K, V]) mutate(
 			return n
 		case opInvalidate:
 			if from == fromCaller {
-				c.singleflight.delete(key)
+				c.singleflight.invalidate(key)
 			}
 			m.cause = c.retireRemoved(current, nowNano)
 			return nil
 		case opRemoveExpired:
-			c.singleflight.deleteRefresh(key)
+			c.singleflight.deleteOnRemoval(key)
 			m.cause = c.retireRemoved(current, nowNano)
 			return nil
 		default:
 			return current
 		}
 	})
+	// A write or an invalidation cancels the key's calls inside the callback, before the hash
+	// table stores the new node or removes the old one, so a call registered in between can still
+	// find the old value: its owner re-checks the table and adopts it, and a Get that starts after
+	// this returns would join it. Cancelling again once the change is visible ends such calls.
+	if from == fromCaller && (m.op == opWrite || m.op == opInvalidate) {
+		c.singleflight.delete(key)
+	}
 	return m
 }
 
