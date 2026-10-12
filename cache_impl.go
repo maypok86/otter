@@ -114,6 +114,11 @@ type cache[K comparable, V any] struct {
 	// so that the timer wheel and size eviction agree on what has expired; guarded by
 	// evictionMutex
 	maintenanceNanos int64
+	// even while a scheduler that holds evictionMutex waits to learn whether its executor ran the
+	// drain inline; whoever makes it odd releases that mutex. Each schedule takes a new value, so
+	// a scheduler releases only its own lock, and only a drain can take over another's release
+	drainToken       atomic.Uint64
+	drainBuffersFunc func()
 }
 
 // newCache returns a new cache instance based on the settings from Options.
@@ -163,6 +168,7 @@ func newCache[K comparable, V any](o *Options[K, V]) *cache[K, V] {
 		isWeighted:         withWeight,
 		withStats:          withStats,
 	}
+	c.drainBuffersFunc = c.drainBuffers
 	c.singleflight.commit = c.commitCall
 	c.singleflight.publish = c.publish
 	// read on every refresh, so that tests can replace the executor
@@ -1831,38 +1837,37 @@ func (c *cache[K, V]) scheduleDrainBuffers() {
 
 		c.drainStatus.Store(processingToIdle)
 
-		var token atomic.Uint32
+		token := (c.drainToken.Load() | 1) + 1
+		c.drainToken.Store(token)
 		func() {
 			// A panic of a custom executor, or of maintenance run by a synchronous one, is logged:
 			// the caller's write is already done. If the drain did not take over the lock, it is
 			// released here, and the drain is left required for the next attempt.
 			defer func() {
 				if r := recover(); r != nil {
-					if token.CompareAndSwap(0, 1) {
+					if c.drainToken.CompareAndSwap(token, token+1) {
 						c.drainStatus.Store(required)
 						c.evictionMutex.Unlock()
 					}
 					c.logger.Error(context.Background(), "Maintenance panicked", newPanicError(r))
 				}
 			}()
-			c.executor(func() {
-				c.drainBuffers(&token)
-			})
+			c.executor(c.drainBuffersFunc)
 		}()
 
-		if token.CompareAndSwap(0, 1) {
+		if c.drainToken.CompareAndSwap(token, token+1) {
 			c.evictionMutex.Unlock()
 		}
 	}
 }
 
-func (c *cache[K, V]) drainBuffers(token *atomic.Uint32) {
+func (c *cache[K, V]) drainBuffers() {
 	if c.evictionMutex.TryLock() {
 		c.maintenanceAndUnlock(nil)
 		c.rescheduleCleanUpIfIncomplete()
 	} else {
 		// already locked
-		if token.CompareAndSwap(0, 1) {
+		if token := c.drainToken.Load(); token&1 == 0 && c.drainToken.CompareAndSwap(token, token+1) {
 			// executor is sync
 			c.maintenanceAndUnlock(nil)
 			c.rescheduleCleanUpIfIncomplete()
