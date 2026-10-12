@@ -136,7 +136,9 @@ cancelled or whose node is gone) does not take that value either: it returns the
 value, or loads the key again. A load cancelled by an invalidation may have read the data
 source before the change, and `Invalidate` has reported the key absent. Nor does a `Get` that joined a load after its value was
 committed and had expired before the `Get` started (`call.expiresAt`): the call stays registered
-until `finish` deletes it, after the commit. A write cancels the calls
+until `finish` deletes it, after the commit. The call also records the value's node (`call.node`),
+whose deadline counts as well: `SetExpiresAfter` or `ExpireAfterRead` can move it earlier while
+the call is registered. A write cancels the calls
 before a new node is stored (`hashmap.Compute` stores it after the callback), so a load
 registered in between is not cancelled, and only this rule keeps it from overwriting the write.
 Such a call can also find the old value on its re-check and adopt it, so `mutate` cancels the

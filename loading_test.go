@@ -3144,7 +3144,7 @@ func TestCache_CallSupersedesRefreshOfRemovedNode(t *testing.T) {
 				require.True(t, shouldLoad)
 				require.NotSame(t, doomed, cl)
 				require.Same(t, cl, c.cache.singleflight.getCall(1))
-				c.cache.singleflight.adopt(cl, n.Value(), 0)
+				c.cache.singleflight.adopt(cl, n.Value(), 0, n)
 			},
 		},
 	}
@@ -3357,15 +3357,26 @@ func TestCache_GetJoinedRefreshNotWritten(t *testing.T) {
 	}
 }
 
+// shortReadExpiry gives entries a minute and moves their deadline to 10 seconds on a read.
+type shortReadExpiry struct{}
+
+func (shortReadExpiry) ExpireAfterCreate(Entry[int, int]) time.Duration { return time.Minute }
+
+func (shortReadExpiry) ExpireAfterUpdate(Entry[int, int], int) time.Duration { return time.Minute }
+
+func (shortReadExpiry) ExpireAfterRead(Entry[int, int]) time.Duration { return 10 * time.Second }
+
 func TestCache_GetDoesNotTakeLoadedValueExpiredBeforeIt(t *testing.T) {
 	t.Parallel()
 
 	// A load hands its waiters a value from the cache before its call is deleted: the value it
 	// wrote, the value written during the load, or one written by another load before it started
 	// (adopt). A Get that misses the key in between, because the value has already expired,
-	// joins the call: it must not return a value that expired before it started.
+	// joins the call: it must not return a value that expired before it started. The value
+	// expires at the deadline the call recorded with it, or earlier if SetExpiresAfter or a read
+	// whose ExpireAfterRead shortens the lifetime moves the deadline meanwhile.
 	ctx := context.Background()
-	tests := []struct {
+	starts := []struct {
 		name string
 		// start registers the load and runs the part of it that finds or writes its value; the
 		// returned func finishes it
@@ -3403,46 +3414,65 @@ func TestCache_GetDoesNotTakeLoadedValueExpiredBeforeIt(t *testing.T) {
 			start: func(c *Cache[int, int]) func() {
 				c.Set(1, 3)
 				cl, _ := c.cache.singleflight.startLoad(1)
-				n := c.cache.getNodeQuietly(1, c.cache.clock.NowNano())
+				value, expiresAt, n := c.cache.readForAdoption(cl, c.cache.clock.NowNano())
 				return func() {
-					c.cache.singleflight.adopt(cl, n.Value(), c.cache.expiresAtOf(n))
+					c.cache.singleflight.adopt(cl, value, expiresAt, n)
 				}
 			},
 		},
 	}
-	for _, tt := range tests {
-		for _, bulk := range []bool{false, true} {
-			clock := newNonTickingClock()
-			c := Must(&Options[int, int]{
-				ExpiryCalculator: ExpiryWriting[int, int](time.Minute),
-				Clock:            clock,
-				// the tasks never run: maintenance would remove the expired entry, and with it the call
-				Executor: func(func()) {},
-			})
-			c.cache.singleflight.init()
-			finish := tt.start(c)
+	expirations := []struct {
+		name   string
+		expire func(c *Cache[int, int], clock *nonTickingClock)
+	}{
+		{name: "recorded deadline", expire: func(c *Cache[int, int], clock *nonTickingClock) {
 			clock.Sleep(2 * time.Minute)
+		}},
+		{name: "SetExpiresAfter", expire: func(c *Cache[int, int], clock *nonTickingClock) {
+			c.SetExpiresAfter(1, 10*time.Second)
+			clock.Sleep(20 * time.Second)
+		}},
+		{name: "ExpireAfterRead", expire: func(c *Cache[int, int], clock *nonTickingClock) {
+			c.GetIfPresent(1)
+			clock.Sleep(20 * time.Second)
+		}},
+	}
+	for _, st := range starts {
+		for _, ex := range expirations {
+			for _, bulk := range []bool{false, true} {
+				name := fmt.Sprintf("%s, %s, bulk=%v", st.name, ex.name, bulk)
+				clock := newNonTickingClock()
+				c := Must(&Options[int, int]{
+					ExpiryCalculator: shortReadExpiry{},
+					Clock:            clock,
+					// the tasks never run: maintenance would remove the expired entry, and with it the call
+					Executor: func(func()) {},
+				})
+				c.cache.singleflight.init()
+				finish := st.start(c)
+				ex.expire(c, clock)
 
-			got := make(chan getResult, 1)
-			go func() {
-				if bulk {
-					res, err := c.BulkGet(ctx, []int{1}, newTestBulkLoader[int, int](func(context.Context, []int) (map[int]int, error) {
-						return map[int]int{1: 5}, nil
+				got := make(chan getResult, 1)
+				go func() {
+					if bulk {
+						res, err := c.BulkGet(ctx, []int{1}, newTestBulkLoader[int, int](func(context.Context, []int) (map[int]int, error) {
+							return map[int]int{1: 5}, nil
+						}))
+						got <- getResult{res[1], err}
+						return
+					}
+					v, err := c.Get(ctx, 1, newTestLoader[int, int](func(context.Context, int) (int, error) {
+						return 5, nil
 					}))
-					got <- getResult{res[1], err}
-					return
-				}
-				v, err := c.Get(ctx, 1, newTestLoader[int, int](func(context.Context, int) (int, error) {
-					return 5, nil
-				}))
-				got <- getResult{v, err}
-			}()
-			waitForJoinedLoad(t)
-			finish()
+					got <- getResult{v, err}
+				}()
+				waitForJoinedLoad(t)
+				finish()
 
-			r := <-got
-			require.NoError(t, r.err, "%s, bulk=%v", tt.name, bulk)
-			require.Equal(t, 5, r.value, "%s, bulk=%v", tt.name, bulk)
+				r := <-got
+				require.NoError(t, r.err, name)
+				require.Equal(t, 5, r.value, name)
+			}
 		}
 	}
 }
@@ -3554,7 +3584,7 @@ func TestCache_WriteCancelsCallRegisteredWhileItIsApplied(t *testing.T) {
 			c.Set(1, 1)
 			tt.invalidate(c)
 			require.NotNil(t, adopting)
-			defer c.cache.singleflight.adopt(adopting, 1, 0)
+			defer c.cache.singleflight.adopt(adopting, 1, 0, nil)
 			require.True(t, sawOld)
 
 			require.Nil(t, c.cache.singleflight.getCall(1))
@@ -3584,8 +3614,8 @@ func TestCache_EvictionDropsLoadThatAdoptedItsValue(t *testing.T) {
 		c.Set(1, 1)
 		n := c.cache.getNodeQuietly(1, c.cache.clock.NowNano())
 		cl, _ := c.cache.singleflight.startLoad(1)
-		value, expiresAt, ok := c.cache.readForAdoption(cl, c.cache.clock.NowNano())
-		require.True(t, ok)
+		value, expiresAt, live := c.cache.readForAdoption(cl, c.cache.clock.NowNano())
+		require.NotNil(t, live)
 		require.Equal(t, 1, value)
 
 		c.cache.evictNode(n) // before the call is finished
@@ -3593,7 +3623,7 @@ func TestCache_EvictionDropsLoadThatAdoptedItsValue(t *testing.T) {
 		v, err := c.Get(ctx, 1, load99)
 		require.NoError(t, err)
 		require.Equal(t, 99, v)
-		c.cache.singleflight.adopt(cl, value, expiresAt)
+		c.cache.singleflight.adopt(cl, value, expiresAt, live)
 	})
 	t.Run("evicted before the read", func(t *testing.T) {
 		t.Parallel()
@@ -3604,8 +3634,8 @@ func TestCache_EvictionDropsLoadThatAdoptedItsValue(t *testing.T) {
 		n := c.cache.getNodeQuietly(1, c.cache.clock.NowNano())
 		cl, _ := c.cache.singleflight.startLoad(1)
 		c.cache.evictNode(n) // after the lock-free check found the value
-		_, _, ok := c.cache.readForAdoption(cl, c.cache.clock.NowNano())
-		require.False(t, ok)
+		_, _, live := c.cache.readForAdoption(cl, c.cache.clock.NowNano())
+		require.Nil(t, live)
 		c.cache.singleflight.deleteCall(cl)
 		cl.cancel()
 	})

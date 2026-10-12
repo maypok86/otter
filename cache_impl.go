@@ -718,7 +718,7 @@ func (c *cache[K, V]) refreshKey(
 	}
 	if !isManual {
 		if n := c.refreshedMeanwhile(rk.key, nowNano); n != nil {
-			c.singleflight.adopt(cl, n.Value(), c.expiresAtOf(n))
+			c.singleflight.adopt(cl, n.Value(), c.expiresAtOf(n), n)
 			return ch
 		}
 	}
@@ -819,8 +819,8 @@ func (c *cache[K, V]) loadOrJoin(
 		// value is already visible here; adopt it rather than loading it again. Quiet lookup: the
 		// getNode above already recorded the miss for this request.
 		if c.getNodeQuietly(key, nowNano) != nil {
-			if value, expiresAt, ok := c.readForAdoption(cl, nowNano); ok {
-				c.singleflight.adopt(cl, value, expiresAt)
+			if value, expiresAt, n := c.readForAdoption(cl, nowNano); n != nil {
+				c.singleflight.adopt(cl, value, expiresAt, n)
 				return value, false, nil
 			}
 		}
@@ -873,7 +873,7 @@ func (c *cache[K, V]) commitCall(cl *call[K, V]) mutation[K, V] {
 			// cancelled. The value stays, and the load returns it, whatever it loaded, as a Get that
 			// ran after the write would.
 			cl.value, cl.err, cl.isNotFound = prev.value, nil, false
-			cl.expiresAt = c.expiresAtOf(prev.node)
+			cl.expiresAt, cl.node = c.expiresAtOf(prev.node), prev.node
 			return opKeep, cl.value
 		}
 		authoritative := c.singleflight.authoritative(cl, prev, nowNano)
@@ -896,28 +896,33 @@ func (c *cache[K, V]) commitCall(cl *call[K, V]) mutation[K, V] {
 		return opWrite, cl.value
 	})
 	if m.op == opWrite {
-		// The node is created after the decision. It is read before the waiters are woken.
-		cl.expiresAt = c.expiresAtOf(m.next)
+		// The node is created after the decision. The expiration time is the one the write gave
+		// the value: a write that follows can update the node in place before this line. Both
+		// are set before the waiters are woken.
+		cl.node = m.next
+		if c.withExpiration {
+			cl.expiresAt = m.expiresAt
+		}
 	}
 	return m
 }
 
-// readForAdoption returns the key's live value, and when it expires, for cl, a load that the
+// readForAdoption returns the key's live value, when it expires and its node, for cl, a load that the
 // caller registered and finishes with them (group.adopt) instead of loading. The value is read
 // under the key's bucket lock, where cl is marked committed: an eviction or expiration of the
 // value after that drops cl (group.deleteOnRemoval), so that a Get that starts after the removal
 // does not join cl and get the removed value. Read without the lock, the value could be removed
-// before cl is finished, and cl would stay registered with it. ok is false if the key has no
-// live value any more.
-func (c *cache[K, V]) readForAdoption(cl *call[K, V], nowNano int64) (value V, expiresAt int64, ok bool) {
+// before cl is finished, and cl would stay registered with it. The node is nil if the key has
+// no live value any more.
+func (c *cache[K, V]) readForAdoption(cl *call[K, V], nowNano int64) (value V, expiresAt int64, live node.Node[K, V]) {
 	c.hashmap.Compute(cl.key, func(n node.Node[K, V]) node.Node[K, V] {
 		if n != nil && !n.HasExpired(nowNano) {
-			value, expiresAt, ok = n.Value(), c.expiresAtOf(n), true
+			value, expiresAt, live = n.Value(), c.expiresAtOf(n), n
 			cl.committed = true
 		}
 		return n
 	})
-	return value, expiresAt, ok
+	return value, expiresAt, live
 }
 
 // valueAfterRefusal returns the value that a Get or BulkGet takes from a call whose value the
@@ -989,7 +994,7 @@ func (c *cache[K, V]) bulkRefreshKeys(
 		cl, shouldLoad := c.singleflight.startRefresh(rk.key, rk.old)
 		if shouldLoad && !isManual {
 			if n := c.refreshedMeanwhile(rk.key, nowNano); n != nil {
-				c.singleflight.adopt(cl, n.Value(), c.expiresAtOf(n))
+				c.singleflight.adopt(cl, n.Value(), c.expiresAtOf(n), n)
 				continue
 			}
 		}
@@ -1194,8 +1199,8 @@ func (c *cache[K, V]) bulkLoadOrJoin(
 		if shouldLoad {
 			// Winning the call slot means that a value written before is visible, see Get.
 			if c.getNodeQuietly(key, nowNano) != nil {
-				if value, expiresAt, ok := c.readForAdoption(cl, nowNano); ok {
-					c.singleflight.adopt(cl, value, expiresAt)
+				if value, expiresAt, n := c.readForAdoption(cl, nowNano); n != nil {
+					c.singleflight.adopt(cl, value, expiresAt, n)
 					result[key] = value
 					delete(misses, key)
 					i++
