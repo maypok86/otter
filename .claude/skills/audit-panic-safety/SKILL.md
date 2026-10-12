@@ -1,5 +1,5 @@
 ---
-name: audit-exception-safety
+name: audit-panic-safety
 description: Audit panic safety and failure atomicity at every point where user code or the runtime can panic
 context: fork
 agent: auditor
