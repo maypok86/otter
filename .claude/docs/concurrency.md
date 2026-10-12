@@ -64,8 +64,8 @@ lossy read buffer. A full buffer drops the access; it never blocks.
 Every change decided from a key's current value (`set`, `doCompute`, `Invalidate`,
 `commitCall`) is a key mutation (`mutation.go`):
 
-1. `mutate` locks the bucket (`hashmap.Compute`), reads the current node once (absent, live or
-   expired) and asks the caller's `decide` for an op: keep, write, invalidate or remove an
+1. `mutate` locks the bucket (`hashmap.Compute`), reads the clock and the current node once
+   (absent, live or expired) and asks the caller's `decide` for an op: keep, write, invalidate or remove an
    expired entry. Its `origin` (caller, load or refresh) decides which pending calls are
    cancelled and whether a write is a reload.
 2. Under the lock, `atomicSet` decides between an **in-place update** (old node alive and

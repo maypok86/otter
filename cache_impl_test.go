@@ -1149,7 +1149,7 @@ func TestCache_CornerCases(t *testing.T) {
 
 		v, ok := c.cache.doCompute(key, func(oldValue int, found bool) (newValue int, op ComputeOp) {
 			return 2 * key, CancelOp
-		}, cl.NowNano(), true)
+		}, true)
 		require.False(t, ok)
 		require.Equal(t, 0, v)
 

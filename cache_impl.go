@@ -420,18 +420,20 @@ func (c *cache[K, V]) SetExpiresAfter(key K, expiresAfter time.Duration) {
 		return
 	}
 
-	nowNano := c.clock.NowNano()
 	var (
 		n       node.Node[K, V]
+		nowNano int64
 		earlier bool
 	)
 	// The deadline is changed under the key's bucket lock, as a write changes it: a write reads
 	// the deadline before its calculator runs and stores the result after, so a deadline set
-	// without the lock in between would be overwritten with one computed from the former.
+	// without the lock in between would be overwritten with one computed from the former. The
+	// clock is read under the lock too, as in mutate.
 	c.hashmap.Compute(key, func(cur node.Node[K, V]) node.Node[K, V] {
 		if cur == nil {
 			return nil
 		}
+		nowNano = c.clock.NowNano()
 		// An expired entry that is still in the table is absent: a new deadline would bring its
 		// stale value back.
 		expiresAt := cur.ExpiresAt()
@@ -470,12 +472,12 @@ func (c *cache[K, V]) SetRefreshableAfter(key K, refreshableAfter time.Duration)
 		return
 	}
 
-	nowNano := c.clock.NowNano()
 	// Under the key's bucket lock, as for SetExpiresAfter.
 	c.hashmap.Compute(key, func(n node.Node[K, V]) node.Node[K, V] {
 		if n == nil {
 			return nil
 		}
+		nowNano := c.clock.NowNano()
 		refreshableAt := n.RefreshableAt()
 		if next := nextDeadline(refreshableAt, nowNano, refreshableAfter); next != refreshableAt {
 			n.SetRefreshableAt(next)
@@ -485,10 +487,9 @@ func (c *cache[K, V]) SetRefreshableAfter(key K, refreshableAfter time.Duration)
 }
 
 func (c *cache[K, V]) set(key K, value V, onlyIfAbsent bool) (V, bool) {
-	nowNano := c.clock.NowNano()
-	m := c.mutate(key, nowNano, fromCaller, func(prev previous[K, V]) (mutationOp, V) {
+	m := c.mutate(key, fromCaller, func(prev previous[K, V]) (mutationOp, V) {
 		if onlyIfAbsent && prev.live {
-			c.calcExpiresAtAfterRead(prev.node, nowNano)
+			c.calcExpiresAtAfterRead(prev.node, prev.nowNano)
 			return opKeep, value
 		}
 		return opWrite, value
@@ -499,7 +500,7 @@ func (c *cache[K, V]) set(key K, value V, onlyIfAbsent bool) (V, bool) {
 		return value, true
 	}
 	if onlyIfAbsent {
-		c.afterRead(m.node, nowNano, false, false)
+		c.afterRead(m.node, m.nowNano, false, false)
 	}
 	return m.value, false
 }
@@ -529,7 +530,7 @@ func (c *cache[K, V]) Compute(
 	key K,
 	remappingFunc func(oldValue V, found bool) (newValue V, op ComputeOp),
 ) (V, bool) {
-	return c.doCompute(key, remappingFunc, c.clock.NowNano(), true)
+	return c.doCompute(key, remappingFunc, true)
 }
 
 // ComputeIfAbsent returns the existing value for the key if
@@ -564,7 +565,7 @@ func (c *cache[K, V]) ComputeIfAbsent(
 			return zeroValue[V](), CancelOp
 		}
 		return newValue, WriteOp
-	}, nowNano, false)
+	}, false)
 }
 
 // ComputeIfPresent returns the zero value for type V if the key is not found.
@@ -605,13 +606,12 @@ func (c *cache[K, V]) ComputeIfPresent(
 			return remappingFunc(oldValue)
 		}
 		return zeroValue[V](), CancelOp
-	}, nowNano, false)
+	}, false)
 }
 
 func (c *cache[K, V]) doCompute(
 	key K,
 	remappingFunc func(oldValue V, found bool) (newValue V, op ComputeOp),
-	nowNano int64,
 	recordStats bool,
 ) (V, bool) {
 	var (
@@ -620,7 +620,7 @@ func (c *cache[K, V]) doCompute(
 		notValidOp bool
 		panicErr   error
 	)
-	m := c.mutate(key, nowNano, fromCaller, func(prev previous[K, V]) (mutationOp, V) {
+	m := c.mutate(key, fromCaller, func(prev previous[K, V]) (mutationOp, V) {
 		var (
 			oldValue    V
 			actualValue V
@@ -867,8 +867,7 @@ func (c *cache[K, V]) commitCall(cl *call[K, V]) mutation[K, V] {
 	if cl.isRefresh {
 		from = fromRefresh
 	}
-	nowNano := c.clock.NowNano()
-	m := c.mutate(cl.key, nowNano, from, func(prev previous[K, V]) (mutationOp, V) {
+	m := c.mutate(cl.key, from, func(prev previous[K, V]) (mutationOp, V) {
 		// From here on, an eviction or expiration of the key drops the call (see
 		// group.deleteOnRemoval): it can no longer bring the removed value back.
 		cl.committed = true
@@ -882,7 +881,7 @@ func (c *cache[K, V]) commitCall(cl *call[K, V]) mutation[K, V] {
 			cl.expiresAt, cl.node = c.expiresAtOf(prev.node), prev.node
 			return opKeep, cl.value
 		}
-		authoritative := c.singleflight.authoritative(cl, prev, nowNano)
+		authoritative := c.singleflight.authoritative(cl, prev, prev.nowNano)
 		// A failed load reports its error: no value of the key is involved.
 		cl.refused = !authoritative && (cl.isRefresh || cl.err == nil)
 		if authoritative && cl.isNotFound {
@@ -891,8 +890,8 @@ func (c *cache[K, V]) commitCall(cl *call[K, V]) mutation[K, V] {
 		if cl.err != nil {
 			// A failed refresh of an absent key leaves an expired node that it matched as it is.
 			if authoritative && cl.isRefresh && prev.live && c.withRefresh {
-				entry := c.nodeToEntry(prev.node, nowNano)
-				prev.node.SetRefreshableAt(refreshableAtAfterWrite(c.refreshCalculator, reloadFailure, entry, entry.Value, cl.err, nowNano))
+				entry := c.nodeToEntry(prev.node, prev.nowNano)
+				prev.node.SetRefreshableAt(refreshableAtAfterWrite(c.refreshCalculator, reloadFailure, entry, entry.Value, cl.err, prev.nowNano))
 			}
 			return opKeep, cl.value
 		}
@@ -1408,8 +1407,7 @@ func (c *cache[K, V]) BulkRefresh(ctx context.Context, keys []K, bulkLoader Bulk
 // Returns previous value if any. The invalidated result reports whether the key was
 // present; an expired entry that has not been removed yet is not.
 func (c *cache[K, V]) Invalidate(key K) (value V, invalidated bool) {
-	nowNano := c.clock.NowNano()
-	m := c.mutate(key, nowNano, fromCaller, func(prev previous[K, V]) (mutationOp, V) {
+	m := c.mutate(key, fromCaller, func(prev previous[K, V]) (mutationOp, V) {
 		return opInvalidate, prev.value
 	})
 	c.publish(m)

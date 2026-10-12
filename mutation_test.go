@@ -549,3 +549,85 @@ func TestCache_KeyMutationsCancelPendingRefresh(t *testing.T) {
 		})
 	}
 }
+
+// A mutation decides whether the key's entry is live with the time it reads under the bucket
+// lock. An entry can expire while the mutation waits for the lock, here held by a Compute of the
+// key, and a read in between finds the key absent: the mutation must find it absent too. With
+// the time read before the lock, SetIfAbsent kept the expired value and reported it, Invalidate
+// reported it present, Compute was given it, and SetExpiresAfter and a refresh of it brought the
+// key back.
+func TestCache_MutationDecidesWithTimeTakenUnderLock(t *testing.T) {
+	ctx := context.Background()
+	tests := []struct {
+		name string
+		// absent runs the mutation of key 1 and reports whether it found the key absent
+		absent func(c *Cache[int, int]) bool
+	}{
+		{name: "SetIfAbsent", absent: func(c *Cache[int, int]) bool {
+			v, ok := c.SetIfAbsent(1, 2)
+			return ok && v == 2
+		}},
+		{name: "Invalidate", absent: func(c *Cache[int, int]) bool {
+			_, ok := c.Invalidate(1)
+			return !ok
+		}},
+		{name: "Compute", absent: func(c *Cache[int, int]) bool {
+			var found bool
+			c.Compute(1, func(_ int, ok bool) (int, ComputeOp) {
+				found = ok
+				return 0, CancelOp
+			})
+			return !found
+		}},
+		{name: "SetExpiresAfter", absent: func(c *Cache[int, int]) bool {
+			c.SetExpiresAfter(1, time.Hour)
+			_, ok := c.GetIfPresent(1)
+			return !ok
+		}},
+		{name: "refresh", absent: func(c *Cache[int, int]) bool {
+			<-c.Refresh(ctx, 1, LoaderFunc[int, int](func(context.Context, int) (int, error) {
+				return 2, nil
+			}))
+			_, ok := c.GetIfPresent(1)
+			return !ok
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			clk := newNonTickingClock()
+			c := Must(&Options[int, int]{
+				Clock:             clk,
+				ExpiryCalculator:  ExpiryWriting[int, int](time.Minute),
+				RefreshCalculator: RefreshWriting[int, int](time.Hour),
+				// goroutines of this test, which waitForFrame tells apart
+				Executor: func(fn func()) { go fn() },
+			})
+			c.Set(1, 1) // expires at 60s
+			clk.Sleep(50 * time.Second)
+
+			entered, proceed := make(chan struct{}), make(chan struct{})
+			held := make(chan struct{})
+			go func() {
+				defer close(held)
+				c.Compute(1, func(old int, _ bool) (int, ComputeOp) {
+					close(entered)
+					<-proceed
+					return old, CancelOp
+				})
+			}()
+			<-entered
+			absent := make(chan bool, 1)
+			go func() {
+				absent <- tt.absent(c)
+			}()
+			waitForFrame(t, bucketLockFrame, "the mutation did not wait for the bucket lock")
+			// The entry expires. Nothing reads it here: a read would schedule maintenance, which
+			// could remove the entry before the mutation takes the lock. A value written with the
+			// time read at 50s, before the lock, would live until 110s.
+			clk.Sleep(20 * time.Second)
+			close(proceed)
+			<-held
+			require.True(t, <-absent, "the mutation found the entry that expired while it waited for the lock")
+		})
+	}
+}
