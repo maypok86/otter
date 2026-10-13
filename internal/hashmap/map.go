@@ -157,16 +157,17 @@ func newMap[K comparable, V any, N mapNode[K, V]](nodeManager mapNodeManager[K, 
 		nodeManager: nodeManager,
 	}
 	m.resizeCond = *sync.NewCond(&m.resizeMu)
-	var table *mapTable[K]
-	if sizeHint <= defaultMinMapTableLen*nodesPerMapBucket {
-		table = newMapTable(defaultMinMapTableLen, xruntime.NewHasher[K]())
-	} else {
-		tableLen := xmath.RoundUpPowerOf2(uint32((float64(sizeHint) / nodesPerMapBucket) / mapLoadFactor))
-		table = newMapTable(int(tableLen), xruntime.NewHasher[K]())
-	}
+	table := newMapTable(tableLenFor(sizeHint), xruntime.NewHasher[K]())
 	m.minTableLen = len(table.buckets)
 	m.table.Store(table)
 	return m
+}
+
+func tableLenFor(sizeHint int) int {
+	if sizeHint <= defaultMinMapTableLen*nodesPerMapBucket {
+		return defaultMinMapTableLen
+	}
+	return int(xmath.RoundUpPowerOf264(uint64((float64(sizeHint) / nodesPerMapBucket) / mapLoadFactor)))
 }
 
 func newMapTable[K comparable](minTableLen int, hasher xruntime.Hasher[K]) *mapTable[K] {
