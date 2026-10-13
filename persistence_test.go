@@ -23,6 +23,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/maypok86/otter/v2/stats"
 )
 
 func TestSaveLoadCache(t *testing.T) {
@@ -154,4 +156,42 @@ func (w *updatingWriter) Write(p []byte) (int, error) {
 		w.update()
 	}
 	return w.buf.Write(p)
+}
+
+// LoadCacheFrom credits the restored entries to the eviction policy as reads, but they are not
+// reads of the caller: they record no hits, and under ExpiryAccessing they keep the remaining
+// lifetime the snapshot restored instead of getting a full one.
+func TestLoadCacheFrom_WarmUpIsNotARead(t *testing.T) {
+	t.Parallel()
+
+	const keys = 10
+	for _, maximumSize := range []int{0, 100} {
+		newCache := func(clk *nonTickingClock, recorder stats.Recorder) *Cache[int, int] {
+			return Must(&Options[int, int]{
+				MaximumSize:      maximumSize,
+				ExpiryCalculator: ExpiryAccessing[int, int](time.Hour),
+				Clock:            clk,
+				StatsRecorder:    recorder,
+			})
+		}
+		clk := newNonTickingClock()
+		saved := newCache(clk, nil)
+		for k := range keys {
+			saved.Set(k, k)
+		}
+		clk.Sleep(30 * time.Minute)
+		var buf bytes.Buffer
+		require.NoError(t, SaveCacheTo(saved, &buf))
+
+		counter := stats.NewCounter()
+		loaded := newCache(clk, counter)
+		require.NoError(t, LoadCacheFrom(loaded, &buf))
+
+		require.Zero(t, loaded.Stats().Hits, "MaximumSize=%d", maximumSize)
+		for k := range keys {
+			entry, ok := loaded.GetEntryQuietly(k)
+			require.True(t, ok)
+			require.Equal(t, 30*time.Minute, entry.ExpiresAfter(), "MaximumSize=%d, key %d", maximumSize, k)
+		}
+	}
 }
