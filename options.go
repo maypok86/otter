@@ -86,6 +86,8 @@ type Options[K comparable, V any] struct {
 	//
 	// NOTE: If your stats.Recorder implementation doesn't also implement stats.Snapshoter,
 	// Cache.Stats method will always return a zero-value snapshot.
+	//
+	// WARNING: The recorder's methods may run while the cache holds its locks and must not call the cache.
 	StatsRecorder stats.Recorder
 	// InitialCapacity specifies the minimum total size for the internal data structures. Providing a large enough estimate
 	// at construction time avoids the need for expensive resizing operations later, but setting this
@@ -99,10 +101,18 @@ type Options[K comparable, V any] struct {
 	//
 	// When the weight of an entry is zero it will not be considered for size-based eviction (though
 	// it still may be evicted by other means).
+	//
+	// WARNING: The weigher runs under the lock of the entry's hash table bucket. It may only read entries
+	// with Cache.GetIfPresent, Cache.GetEntry or Cache.GetEntryQuietly. Any other call of the cache, even
+	// a write of another key, may deadlock it: its locks are not reentrant.
 	Weigher func(key K, value V) uint32
 	// ExpiryCalculator specifies that each entry should be automatically removed from the cache once a duration has
 	// elapsed after the entry's creation, the most recent replacement of its value, or its last read.
 	// The expiration time is reset by all cache read and write operations.
+	//
+	// WARNING: The calculator may run under the lock of the entry's hash table bucket. It may only read
+	// entries with Cache.GetIfPresent, Cache.GetEntry or Cache.GetEntryQuietly. Any other call of the
+	// cache, even a write of another key, may deadlock it: its locks are not reentrant.
 	ExpiryCalculator ExpiryCalculator[K, V]
 	// OnDeletion specifies a handler instance that caches should notify each time an entry is deleted for any
 	// DeletionCause reason. The cache will invoke this handler on the configured Executor
@@ -110,12 +120,19 @@ type Options[K comparable, V any] struct {
 	//
 	// An OnAtomicDeletion may be preferred when the handler should be invoked
 	// as part of the atomic operation to delete the entry.
+	//
+	// WARNING: With an Executor that runs tasks on the calling goroutine, the handler may run under the
+	// eviction policy's lock, with the restrictions of the loop body of Cache.Hottest.
 	OnDeletion func(e DeletionEvent[K, V])
 	// OnAtomicDeletion specifies a handler that caches should notify each time an entry is deleted for any
 	// DeletionCause. The cache will invoke this handler during the atomic operation to delete the entry.
 	//
 	// A OnDeletion may be preferred when the handler should be performed outside the atomic operation to
 	// delete the entry, or be delegated to the configured Executor.
+	//
+	// WARNING: The handler runs under the lock of the entry's hash table bucket. It may only read entries
+	// with Cache.GetIfPresent, Cache.GetEntry or Cache.GetEntryQuietly. Any other call of the cache, even
+	// a write of another key, may deadlock it: its locks are not reentrant.
 	OnAtomicDeletion func(e DeletionEvent[K, V])
 	// RefreshCalculator specifies that active entries are eligible for automatic refresh once a duration has
 	// elapsed after the entry's creation, the most recent replacement of its value, or the most recent entry's reload.
@@ -127,6 +144,10 @@ type Options[K comparable, V any] struct {
 	// Until refresh is completed, requests will continue to return the old value.
 	//
 	// NOTE: all errors returned during refresh will be logged (using Logger) and then swallowed.
+	//
+	// WARNING: The calculator runs under the lock of the entry's hash table bucket. It may only read
+	// entries with Cache.GetIfPresent, Cache.GetEntry or Cache.GetEntryQuietly. Any other call of the
+	// cache, even a write of another key, may deadlock it: its locks are not reentrant.
 	RefreshCalculator RefreshCalculator[K, V]
 	// Executor specifies the executor to use when running asynchronous tasks. The executor is delegated to
 	// when sending deletion events, when asynchronous computations are performed by
@@ -136,6 +157,11 @@ type Options[K comparable, V any] struct {
 	// The primary intent of this method is to facilitate testing of caches which have been configured
 	// with OnDeletion or utilize asynchronous computations. A test may instead prefer
 	// to configure the cache to execute tasks directly on the same goroutine.
+	//
+	// Beware that such an executor runs maintenance and OnDeletion on the goroutine that calls the
+	// cache, sometimes while the cache holds its locks: then even a read from a Compute function or
+	// another function that runs under a bucket lock may deadlock, and OnDeletion may run under the
+	// eviction policy's lock.
 	//
 	// Beware that configuring a cache with an executor that discards tasks or never runs them may
 	// experience non-deterministic behavior.

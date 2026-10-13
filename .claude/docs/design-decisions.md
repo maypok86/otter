@@ -61,6 +61,20 @@ Audits read this file **after** recording their findings (Phase 1.5 of the audit
 - **Both deletion listeners receive the cause decided under the lock** (`mutation.cause`,
   `deleteNodeFromMap`'s returned cause).
 
+## Callbacks and locks
+
+- **A callback that runs under one of the cache's locks must not call back into the cache,
+  except to read single entries.** The bucket locks and `evictionMutex` are plain `sync.Mutex`,
+  and `Compute*` functions, the weigher, the calculators and `OnAtomicDeletion` run under the
+  bucket lock to stay atomic with the write; the loop body of `Hottest`/`Coldest`,
+  `SaveCacheTo`'s writer, `RecordEviction` in maintenance and `OnDeletion` on a caller-runs
+  executor run under `evictionMutex`. A deadlock from such a callback that writes (any key),
+  loads, iterates or calls a method that takes `evictionMutex` is the documented contract
+  (the docs of each callback, of `Hottest`/`Coldest` and of `Options.Executor`), not a bug. A deadlock from a single-entry read
+  (`GetIfPresent`, `GetEntry`, `GetEntryQuietly`, `EstimatedSize`) with an executor that runs
+  tasks on other goroutines is a bug. With a caller-runs executor such a read may run
+  maintenance inline under the held bucket lock, which is documented on `Options.Executor`.
+
 ## Policy
 
 - **Region maxima (`windowMaximum`, `mainProtectedMaximum`) are targets**, adjusted by at most
