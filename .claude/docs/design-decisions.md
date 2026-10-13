@@ -12,12 +12,14 @@ Audits read this file **after** recording their findings (Phase 1.5 of the audit
   `HasExpired` and treat them as absent. The wheel works in buckets of about 1 s at the finest
   level, so removal is late by up to a bucket.
 - **An expired entry is absent for every operation, not only for reads.** `Set` and
-  `SetIfAbsent` report no previous value, `Invalidate` reports the key as not present,
-  `Compute` gets `found=false`, and `SetExpiresAfter` leaves it alone. Only the listeners see
-  its value, with `CauseExpiration`, also when size eviction reaches it before the timer wheel
-  does. A write or load over it creates the entry for both
-  calculators (`ExpireAfterCreate`, `RefreshAfterCreate`), which see no expiration or refresh
-  time, as for an absent key; a refresh whose entry expires while it is in flight is discarded.
+  `SetIfAbsent` report no previous value, `Invalidate` reports the key as not present, `Compute`
+  gets `found=false`, and `SetExpiresAfter` leaves it alone. Only the listeners see its value,
+  with `CauseExpiration`, also when size eviction reaches it before the timer wheel does, and
+  `Stats` counts it as an eviction whichever operation removes it, an `Invalidate` included: the
+  count must not depend on whether the wheel or a write gets there first. A write or load over
+  it creates the entry for both calculators (`ExpireAfterCreate`, `RefreshAfterCreate`), which
+  see no expiration or refresh time, as for an absent key; a refresh whose entry expires while
+  it is in flight is discarded.
 - **A mutation decides whether the entry is live once, with the time it reads under the bucket
   lock.** The callbacks it then runs under the lock (the `Compute` function, the weigher, the
   calculators, `OnAtomicDeletion`) do not change that decision: an entry that expires while they
