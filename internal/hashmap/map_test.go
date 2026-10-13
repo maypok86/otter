@@ -22,6 +22,7 @@
 package hashmap
 
 import (
+	"math"
 	"math/rand"
 	"runtime"
 	"strconv"
@@ -58,6 +59,15 @@ func TestMap_BucketStructSize(t *testing.T) {
 	size := unsafe.Sizeof(bucketPadded{})
 	if size != 64 {
 		t.Fatalf("size of 64B (one cache line) is expected, got: %d", size)
+	}
+}
+
+func TestMap_TableLenForHugeSizeHint(t *testing.T) {
+	t.Parallel()
+
+	sizeHint := int(min(9_000_000_000, uint64(math.MaxInt))) // fits a 32-bit int
+	if got := tableLenFor(sizeHint); got < sizeHint/nodesPerMapBucket {
+		t.Fatalf("%d buckets for a size hint of %d", got, sizeHint)
 	}
 }
 
