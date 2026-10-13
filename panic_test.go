@@ -632,3 +632,152 @@ func TestCache_PanicInLoggerIsContained(t *testing.T) {
 		require.LessOrEqual(t, c.EstimatedSize(), 10)
 	})
 }
+
+// A nil loader or context is the caller's bug, but it must not leave the key's call registered:
+// every later load or refresh of the key would wait for it forever. On the caller's goroutine
+// the panic reaches the caller. On the executor it fails the refresh, whose result carries it,
+// and does not escape the task, which with the default executor would crash the process.
+func TestCache_NilLoaderOrContextDoesNotStrandKey(t *testing.T) {
+	t.Parallel()
+
+	var nilCtx context.Context
+	ctx := context.Background()
+	loader := LoaderFunc[int, int](func(ctx context.Context, key int) (int, error) {
+		return key * 10, nil
+	})
+	bulkLoader := BulkLoaderFunc[int, int](func(ctx context.Context, keys []int) (map[int]int, error) {
+		m := make(map[int]int, len(keys))
+		for _, k := range keys {
+			m[k] = k * 10
+		}
+		return m, nil
+	})
+
+	type env struct {
+		c       *Cache[int, int]
+		clk     *nonTickingClock
+		escaped *atomic.Int32
+	}
+	newEnv := func() env {
+		e := env{clk: newNonTickingClock(), escaped: &atomic.Int32{}}
+		e.c = Must(&Options[int, int]{
+			MaximumSize:       100,
+			RefreshCalculator: RefreshWriting[int, int](time.Hour),
+			Clock:             e.clk,
+			Logger:            &recordingLogger{},
+			// The default executor, except that a panic escaping a task is counted instead of
+			// crashing the test binary.
+			Executor: func(fn func()) {
+				go func() {
+					defer func() {
+						if recover() != nil {
+							e.escaped.Add(1)
+						}
+					}()
+					fn()
+				}()
+			},
+		})
+		return e
+	}
+	// requireLoads checks that a Get of the absent key loads it rather than waiting for a call
+	// left behind.
+	requireLoads := func(t *testing.T, e env, key int) {
+		t.Helper()
+		completes(t, "Get after the misuse", func() {
+			v, err := e.c.Get(ctx, key, loader)
+			require.NoError(t, err)
+			require.Equal(t, key*10, v)
+		})
+	}
+	requirePanicErrors := func(t *testing.T, e env, results ...RefreshResult[int, int]) {
+		t.Helper()
+		for _, r := range results {
+			var pe *panicError
+			require.ErrorAs(t, r.Err, &pe, "key %d", r.Key)
+		}
+		require.Zero(t, e.escaped.Load(), "a panic escaped the refresh task")
+	}
+
+	t.Run("Get with a nil loader", func(t *testing.T) {
+		t.Parallel()
+		e := newEnv()
+		require.Panics(t, func() { _, _ = e.c.Get(ctx, 1, nil) })
+		requireLoads(t, e, 1)
+	})
+	t.Run("BulkGet with a nil loader", func(t *testing.T) {
+		t.Parallel()
+		e := newEnv()
+		require.Panics(t, func() { _, _ = e.c.BulkGet(ctx, []int{1, 2}, nil) })
+		requireLoads(t, e, 1)
+		requireLoads(t, e, 2)
+	})
+	t.Run("Refresh with a nil loader", func(t *testing.T) {
+		t.Parallel()
+		e := newEnv()
+		var res RefreshResult[int, int]
+		completes(t, "Refresh", func() { res = <-e.c.Refresh(ctx, 1, nil) })
+		requirePanicErrors(t, e, res)
+		requireLoads(t, e, 1)
+	})
+	t.Run("Refresh with a nil context", func(t *testing.T) {
+		t.Parallel()
+		e := newEnv()
+		var res RefreshResult[int, int]
+		completes(t, "Refresh", func() { res = <-e.c.Refresh(nilCtx, 1, loader) })
+		requirePanicErrors(t, e, res)
+		requireLoads(t, e, 1)
+	})
+	t.Run("BulkRefresh with a nil loader", func(t *testing.T) {
+		t.Parallel()
+		e := newEnv()
+		var results []RefreshResult[int, int]
+		completes(t, "BulkRefresh", func() { results = <-e.c.BulkRefresh(ctx, []int{1, 2}, nil) })
+		require.Len(t, results, 2)
+		requirePanicErrors(t, e, results...)
+		requireLoads(t, e, 1)
+		requireLoads(t, e, 2)
+	})
+	t.Run("BulkRefresh with a nil context", func(t *testing.T) {
+		t.Parallel()
+		e := newEnv()
+		var results []RefreshResult[int, int]
+		completes(t, "BulkRefresh", func() { results = <-e.c.BulkRefresh(nilCtx, []int{1, 2}, bulkLoader) })
+		require.Len(t, results, 2)
+		requirePanicErrors(t, e, results...)
+		requireLoads(t, e, 1)
+		requireLoads(t, e, 2)
+	})
+	// A stale read with a nil context returns the value; the refresh it requests fails, and a
+	// later refresh of the key runs instead of joining it.
+	for _, bulk := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stale read with a nil context/bulk=%v", bulk), func(t *testing.T) {
+			t.Parallel()
+			e := newEnv()
+			e.c.Set(1, 1)
+			e.clk.Sleep(2 * time.Hour)
+
+			if bulk {
+				got, err := e.c.BulkGet(nilCtx, []int{1}, bulkLoader)
+				require.NoError(t, err)
+				require.Equal(t, map[int]int{1: 1}, got)
+			} else {
+				v, err := e.c.Get(nilCtx, 1, loader)
+				require.NoError(t, err)
+				require.Equal(t, 1, v)
+			}
+
+			// The failed refresh must finish first, so that this one is not joined to it.
+			require.Eventually(t, func() bool {
+				return e.c.cache.singleflight.getCall(1) == nil
+			}, 30*time.Second, time.Millisecond, "the refresh requested by the stale read did not finish")
+			var res RefreshResult[int, int]
+			completes(t, "Refresh after the stale read", func() {
+				res = <-e.c.Refresh(ctx, 1, loader)
+			})
+			require.NoError(t, res.Err)
+			require.Equal(t, 10, res.Value)
+			require.Zero(t, e.escaped.Load(), "a panic escaped the refresh task")
+		})
+	}
+}

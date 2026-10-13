@@ -736,19 +736,17 @@ func (c *cache[K, V]) refreshKey(
 	}
 
 	c.singleflight.submitRefresh([]*call[K, V]{cl}, func() {
-		var refresher func(ctx context.Context, key K) (V, error)
-		if rk.old != nil {
-			refresher = func(ctx context.Context, key K) (V, error) {
+		// the loader is called in a closure, see doCall
+		refresher := func(ctx context.Context, key K) (V, error) {
+			if rk.old != nil {
 				return loader.Reload(ctx, key, rk.old.Value())
 			}
-		} else {
-			refresher = loader.Load
+			return loader.Load(ctx, key)
 		}
 
 		//nolint:errcheck // there is no need to check error
 		_ = c.wrapRefresh(func() error {
-			loadCtx := context.WithoutCancel(ctx)
-			return c.singleflight.doCall(loadCtx, cl, refresher)
+			return c.singleflight.doCall(ctx, cl, refresher)
 		})
 
 		if cl.err != nil && !cl.isNotFound {
@@ -838,7 +836,10 @@ func (c *cache[K, V]) loadOrJoin(
 		}
 		//nolint:errcheck // there is no need to check error
 		_ = c.wrapLoad(func() error {
-			return c.singleflight.doCall(ctx, cl, loader.Load)
+			// the loader is called in a closure, see doCall
+			return c.singleflight.doCall(ctx, cl, func(ctx context.Context, key K) (V, error) {
+				return loader.Load(ctx, key)
+			})
 		})
 		if cl.refused {
 			value, ok := c.valueAfterRefusal(key)
@@ -1043,10 +1044,12 @@ func (c *cache[K, V]) bulkRefreshKeys(
 			results = make([]RefreshResult[K, V], 0, len(rks))
 		}
 
-		loadCtx := context.WithoutCancel(ctx)
 		if len(toLoadCalls) > 0 {
 			loadErr := c.wrapRefresh(func() error {
-				return c.singleflight.doBulkCall(loadCtx, toLoadCalls, bulkLoader.BulkLoad)
+				// the loader is called in a closure, see doCall
+				return c.singleflight.doBulkCall(ctx, toLoadCalls, func(ctx context.Context, keys []K) (map[K]V, error) {
+					return bulkLoader.BulkLoad(ctx, keys)
+				})
 			})
 			if loadErr != nil {
 				c.logger.Error(ctx, "BulkLoad returned an error", loadErr)
@@ -1074,7 +1077,7 @@ func (c *cache[K, V]) bulkRefreshKeys(
 			}
 
 			reloadErr := c.wrapRefresh(func() error {
-				return c.singleflight.doBulkCall(loadCtx, toReloadCalls, reload)
+				return c.singleflight.doBulkCall(ctx, toReloadCalls, reload)
 			})
 			if reloadErr != nil {
 				c.logger.Error(ctx, "BulkReload returned an error", reloadErr)
@@ -1230,7 +1233,10 @@ func (c *cache[K, V]) bulkLoadOrJoin(
 	var loadErr error
 	if len(toLoadCalls) > 0 {
 		loadErr = c.wrapLoad(func() error {
-			return c.singleflight.doBulkCall(ctx, toLoadCalls, bulkLoader.BulkLoad)
+			// the loader is called in a closure, see doCall
+			return c.singleflight.doBulkCall(ctx, toLoadCalls, func(ctx context.Context, keys []K) (map[K]V, error) {
+				return bulkLoader.BulkLoad(ctx, keys)
+			})
 		})
 	}
 	if loadErr != nil {

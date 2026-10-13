@@ -241,6 +241,13 @@ func (g *group[K, V]) adopt(c *call[K, V], value V, expiresAt int64, n node.Node
 	c.cancel()
 }
 
+// doCall runs load for c, which the caller registered, and finishes c whatever happens, with a
+// panic or runtime.Goexit of load as its error. Everything that can panic runs after the defer
+// that finishes c: a panic between the registration and that defer would leave c registered,
+// and every later load of its key would wait for it. That includes detaching a refresh from the
+// cancellation of the request (a refresh outlives the read that asked for it), which panics on
+// a nil context, and the loader's method, which callers pass in a closure rather than as a method
+// value, since the method value of a nil loader panics where it is taken.
 func (g *group[K, V]) doCall(
 	ctx context.Context,
 	c *call[K, V],
@@ -261,12 +268,17 @@ func (g *group[K, V]) doCall(
 		g.finish(c)
 	}()
 
+	if c.isRefresh {
+		ctx = context.WithoutCancel(ctx)
+	}
 	c.value, err = load(ctx, c.key)
 	returned = true
 	c.ownerCtxDone = ctx.Err() != nil
 	return err
 }
 
+// doBulkCall is doCall for the calls of a bulk load, all loads or all refreshes. It also adds a
+// fake call for each key the loader returned without being asked for.
 func (g *group[K, V]) doBulkCall(
 	ctx context.Context,
 	callsInBulk map[K]*call[K, V],
@@ -315,23 +327,20 @@ func (g *group[K, V]) doBulkCall(
 	}()
 
 	keys := make([]K, 0, len(callsInBulk))
-	for k := range callsInBulk {
+	isRefresh := false
+	for k, cl := range callsInBulk {
 		keys = append(keys, k)
+		isRefresh = cl.isRefresh
 	}
 
+	if isRefresh {
+		ctx = context.WithoutCancel(ctx)
+	}
 	res, err := bulkLoad(ctx, keys)
 	returned = true
 	ownerCtxDone := ctx.Err() != nil
 
-	var (
-		isRefresh bool
-		found     bool
-	)
 	for k, cl := range callsInBulk {
-		if !found {
-			isRefresh = cl.isRefresh
-			found = true
-		}
 		cl.ownerCtxDone = ownerCtxDone
 		v, ok := res[k]
 		if ok {
