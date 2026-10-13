@@ -79,17 +79,31 @@ func LoadCacheFrom[K comparable, V any](c *Cache[K, V], r io.Reader) error {
 		size += uint64(entry.Weight)
 
 		if size <= maximum2 {
-			c.GetIfPresent(entry.Key)
-			c.GetIfPresent(entry.Key)
+			warmUp(c, entry.Key, 2)
 			continue
 		}
 		if size <= maximum1 {
-			c.GetIfPresent(entry.Key)
+			warmUp(c, entry.Key, 1)
 			continue
 		}
 	}
 
 	return nil
+}
+
+// warmUp credits the restored entry of key to the eviction policy as reads would, so that the
+// hottest entries of the snapshot are not the first ones evicted. These are not the caller's
+// reads: they record no hits, and do not call ExpireAfterRead, which would replace the lifetime
+// just restored.
+func warmUp[K comparable, V any](c *Cache[K, V], key K, reads int) {
+	nowNano := c.cache.clock.NowNano()
+	n := c.cache.getNodeQuietly(key, nowNano)
+	if n == nil {
+		return
+	}
+	for range reads {
+		c.cache.afterRead(n, nowNano, false, false)
+	}
 }
 
 // SaveCacheToFile atomically saves cache data to the given filePath.
