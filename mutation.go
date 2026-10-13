@@ -145,13 +145,11 @@ func (c *cache[K, V]) mutate(
 	return m
 }
 
-// publish hands a mutation to the policies, through the write or read buffer, and reports the
+// publish hands a mutation to the policies, through the write or read buffer, counts the removal
+// of the previous value in the stats if it is an eviction (countEviction), and reports the
 // previous value to the OnDeletion listener with the cause decided under the lock.
 func (c *cache[K, V]) publish(m mutation[K, V]) {
-	if m.cause == CauseExpiration {
-		// counted first, as removeNode does
-		c.stats.RecordEviction(m.weight)
-	}
+	c.countEviction(m.cause, m.weight)
 	onExecutor := m.from == fromRefresh
 	switch m.op {
 	case opWrite:

@@ -16,6 +16,7 @@ package otter
 
 import (
 	"container/heap"
+	"context"
 	"fmt"
 	"math"
 	"math/rand"
@@ -1179,6 +1180,74 @@ func TestCache_ExpiredEntryRemovedByWriteIsCountedAsEviction(t *testing.T) {
 			require.Equal(t, uint64(3), s.EvictionWeight)
 		})
 	}
+}
+
+func TestCache_EvictionStatsMatchDeletionListener(t *testing.T) {
+	t.Parallel()
+
+	seed := time.Now().UnixNano()
+	r := rand.New(rand.NewSource(seed))
+	clk := newNonTickingClock()
+	counter := stats.NewCounter()
+	var evictions, evictionWeight uint64
+	c := Must(&Options[int, uint32]{
+		MaximumWeight:     20,
+		Weigher:           func(_ int, v uint32) uint32 { return v },
+		Clock:             clk,
+		StatsRecorder:     counter,
+		ExpiryCalculator:  ExpiryWriting[int, uint32](time.Minute),
+		RefreshCalculator: RefreshWriting[int, uint32](30 * time.Second),
+		OnDeletion: func(e DeletionEvent[int, uint32]) {
+			if e.WasEvicted() {
+				evictions++
+				evictionWeight += uint64(e.Value)
+			}
+		},
+		Executor: func(fn func()) { fn() },
+	})
+	loader := LoaderFunc[int, uint32](func(context.Context, int) (uint32, error) {
+		return uint32(r.Intn(5)), nil
+	})
+	bulkLoader := BulkLoaderFunc[int, uint32](func(_ context.Context, keys []int) (map[int]uint32, error) {
+		m := make(map[int]uint32, len(keys))
+		for _, k := range keys {
+			m[k] = uint32(r.Intn(5))
+		}
+		return m, nil
+	})
+
+	for range 10_000 {
+		k, v := r.Intn(8), uint32(r.Intn(5))
+		switch r.Intn(11) {
+		case 0:
+			c.Set(k, v)
+		case 1:
+			c.SetIfAbsent(k, v)
+		case 2:
+			c.Invalidate(k)
+		case 3:
+			c.Compute(k, func(uint32, bool) (uint32, ComputeOp) { return v, ComputeOp(r.Intn(3)) })
+		case 4:
+			_, _ = c.Get(context.Background(), k, loader)
+		case 5:
+			_, _ = c.BulkGet(context.Background(), []int{k, r.Intn(8)}, bulkLoader)
+		case 6:
+			c.Refresh(context.Background(), k, loader)
+		case 7:
+			c.SetExpiresAfter(k, time.Duration(1+r.Intn(120))*time.Second)
+		case 8:
+			if r.Intn(50) == 0 {
+				c.InvalidateAll()
+			}
+		default:
+			clk.Sleep(time.Duration(r.Intn(40)) * time.Second)
+		}
+	}
+	c.CleanUp()
+
+	s := counter.Snapshot()
+	require.Equal(t, evictions, s.Evictions, "seed %d", seed)
+	require.Equal(t, evictionWeight, s.EvictionWeight, "seed %d", seed)
 }
 
 func TestCache_Invalidate(t *testing.T) {

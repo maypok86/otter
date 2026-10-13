@@ -1450,8 +1450,9 @@ func (r nodeRemoval) cause() DeletionCause {
 	}
 }
 
-// deleteNodeFromMap removes n from the hash table if it is still there, and returns the cause
-// reported to the synchronous listener. kept reports that n stays, as described by removal.
+// deleteNodeFromMap removes n from the hash table if it is still there, counts the removal in the
+// stats if it is an eviction (countEviction), and returns the cause reported to the synchronous
+// listener. kept reports that n stays, as described by removal.
 func (c *cache[K, V]) deleteNodeFromMap(
 	n node.Node[K, V],
 	nowNano int64,
@@ -1495,14 +1496,15 @@ func (c *cache[K, V]) deleteNodeFromMap(
 		c.notifyAtomicDeletion(deleted.Key(), deleted.Value(), deletedCause)
 		return nil
 	})
+	if deleted != nil {
+		// A retired node is never updated in place, so its weight is the one it was removed with.
+		c.countEviction(deletedCause, deleted.Weight())
+	}
 	return deleted, deletedCause, kept
 }
 
 func (c *cache[K, V]) deleteNode(n node.Node[K, V], nowNano int64) bool {
 	deleted, cause, _ := c.deleteNodeFromMap(n, nowNano, removeInvalidated)
-	if cause == CauseExpiration {
-		c.stats.RecordEviction(deleted.Weight())
-	}
 	c.afterDelete(deleted, cause, true, false)
 	return deleted != nil
 }
@@ -1524,6 +1526,17 @@ func (c *cache[K, V]) afterDelete(deleted node.Node[K, V], cause DeletionCause, 
 		c.runTask(t)
 	} else {
 		c.afterWriteTask(t)
+	}
+}
+
+// countEviction is called for every removal, and counts it in the stats when the cause the
+// listeners are given is an eviction, so that the two never disagree. It is called once the
+// bucket lock is released, and before the OnDeletion listener is notified, so that the listener
+// sees the eviction it is told about. weight is the removed entry's weight, read when it was
+// removed; causeUnknown means that nothing was removed.
+func (c *cache[K, V]) countEviction(cause DeletionCause, weight uint32) {
+	if cause != causeUnknown && cause.IsEviction() {
+		c.stats.RecordEviction(weight)
 	}
 }
 
@@ -1623,8 +1636,6 @@ func (c *cache[K, V]) removeNode(n node.Node[K, V], nowNanos int64, removal node
 		c.timerWheel.Unschedule(n)
 	}
 	if deleted != nil {
-		// counted first, so that the listener sees the eviction it is told about
-		c.stats.RecordEviction(n.Weight())
 		c.notifyDeletion(n.Key(), n.Value(), cause)
 	}
 	return true
