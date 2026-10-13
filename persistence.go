@@ -129,7 +129,8 @@ func SaveCacheToFile[K comparable, V any](c *Cache[K, V], filePath string) error
 // The saved data may be loaded with LoadCacheFrom.
 //
 // WARNING: Beware that this operation is performed within the eviction policy's exclusive lock.
-// While the operation is in progress further eviction maintenance will be halted.
+// While the operation is in progress further eviction maintenance will be halted, and w has the
+// restrictions of the loop body of [Cache.Hottest].
 func SaveCacheTo[K comparable, V any](c *Cache[K, V], w io.Writer) error {
 	enc := gob.NewEncoder(w)
 

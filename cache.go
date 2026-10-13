@@ -153,8 +153,13 @@ func (c *Cache[K, V]) SetIfAbsent(key K, value V) (V, bool) {
 //
 // This call locks a hash table bucket while the compute function
 // is executed. It means that modifications on other entries in
-// the bucket will be blocked until the remappingFunc executes. Consider
-// this when the function includes long-running operations.
+// the bucket will be blocked until the remappingFunc executes, and so will
+// a growth of the hash table, during which writes of every key wait.
+// Consider this when the function includes long-running operations.
+//
+// WARNING: The function may only read entries with [Cache.GetIfPresent],
+// [Cache.GetEntry] or [Cache.GetEntryQuietly]. Any other call of this cache,
+// even a write of another key, may deadlock it: its locks are not reentrant.
 func (c *Cache[K, V]) Compute(
 	key K,
 	remappingFunc func(oldValue V, found bool) (newValue V, op ComputeOp),
@@ -174,8 +179,13 @@ func (c *Cache[K, V]) Compute(
 //
 // This call locks a hash table bucket while the compute function
 // is executed. It means that modifications on other entries in
-// the bucket will be blocked until the valueFn executes. Consider
-// this when the function includes long-running operations.
+// the bucket will be blocked until the valueFn executes, and so will
+// a growth of the hash table, during which writes of every key wait.
+// Consider this when the function includes long-running operations.
+//
+// WARNING: The function may only read entries with [Cache.GetIfPresent],
+// [Cache.GetEntry] or [Cache.GetEntryQuietly]. Any other call of this cache,
+// even a write of another key, may deadlock it: its locks are not reentrant.
 func (c *Cache[K, V]) ComputeIfAbsent(
 	key K,
 	mappingFunc func() (newValue V, cancel bool),
@@ -205,8 +215,13 @@ func (c *Cache[K, V]) ComputeIfAbsent(
 //
 // This call locks a hash table bucket while the compute function
 // is executed. It means that modifications on other entries in
-// the bucket will be blocked until the valueFn executes. Consider
-// this when the function includes long-running operations.
+// the bucket will be blocked until the valueFn executes, and so will
+// a growth of the hash table, during which writes of every key wait.
+// Consider this when the function includes long-running operations.
+//
+// WARNING: The function may only read entries with [Cache.GetIfPresent],
+// [Cache.GetEntry] or [Cache.GetEntryQuietly]. Any other call of this cache,
+// even a write of another key, may deadlock it: its locks are not reentrant.
 func (c *Cache[K, V]) ComputeIfPresent(
 	key K,
 	remappingFunc func(oldValue V) (newValue V, op ComputeOp),
@@ -463,7 +478,10 @@ func (c *Cache[K, V]) Stats() stats.Stats {
 //
 // WARNING: Beware that this iteration is performed within the eviction policy's exclusive lock, so the
 // iteration should be short and simple. While the iteration is in progress further eviction
-// maintenance will be halted.
+// maintenance will be halted. The loop body may read entries without loading them, but must not
+// write to the cache or call [Cache.CleanUp], [Cache.InvalidateAll], [Cache.SetMaximum],
+// [Cache.GetMaximum], [Cache.WeightedSize], [Cache.Hottest], [Cache.Coldest] or [SaveCacheTo],
+// which take this lock. To change the cache based on this order, collect the keys first.
 func (c *Cache[K, V]) Hottest() iter.Seq[Entry[K, V]] {
 	return c.cache.Hottest()
 }
@@ -475,7 +493,10 @@ func (c *Cache[K, V]) Hottest() iter.Seq[Entry[K, V]] {
 //
 // WARNING: Beware that this iteration is performed within the eviction policy's exclusive lock, so the
 // iteration should be short and simple. While the iteration is in progress further eviction
-// maintenance will be halted.
+// maintenance will be halted. The loop body may read entries without loading them, but must not
+// write to the cache or call [Cache.CleanUp], [Cache.InvalidateAll], [Cache.SetMaximum],
+// [Cache.GetMaximum], [Cache.WeightedSize], [Cache.Hottest], [Cache.Coldest] or [SaveCacheTo],
+// which take this lock. To change the cache based on this order, collect the keys first.
 func (c *Cache[K, V]) Coldest() iter.Seq[Entry[K, V]] {
 	return c.cache.Coldest()
 }

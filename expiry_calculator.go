@@ -20,6 +20,10 @@ import (
 
 // ExpiryCalculator calculates when cache entries expire. A single expiration time is retained so that the lifetime
 // of an entry may be extended or reduced by subsequent evaluations.
+//
+// WARNING: Its methods may run under the lock of the entry's hash table bucket. They may only read entries
+// with [Cache.GetIfPresent], [Cache.GetEntry] or [Cache.GetEntryQuietly]. Any other call of the cache,
+// even a write of another key, may deadlock it: its locks are not reentrant.
 type ExpiryCalculator[K comparable, V any] interface {
 	// ExpireAfterCreate specifies that the entry should be automatically removed from the cache once the duration has
 	// elapsed after the entry's creation. To indicate no expiration, an entry may be given an
