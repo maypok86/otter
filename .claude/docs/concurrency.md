@@ -141,9 +141,13 @@ reweigh task brings the accounted weight to zero.
 `startLoad`, refreshes with `startRefresh`; waiters block on it until it finishes or their own
 context is done (`waitContext`). A load that fails after its owner's context is done
 (`failedForOwner`) is not shared: a waiter with a live context loads the key again. Refreshes
-run with `context.WithoutCancel`, so their failures are always shared. `doCall`/`doBulkCall` run the
-loader with its panics and `runtime.Goexit` caught and end in `group.finish`, which commits the
-result through the cache's `commitCall` (a key mutation from a load or refresh), then deletes
+run with `context.WithoutCancel`, so their failures are always shared. Nothing that can panic runs
+between registering a call and the defer in `doCall`/`doBulkCall` that finishes it, or the call
+would stay registered and every later load of its key would wait for it: a refresh is detached
+from cancellation inside them (`WithoutCancel` panics on a nil context), and loaders are passed in
+closures, not as method values (the method value of a nil loader panics where it is taken).
+`doCall`/`doBulkCall` run the loader with its panics and `runtime.Goexit` caught and end in
+`group.finish`, which commits the result through the cache's `commitCall` (a key mutation from a load or refresh), then deletes
 the call, wakes its waiters and publishes. `commitCall` writes only if `group.authoritative`
 says the call is still the current one for the key. A load writes only over a key without a
 live value: a live value was written during the load, and the load returns it to its owner and
