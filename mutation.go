@@ -72,6 +72,8 @@ type previous[K comparable, V any] struct {
 	node node.Node[K, V]
 	// value is node's value, read under the lock.
 	value V
+	// weight is node's weight, read under the lock: an update in place changes it.
+	weight uint32
 	// live reports that node holds a value that has not expired.
 	live bool
 }
@@ -108,6 +110,7 @@ func (c *cache[K, V]) mutate(
 		m.node = current
 		if current != nil {
 			m.value = current.Value()
+			m.weight = current.Weight()
 			m.live = !current.HasExpired(nowNano)
 		}
 
@@ -145,6 +148,10 @@ func (c *cache[K, V]) mutate(
 // publish hands a mutation to the policies, through the write or read buffer, and reports the
 // previous value to the OnDeletion listener with the cause decided under the lock.
 func (c *cache[K, V]) publish(m mutation[K, V]) {
+	if m.cause == CauseExpiration {
+		// counted first, as removeNode does
+		c.stats.RecordEviction(m.weight)
+	}
 	onExecutor := m.from == fromRefresh
 	switch m.op {
 	case opWrite:

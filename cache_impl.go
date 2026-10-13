@@ -1500,6 +1500,9 @@ func (c *cache[K, V]) deleteNodeFromMap(
 
 func (c *cache[K, V]) deleteNode(n node.Node[K, V], nowNano int64) bool {
 	deleted, cause, _ := c.deleteNodeFromMap(n, nowNano, removeInvalidated)
+	if cause == CauseExpiration {
+		c.stats.RecordEviction(deleted.Weight())
+	}
 	c.afterDelete(deleted, cause, true, false)
 	return deleted != nil
 }

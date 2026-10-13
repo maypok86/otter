@@ -1146,6 +1146,41 @@ func TestCache_SetWithExpiresAfterAccessing(t *testing.T) {
 	}
 }
 
+func TestCache_ExpiredEntryRemovedByWriteIsCountedAsEviction(t *testing.T) {
+	t.Parallel()
+
+	for name, remove := range map[string]func(c *Cache[int, uint32]){
+		"Set":           func(c *Cache[int, uint32]) { c.Set(1, 5) },
+		"Invalidate":    func(c *Cache[int, uint32]) { c.Invalidate(1) },
+		"InvalidateAll": func(c *Cache[int, uint32]) { c.InvalidateAll() },
+		"Compute": func(c *Cache[int, uint32]) {
+			c.Compute(1, func(uint32, bool) (uint32, ComputeOp) { return 0, CancelOp })
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			clk := newNonTickingClock()
+			counter := stats.NewCounter()
+			c := Must(&Options[int, uint32]{
+				MaximumWeight:    100,
+				Weigher:          func(_ int, v uint32) uint32 { return v },
+				Clock:            clk,
+				StatsRecorder:    counter,
+				ExpiryCalculator: ExpiryWriting[int, uint32](time.Minute),
+				Executor:         func(fn func()) { fn() },
+			})
+			c.Set(1, 3)
+			clk.Sleep(2 * time.Minute)
+			remove(c)
+
+			s := counter.Snapshot()
+			require.Equal(t, uint64(1), s.Evictions)
+			require.Equal(t, uint64(3), s.EvictionWeight)
+		})
+	}
+}
+
 func TestCache_Invalidate(t *testing.T) {
 	t.Parallel()
 
