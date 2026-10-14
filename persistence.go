@@ -41,6 +41,10 @@ func LoadCacheFromFile[K comparable, V any](c *Cache[K, V], filePath string) err
 // LoadCacheFrom loads cache data from the given [io.Reader].
 //
 // See SaveCacheToFile for saving cache data to file.
+//
+// The data is decoded with [encoding/gob], so the keys and values have the limits of gob: unexported
+// struct fields are not restored. The saved expiration and refresh times are absolute, so both
+// caches' clocks must count from the same point, as the default clock does (Unix time).
 func LoadCacheFrom[K comparable, V any](c *Cache[K, V], r io.Reader) error {
 	dec := gob.NewDecoder(r)
 
@@ -141,6 +145,9 @@ func SaveCacheToFile[K comparable, V any](c *Cache[K, V], filePath string) error
 // SaveCacheToFile may be called concurrently with other operations on the cache.
 //
 // The saved data may be loaded with LoadCacheFrom.
+//
+// The data is encoded with [encoding/gob], so the keys and values have the limits of gob: unexported
+// struct fields are not saved.
 //
 // WARNING: Beware that this operation is performed within the eviction policy's exclusive lock.
 // While the operation is in progress further eviction maintenance will be halted, and w has the

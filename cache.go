@@ -310,8 +310,8 @@ func (c *Cache[K, V]) BulkGet(ctx context.Context, keys []K, bulkLoader BulkLoad
 // Refresh loads a new value for the key, asynchronously. While the new value is loading the
 // previous value (if any) will continue to be returned by any Get unless it is evicted.
 // If the new value is loaded successfully, it will replace the previous value in the cache;
-// If refreshing returned an error, the previous value will remain,
-// and the error will be logged using [Logger] (if it's not [ErrNotFound]) and swallowed. If another goroutine is currently
+// If refreshing returned an error, the previous value will remain, and the error will be logged
+// using [Logger] and swallowed, except for [ErrNotFound], which removes the entry. If another goroutine is currently
 // loading the value for key, then this method does not perform an additional load.
 // If the key is written, invalidated or expires after the refresh was requested, the loaded
 // value is discarded and the cache keeps the newer state.
@@ -342,8 +342,9 @@ func (c *Cache[K, V]) Refresh(ctx context.Context, key K, loader Loader[K, V]) <
 // BulkRefresh loads a new value for each key, asynchronously. While the new value is loading the
 // previous value (if any) will continue to be returned by any Get unless it is evicted.
 // If the new value is loaded successfully, it will replace the previous value in the cache;
-// If refreshing returned an error, the previous value will remain,
-// and the error will be logged using [Logger] and swallowed. If another goroutine is currently
+// If refreshing returned an error, the previous values will remain, and the error will be logged
+// using [Logger] and swallowed, an [ErrNotFound] for the whole bulk included. A key that the
+// [BulkLoader] leaves out of its result is not found, and its entry is removed. If another goroutine is currently
 // loading the value for key, then this method does not perform an additional load.
 // If the key is written, invalidated or expires after the refresh was requested, the loaded
 // value is discarded and the cache keeps the newer state.
@@ -482,6 +483,9 @@ func (c *Cache[K, V]) Stats() stats.Stats {
 // write to the cache or call [Cache.CleanUp], [Cache.InvalidateAll], [Cache.SetMaximum],
 // [Cache.GetMaximum], [Cache.WeightedSize], [Cache.Hottest], [Cache.Coldest] or [SaveCacheTo],
 // which take this lock. To change the cache based on this order, collect the keys first.
+//
+// If the cache has no size bound, the entries come in no particular order, as from [Cache.All], and
+// the eviction policy's lock is not held.
 func (c *Cache[K, V]) Hottest() iter.Seq[Entry[K, V]] {
 	return c.cache.Hottest()
 }
@@ -497,6 +501,9 @@ func (c *Cache[K, V]) Hottest() iter.Seq[Entry[K, V]] {
 // write to the cache or call [Cache.CleanUp], [Cache.InvalidateAll], [Cache.SetMaximum],
 // [Cache.GetMaximum], [Cache.WeightedSize], [Cache.Hottest], [Cache.Coldest] or [SaveCacheTo],
 // which take this lock. To change the cache based on this order, collect the keys first.
+//
+// If the cache has no size bound, the entries come in no particular order, as from [Cache.All], and
+// the eviction policy's lock is not held.
 func (c *Cache[K, V]) Coldest() iter.Seq[Entry[K, V]] {
 	return c.cache.Coldest()
 }
@@ -507,6 +514,9 @@ func (c *Cache[K, V]) Coldest() iter.Seq[Entry[K, V]] {
 // NOTE: In the vast majority of cases, you do not need to call this method, and it will be called automatically.
 // However, it can sometimes be useful, for example when using synctest.
 // You can think of this method as analogous to the Stop method of [time.Timer].
+//
+// WARNING: StopAllGoroutines must not be called from a function that the cache runs, such as a
+// deletion listener: it waits for the periodic clean-up goroutine, which may be the one running it.
 //
 // NOTE: This method only stops the goroutines and does not invalidate entries in the cache.
 // To invalidate entries, you can use the Invalidate / InvalidateAll methods.

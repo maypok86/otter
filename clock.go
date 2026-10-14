@@ -28,6 +28,8 @@ import (
 //   - Returns a channel that delivers “ticks” of a clock at intervals.
 type Clock interface {
 	// NowNano returns the number of nanoseconds elapsed since this clock's fixed point of reference.
+	// Entry times and the data of SaveCacheTo and LoadCacheFrom are in the clock's units, so a cache
+	// that saves or loads its data must use a clock counting from the Unix epoch, as the default one does.
 	//
 	// By default, time.Now().UnixNano() is used.
 	NowNano() int64
