@@ -20,7 +20,9 @@ import "context"
 type Loader[K comparable, V any] interface {
 	// Load computes or retrieves the value corresponding to key.
 	//
-	// WARNING: loading must not attempt to update any mappings of this cache directly.
+	// WARNING: loading must not attempt to update any mappings of this cache directly, or load keys of
+	// this cache that are being loaded, its own key included: Cache.Get of such a key waits for its load,
+	// which may be the one that called it or one waiting for it.
 	//
 	// NOTE: The Loader implementation should always return ErrNotFound
 	// if the entry was not found in the data source.
@@ -67,7 +69,8 @@ type BulkLoader[K comparable, V any] interface {
 	// replaces a value, including one written during the load. Only the entries for keys are
 	// returned from Cache.BulkGet.
 	//
-	// WARNING: loading must not attempt to update any mappings of this cache directly.
+	// WARNING: loading must not attempt to update any mappings of this cache directly, or load keys of
+	// this cache that are being loaded, as for Loader.Load.
 	BulkLoad(ctx context.Context, keys []K) (map[K]V, error)
 	// BulkReload computes or retrieves replacement values corresponding to already-cached keys.
 	// If the replacement value is not found, then the mapping will be removed.

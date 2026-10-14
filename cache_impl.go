@@ -1339,8 +1339,8 @@ func (c *cache[K, V]) wrapRefresh(fn func() error) (err error) {
 // Refresh loads a new value for the key, asynchronously. While the new value is loading the
 // previous value (if any) will continue to be returned by any Get unless it is evicted.
 // If the new value is loaded successfully, it will replace the previous value in the cache;
-// If refreshing returned an error, the previous value will remain,
-// and the error will be logged using Logger (if it's not ErrNotFound) and swallowed. If another goroutine is currently
+// If refreshing returned an error, the previous value will remain, and the error will be logged
+// using Logger and swallowed, except for [ErrNotFound], which removes the entry. If another goroutine is currently
 // loading the value for key, then this method does not perform an additional load.
 // If the key is written, invalidated or expires after the refresh was requested, the loaded
 // value is discarded and the cache keeps the newer state.
@@ -1374,8 +1374,9 @@ func (c *cache[K, V]) Refresh(ctx context.Context, key K, loader Loader[K, V]) <
 // BulkRefresh loads a new value for each key, asynchronously. While the new value is loading the
 // previous value (if any) will continue to be returned by any Get unless it is evicted.
 // If the new value is loaded successfully, it will replace the previous value in the cache;
-// If refreshing returned an error, the previous value will remain,
-// and the error will be logged using Logger and swallowed. If another goroutine is currently
+// If refreshing returned an error, the previous values will remain, and the error will be logged
+// using Logger and swallowed, an [ErrNotFound] for the whole bulk included. A key that the
+// [BulkLoader] leaves out of its result is not found, and its entry is removed. If another goroutine is currently
 // loading the value for key, then this method does not perform an additional load.
 // If the key is written, invalidated or expires after the refresh was requested, the loaded
 // value is discarded and the cache keeps the newer state.
@@ -1586,8 +1587,9 @@ func (c *cache[K, V]) notifyAtomicDeletion(key K, value V, cause DeletionCause) 
 		return
 	}
 
-	// The listener runs under the hash table's bucket lock, after the entry is already changed
-	// or removed; a panic is logged so that the change completes.
+	// The listener runs under the hash table's bucket lock, before the change is visible: an update
+	// in place calls it before the new value is set, and a replacement or removal before the table
+	// is changed. A panic is logged so that the change completes.
 	defer recoverCallback(c.logger, "OnAtomicDeletion panicked")
 	c.onAtomicDeletion(DeletionEvent[K, V]{
 		Key:   key,

@@ -42,5 +42,5 @@ bulkLoader := otter.BulkLoaderFunc[string, string](func(ctx context.Context, key
 })
     
 // Refresh values in the cache
-cache.BulkRefresh([]string{"key1", "key2"}, bulkLoader)
+cache.BulkRefresh(ctx, []string{"key1", "key2"}, bulkLoader)
 ```

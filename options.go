@@ -42,7 +42,7 @@ var defaultExecutor = func(fn func()) {
 //
 //	cache := otter.Must(&Options[string, string]{
 //		MaximumSize:      10_000,
-//	  	ExpiryCalculator: otter.ExpiryWriting[string, string(10 * time.Minute),
+//		ExpiryCalculator: otter.ExpiryWriting[string, string](10 * time.Minute),
 //		StatsRecorder:    stats.NewCounter(),
 //	})
 //
@@ -108,7 +108,8 @@ type Options[K comparable, V any] struct {
 	Weigher func(key K, value V) uint32
 	// ExpiryCalculator specifies that each entry should be automatically removed from the cache once a duration has
 	// elapsed after the entry's creation, the most recent replacement of its value, or its last read.
-	// The expiration time is reset by all cache read and write operations.
+	// The calculator decides which operations reset the expiration time: ExpiryWriting resets it on every
+	// write, and ExpiryAccessing also on every read.
 	//
 	// WARNING: The calculator may run under the lock of the entry's hash table bucket. It may only read
 	// entries with Cache.GetIfPresent, Cache.GetEntry or Cache.GetEntryQuietly. Any other call of the
@@ -152,7 +153,8 @@ type Options[K comparable, V any] struct {
 	// Executor specifies the executor to use when running asynchronous tasks. The executor is delegated to
 	// when sending deletion events, when asynchronous computations are performed by
 	// Cache.Refresh/Cache.BulkRefresh or for refreshes in Cache.Get/Cache.BulkGet, if RefreshCalculator was specified,
-	// or when performing periodic maintenance. By default, goroutines are used.
+	// or when performing maintenance after reads and writes. Periodic maintenance runs on a goroutine of its
+	// own. By default, goroutines are used.
 	//
 	// The primary intent of this method is to facilitate testing of caches which have been configured
 	// with OnDeletion or utilize asynchronous computations. A test may instead prefer

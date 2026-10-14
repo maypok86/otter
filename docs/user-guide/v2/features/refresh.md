@@ -22,6 +22,6 @@ A `Loader` may specify smart behavior to use on a refresh by overriding `Loader.
 
 Refresh operations are executed asynchronously using goroutine by default.
 
-If an error is returned after refresh then the old value is kept and the error is logged (using `Logger`) and swallowed.
+If an error is returned after refresh then the old value is kept and the error is logged (using `Logger`) and swallowed. The exception is `ErrNotFound`, which removes the entry.
 
 If the key is written (`Set`, `Compute`, ...) or invalidated after a refresh was requested, the refreshed value is discarded, so a refresh never overwrites a newer write or brings back an invalidated entry.
