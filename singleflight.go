@@ -308,9 +308,25 @@ func (g *group[K, V]) doBulkCall(
 			}
 		}
 
-		// Every call is finished, even if finishing one of them panics: an unfinished call
-		// would block its waiters and every later load of its key.
+		// Every call is finished, even if finishing one of them panics or calls runtime.Goexit: an
+		// unfinished call would block its waiters and every later load of its key.
 		var finishPanic any
+		exited := true
+		defer func() {
+			if exited {
+				// runtime.Goexit, which runs only deferred calls, left the loop below. The calls it
+				// did not reach are finished without their values.
+				for _, cl := range callsInBulk {
+					select {
+					case <-cl.done:
+					default:
+						cl.err, cl.isNotFound = errLoaderExited, false
+						g.deleteCall(cl)
+						cl.cancel()
+					}
+				}
+			}
+		}()
 		for _, cl := range callsInBulk {
 			func() {
 				defer func() {
@@ -321,6 +337,7 @@ func (g *group[K, V]) doBulkCall(
 				g.finish(cl)
 			}()
 		}
+		exited = false
 		if finishPanic != nil {
 			panic(finishPanic)
 		}
