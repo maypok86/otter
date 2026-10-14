@@ -305,10 +305,17 @@ func (p *policy[K, V]) setMaximumSize(maximum uint64) {
 	p.windowMaximum = window
 	p.mainProtectedMaximum = mainProtected
 
+	// The hill climber starts over: the quota it has not moved yet and the hit rate of its last
+	// sample were measured for the previous maximum.
 	p.hitsInSample = 0
 	p.missesInSample = 0
+	p.previousSampleHitRate = 0
+	p.adjustment = 0
 	p.stepSize = -hillClimberStepPercent * float64(maximum)
 
+	// The sketch never shrinks, and neither does its sample: after a lower maximum, the counters
+	// age and the climber samples at the pace of the largest maximum the sketch was sized for (see
+	// design-decisions.md).
 	if p.sketch != nil && !p.isWeighted && p.weightedSize >= (maximum>>1) {
 		// Lazily initialize when close to the maximum size
 		p.sketch.ensureCapacity(maximum)
