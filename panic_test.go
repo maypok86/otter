@@ -579,6 +579,43 @@ func TestCache_GoexitWhileWritingLoadedValue(t *testing.T) {
 	require.Equal(t, 8, v)
 }
 
+// A weigher that calls runtime.Goexit while the values of a bulk load are written does not leave
+// the loads of the other keys registered: a later Get of each key loads it instead of joining.
+func TestCache_GoexitWhileWritingBulkLoadedValues(t *testing.T) {
+	t.Parallel()
+
+	var exit atomic.Bool
+	exit.Store(true)
+	c := Must(&Options[int, int]{
+		MaximumWeight: 100,
+		Weigher: func(key, value int) uint32 {
+			if exit.CompareAndSwap(true, false) {
+				runtime.Goexit()
+			}
+			return 1
+		},
+	})
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = c.BulkGet(context.Background(), []int{1, 2}, BulkLoaderFunc[int, int](func(ctx context.Context, keys []int) (map[int]int, error) {
+			return map[int]int{1: 7, 2: 7}, nil
+		}))
+	}()
+	<-done
+
+	for key := 1; key <= 2; key++ {
+		completes(t, "Get after the exited bulk write", func() {
+			v, err := c.Get(context.Background(), key, LoaderFunc[int, int](func(ctx context.Context, key int) (int, error) {
+				return 7, nil
+			}))
+			require.NoError(t, err)
+			require.Equal(t, 7, v)
+		})
+	}
+}
+
 type panickingLogger struct{}
 
 func (panickingLogger) Warn(context.Context, string, error) { panic("logger boom") }
