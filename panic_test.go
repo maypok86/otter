@@ -305,6 +305,33 @@ func TestCache_PanicInExecutorOnRefreshFromRead(t *testing.T) {
 	}
 }
 
+// The clock is user code, and maintenance reads it once per pass. If it panics there, the pass
+// runs with the time of the previous one and the panic is logged: the pass may hold a task that a
+// writer handed it, and on the default executor the panic would crash the program.
+func TestCache_PanicInClockDuringMaintenance(t *testing.T) {
+	t.Parallel()
+
+	logger := &recordingLogger{}
+	clock := &panickingClock{nonTickingClock: newNonTickingClock()}
+	c := Must(&Options[int, int]{
+		MaximumSize:      10,
+		ExpiryCalculator: ExpiryWriting[int, int](time.Hour),
+		Clock:            clock,
+		Logger:           logger,
+		// maintenance runs only when CleanUp is called
+		Executor: func(fn func()) {},
+	})
+	for i := range 20 {
+		c.Set(i, i)
+	}
+
+	clock.panics.Store(true)
+	require.NotPanics(t, c.CleanUp)
+	clock.panics.Store(false)
+	require.NotEmpty(t, logger.get())
+	require.Equal(t, 10, c.EstimatedSize(), "the pass did not apply the buffered writes")
+}
+
 // A refresh is registered before it is handed to the executor. If the executor panics, the
 // refresh is finished with the panic, so that a later load of the key does not wait for it
 // forever, and the task is abandoned even if the executor scheduled it before panicking.

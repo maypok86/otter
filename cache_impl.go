@@ -1958,8 +1958,13 @@ func (c *cache[K, V]) maintenance(t *task[K, V]) {
 
 // readMaintenanceTime reads the time of a maintenance pass, under evictionMutex. Reading the clock
 // once per pass rather than per eviction keeps it off the single-threaded maintenance path.
+//
+// The clock is user code. If it panics, the pass runs with the time of the previous one and the
+// panic is logged: the pass may hold a task that a writer handed it, which would be lost, and on
+// the default executor the panic would crash the program. Entries then expire a pass later.
 func (c *cache[K, V]) readMaintenanceTime() {
 	if c.withExpiration {
+		defer recoverCallback(c.logger, "Clock panicked during maintenance")
 		c.maintenanceNanos = c.clock.NowNano()
 	}
 }
