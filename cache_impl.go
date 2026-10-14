@@ -1600,7 +1600,13 @@ func (c *cache[K, V]) notifyAtomicDeletion(key K, value V, cause DeletionCause) 
 }
 
 func (c *cache[K, V]) periodicCleanUp() {
-	tick := c.clock.Tick(time.Second)
+	// The clock is user code, and this goroutine is the cache's own: if Tick panics, the panic is
+	// logged and the cache does without periodic clean-ups. The loop still waits for
+	// StopAllGoroutines.
+	tick := func() <-chan time.Time {
+		defer recoverCallback(c.logger, "Clock.Tick panicked")
+		return c.clock.Tick(time.Second)
+	}()
 	for {
 		select {
 		case <-c.doneStop:

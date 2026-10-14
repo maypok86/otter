@@ -402,6 +402,35 @@ func TestCache_PanicInClockOnRefreshFromRead(t *testing.T) {
 	}
 }
 
+// panickingTickClock is a clock whose Tick panics.
+type panickingTickClock struct {
+	*nonTickingClock
+}
+
+func (c *panickingTickClock) Tick(time.Duration) <-chan time.Time {
+	panic("tick")
+}
+
+// The periodic clean-up runs on a goroutine of the cache's own. If the clock's Tick panics there,
+// the panic is logged and the cache does without periodic clean-ups, instead of crashing the
+// program.
+func TestCache_PanicInClockTick(t *testing.T) {
+	t.Parallel()
+
+	logger := &recordingLogger{}
+	c := Must(&Options[int, int]{
+		ExpiryCalculator: ExpiryWriting[int, int](time.Hour),
+		Clock:            &panickingTickClock{nonTickingClock: newNonTickingClock()},
+		Logger:           logger,
+	})
+	require.Eventually(t, func() bool {
+		return len(logger.get()) > 0
+	}, 10*time.Second, time.Millisecond)
+	completes(t, "StopAllGoroutines", func() {
+		require.True(t, c.StopAllGoroutines())
+	})
+}
+
 // A refresh is registered before it is handed to the executor. If the executor panics, the
 // refresh is finished with the panic, so that a later load of the key does not wait for it
 // forever, and the task is abandoned even if the executor scheduled it before panicking.
