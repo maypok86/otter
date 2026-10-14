@@ -36,6 +36,19 @@ Audits read this file **after** recording their findings (Phase 1.5 of the audit
   off the read path. If the access is dropped, the entry is already invisible to reads but is
   removed at its former deadline. `SetExpiresAfter` sends an earlier deadline through the
   write buffer.
+- **With the default executor, a drain can wait about 10 ms when every P is busy, and the reads
+  in between are dropped.** `go fn()` puts the drain goroutine in the scheduling P's `runnext`,
+  and `wakep` only wakes an idle P, so with every P running readers the drain starts when the
+  reader is preempted (`forcePreemptNS`, 10 ms). Meanwhile `drainStatus` is `processingToIdle`,
+  no other drain is scheduled, and the full read buffer drops accesses with a cheap `Full`
+  check. A dedicated maintenance goroutine woken through a channel lands in `runnext` the same
+  way, so in Go only a synchronous drain is fast under saturation. Measured on 8 busy threads
+  (Ryzen 7 7840H, 2026-10-12): about 60 drains/s at 100% reads with the default executor
+  against 25-115K with `Executor: func(fn func()) { fn() }`, but the synchronous one costs
+  10-27% ops/s wherever there are reads, for +1.6-2.0 hit-rate points on 3 of 8 eviction
+  workloads and none on the rest. Read throughput wins; with an idle P the delay is gone. A
+  drain started by the write path is a separate question (it was faster synchronously on pure
+  inserts with eviction).
 - **`Entry` values can mix fields of different writes of the same key.** The fields are read
   one at a time from a node that is updated in place, as in Caffeine. (The doc comment still
   calls it an immutable snapshot; that is a known documentation gap.)
