@@ -296,3 +296,33 @@ func TestLoadCacheFrom_FillsInTheCacheUnits(t *testing.T) {
 	require.NoError(t, LoadCacheFrom(sized, &buf))
 	require.Equal(t, 50, sized.EstimatedSize())
 }
+
+// The warm-up reaches the frequency sketch of a cache without InitialCapacity, which sizes its
+// sketch only once it is half full: the hottest entry of the snapshot ends up more frequent than
+// the coldest.
+func TestLoadCacheFrom_WarmUpReachesTheSketch(t *testing.T) {
+	t.Parallel()
+
+	const maximumSize = 100
+	saved := Must(&Options[int, int]{MaximumSize: maximumSize})
+	for i := range maximumSize {
+		saved.Set(i, i)
+	}
+	var order []int
+	for e := range saved.Hottest() {
+		order = append(order, e.Key)
+	}
+	var buf bytes.Buffer
+	require.NoError(t, SaveCacheTo(saved, &buf))
+
+	loaded := Must(&Options[int, int]{MaximumSize: maximumSize})
+	require.NoError(t, LoadCacheFrom(loaded, &buf))
+	validateCache(t, loaded)
+
+	ci := loaded.cache
+	ci.evictionMutex.Lock()
+	defer ci.evictionMutex.Unlock()
+	hottest := ci.evictionPolicy.sketch.frequency(order[0])
+	coldest := ci.evictionPolicy.sketch.frequency(order[len(order)-1])
+	require.Greater(t, hottest, coldest)
+}
