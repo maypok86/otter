@@ -235,7 +235,7 @@ func TestCache_BulkGetPanic(t *testing.T) {
 				t.Fatalf("unexpected wrapped error type %T; want %T", err, new(errValue))
 			}
 
-			for k := range ks {
+			for _, k := range ks {
 				if c.cache.singleflight.getCall(k) != nil {
 					t.Fatal("calls should be deleted even in case of panic")
 				}
@@ -1503,9 +1503,11 @@ func TestCache_GetWithSuppressedLoad(t *testing.T) {
 		t.Fatalf("the cache should only contain the key = %v", k1)
 	}
 
+	// wg1 only shows that a goroutine is about to call Get. One descheduled for longer than the
+	// load calls Get after the value is stored and records a hit, so only the total is exact.
 	snapshot := statsCounter.Snapshot()
-	if snapshot.Hits != 0 ||
-		snapshot.Misses != n ||
+	if snapshot.Hits+snapshot.Misses != n ||
+		snapshot.Misses < 1 ||
 		snapshot.Loads() != 1 ||
 		snapshot.LoadSuccesses != 1 {
 		t.Fatalf("statistics are not recorded correctly. snapshot: %v", snapshot)

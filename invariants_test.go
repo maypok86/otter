@@ -25,6 +25,8 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/maypok86/otter/v2/internal/deque"
 	"github.com/maypok86/otter/v2/internal/generated/node"
 )
@@ -64,11 +66,25 @@ func validateCache[K comparable, V any](t testing.TB, c *Cache[K, V]) {
 		queued := make(map[unsafe.Pointer]string, len(inMap))
 		var weighted, window, protected uint64
 		walk := func(name string, d *deque.Linked[K, V], belongs func(n node.Node[K, V]) bool, size *uint64) {
+			// The walk follows the forward links; the back-links, the length and the tail must
+			// agree with them.
+			var prev node.Node[K, V]
+			linked := 0
 			for n := range d.All() {
 				if other, ok := queued[n.AsPointer()]; ok {
+					if other == name {
+						// the walk would follow the cycle for ever
+						report("%s: the forward links loop back to key %v", name, n.Key())
+						break
+					}
 					report("key %v: the node is in both %s and %s", n.Key(), other, name)
 				}
 				queued[n.AsPointer()] = name
+				if n.Prev() != prev {
+					report("key %v: the node's back-link in %s does not point to the node before it", n.Key(), name)
+				}
+				prev = n
+				linked++
 				if !belongs(n) {
 					report("key %v: the node is in %s, but its queue type is %d", n.Key(), name, n.GetQueueType())
 				}
@@ -86,6 +102,12 @@ func validateCache[K comparable, V any](t testing.TB, c *Cache[K, V]) {
 				if size != nil {
 					*size += w
 				}
+			}
+			if linked != d.Len() {
+				report("%s: Len() = %d, but %d nodes are linked", name, d.Len(), linked)
+			}
+			if d.Tail() != prev {
+				report("%s: the tail is not the last linked node", name)
 			}
 		}
 		walk("window", p.window, func(n node.Node[K, V]) bool { return n.InWindow() }, &window)
@@ -108,6 +130,11 @@ func validateCache[K comparable, V any](t testing.TB, c *Cache[K, V]) {
 		}
 		if p.weightedSize > p.maximum {
 			report("weightedSize = %d exceeds the maximum %d", p.weightedSize, p.maximum)
+		}
+		if p.windowMaximum > p.maximum {
+			report("windowMaximum = %d exceeds the maximum %d", p.windowMaximum, p.maximum)
+		} else if p.mainProtectedMaximum > p.maximum-p.windowMaximum {
+			report("mainProtectedMaximum = %d exceeds the main region's maximum %d", p.mainProtectedMaximum, p.maximum-p.windowMaximum)
 		}
 	}
 
@@ -142,6 +169,60 @@ func validateCache[K comparable, V any](t testing.TB, c *Cache[K, V]) {
 
 	if len(problems) > 0 {
 		t.Fatalf("cache invariants are violated:\n%s", strings.Join(problems, "\n"))
+	}
+}
+
+// fatalRecorder is a testing.TB whose Fatalf records the message instead of stopping the test,
+// so that a test can check what validateCache reports.
+type fatalRecorder struct {
+	testing.TB
+	msg string
+}
+
+func (r *fatalRecorder) Helper() {}
+
+func (r *fatalRecorder) Fatalf(format string, args ...any) {
+	r.msg = fmt.Sprintf(format, args...)
+}
+
+// validateCache reports a broken policy: region maxima that do not fit the maximum, and a deque
+// whose back-links, length or tail disagree with its forward links, or that loops.
+func TestValidateCache_ReportsBrokenPolicy(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		corrupt func(p *policy[int, int])
+		want    string
+	}{
+		{"window maximum", func(p *policy[int, int]) { p.windowMaximum = p.maximum + 1 }, "windowMaximum"},
+		{"protected maximum", func(p *policy[int, int]) { p.mainProtectedMaximum = p.maximum }, "mainProtectedMaximum"},
+		{"back-link", func(p *policy[int, int]) { p.probation.Tail().SetPrev(nil) }, "back-link"},
+		{"length", func(p *policy[int, int]) {
+			// unlinked by its neighbours, which keeps the links consistent but not the length
+			n := p.probation.Head().Next()
+			n.Prev().SetNext(n.Next())
+			n.Next().SetPrev(n.Prev())
+		}, "Len()"},
+		{"cycle", func(p *policy[int, int]) { p.probation.Tail().SetNext(p.probation.Head()) }, "forward links loop back"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			c := Must(&Options[int, int]{MaximumSize: 100})
+			for i := range 50 {
+				c.Set(i, i)
+			}
+			validateCache(t, c)
+
+			c.cache.evictionMutex.Lock()
+			tt.corrupt(c.cache.evictionPolicy)
+			c.cache.evictionMutex.Unlock()
+			r := &fatalRecorder{TB: t}
+			validateCache(r, c)
+			require.Contains(t, r.msg, tt.want)
+		})
 	}
 }
 
