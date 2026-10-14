@@ -81,6 +81,14 @@ Audits read this file **after** recording their findings (Phase 1.5 of the audit
   `queueTransferThreshold` (1000) transfers per maintenance; the regions can lag behind them.
 - **Hashing is randomized per cache**, so hit rates of one simulator run vary by up to ±3
   points on small traces. Compare policies over repeated runs.
+- **The frequency sketch keeps its table and sample when the maximum shrinks.** The sample
+  (ten times the maximum the table was sized for) is both the aging period of the counters and
+  the length of a hill-climber sample, so after `SetMaximum` lowers the maximum both run at the
+  old pace: from 100,000 to 1000 entries, the climber's first adjustment comes a million
+  requests later, and until then the regions keep their initial split. Resizing the sample
+  alone is not enough: `reset` subtracts the number of odd counters, which a table filled at
+  the old pace can hold more of than a cut `size` allows, and the subtraction would wrap and
+  stop the aging for good. A lower maximum is rare, and the split it starts from is safe.
 
 ## Memory and layout
 

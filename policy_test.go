@@ -275,3 +275,33 @@ func TestPolicy_EvictionKeptByTheCache(t *testing.T) {
 		requireAccounted(t, p, rest...)
 	}
 }
+
+// A new maximum starts the hill climber over. The quota that climb could not move yet and the
+// hit rate of the last sample were measured for the previous maximum: applied to the new one, a
+// quota left over from a large maximum takes the whole protected region of a small one, or
+// shrinks its window to a single entry.
+func TestPolicy_SetMaximumSizeRestartsClimber(t *testing.T) {
+	t.Parallel()
+
+	nm := node.NewManager[int, int](node.Config{WithSize: true})
+	for _, adjustment := range []int64{5250, -5250} {
+		p := newPolicy[int, int](false, 100_000, removeAll)
+		p.setMaximumSize(100_000)
+		for k := range 1000 {
+			p.add(nm.Create(k, k, 0, 0, 1))
+		}
+		p.evictNodes()
+		// what climb leaves when increaseWindow or decreaseWindow has not moved all of its quota
+		p.adjustment = adjustment
+		p.previousSampleHitRate = 0.9
+
+		p.setMaximumSize(1000)
+		window, protected := p.windowMaximum, p.mainProtectedMaximum
+		p.evictNodes()
+		p.climb()
+
+		require.Equal(t, window, p.windowMaximum, "adjustment %d", adjustment)
+		require.Equal(t, protected, p.mainProtectedMaximum, "adjustment %d", adjustment)
+		require.Zero(t, p.previousSampleHitRate, "adjustment %d", adjustment)
+	}
+}
