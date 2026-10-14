@@ -54,10 +54,13 @@ func LoadCacheFrom[K comparable, V any](c *Cache[K, V], r io.Reader) error {
 		return fmt.Errorf("otter: decode maximum: %w", err)
 	}
 
-	maximum := min(savedMaximum, c.GetMaximum())
-	maximum2 := maximum / 4
-	maximum1 := 2 * maximum2
-	size := uint64(0)
+	// The snapshot and the cache may count their maxima in different units, entries or weight, so
+	// each is measured in its own: the cache is filled up to its maximum by the weights it gives the
+	// entries, and the warm-up credits the hottest quarter of the snapshot twice and the next one
+	// once, by the saved weights, as long as they fit in the same part of the cache.
+	maximum := c.GetMaximum()
+	savedSize, size := uint64(0), uint64(0)
+	var warm []warmKey[K]
 	for size < maximum {
 		var entry Entry[K, V]
 		if err := dec.Decode(&entry); err != nil {
@@ -81,33 +84,56 @@ func LoadCacheFrom[K comparable, V any](c *Cache[K, V], r io.Reader) error {
 			refreshableAfter := max(1, time.Duration(entry.RefreshableAtNano-nowNano))
 			c.SetRefreshableAfter(entry.Key, refreshableAfter)
 		}
-		size += uint64(entry.Weight)
+		savedSize += uint64(entry.Weight)
+		size += uint64(c.cache.weigher(entry.Key, entry.Value))
 
-		if size <= maximum2 {
-			warmUp(c, entry.Key, 2)
+		// only a cache with an eviction policy has anything to warm up
+		if !c.cache.withEviction {
 			continue
 		}
-		if size <= maximum1 {
-			warmUp(c, entry.Key, 1)
+		if savedSize <= savedMaximum/4 && size <= maximum/4 {
+			warm = append(warm, warmKey[K]{key: entry.Key, reads: 2})
 			continue
+		}
+		if savedSize <= savedMaximum/2 && size <= maximum/2 {
+			warm = append(warm, warmKey[K]{key: entry.Key, reads: 1})
 		}
 	}
+	warmUp(c, warm)
 
 	return nil
 }
 
-// warmUp credits the restored entry of key to the eviction policy as reads would, so that the
-// hottest entries of the snapshot are not the first ones evicted. These are not the caller's
-// reads: they record no hits, and do not call ExpireAfterRead, which would replace the lifetime
-// just restored.
-func warmUp[K comparable, V any](c *Cache[K, V], key K, reads int) {
-	nowNano := c.cache.clock.NowNano()
-	n := c.cache.getNodeQuietly(key, nowNano)
-	if n == nil {
+// warmKey is a restored key that warmUp credits to the eviction policy as reads reads.
+type warmKey[K comparable] struct {
+	key   K
+	reads int
+}
+
+// warmUp credits the restored entries to the eviction policy as reads would, so that the hottest
+// entries of the snapshot are not the first ones evicted. It runs once every entry is written,
+// under the eviction lock and after maintenance has applied the writes: the policy then holds the
+// nodes and has sized its frequency sketch, which a cache without InitialCapacity does only once it
+// is half full, and the reads skip the read buffer, which drops them when it is full. These are not
+// the caller's reads: they record no hits, and do not call ExpireAfterRead, which would replace the
+// lifetime just restored.
+func warmUp[K comparable, V any](c *Cache[K, V], keys []warmKey[K]) {
+	ci := c.cache
+	if len(keys) == 0 {
 		return
 	}
-	for range reads {
-		c.cache.afterRead(n, nowNano, false, false)
+	nowNano := ci.clock.NowNano()
+	ci.evictionMutex.Lock()
+	defer ci.evictionMutex.Unlock()
+	ci.maintenance(nil)
+	for _, wk := range keys {
+		n := ci.hashmap.Get(wk.key)
+		if n == nil || !n.IsAlive() || n.HasExpired(nowNano) {
+			continue
+		}
+		for range wk.reads {
+			ci.evictionPolicy.access(n)
+		}
 	}
 }
 
