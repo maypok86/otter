@@ -1043,7 +1043,8 @@ func (c *cache[K, V]) bulkRefreshKeys(
 
 	c.singleflight.submitRefresh(owned, func() {
 		// Deferred, so that a bulk loader that calls runtime.Goexit, like one that panics, does not
-		// skip the reload or the results.
+		// skip the reload or the results. Deferred calls run in reverse order: the results are
+		// deferred first, so that they are sent after the load and the reload.
 		if isManual {
 			defer func() {
 				results := make([]RefreshResult[K, V], 0, len(rks))
