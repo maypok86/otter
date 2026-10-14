@@ -3649,3 +3649,49 @@ func TestCache_EvictionDropsLoadThatAdoptedItsValue(t *testing.T) {
 		cl.cancel()
 	})
 }
+
+// The read that starts a refresh is the request's access. Writing the reloaded value is not
+// another one, whether it is applied in place or replaces the node.
+func TestCache_RefreshCompletionIsNotAnAccess(t *testing.T) {
+	t.Parallel()
+
+	for _, inPlace := range []bool{true, false} {
+		c := Must(&Options[int, string]{
+			MaximumSize:       100,
+			RefreshCalculator: RefreshWriting[int, string](time.Hour),
+			Executor: func(fn func()) {
+				fn()
+			},
+		})
+		ci := c.cache
+		for k := range 60 {
+			c.Set(k, "v")
+			if inPlace {
+				// the second write boxes the node, so that the refresh is applied in place
+				c.Set(k, "v")
+			}
+		}
+		c.CleanUp()
+		before := ci.hashmap.Get(1)
+
+		ci.evictionMutex.Lock()
+		p := ci.evictionPolicy
+		require.False(t, p.sketch.isNotInitialized())
+		hits, misses, freq := p.hitsInSample, p.missesInSample, p.sketch.frequency(1)
+		ci.evictionMutex.Unlock()
+
+		res := <-c.Refresh(context.Background(), 1, LoaderFunc[int, string](func(ctx context.Context, key int) (string, error) {
+			return "reloaded", nil
+		}))
+		require.NoError(t, res.Err)
+		require.Equal(t, inPlace, before == ci.hashmap.Get(1), "in place")
+		c.CleanUp()
+
+		ci.evictionMutex.Lock()
+		require.Equal(t, hits, p.hitsInSample, "in place %v: climber hits", inPlace)
+		require.Equal(t, misses, p.missesInSample, "in place %v: climber misses", inPlace)
+		require.Equal(t, freq, p.sketch.frequency(1), "in place %v: sketch frequency", inPlace)
+		ci.evictionMutex.Unlock()
+		validateCache(t, c)
+	}
+}

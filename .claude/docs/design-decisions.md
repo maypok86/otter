@@ -49,6 +49,16 @@ Audits read this file **after** recording their findings (Phase 1.5 of the audit
   workloads and none on the rest. Read throughput wins; with an idle P the delay is gone. A
   drain started by the write path is a separate question (it was faster synchronously on pure
   inserts with eviction).
+- **`InvalidateAll` replays the write buffer until it is empty, without a bound.** Unlike
+  `drainWriteBuffer`, which stops after `maxWriteBufferSize` tasks, the loop in
+  `invalidateAllLocked` has no limit, yet it terminates: it is the only consumer and holds
+  `evictionMutex`. Writers slower than the loop let it catch up; faster ones fill the buffer,
+  retry and then block on `evictionMutex` in `performCleanUp`, so they drop out until the
+  buffer is empty. A rate that keeps the buffer non-empty but never full is not stable.
+  Measured on an M4 Pro with 1-24 writers inserting without pause (2026-10-11): every call
+  returned, the worst after 291 ms, most of it the one-by-one invalidation that follows; one
+  call replayed 92,302 tasks, 45 times the buffer's capacity. A bound would leave tasks of
+  writes made before the call for a later maintenance, for no measured gain.
 - **`Entry` values can mix fields of different writes of the same key.** The fields are read
   one at a time from a node that is updated in place, as in Caffeine. (The doc comment still
   calls it an immutable snapshot; that is a known documentation gap.)

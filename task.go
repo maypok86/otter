@@ -38,6 +38,9 @@ type task[K comparable, V any] struct {
 	old           node.Node[K, V]
 	writeReason   reason
 	deletionCause DeletionCause
+	// quiet reports an update that is not an access: the completion of a refresh, whose
+	// request was counted by the read that started it.
+	quiet bool
 }
 
 // node returns the node contained in the task. If node was not specified, it returns nil.

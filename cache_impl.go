@@ -602,8 +602,12 @@ func (c *cache[K, V]) ComputeIfPresent(
 	key K,
 	remappingFunc func(oldValue V) (newValue V, op ComputeOp),
 ) (V, bool) {
-	nowNano := c.clock.NowNano()
-	if n := c.getNode(key, nowNano); n == nil {
+	// The check only skips locking the bucket of an absent key. It is not a read: as in Compute,
+	// the hit or miss is the entry the function is given, and a read of it would also restart
+	// its ExpireAfterRead deadline before the function decides what to do with it. An expired
+	// entry is removed under the lock, as Compute removes it.
+	if c.hashmap.Get(key) == nil {
+		c.stats.RecordMisses(1)
 		return zeroValue[V](), false
 	}
 
@@ -612,7 +616,7 @@ func (c *cache[K, V]) ComputeIfPresent(
 			return remappingFunc(oldValue)
 		}
 		return zeroValue[V](), CancelOp
-	}, false)
+	}, true)
 }
 
 func (c *cache[K, V]) doCompute(
@@ -2019,7 +2023,7 @@ func (c *cache[K, V]) runTask(t *task[K, V]) {
 			c.timerWheel.Schedule(n)
 		}
 		if c.withEviction {
-			c.evictionPolicy.update(n, old)
+			c.evictionPolicy.update(n, old, t.quiet)
 		}
 		c.notifyDeletion(old.Key(), old.Value(), t.deletionCause)
 	case reconcileReason:

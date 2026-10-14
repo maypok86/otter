@@ -104,7 +104,7 @@ func TestPolicy_OutOfOrderTasks(t *testing.T) {
 			n1.Retire()
 			n2.Retire()
 			p.makeDead(n2)
-			p.update(n2, n1)
+			p.update(n2, n1, false)
 
 			requireAccounted(t, p)
 			require.True(t, n1.IsDead())
@@ -122,8 +122,8 @@ func TestPolicy_OutOfOrderTasks(t *testing.T) {
 		n3 := nm.Create(1, 3, 0, 0, 7)
 		n1.Retire()
 		n2.Retire()
-		p.update(n3, n2)
-		p.update(n2, n1)
+		p.update(n3, n2, false)
+		p.update(n2, n1, false)
 
 		requireAccounted(t, p, n3)
 		require.True(t, n1.IsDead())
@@ -136,7 +136,7 @@ func TestPolicy_OutOfOrderTasks(t *testing.T) {
 		n1 := nm.Create(1, 1, 0, 0, 3)
 		n2 := nm.Create(1, 2, 0, 0, 5)
 		n1.Retire()
-		p.update(n2, n1)
+		p.update(n2, n1, false)
 		p.add(n1)
 
 		requireAccounted(t, p, n2)
@@ -303,5 +303,31 @@ func TestPolicy_SetMaximumSizeRestartsClimber(t *testing.T) {
 		require.Equal(t, window, p.windowMaximum, "adjustment %d", adjustment)
 		require.Equal(t, protected, p.mainProtectedMaximum, "adjustment %d", adjustment)
 		require.Zero(t, p.previousSampleHitRate, "adjustment %d", adjustment)
+	}
+}
+
+func TestPolicy_ClimberWaitsForHalfFull(t *testing.T) {
+	t.Parallel()
+
+	// An InitialCapacity hint creates the sketch at construction, which used to release the
+	// climber while the cache was far from evicting.
+	for _, hint := range []int{0, 1000} {
+		c := Must(&Options[int, int]{MaximumSize: 400_000, InitialCapacity: hint})
+		ci := c.cache
+		ci.evictionMutex.Lock()
+		window := ci.evictionPolicy.windowMaximum
+		ci.evictionMutex.Unlock()
+
+		for k := range 40_000 {
+			c.Set(k, k)
+			if k%1000 == 0 {
+				c.CleanUp()
+			}
+		}
+		c.CleanUp()
+
+		ci.evictionMutex.Lock()
+		require.Equal(t, window, ci.evictionPolicy.windowMaximum, "InitialCapacity %d", hint)
+		ci.evictionMutex.Unlock()
 	}
 }

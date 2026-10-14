@@ -78,7 +78,11 @@ Every change decided from a key's current value (`set`, `doCompute`, `Invalidate
    removal):
    - in place: an access through the read buffer, plus a `reconcileReason` task if the weight
      changed or the deadline moved earlier;
-   - insert: an `addReason` task; replacement: an `updateReason` task.
+   - insert: an `addReason` task; replacement: an `updateReason` task;
+   - the completion of a refresh is not an access, since the read that started it was one: in
+     place it skips the read buffer (the timer wheel reschedules a deadline that moved later
+     when it finds the node unexpired), and its `updateReason` task is `quiet`, so
+     `policy.update` only reorders the node.
 4. Tasks go to the bounded MPSC write buffer. When it is full, the writer runs
    `performCleanUp` itself under `evictionMutex`.
 

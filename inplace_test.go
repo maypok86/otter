@@ -963,3 +963,45 @@ func TestCache_RefreshInPlaceWithBoundedExecutor(t *testing.T) {
 		return v1 == 10 && v2 == 20 && events.Load() == 2*slots
 	}, 5*time.Second, time.Millisecond, "the refreshes deadlocked on the executor")
 }
+
+// A refresh applied in place does not reach the policies through the read buffer, so a deadline
+// it moves later is not rescheduled when it is written: the timer wheel finds the node unexpired
+// at its former deadline and schedules it again.
+func TestCache_InPlaceRefreshMovesDeadlineLater(t *testing.T) {
+	t.Parallel()
+
+	clk := newNonTickingClock()
+	c := Must(&Options[int, int]{
+		MaximumSize:       10,
+		Clock:             clk,
+		ExpiryCalculator:  ExpiryWriting[int, int](10 * time.Second),
+		RefreshCalculator: RefreshWriting[int, int](time.Hour),
+		Executor: func(fn func()) {
+			fn()
+		},
+	})
+	c.Set(1, 1)
+	c.Set(1, 2) // an update, applied in place
+	c.CleanUp()
+	n := c.cache.hashmap.Get(1)
+
+	clk.Sleep(6 * time.Second)
+	res := <-c.Refresh(context.Background(), 1, LoaderFunc[int, int](func(ctx context.Context, key int) (int, error) {
+		return 3, nil
+	}))
+	require.NoError(t, res.Err)
+	require.True(t, n.AsPointer() == c.cache.hashmap.Get(1).AsPointer(), "the node was replaced")
+
+	clk.Sleep(5 * time.Second) // past the former deadline
+	c.CleanUp()
+	e, ok := c.GetEntryQuietly(1)
+	require.True(t, ok)
+	require.Equal(t, 3, e.Value)
+	require.Equal(t, 5*time.Second, e.ExpiresAfter())
+	validateCache(t, c)
+
+	clk.Sleep(6 * time.Second)
+	c.CleanUp()
+	require.Nil(t, c.cache.hashmap.Get(1), "the entry is removed at its new deadline")
+	validateCache(t, c)
+}
