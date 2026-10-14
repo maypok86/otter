@@ -54,10 +54,12 @@ func LoadCacheFrom[K comparable, V any](c *Cache[K, V], r io.Reader) error {
 		return fmt.Errorf("otter: decode maximum: %w", err)
 	}
 
-	maximum := min(savedMaximum, c.GetMaximum())
-	maximum2 := maximum / 4
-	maximum1 := 2 * maximum2
-	size := uint64(0)
+	// The snapshot and the cache may count their maxima in different units, entries or weight, so
+	// each is measured in its own: the cache is filled up to its maximum by the weights it gives the
+	// entries, and the warm-up credits the hottest quarter of the snapshot twice and the next one
+	// once, by the saved weights, as long as they fit in the same part of the cache.
+	maximum := c.GetMaximum()
+	savedSize, size := uint64(0), uint64(0)
 	for size < maximum {
 		var entry Entry[K, V]
 		if err := dec.Decode(&entry); err != nil {
@@ -81,13 +83,14 @@ func LoadCacheFrom[K comparable, V any](c *Cache[K, V], r io.Reader) error {
 			refreshableAfter := max(1, time.Duration(entry.RefreshableAtNano-nowNano))
 			c.SetRefreshableAfter(entry.Key, refreshableAfter)
 		}
-		size += uint64(entry.Weight)
+		savedSize += uint64(entry.Weight)
+		size += uint64(c.cache.weigher(entry.Key, entry.Value))
 
-		if size <= maximum2 {
+		if savedSize <= savedMaximum/4 && size <= maximum/4 {
 			warmUp(c, entry.Key, 2)
 			continue
 		}
-		if size <= maximum1 {
+		if savedSize <= savedMaximum/2 && size <= maximum/2 {
 			warmUp(c, entry.Key, 1)
 			continue
 		}

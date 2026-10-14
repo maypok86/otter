@@ -276,3 +276,23 @@ func TestSaveCacheToFile_KeepsLinkAndMode(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, 1, v)
 }
+
+// A snapshot and the cache it is loaded into may count their maxima in different units: entries
+// or weight. The cache is filled up to its own maximum.
+func TestLoadCacheFrom_FillsInTheCacheUnits(t *testing.T) {
+	t.Parallel()
+
+	weighted := Must(&Options[int, int]{
+		MaximumWeight: 10_000,
+		Weigher:       func(int, int) uint32 { return 100 },
+	})
+	for i := range 50 {
+		weighted.Set(i, i)
+	}
+	var buf bytes.Buffer
+	require.NoError(t, SaveCacheTo(weighted, &buf))
+
+	sized := Must(&Options[int, int]{MaximumSize: 1000})
+	require.NoError(t, LoadCacheFrom(sized, &buf))
+	require.Equal(t, 50, sized.EstimatedSize())
+}
