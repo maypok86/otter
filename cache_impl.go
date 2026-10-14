@@ -736,6 +736,17 @@ func (c *cache[K, V]) refreshKey(
 	}
 
 	c.singleflight.submitRefresh([]*call[K, V]{cl}, func() {
+		// Deferred, so that a loader that calls runtime.Goexit is reported like one that panics.
+		defer func() {
+			if cl.err != nil && !cl.isNotFound {
+				c.logger.Error(ctx, "Returned an error during the refreshing", cl.err)
+			}
+
+			if isManual {
+				ch <- cl.refreshResult()
+			}
+		}()
+
 		// the loader is called in a closure, see doCall
 		refresher := func(ctx context.Context, key K) (V, error) {
 			if rk.old != nil {
@@ -748,14 +759,6 @@ func (c *cache[K, V]) refreshKey(
 		_ = c.wrapRefresh(func() error {
 			return c.singleflight.doCall(ctx, cl, refresher)
 		})
-
-		if cl.err != nil && !cl.isNotFound {
-			c.logger.Error(ctx, "Returned an error during the refreshing", cl.err)
-		}
-
-		if isManual {
-			ch <- cl.refreshResult()
-		}
 	})
 
 	return ch
@@ -1039,9 +1042,36 @@ func (c *cache[K, V]) bulkRefreshKeys(
 	}
 
 	c.singleflight.submitRefresh(owned, func() {
-		var results []RefreshResult[K, V]
+		// Deferred, so that a bulk loader that calls runtime.Goexit, like one that panics, does not
+		// skip the reload or the results.
 		if isManual {
-			results = make([]RefreshResult[K, V], 0, len(rks))
+			defer func() {
+				results := make([]RefreshResult[K, V], 0, len(rks))
+				for _, cl := range owned {
+					results = append(results, cl.refreshResult())
+				}
+				sendAfterJoined(ch, results, foundCalls)
+			}()
+		}
+		if len(toReloadCalls) > 0 {
+			defer func() {
+				reload := func(ctx context.Context, keys []K) (map[K]V, error) {
+					oldValues := make([]V, 0, len(keys))
+					for _, k := range keys {
+						// read when the reload starts, as for a single refresh: a write that changed
+						// it since the request has cancelled the refresh
+						oldValues = append(oldValues, toReloadCalls[k].base.Value())
+					}
+					return bulkLoader.BulkReload(ctx, keys, oldValues)
+				}
+
+				reloadErr := c.wrapRefresh(func() error {
+					return c.singleflight.doBulkCall(ctx, toReloadCalls, reload)
+				})
+				if reloadErr != nil {
+					c.logger.Error(ctx, "BulkReload returned an error", reloadErr)
+				}
+			}()
 		}
 
 		if len(toLoadCalls) > 0 {
@@ -1054,46 +1084,6 @@ func (c *cache[K, V]) bulkRefreshKeys(
 			if loadErr != nil {
 				c.logger.Error(ctx, "BulkLoad returned an error", loadErr)
 			}
-
-			if isManual {
-				for _, cl := range toLoadCalls {
-					// the bulk loader may have added keys that were not requested
-					if cl.isFake {
-						continue
-					}
-					results = append(results, cl.refreshResult())
-				}
-			}
-		}
-		if len(toReloadCalls) > 0 {
-			reload := func(ctx context.Context, keys []K) (map[K]V, error) {
-				oldValues := make([]V, 0, len(keys))
-				for _, k := range keys {
-					// read when the reload starts, as for a single refresh: a write that changed
-					// it since the request has cancelled the refresh
-					oldValues = append(oldValues, toReloadCalls[k].base.Value())
-				}
-				return bulkLoader.BulkReload(ctx, keys, oldValues)
-			}
-
-			reloadErr := c.wrapRefresh(func() error {
-				return c.singleflight.doBulkCall(ctx, toReloadCalls, reload)
-			})
-			if reloadErr != nil {
-				c.logger.Error(ctx, "BulkReload returned an error", reloadErr)
-			}
-
-			if isManual {
-				for _, cl := range toReloadCalls {
-					if cl.isFake {
-						continue
-					}
-					results = append(results, cl.refreshResult())
-				}
-			}
-		}
-		if isManual {
-			sendAfterJoined(ch, results, foundCalls)
 		}
 	})
 

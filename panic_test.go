@@ -537,6 +537,45 @@ func TestCache_GoexitInLoader(t *testing.T) {
 	require.False(t, ok, "the zero value of an exited load was cached")
 }
 
+// A loader that calls runtime.Goexit fails its refresh like one that panics: a manual refresh
+// still delivers its result, and a bulk refresh still reloads the keys of its other batch.
+func TestCache_GoexitInRefreshLoader(t *testing.T) {
+	t.Parallel()
+
+	t.Run("Refresh", func(t *testing.T) {
+		t.Parallel()
+
+		c := Must(&Options[int, int]{MaximumSize: 10, RefreshCalculator: RefreshWriting[int, int](time.Hour)})
+		c.Set(1, 1)
+		ch := c.Refresh(context.Background(), 1, LoaderFunc[int, int](func(context.Context, int) (int, error) {
+			runtime.Goexit()
+			return 0, nil
+		}))
+		completes(t, "Refresh", func() {
+			require.ErrorIs(t, (<-ch).Err, errLoaderExited)
+		})
+	})
+	t.Run("BulkRefresh", func(t *testing.T) {
+		t.Parallel()
+
+		c := Must(&Options[int, int]{MaximumSize: 10, RefreshCalculator: RefreshWriting[int, int](time.Hour)})
+		c.Set(1, 1)
+		ch := c.BulkRefresh(context.Background(), []int{1, 2}, BulkLoaderFunc[int, int](func(_ context.Context, keys []int) (map[int]int, error) {
+			if keys[0] == 2 {
+				// the load of the absent key
+				runtime.Goexit()
+			}
+			return map[int]int{1: 5}, nil
+		}))
+		completes(t, "BulkRefresh", func() {
+			require.Len(t, <-ch, 2)
+		})
+		v, ok := c.GetIfPresent(1)
+		require.True(t, ok)
+		require.Equal(t, 5, v, "the reload of the present key did not run")
+	})
+}
+
 // A weigher that calls runtime.Goexit while the loaded value is written does not leave the load
 // registered: a later Get loads the key again instead of joining the finished load.
 func TestCache_GoexitWhileWritingLoadedValue(t *testing.T) {
