@@ -171,10 +171,17 @@ func (c *cache[K, V]) afterWrite(m mutation[K, V], onExecutor bool) {
 		return
 	}
 
+	// The read that started a refresh was the request's access, so its completion is not another
+	// one.
+	quiet := m.from == fromRefresh
 	if m.inPlace {
 		// Updated in place: the policies observe an access through the lossy read buffer, and a
-		// changed weight or an earlier expiration time through a task, which must not be lost.
-		c.afterRead(n, m.nowNano, false, false)
+		// changed weight or an earlier expiration time through a task, which must not be lost. A
+		// later expiration time needs no task: the timer wheel reschedules a node that it finds
+		// has not expired yet.
+		if !quiet {
+			c.afterRead(n, m.nowNano, false, false)
+		}
 		if m.reconcile {
 			c.afterWriteTask(newTask(n, nil, reconcileReason, causeUnknown))
 		}
@@ -189,7 +196,9 @@ func (c *cache[K, V]) afterWrite(m mutation[K, V], onExecutor bool) {
 	}
 
 	// update
-	c.afterWriteTask(newTask(n, old, updateReason, m.cause))
+	t := newTask(n, old, updateReason, m.cause)
+	t.quiet = quiet
+	c.afterWriteTask(t)
 }
 
 // atomicSet applies a write of value to the key whose current node is old (nil if absent).

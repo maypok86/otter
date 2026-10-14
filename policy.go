@@ -92,6 +92,13 @@ func newPolicy[K comparable, V any](
 // access updates the eviction policy based on node accesses.
 func (p *policy[K, V]) access(n node.Node[K, V]) {
 	p.sketch.increment(n.Key())
+	p.reorderNode(n)
+	p.hitsInSample++
+}
+
+// reorderNode moves n as an access does, without counting one in the sketch or the climber's
+// sample.
+func (p *policy[K, V]) reorderNode(n node.Node[K, V]) {
 	switch {
 	case n.InWindow():
 		reorder(p.window, n)
@@ -100,7 +107,15 @@ func (p *policy[K, V]) access(n node.Node[K, V]) {
 	case n.InMainProtected():
 		reorder(p.protected, n)
 	}
-	p.hitsInSample++
+}
+
+// accessUpdated is the access of an update; a quiet update only reorders n.
+func (p *policy[K, V]) accessUpdated(n node.Node[K, V], quiet bool) {
+	if quiet {
+		p.reorderNode(n)
+		return
+	}
+	p.access(n)
 }
 
 // add adds node to the eviction policy.
@@ -148,7 +163,7 @@ func (p *policy[K, V]) add(n node.Node[K, V]) {
 	}
 }
 
-func (p *policy[K, V]) update(n, old node.Node[K, V]) {
+func (p *policy[K, V]) update(n, old node.Node[K, V], quiet bool) {
 	if !n.IsAlive() {
 		// n was replaced or removed before this update was replayed. The task that replaced or
 		// removed it accounts for n, so only old, which n replaced, leaves the policy. Linking n
@@ -176,19 +191,19 @@ func (p *policy[K, V]) update(n, old node.Node[K, V]) {
 		case nodeWeight > p.maximum:
 			p.evictNode(n)
 		case nodeWeight <= p.windowMaximum:
-			p.access(n)
+			p.accessUpdated(n, quiet)
 		case p.window.Contains(n):
 			p.window.MoveToFront(n)
 		}
 	case n.InMainProbation():
 		if nodeWeight <= p.maximum {
-			p.access(n)
+			p.accessUpdated(n, quiet)
 		} else {
 			p.evictNode(n)
 		}
 	case n.InMainProtected():
 		if nodeWeight <= p.maximum {
-			p.access(n)
+			p.accessUpdated(n, quiet)
 		} else {
 			p.evictNode(n)
 		}

@@ -104,7 +104,7 @@ func TestPolicy_OutOfOrderTasks(t *testing.T) {
 			n1.Retire()
 			n2.Retire()
 			p.makeDead(n2)
-			p.update(n2, n1)
+			p.update(n2, n1, false)
 
 			requireAccounted(t, p)
 			require.True(t, n1.IsDead())
@@ -122,8 +122,8 @@ func TestPolicy_OutOfOrderTasks(t *testing.T) {
 		n3 := nm.Create(1, 3, 0, 0, 7)
 		n1.Retire()
 		n2.Retire()
-		p.update(n3, n2)
-		p.update(n2, n1)
+		p.update(n3, n2, false)
+		p.update(n2, n1, false)
 
 		requireAccounted(t, p, n3)
 		require.True(t, n1.IsDead())
@@ -136,7 +136,7 @@ func TestPolicy_OutOfOrderTasks(t *testing.T) {
 		n1 := nm.Create(1, 1, 0, 0, 3)
 		n2 := nm.Create(1, 2, 0, 0, 5)
 		n1.Retire()
-		p.update(n2, n1)
+		p.update(n2, n1, false)
 		p.add(n1)
 
 		requireAccounted(t, p, n2)

@@ -2023,7 +2023,7 @@ func (c *cache[K, V]) runTask(t *task[K, V]) {
 			c.timerWheel.Schedule(n)
 		}
 		if c.withEviction {
-			c.evictionPolicy.update(n, old)
+			c.evictionPolicy.update(n, old, t.quiet)
 		}
 		c.notifyDeletion(old.Key(), old.Value(), t.deletionCause)
 	case reconcileReason:
