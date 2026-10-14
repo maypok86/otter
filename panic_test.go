@@ -332,6 +332,76 @@ func TestCache_PanicInClockDuringMaintenance(t *testing.T) {
 	require.Equal(t, 10, c.EstimatedSize(), "the pass did not apply the buffered writes")
 }
 
+// countingClock panics on its panicAt-th reading, counting from 1; 0 never panics.
+type countingClock struct {
+	*nonTickingClock
+	calls   atomic.Int64
+	panicAt atomic.Int64
+}
+
+func (c *countingClock) NowNano() int64 {
+	if c.calls.Add(1) == c.panicAt.Load() {
+		panic("clock")
+	}
+	return c.nonTickingClock.NowNano()
+}
+
+// A refresh that a read starts reads the clock before it is registered. If the clock panics
+// there, the panic is logged like one of the executor submitting the refresh, and the read
+// returns the value it found.
+func TestCache_PanicInClockOnRefreshFromRead(t *testing.T) {
+	t.Parallel()
+
+	for _, bulk := range []bool{false, true} {
+		t.Run(fmt.Sprintf("bulk=%v", bulk), func(t *testing.T) {
+			t.Parallel()
+
+			newCache := func(clock *countingClock, logger Logger) *Cache[int, int] {
+				c := Must(&Options[int, int]{
+					RefreshCalculator: RefreshWriting[int, int](time.Hour),
+					Clock:             clock,
+					Logger:            logger,
+					// the refresh is never run: only the read is checked
+					Executor: func(fn func()) {},
+				})
+				c.Set(1, 1)
+				clock.Sleep(2 * time.Hour)
+				clock.calls.Store(0)
+				return c
+			}
+			get := func(c *Cache[int, int]) (int, error) {
+				if bulk {
+					m, err := c.BulkGet(context.Background(), []int{1}, BulkLoaderFunc[int, int](func(ctx context.Context, keys []int) (map[int]int, error) {
+						return map[int]int{1: 2}, nil
+					}))
+					return m[1], err
+				}
+				return c.Get(context.Background(), 1, LoaderFunc[int, int](func(ctx context.Context, key int) (int, error) {
+					return 2, nil
+				}))
+			}
+
+			// the refresh reads the clock last
+			counting := &countingClock{nonTickingClock: newNonTickingClock()}
+			_, _ = get(newCache(counting, nil))
+			reads := counting.calls.Load()
+
+			logger := &recordingLogger{}
+			clock := &countingClock{nonTickingClock: newNonTickingClock()}
+			c := newCache(clock, logger)
+			clock.panicAt.Store(reads)
+			var (
+				v   int
+				err error
+			)
+			require.NotPanics(t, func() { v, err = get(c) })
+			require.NoError(t, err)
+			require.Equal(t, 1, v)
+			require.NotEmpty(t, logger.get())
+		})
+	}
+}
+
 // A refresh is registered before it is handed to the executor. If the executor panics, the
 // refresh is finished with the panic, so that a later load of the key does not wait for it
 // forever, and the task is abandoned even if the executor scheduled it before panicking.

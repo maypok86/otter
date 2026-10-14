@@ -712,6 +712,12 @@ func (c *cache[K, V]) refreshKey(
 	// after the write would replace the written value or bring an invalidated key back.
 	// The clock is user code, so it is read before: if it panicked after the registration, the
 	// call would never be finished, and every later refresh of the key would join it.
+	if !isManual {
+		// A refresh that a read starts is the cache's own work: a panic of the clock, or of a
+		// custom executor submitting it, is logged, as one submitting maintenance or OnDeletion,
+		// and the read returns the value it found. submitRefresh has finished the call by then.
+		defer recoverCallback(c.logger, "Panicked while starting a refresh")
+	}
 	nowNano := c.clock.NowNano()
 	cl, shouldLoad := c.singleflight.startRefresh(rk.key, rk.old)
 	if !shouldLoad {
@@ -735,12 +741,6 @@ func (c *cache[K, V]) refreshKey(
 		}
 	}
 
-	if !isManual {
-		// A refresh that a read starts is the cache's own work: a panic of a custom executor
-		// submitting it is logged, as one submitting maintenance or OnDeletion, and the read
-		// returns the value it found. submitRefresh has finished the call by then.
-		defer recoverCallback(c.logger, "Executor panicked while submitting a refresh")
-	}
 	c.singleflight.submitRefresh([]*call[K, V]{cl}, func() {
 		// Deferred, so that a loader that calls runtime.Goexit is reported like one that panics.
 		defer func() {
@@ -1004,6 +1004,10 @@ func (c *cache[K, V]) bulkRefreshKeys(
 	}
 
 	// Registered before the task is submitted, with the clock read before, as in refreshKey.
+	if !isManual {
+		// as in refreshKey
+		defer recoverCallback(c.logger, "Panicked while starting a refresh")
+	}
 	nowNano := c.clock.NowNano()
 	var (
 		toLoadCalls   map[K]*call[K, V]
@@ -1047,10 +1051,6 @@ func (c *cache[K, V]) bulkRefreshKeys(
 		return ch
 	}
 
-	if !isManual {
-		// as in refreshKey
-		defer recoverCallback(c.logger, "Executor panicked while submitting a refresh")
-	}
 	c.singleflight.submitRefresh(owned, func() {
 		// Deferred, so that a bulk loader that calls runtime.Goexit, like one that panics, does not
 		// skip the reload or the results. Deferred calls run in reverse order: the results are

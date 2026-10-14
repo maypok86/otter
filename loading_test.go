@@ -2915,8 +2915,9 @@ func (c *panickingClock) NowNano() int64 {
 func TestCache_ClockPanicDoesNotStrandRefresh(t *testing.T) {
 	t.Parallel()
 
-	// The clock is user code. If it panics while a read requests a refresh, the refresh must not
-	// stay registered: every later refresh of the key would join it, and none would ever run.
+	// The clock is user code. If it panics while a read requests a refresh, the panic is logged,
+	// and the refresh must not stay registered: every later refresh of the key would join it, and
+	// none would ever run.
 	for _, bulk := range []bool{false, true} {
 		clock := &panickingClock{nonTickingClock: newNonTickingClock()}
 		c := Must(&Options[int, int]{
@@ -2944,7 +2945,7 @@ func TestCache_ClockPanicDoesNotStrandRefresh(t *testing.T) {
 
 		clock.panics.Store(true)
 		rk := refreshableKey[int, int]{key: 1, old: stale}
-		require.Panics(t, func() {
+		require.NotPanics(t, func() {
 			if bulk {
 				c.cache.bulkRefreshKeys(context.Background(), []refreshableKey[int, int]{rk}, tbl, false)
 			} else {
