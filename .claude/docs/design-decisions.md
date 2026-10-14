@@ -124,6 +124,15 @@ Audits read this file **after** recording their findings (Phase 1.5 of the audit
   OLTP lost 0.1 to 1.2 points (2.33% to 1.18% at 15) and Glimpse 0.2 to 0.3, with Mixed
   unchanged. A sample of ten times such a maximum is too noisy for the climber to find a better
   window than the initial one.
+- **A load or `Compute` that finds its entry expired but not yet removed counts as a hit in the
+  climber's sample.** The caller sees a miss, and the stats record one, but the write lands on
+  the existing node, so the policy sees an access; had maintenance removed the entry first, the
+  same operation would have been an insertion and a miss. The climber compares the hit rate of
+  a sample with the previous one, and a steady share of such hits cancels in that difference.
+  Counting them as misses would need a write-buffer task for every reload of an expired entry,
+  since the read buffer cannot say that an access was a miss, which undoes part of what writing
+  in place saves. The simulator cannot measure it either way: its traces do not expire. Worth
+  revisiting with a climber that uses a sample's hit rate on its own rather than its change.
 
 ## Memory and layout
 
