@@ -712,6 +712,12 @@ func (c *cache[K, V]) refreshKey(
 	// after the write would replace the written value or bring an invalidated key back.
 	// The clock is user code, so it is read before: if it panicked after the registration, the
 	// call would never be finished, and every later refresh of the key would join it.
+	if !isManual {
+		// A refresh that a read starts is the cache's own work: a panic of the clock, or of a
+		// custom executor submitting it, is logged, as one submitting maintenance or OnDeletion,
+		// and the read returns the value it found. submitRefresh has finished the call by then.
+		defer recoverCallback(c.logger, "Panicked while starting a refresh")
+	}
 	nowNano := c.clock.NowNano()
 	cl, shouldLoad := c.singleflight.startRefresh(rk.key, rk.old)
 	if !shouldLoad {
@@ -998,6 +1004,10 @@ func (c *cache[K, V]) bulkRefreshKeys(
 	}
 
 	// Registered before the task is submitted, with the clock read before, as in refreshKey.
+	if !isManual {
+		// as in refreshKey
+		defer recoverCallback(c.logger, "Panicked while starting a refresh")
+	}
 	nowNano := c.clock.NowNano()
 	var (
 		toLoadCalls   map[K]*call[K, V]
@@ -1590,7 +1600,13 @@ func (c *cache[K, V]) notifyAtomicDeletion(key K, value V, cause DeletionCause) 
 }
 
 func (c *cache[K, V]) periodicCleanUp() {
-	tick := c.clock.Tick(time.Second)
+	// The clock is user code, and this goroutine is the cache's own: if Tick panics, the panic is
+	// logged and the cache does without periodic clean-ups. The loop still waits for
+	// StopAllGoroutines.
+	tick := func() <-chan time.Time {
+		defer recoverCallback(c.logger, "Clock.Tick panicked")
+		return c.clock.Tick(time.Second)
+	}()
 	for {
 		select {
 		case <-c.doneStop:
@@ -1856,25 +1872,25 @@ func (c *cache[K, V]) scheduleDrainBuffers() {
 
 		token := (c.drainToken.Load() | 1) + 1
 		c.drainToken.Store(token)
-		func() {
-			// A panic of a custom executor, or of maintenance run by a synchronous one, is logged:
-			// the caller's write is already done. If the drain did not take over the lock, it is
-			// released here, and the drain is left required for the next attempt.
-			defer func() {
-				if r := recover(); r != nil {
-					if c.drainToken.CompareAndSwap(token, token+1) {
-						c.drainStatus.Store(required)
-						c.evictionMutex.Unlock()
-					}
-					c.logger.Error(context.Background(), "Maintenance panicked", newPanicError(r))
+		// If the drain did not take over the lock, it is released here, also when a custom executor,
+		// or maintenance run by a synchronous one, panics or calls runtime.Goexit. Then the drain is
+		// left required for the next attempt, and a panic is logged: the caller's write is already
+		// done.
+		returned := false
+		defer func() {
+			r := recover()
+			if c.drainToken.CompareAndSwap(token, token+1) {
+				if !returned {
+					c.drainStatus.Store(required)
 				}
-			}()
-			c.executor(c.drainBuffersFunc)
+				c.evictionMutex.Unlock()
+			}
+			if r != nil {
+				c.logger.Error(context.Background(), "Maintenance panicked", newPanicError(r))
+			}
 		}()
-
-		if c.drainToken.CompareAndSwap(token, token+1) {
-			c.evictionMutex.Unlock()
-		}
+		c.executor(c.drainBuffersFunc)
+		returned = true
 	}
 }
 
@@ -1948,8 +1964,13 @@ func (c *cache[K, V]) maintenance(t *task[K, V]) {
 
 // readMaintenanceTime reads the time of a maintenance pass, under evictionMutex. Reading the clock
 // once per pass rather than per eviction keeps it off the single-threaded maintenance path.
+//
+// The clock is user code. If it panics, the pass runs with the time of the previous one and the
+// panic is logged: the pass may hold a task that a writer handed it, which would be lost, and on
+// the default executor the panic would crash the program. Entries then expire a pass later.
 func (c *cache[K, V]) readMaintenanceTime() {
 	if c.withExpiration {
+		defer recoverCallback(c.logger, "Clock panicked during maintenance")
 		c.maintenanceNanos = c.clock.NowNano()
 	}
 }

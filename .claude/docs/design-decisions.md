@@ -87,6 +87,21 @@ Audits read this file **after** recording their findings (Phase 1.5 of the audit
   (`GetIfPresent`, `GetEntry`, `GetEntryQuietly`, `EstimatedSize`) with an executor that runs
   tasks on other goroutines is a bug. With a caller-runs executor such a read may run
   maintenance inline under the held bucket lock, which is documented on `Options.Executor`.
+- **A panic of user code reaches the caller only when that code produces the caller's result.**
+  The loader of a `Get`/`BulkGet` (as a `*panicError`), a `Compute` function, the weigher and
+  the calculators of the caller's write, `ExpireAfterRead` of the caller's read, the loop body
+  of an iteration, `SaveCacheTo`'s writer, `Stats` (the recorder's `Snapshot`) and the executor
+  in a manual `Refresh`/`BulkRefresh` panic to the caller, with the locks released and the
+  write not applied. An asynchronous result carries the panic as its error instead: a manual
+  refresh reports its loader's panic in `RefreshResult.Err`, and a caller that joined another's
+  load gets it as the load's error. Observers and the cache's own work log it and carry on:
+  the deletion listeners (`OnAtomicDeletion` too, although it runs inside the caller's write),
+  the recorder's `Record*`, the logger itself (dropped), and maintenance, a refresh that a read
+  starts and the periodic clean-up, including the clock and the executor they call. Maintenance
+  counts as the cache's own work even when the caller asks for it (`CleanUp`, `SetMaximum`,
+  `Hottest`): a pass also applies the writes of other callers, which a panic would lose. So a
+  panicking `Record*` is logged while a panicking `Snapshot` is not, and a panicking executor is
+  logged for a stale `Get` but not for `Refresh`: neither pair is an inconsistency.
 
 ## Policy
 

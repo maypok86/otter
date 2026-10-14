@@ -49,4 +49,9 @@ func TestSaturatedAdd(t *testing.T) {
 
 	require.Equal(t, int64(3), SaturatedAdd(1, 2))
 	require.Equal(t, int64(math.MaxInt64), SaturatedAdd(math.MaxInt64-300_000, 1_000_000))
+	// A negative operand is an ordinary sum, not an overflow.
+	require.Equal(t, int64(7), SaturatedAdd(10, -3))
+	require.Equal(t, int64(7), SaturatedAdd(-3, 10))
+	require.Equal(t, int64(-13), SaturatedAdd(-10, -3))
+	require.Equal(t, int64(math.MinInt64), SaturatedAdd(math.MinInt64+300_000, -1_000_000))
 }

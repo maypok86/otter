@@ -64,3 +64,13 @@ func TestEntry(t *testing.T) {
 		t.Fatalf("not valid snaphotAt. want %v, got %v", time.Unix(0, snapshotAt), e.SnapshotAt())
 	}
 }
+
+// An entry has expired at its deadline, as a node of the cache has.
+func TestEntry_HasExpiredAtItsDeadline(t *testing.T) {
+	t.Parallel()
+
+	e := Entry[int, int]{ExpiresAtNano: 5, SnapshotAtNano: 5}
+	if !e.HasExpired() {
+		t.Fatal("an entry at its deadline should have expired")
+	}
+}

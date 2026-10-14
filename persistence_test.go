@@ -195,3 +195,84 @@ func TestLoadCacheFrom_WarmUpIsNotARead(t *testing.T) {
 		}
 	}
 }
+
+// An entry is expired at its deadline, as the cache's own entries are, so a load at that instant
+// does not restore it.
+func TestLoadCacheFrom_SkipsEntryAtItsDeadline(t *testing.T) {
+	t.Parallel()
+
+	clk := newNonTickingClock()
+	newCache := func() *Cache[int, int] {
+		return Must(&Options[int, int]{
+			ExpiryCalculator: ExpiryWriting[int, int](time.Hour),
+			Clock:            clk,
+		})
+	}
+	saved := newCache()
+	saved.Set(1, 1)
+	clk.Sleep(30 * time.Minute)
+	var buf bytes.Buffer
+	require.NoError(t, SaveCacheTo(saved, &buf))
+
+	clk.Sleep(30 * time.Minute)
+	loaded := newCache()
+	require.NoError(t, LoadCacheFrom(loaded, &buf))
+	require.Zero(t, loaded.EstimatedSize())
+}
+
+// A save that fails leaves the file it would have replaced as it was, and no temporary file
+// behind.
+func TestSaveCacheToFile_FailureKeepsPreviousFile(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	filePath := filepath.Join(dir, "cache.gob")
+	c := Must(&Options[int, any]{MaximumSize: 10})
+	c.Set(1, 1)
+	require.NoError(t, SaveCacheToFile(c, filePath))
+	saved, err := os.ReadFile(filePath)
+	require.NoError(t, err)
+
+	// gob cannot encode a function
+	c.Set(1, func() {})
+	require.Error(t, SaveCacheToFile(c, filePath))
+
+	got, err := os.ReadFile(filePath)
+	require.NoError(t, err)
+	require.Equal(t, saved, got)
+	files, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	require.Len(t, files, 1)
+}
+
+// A save replaces the file a link points to, not the link, and the file keeps its permissions,
+// as when it was written in place.
+func TestSaveCacheToFile_KeepsLinkAndMode(t *testing.T) {
+	t.Parallel()
+
+	if runtime.GOOS == "windows" {
+		t.Skip("symbolic links and Unix permissions")
+	}
+	dir := t.TempDir()
+	target := filepath.Join(dir, "data", "cache.gob")
+	require.NoError(t, os.MkdirAll(filepath.Dir(target), 0o755))
+	require.NoError(t, os.WriteFile(target, nil, 0o600))
+	link := filepath.Join(dir, "cache.gob")
+	require.NoError(t, os.Symlink(target, link))
+
+	c := Must(&Options[int, int]{MaximumSize: 10})
+	c.Set(1, 1)
+	require.NoError(t, SaveCacheToFile(c, link))
+
+	info, err := os.Lstat(link)
+	require.NoError(t, err)
+	require.NotZero(t, info.Mode()&os.ModeSymlink, "the link was replaced")
+	info, err = os.Stat(target)
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	loaded := Must(&Options[int, int]{MaximumSize: 10})
+	require.NoError(t, LoadCacheFromFile(loaded, target))
+	v, ok := loaded.GetIfPresent(1)
+	require.True(t, ok)
+	require.Equal(t, 1, v)
+}

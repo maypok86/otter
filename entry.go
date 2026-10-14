@@ -69,7 +69,7 @@ func (e Entry[K, V]) ExpiresAfter() time.Duration {
 
 // HasExpired returns true if the entry has expired.
 func (e Entry[K, V]) HasExpired() bool {
-	return e.ExpiresAtNano < e.SnapshotAtNano
+	return e.ExpiresAtNano <= e.SnapshotAtNano
 }
 
 // RefreshableAt is the time after which the entry will be reloaded.

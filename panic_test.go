@@ -214,6 +214,223 @@ func TestCache_PanicInExecutorDoesNotStopMaintenance(t *testing.T) {
 	require.NotEmpty(t, logger.get())
 }
 
+// An executor that calls runtime.Goexit while it is handed the drain does not keep the eviction
+// lock: the drain is left required, and the next write or CleanUp runs it.
+func TestCache_GoexitInExecutorDoesNotStopMaintenance(t *testing.T) {
+	t.Parallel()
+
+	var exit atomic.Bool
+	exit.Store(true)
+	c := Must(&Options[int, int]{
+		MaximumSize: 10,
+		Executor: func(fn func()) {
+			if exit.CompareAndSwap(true, false) {
+				runtime.Goexit()
+			}
+			fn()
+		},
+	})
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		c.Set(0, 0)
+	}()
+	<-done
+	require.False(t, exit.Load(), "the executor was not called")
+
+	completes(t, "writes after the executor exited", func() {
+		for i := 1; i < 5000; i++ {
+			c.Set(i, i)
+		}
+		c.CleanUp()
+	})
+	require.LessOrEqual(t, c.EstimatedSize(), 10)
+}
+
+// A refresh that a read starts is the cache's own work. If a custom executor panics when it is
+// handed one, the panic is logged and the read returns what it found, as when the executor
+// panics on maintenance or OnDeletion. The refresh is finished, so a later read starts another.
+func TestCache_PanicInExecutorOnRefreshFromRead(t *testing.T) {
+	t.Parallel()
+
+	for _, bulk := range []bool{false, true} {
+		t.Run(fmt.Sprintf("bulk=%v", bulk), func(t *testing.T) {
+			t.Parallel()
+
+			var failing atomic.Bool
+			logger := &recordingLogger{}
+			clk := newNonTickingClock()
+			c := Must(&Options[int, int]{
+				RefreshCalculator: RefreshWriting[int, int](time.Hour),
+				Clock:             clk,
+				Logger:            logger,
+				Executor: func(fn func()) {
+					if failing.Load() {
+						panic("executor boom")
+					}
+					fn()
+				},
+			})
+			get := func() (int, error) {
+				if bulk {
+					m, err := c.BulkGet(context.Background(), []int{1}, BulkLoaderFunc[int, int](func(ctx context.Context, keys []int) (map[int]int, error) {
+						return map[int]int{1: 2}, nil
+					}))
+					return m[1], err
+				}
+				return c.Get(context.Background(), 1, LoaderFunc[int, int](func(ctx context.Context, key int) (int, error) {
+					return 2, nil
+				}))
+			}
+
+			c.Set(1, 1)
+			clk.Sleep(2 * time.Hour)
+			failing.Store(true)
+			var (
+				v   int
+				err error
+			)
+			require.NotPanics(t, func() { v, err = get() })
+			require.NoError(t, err)
+			require.Equal(t, 1, v)
+			require.NotEmpty(t, logger.get())
+
+			failing.Store(false)
+			_, _ = get()
+			v, ok := c.GetIfPresent(1)
+			require.True(t, ok)
+			require.Equal(t, 2, v, "the next stale read did not refresh")
+		})
+	}
+}
+
+// The clock is user code, and maintenance reads it once per pass. If it panics there, the pass
+// runs with the time of the previous one and the panic is logged: the pass may hold a task that a
+// writer handed it, and on the default executor the panic would crash the program.
+func TestCache_PanicInClockDuringMaintenance(t *testing.T) {
+	t.Parallel()
+
+	logger := &recordingLogger{}
+	clock := &panickingClock{nonTickingClock: newNonTickingClock()}
+	c := Must(&Options[int, int]{
+		MaximumSize:      10,
+		ExpiryCalculator: ExpiryWriting[int, int](time.Hour),
+		Clock:            clock,
+		Logger:           logger,
+		// maintenance runs only when CleanUp is called
+		Executor: func(fn func()) {},
+	})
+	for i := range 20 {
+		c.Set(i, i)
+	}
+
+	clock.panics.Store(true)
+	require.NotPanics(t, c.CleanUp)
+	clock.panics.Store(false)
+	require.NotEmpty(t, logger.get())
+	require.Equal(t, 10, c.EstimatedSize(), "the pass did not apply the buffered writes")
+}
+
+// countingClock panics on its panicAt-th reading, counting from 1; 0 never panics.
+type countingClock struct {
+	*nonTickingClock
+	calls   atomic.Int64
+	panicAt atomic.Int64
+}
+
+func (c *countingClock) NowNano() int64 {
+	if c.calls.Add(1) == c.panicAt.Load() {
+		panic("clock")
+	}
+	return c.nonTickingClock.NowNano()
+}
+
+// A refresh that a read starts reads the clock before it is registered. If the clock panics
+// there, the panic is logged like one of the executor submitting the refresh, and the read
+// returns the value it found.
+func TestCache_PanicInClockOnRefreshFromRead(t *testing.T) {
+	t.Parallel()
+
+	for _, bulk := range []bool{false, true} {
+		t.Run(fmt.Sprintf("bulk=%v", bulk), func(t *testing.T) {
+			t.Parallel()
+
+			newCache := func(clock *countingClock, logger Logger) *Cache[int, int] {
+				c := Must(&Options[int, int]{
+					RefreshCalculator: RefreshWriting[int, int](time.Hour),
+					Clock:             clock,
+					Logger:            logger,
+					// the refresh is never run: only the read is checked
+					Executor: func(fn func()) {},
+				})
+				c.Set(1, 1)
+				clock.Sleep(2 * time.Hour)
+				clock.calls.Store(0)
+				return c
+			}
+			get := func(c *Cache[int, int]) (int, error) {
+				if bulk {
+					m, err := c.BulkGet(context.Background(), []int{1}, BulkLoaderFunc[int, int](func(ctx context.Context, keys []int) (map[int]int, error) {
+						return map[int]int{1: 2}, nil
+					}))
+					return m[1], err
+				}
+				return c.Get(context.Background(), 1, LoaderFunc[int, int](func(ctx context.Context, key int) (int, error) {
+					return 2, nil
+				}))
+			}
+
+			// the refresh reads the clock last
+			counting := &countingClock{nonTickingClock: newNonTickingClock()}
+			_, _ = get(newCache(counting, nil))
+			reads := counting.calls.Load()
+
+			logger := &recordingLogger{}
+			clock := &countingClock{nonTickingClock: newNonTickingClock()}
+			c := newCache(clock, logger)
+			clock.panicAt.Store(reads)
+			var (
+				v   int
+				err error
+			)
+			require.NotPanics(t, func() { v, err = get(c) })
+			require.NoError(t, err)
+			require.Equal(t, 1, v)
+			require.NotEmpty(t, logger.get())
+		})
+	}
+}
+
+// panickingTickClock is a clock whose Tick panics.
+type panickingTickClock struct {
+	*nonTickingClock
+}
+
+func (c *panickingTickClock) Tick(time.Duration) <-chan time.Time {
+	panic("tick")
+}
+
+// The periodic clean-up runs on a goroutine of the cache's own. If the clock's Tick panics there,
+// the panic is logged and the cache does without periodic clean-ups, instead of crashing the
+// program.
+func TestCache_PanicInClockTick(t *testing.T) {
+	t.Parallel()
+
+	logger := &recordingLogger{}
+	c := Must(&Options[int, int]{
+		ExpiryCalculator: ExpiryWriting[int, int](time.Hour),
+		Clock:            &panickingTickClock{nonTickingClock: newNonTickingClock()},
+		Logger:           logger,
+	})
+	require.Eventually(t, func() bool {
+		return len(logger.get()) > 0
+	}, 10*time.Second, time.Millisecond)
+	completes(t, "StopAllGoroutines", func() {
+		require.True(t, c.StopAllGoroutines())
+	})
+}
+
 // A refresh is registered before it is handed to the executor. If the executor panics, the
 // refresh is finished with the panic, so that a later load of the key does not wait for it
 // forever, and the task is abandoned even if the executor scheduled it before panicking.
@@ -652,6 +869,64 @@ func TestCache_GoexitWhileWritingBulkLoadedValues(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, 7, v)
 		})
+	}
+}
+
+// An OnAtomicDeletion that calls runtime.Goexit stops the write or removal, as a Compute function
+// that exits does: the key keeps its previous value, which every read reports, and the next write
+// of the key works. In a bounded cache the node it would have replaced or removed is retired but
+// stays mapped, until that write replaces it.
+func TestCache_GoexitInOnAtomicDeletion(t *testing.T) {
+	t.Parallel()
+
+	for _, maximumSize := range []int{0, 10} {
+		for _, tt := range []struct {
+			name  string
+			write func(c *Cache[int, int])
+		}{
+			{"replacement", func(c *Cache[int, int]) { c.Set(1, 2) }},
+			{"invalidation", func(c *Cache[int, int]) { c.Invalidate(1) }},
+			{"compute", func(c *Cache[int, int]) {
+				c.Compute(1, func(int, bool) (int, ComputeOp) { return 0, InvalidateOp })
+			}},
+		} {
+			t.Run(fmt.Sprintf("%s/MaximumSize=%d", tt.name, maximumSize), func(t *testing.T) {
+				t.Parallel()
+
+				var exit atomic.Bool
+				c := Must(&Options[int, int]{
+					MaximumSize: maximumSize,
+					OnAtomicDeletion: func(DeletionEvent[int, int]) {
+						if exit.CompareAndSwap(true, false) {
+							runtime.Goexit()
+						}
+					},
+				})
+				c.Set(1, 1)
+				exit.Store(true)
+				done := make(chan struct{})
+				go func() {
+					defer close(done)
+					tt.write(c)
+				}()
+				<-done
+				require.False(t, exit.Load(), "the listener was not called")
+
+				v, ok := c.GetIfPresent(1)
+				require.True(t, ok)
+				require.Equal(t, 1, v)
+				e, ok := c.GetEntryQuietly(1)
+				require.True(t, ok)
+				require.Equal(t, 1, e.Value)
+
+				completes(t, "a write after the exited listener", func() {
+					c.Set(1, 3)
+				})
+				v, ok = c.GetIfPresent(1)
+				require.True(t, ok)
+				require.Equal(t, 3, v)
+			})
+		}
 	}
 }
 
