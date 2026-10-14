@@ -689,6 +689,64 @@ func TestCache_GoexitWhileWritingBulkLoadedValues(t *testing.T) {
 	}
 }
 
+// An OnAtomicDeletion that calls runtime.Goexit stops the write or removal, as a Compute function
+// that exits does: the key keeps its previous value, which every read reports, and the next write
+// of the key works. In a bounded cache the node it would have replaced or removed is retired but
+// stays mapped, until that write replaces it.
+func TestCache_GoexitInOnAtomicDeletion(t *testing.T) {
+	t.Parallel()
+
+	for _, maximumSize := range []int{0, 10} {
+		for _, tt := range []struct {
+			name  string
+			write func(c *Cache[int, int])
+		}{
+			{"replacement", func(c *Cache[int, int]) { c.Set(1, 2) }},
+			{"invalidation", func(c *Cache[int, int]) { c.Invalidate(1) }},
+			{"compute", func(c *Cache[int, int]) {
+				c.Compute(1, func(int, bool) (int, ComputeOp) { return 0, InvalidateOp })
+			}},
+		} {
+			t.Run(fmt.Sprintf("%s/MaximumSize=%d", tt.name, maximumSize), func(t *testing.T) {
+				t.Parallel()
+
+				var exit atomic.Bool
+				c := Must(&Options[int, int]{
+					MaximumSize: maximumSize,
+					OnAtomicDeletion: func(DeletionEvent[int, int]) {
+						if exit.CompareAndSwap(true, false) {
+							runtime.Goexit()
+						}
+					},
+				})
+				c.Set(1, 1)
+				exit.Store(true)
+				done := make(chan struct{})
+				go func() {
+					defer close(done)
+					tt.write(c)
+				}()
+				<-done
+				require.False(t, exit.Load(), "the listener was not called")
+
+				v, ok := c.GetIfPresent(1)
+				require.True(t, ok)
+				require.Equal(t, 1, v)
+				e, ok := c.GetEntryQuietly(1)
+				require.True(t, ok)
+				require.Equal(t, 1, e.Value)
+
+				completes(t, "a write after the exited listener", func() {
+					c.Set(1, 3)
+				})
+				v, ok = c.GetIfPresent(1)
+				require.True(t, ok)
+				require.Equal(t, 3, v)
+			})
+		}
+	}
+}
+
 type panickingLogger struct{}
 
 func (panickingLogger) Warn(context.Context, string, error) { panic("logger boom") }
