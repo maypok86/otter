@@ -315,12 +315,12 @@ func (g *group[K, V]) doBulkCall(
 		defer func() {
 			if exited {
 				// runtime.Goexit, which runs only deferred calls, left the loop below. The calls it
-				// did not reach are finished without their values.
+				// did not reach are finished as finish finishes the call that exited: uncommitted,
+				// with what the loader returned for them, since it did return.
 				for _, cl := range callsInBulk {
 					select {
 					case <-cl.done:
 					default:
-						cl.err, cl.isNotFound = errLoaderExited, false
 						g.deleteCall(cl)
 						cl.cancel()
 					}

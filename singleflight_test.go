@@ -194,6 +194,43 @@ func TestGroup_BulkResults(t *testing.T) {
 	})
 }
 
+// When writing one result of a bulk load calls runtime.Goexit, the calls that were not written yet
+// keep what the loader returned for them, as the call being written does: a value, or ErrNotFound
+// for a key the loader left out. The loader returned, so its waiters must not be told it exited.
+func TestGroup_GoexitWhileFinishingBulkKeepsResults(t *testing.T) {
+	t.Parallel()
+
+	g := newTestGroup()
+	var exited sync.Once
+	g.onCommit = func(*call[int, int]) {
+		exited.Do(runtime.Goexit)
+	}
+	c1, _ := g.startLoad(1)
+	c2, _ := g.startLoad(2)
+	c3, _ := g.startLoad(3)
+	calls := map[int]*call[int, int]{1: c1, 2: c2, 3: c3}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = g.doBulkCall(context.Background(), calls, func(context.Context, []int) (map[int]int, error) {
+			return map[int]int{1: 10, 2: 20}, nil
+		})
+	}()
+	<-done
+
+	for _, cl := range []*call[int, int]{c1, c2} {
+		cl.wait()
+		require.NoError(t, cl.err, "key %d", cl.key)
+		require.Equal(t, cl.key*10, cl.value)
+	}
+	c3.wait()
+	require.ErrorIs(t, c3.err, ErrNotFound)
+	require.True(t, c3.isNotFound)
+	for key := 1; key <= 3; key++ {
+		require.Nil(t, g.getCall(key))
+	}
+}
+
 // If the executor panics while submitting a refresh, the refresh's calls are finished with the
 // panic as their error, and a task that the executor scheduled before panicking does nothing.
 func TestGroup_SubmitRefreshWhenExecutorPanics(t *testing.T) {
