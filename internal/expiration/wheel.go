@@ -47,7 +47,25 @@ var (
 // expires them as its time advances.
 type Wheel[K comparable, V any] struct {
 	wheel [][]node.Node[K, V]
-	time  uint64
+	// time is in wheel units, see toWheel.
+	time uint64
+}
+
+// toWheel converts a time of the cache's clock to the wheel's units. The wheel counts in uint64,
+// so that the bucket of a time is a shift and a mask, but a clock may count from an arbitrary
+// point, so its readings may be negative and cross zero. Flipping the sign bit maps int64 onto
+// uint64 in the same order, while a plain conversion would make a negative deadline that has
+// passed look far in the future. The bucket of a time does not change, since its index is taken
+// from the low bits.
+func toWheel(t int64) uint64 {
+	//nolint:gosec // the conversion is the point
+	return uint64(t) ^ (1 << 63)
+}
+
+// fromWheel is the inverse of toWheel.
+func fromWheel(t uint64) int64 {
+	//nolint:gosec // the conversion is the point
+	return int64(t ^ (1 << 63))
 }
 
 func NewWheel[K comparable, V any](nodeManager *node.Manager[K, V]) *Wheel[K, V] {
@@ -65,6 +83,7 @@ func NewWheel[K comparable, V any](nodeManager *node.Manager[K, V]) *Wheel[K, V]
 	}
 	return &Wheel[K, V]{
 		wheel: wheel,
+		time:  toWheel(0),
 	}
 }
 
@@ -100,8 +119,7 @@ func (w *Wheel[K, V]) Schedule(n node.Node[K, V]) {
 	if !n.IsAlive() {
 		return
 	}
-	//nolint:gosec // there is no overflow
-	root := w.findBucket(uint64(n.ExpiresAt()))
+	root := w.findBucket(toWheel(n.ExpiresAt()))
 	link(root, n)
 }
 
@@ -131,7 +149,7 @@ func (w *Wheel[K, V]) Unschedule(n node.Node[K, V]) {
 // is reached. The wheel reads that time before expire runs, and a writer can extend it in
 // between: expire reports whether it removed the node, and a node it keeps is scheduled again.
 func (w *Wheel[K, V]) Advance(nowNanos int64, expire func(n node.Node[K, V], nowNanos int64) bool) {
-	currentTime := uint64(nowNanos)
+	currentTime := toWheel(nowNanos)
 	prevTime := w.time
 	w.time = currentTime
 
@@ -205,8 +223,8 @@ func (w *Wheel[K, V]) sweepBucket(root node.Node[K, V], expire func(n node.Node[
 		n.SetNextExp(nil)
 
 		// expired at its deadline, as HasExpired reports it
-		expired := uint64(n.ExpiresAt()) <= w.time
-		if !expired || !expire(n, int64(w.time)) {
+		expired := toWheel(n.ExpiresAt()) <= w.time
+		if !expired || !expire(n, fromWheel(w.time)) {
 			w.Schedule(n)
 		}
 
