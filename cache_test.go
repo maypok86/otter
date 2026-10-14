@@ -814,6 +814,47 @@ func TestCache_ComputeIfPresent(t *testing.T) {
 		require.Contains(t, []uint64{0, 1}, snapshot.Misses)
 		require.Equal(t, uint64(1), deletions)
 	})
+	t.Run("notARead", func(t *testing.T) {
+		t.Parallel()
+
+		counter := stats.NewCounter()
+		clk := newNonTickingClock()
+		c := Must(&Options[int, int]{
+			MaximumSize:      100,
+			StatsRecorder:    counter,
+			Clock:            clk,
+			ExpiryCalculator: ExpiryAccessing[int, int](10 * time.Second),
+		})
+		c.Set(1, 1)
+		c.Set(2, 2)
+		clk.Sleep(5 * time.Second)
+
+		// Like Compute, ComputeIfPresent does not read the entry before calling the function: a
+		// cancelled call keeps the deadline, and a panicking one records nothing.
+		c.ComputeIfPresent(1, func(oldValue int) (int, ComputeOp) {
+			return oldValue, CancelOp
+		})
+		c.Compute(2, func(oldValue int, found bool) (int, ComputeOp) {
+			return oldValue, CancelOp
+		})
+		e1, ok := c.GetEntryQuietly(1)
+		require.True(t, ok)
+		e2, ok := c.GetEntryQuietly(2)
+		require.True(t, ok)
+		require.Equal(t, 5*time.Second, e1.ExpiresAfter())
+		require.Equal(t, e2.ExpiresAfter(), e1.ExpiresAfter())
+		require.Equal(t, uint64(2), counter.Snapshot().Hits)
+
+		require.Panics(t, func() {
+			c.ComputeIfPresent(1, func(oldValue int) (int, ComputeOp) {
+				panic("remapping failed")
+			})
+		})
+		e1, ok = c.GetEntryQuietly(1)
+		require.True(t, ok)
+		require.Equal(t, 5*time.Second, e1.ExpiresAfter())
+		require.Equal(t, uint64(2), counter.Snapshot().Hits)
+	})
 }
 
 func TestCache_Compute(t *testing.T) {
