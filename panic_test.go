@@ -248,6 +248,63 @@ func TestCache_GoexitInExecutorDoesNotStopMaintenance(t *testing.T) {
 	require.LessOrEqual(t, c.EstimatedSize(), 10)
 }
 
+// A refresh that a read starts is the cache's own work. If a custom executor panics when it is
+// handed one, the panic is logged and the read returns what it found, as when the executor
+// panics on maintenance or OnDeletion. The refresh is finished, so a later read starts another.
+func TestCache_PanicInExecutorOnRefreshFromRead(t *testing.T) {
+	t.Parallel()
+
+	for _, bulk := range []bool{false, true} {
+		t.Run(fmt.Sprintf("bulk=%v", bulk), func(t *testing.T) {
+			t.Parallel()
+
+			var failing atomic.Bool
+			logger := &recordingLogger{}
+			clk := newNonTickingClock()
+			c := Must(&Options[int, int]{
+				RefreshCalculator: RefreshWriting[int, int](time.Hour),
+				Clock:             clk,
+				Logger:            logger,
+				Executor: func(fn func()) {
+					if failing.Load() {
+						panic("executor boom")
+					}
+					fn()
+				},
+			})
+			get := func() (int, error) {
+				if bulk {
+					m, err := c.BulkGet(context.Background(), []int{1}, BulkLoaderFunc[int, int](func(ctx context.Context, keys []int) (map[int]int, error) {
+						return map[int]int{1: 2}, nil
+					}))
+					return m[1], err
+				}
+				return c.Get(context.Background(), 1, LoaderFunc[int, int](func(ctx context.Context, key int) (int, error) {
+					return 2, nil
+				}))
+			}
+
+			c.Set(1, 1)
+			clk.Sleep(2 * time.Hour)
+			failing.Store(true)
+			var (
+				v   int
+				err error
+			)
+			require.NotPanics(t, func() { v, err = get() })
+			require.NoError(t, err)
+			require.Equal(t, 1, v)
+			require.NotEmpty(t, logger.get())
+
+			failing.Store(false)
+			_, _ = get()
+			v, ok := c.GetIfPresent(1)
+			require.True(t, ok)
+			require.Equal(t, 2, v, "the next stale read did not refresh")
+		})
+	}
+}
+
 // A refresh is registered before it is handed to the executor. If the executor panics, the
 // refresh is finished with the panic, so that a later load of the key does not wait for it
 // forever, and the task is abandoned even if the executor scheduled it before panicking.

@@ -735,6 +735,12 @@ func (c *cache[K, V]) refreshKey(
 		}
 	}
 
+	if !isManual {
+		// A refresh that a read starts is the cache's own work: a panic of a custom executor
+		// submitting it is logged, as one submitting maintenance or OnDeletion, and the read
+		// returns the value it found. submitRefresh has finished the call by then.
+		defer recoverCallback(c.logger, "Executor panicked while submitting a refresh")
+	}
 	c.singleflight.submitRefresh([]*call[K, V]{cl}, func() {
 		// Deferred, so that a loader that calls runtime.Goexit is reported like one that panics.
 		defer func() {
@@ -1041,6 +1047,10 @@ func (c *cache[K, V]) bulkRefreshKeys(
 		return ch
 	}
 
+	if !isManual {
+		// as in refreshKey
+		defer recoverCallback(c.logger, "Executor panicked while submitting a refresh")
+	}
 	c.singleflight.submitRefresh(owned, func() {
 		// Deferred, so that a bulk loader that calls runtime.Goexit, like one that panics, does not
 		// skip the reload or the results. Deferred calls run in reverse order: the results are
