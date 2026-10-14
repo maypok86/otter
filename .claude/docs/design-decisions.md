@@ -112,6 +112,15 @@ Audits read this file **after** recording their findings (Phase 1.5 of the audit
   `Hottest`): a pass also applies the writes of other callers, which a panic would lose. So a
   panicking `Record*` is logged while a panicking `Snapshot` is not, and a panicking executor is
   logged for a stale `Get` but not for `Refresh`: neither pair is an inconsistency.
+- **The executor must not block the submitter; a deadlock with one that does is the documented
+  contract.** Maintenance submits `OnDeletion` while it holds `evictionMutex`, the drain is
+  submitted under it (the token hands the lock to a caller-runs drain), and a drain that runs on
+  the executor submits `OnDeletion` from its own slot. A pool that makes the submitter wait for a
+  free slot (a semaphore in front of `go fn()`, `errgroup` with `SetLimit`) therefore deadlocks:
+  with one slot, the drain waits for the slot it holds (#263). Submitting only after the lock is
+  released would not be enough: the drain's own submissions, and those of callbacks that run on
+  the executor and call the cache, still come from a slot, and Go cannot tell the cache it is on
+  one. A full pool runs the task on the caller instead, as `Options.Executor` shows.
 
 ## Policy
 

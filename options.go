@@ -167,6 +167,26 @@ type Options[K comparable, V any] struct {
 	//
 	// Beware that configuring a cache with an executor that discards tasks or never runs them may
 	// experience non-deterministic behavior.
+	//
+	// WARNING: The executor must not make the caller wait for other tasks, as a pool that blocks the
+	// submitter while all of its workers are busy does. The cache submits tasks while it holds its locks
+	// and from tasks that run on the executor, so such a pool may deadlock it. A bounded pool should run
+	// fn on the calling goroutine when it is full, with the restrictions described above:
+	//
+	//	sem := make(chan struct{}, 16)
+	//	executor := func(fn func()) {
+	//		select {
+	//		case sem <- struct{}{}:
+	//			go func() {
+	//				defer func() { <-sem }()
+	//				fn()
+	//			}()
+	//		default:
+	//			fn()
+	//		}
+	//	}
+	//
+	// With an errgroup.Group limited by SetLimit, use TryGo and run fn when it returns false.
 	Executor func(fn func())
 	// Clock specifies a nanosecond-precision time source for use in determining when entries should be
 	// expired or refreshed. By default, time.Now().UnixNano() is used.
