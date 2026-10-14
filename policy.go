@@ -535,6 +535,15 @@ func (p *policy[K, V]) determineAdjustment() {
 	if requestCount < p.sketch.sampleSize {
 		return
 	}
+	if p.weightedSize < p.maximum>>1 {
+		// An InitialCapacity hint creates the sketch at construction, and a cache can also empty
+		// after it filled. Below half of the maximum, the size at which the sketch is created
+		// otherwise, the cache is not evicting, so the hit rate says nothing about the split
+		// between the window and the main space: the sample is discarded.
+		p.missesInSample = 0
+		p.hitsInSample = 0
+		return
+	}
 
 	hitRate := float64(p.hitsInSample) / float64(requestCount)
 	hitRateChange := hitRate - p.previousSampleHitRate

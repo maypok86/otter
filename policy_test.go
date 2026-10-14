@@ -305,3 +305,29 @@ func TestPolicy_SetMaximumSizeRestartsClimber(t *testing.T) {
 		require.Zero(t, p.previousSampleHitRate, "adjustment %d", adjustment)
 	}
 }
+
+func TestPolicy_ClimberWaitsForHalfFull(t *testing.T) {
+	t.Parallel()
+
+	// An InitialCapacity hint creates the sketch at construction, which used to release the
+	// climber while the cache was far from evicting.
+	for _, hint := range []int{0, 1000} {
+		c := Must(&Options[int, int]{MaximumSize: 400_000, InitialCapacity: hint})
+		ci := c.cache
+		ci.evictionMutex.Lock()
+		window := ci.evictionPolicy.windowMaximum
+		ci.evictionMutex.Unlock()
+
+		for k := range 40_000 {
+			c.Set(k, k)
+			if k%1000 == 0 {
+				c.CleanUp()
+			}
+		}
+		c.CleanUp()
+
+		ci.evictionMutex.Lock()
+		require.Equal(t, window, ci.evictionPolicy.windowMaximum, "InitialCapacity %d", hint)
+		ci.evictionMutex.Unlock()
+	}
+}
