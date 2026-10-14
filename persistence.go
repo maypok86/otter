@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"time"
@@ -110,7 +111,9 @@ func warmUp[K comparable, V any](c *Cache[K, V], key K, reads int) {
 	}
 }
 
-// SaveCacheToFile atomically saves cache data to the given filePath.
+// SaveCacheToFile atomically saves cache data to the given filePath: the data is written to a
+// temporary file in the same directory, which then replaces the file, so that a failed or
+// interrupted save leaves the previous file as it was.
 //
 // SaveCacheToFile may be called concurrently with other operations on the cache.
 //
@@ -119,6 +122,11 @@ func warmUp[K comparable, V any](c *Cache[K, V], key K, reads int) {
 // WARNING: Beware that this operation is performed within the eviction policy's exclusive lock.
 // While the operation is in progress further eviction maintenance will be halted.
 func SaveCacheToFile[K comparable, V any](c *Cache[K, V], filePath string) error {
+	// The file a link points to is replaced, not the link, as when the file was written in place.
+	if resolved, err := filepath.EvalSymlinks(filePath); err == nil {
+		filePath = resolved
+	}
+
 	// Create dir if it doesn't exist.
 	dir := filepath.Dir(filePath)
 	if _, err := os.Stat(dir); err != nil {
@@ -130,19 +138,54 @@ func SaveCacheToFile[K comparable, V any](c *Cache[K, V], filePath string) error
 		}
 	}
 
-	file, err := os.Create(filePath)
+	// opened with the permissions os.Create would give the file
+	tmpPath := fmt.Sprintf("%s.%d.tmp", filePath, rand.Uint64())
+	file, err := os.OpenFile(tmpPath, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o666)
 	if err != nil {
-		return fmt.Errorf("otter: create file %s: %w", filePath, err)
+		return fmt.Errorf("otter: create file %s: %w", tmpPath, err)
 	}
-	//nolint:errcheck // it's ok
-	defer file.Close()
-
-	return SaveCacheTo(c, file)
+	if err := writeCacheFile(c, file, filePath); err != nil {
+		//nolint:errcheck // the save has failed already
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := os.Rename(tmpPath, filePath); err != nil {
+		//nolint:errcheck // the save has failed already
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("otter: rename %s to %s: %w", tmpPath, filePath, err)
+	}
+	return nil
 }
 
-// SaveCacheTo atomically saves cache data to the given [io.Writer].
+// writeCacheFile saves the data of c to file, which is to replace filePath, flushes it to disk and
+// closes file. An existing filePath keeps its permissions, as when it was written in place: a file
+// closed to other users must stay closed. Its owner is not kept.
+func writeCacheFile[K comparable, V any](c *Cache[K, V], file *os.File, filePath string) error {
+	var err error
+	if info, statErr := os.Stat(filePath); statErr == nil {
+		if err = file.Chmod(info.Mode().Perm()); err != nil {
+			err = fmt.Errorf("otter: chmod file %s: %w", file.Name(), err)
+		}
+	}
+	if err == nil {
+		err = SaveCacheTo(c, file)
+	}
+	if err == nil {
+		if err = file.Sync(); err != nil {
+			err = fmt.Errorf("otter: sync file %s: %w", file.Name(), err)
+		}
+	}
+	if closeErr := file.Close(); closeErr != nil && err == nil {
+		err = fmt.Errorf("otter: close file %s: %w", file.Name(), closeErr)
+	}
+	return err
+}
+
+// SaveCacheTo saves cache data to the given [io.Writer].
 //
-// SaveCacheToFile may be called concurrently with other operations on the cache.
+// SaveCacheTo may be called concurrently with other operations on the cache. The data is not a
+// point-in-time snapshot: an entry written or removed while it runs may or may not be saved, and
+// one updated may be saved with either value.
 //
 // The saved data may be loaded with LoadCacheFrom.
 //
