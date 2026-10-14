@@ -68,7 +68,7 @@ func LoadCacheFrom[K comparable, V any](c *Cache[K, V], r io.Reader) error {
 		}
 
 		nowNano := c.cache.clock.NowNano()
-		if c.cache.withExpiration && entry.ExpiresAtNano < nowNano {
+		if c.cache.withExpiration && entry.ExpiresAtNano <= nowNano {
 			continue
 		}
 		c.Set(entry.Key, entry.Value)

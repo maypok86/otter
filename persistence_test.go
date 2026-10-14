@@ -195,3 +195,27 @@ func TestLoadCacheFrom_WarmUpIsNotARead(t *testing.T) {
 		}
 	}
 }
+
+// An entry is expired at its deadline, as the cache's own entries are, so a load at that instant
+// does not restore it.
+func TestLoadCacheFrom_SkipsEntryAtItsDeadline(t *testing.T) {
+	t.Parallel()
+
+	clk := newNonTickingClock()
+	newCache := func() *Cache[int, int] {
+		return Must(&Options[int, int]{
+			ExpiryCalculator: ExpiryWriting[int, int](time.Hour),
+			Clock:            clk,
+		})
+	}
+	saved := newCache()
+	saved.Set(1, 1)
+	clk.Sleep(30 * time.Minute)
+	var buf bytes.Buffer
+	require.NoError(t, SaveCacheTo(saved, &buf))
+
+	clk.Sleep(30 * time.Minute)
+	loaded := newCache()
+	require.NoError(t, LoadCacheFrom(loaded, &buf))
+	require.Zero(t, loaded.EstimatedSize())
+}
