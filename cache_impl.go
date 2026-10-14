@@ -1856,25 +1856,25 @@ func (c *cache[K, V]) scheduleDrainBuffers() {
 
 		token := (c.drainToken.Load() | 1) + 1
 		c.drainToken.Store(token)
-		func() {
-			// A panic of a custom executor, or of maintenance run by a synchronous one, is logged:
-			// the caller's write is already done. If the drain did not take over the lock, it is
-			// released here, and the drain is left required for the next attempt.
-			defer func() {
-				if r := recover(); r != nil {
-					if c.drainToken.CompareAndSwap(token, token+1) {
-						c.drainStatus.Store(required)
-						c.evictionMutex.Unlock()
-					}
-					c.logger.Error(context.Background(), "Maintenance panicked", newPanicError(r))
+		// If the drain did not take over the lock, it is released here, also when a custom executor,
+		// or maintenance run by a synchronous one, panics or calls runtime.Goexit. Then the drain is
+		// left required for the next attempt, and a panic is logged: the caller's write is already
+		// done.
+		returned := false
+		defer func() {
+			r := recover()
+			if c.drainToken.CompareAndSwap(token, token+1) {
+				if !returned {
+					c.drainStatus.Store(required)
 				}
-			}()
-			c.executor(c.drainBuffersFunc)
+				c.evictionMutex.Unlock()
+			}
+			if r != nil {
+				c.logger.Error(context.Background(), "Maintenance panicked", newPanicError(r))
+			}
 		}()
-
-		if c.drainToken.CompareAndSwap(token, token+1) {
-			c.evictionMutex.Unlock()
-		}
+		c.executor(c.drainBuffersFunc)
+		returned = true
 	}
 }
 

@@ -214,6 +214,40 @@ func TestCache_PanicInExecutorDoesNotStopMaintenance(t *testing.T) {
 	require.NotEmpty(t, logger.get())
 }
 
+// An executor that calls runtime.Goexit while it is handed the drain does not keep the eviction
+// lock: the drain is left required, and the next write or CleanUp runs it.
+func TestCache_GoexitInExecutorDoesNotStopMaintenance(t *testing.T) {
+	t.Parallel()
+
+	var exit atomic.Bool
+	exit.Store(true)
+	c := Must(&Options[int, int]{
+		MaximumSize: 10,
+		Executor: func(fn func()) {
+			if exit.CompareAndSwap(true, false) {
+				runtime.Goexit()
+			}
+			fn()
+		},
+	})
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		c.Set(0, 0)
+	}()
+	<-done
+	require.False(t, exit.Load(), "the executor was not called")
+
+	completes(t, "writes after the executor exited", func() {
+		for i := 1; i < 5000; i++ {
+			c.Set(i, i)
+		}
+		c.CleanUp()
+	})
+	require.LessOrEqual(t, c.EstimatedSize(), 10)
+}
+
 // A refresh is registered before it is handed to the executor. If the executor panics, the
 // refresh is finished with the panic, so that a later load of the key does not wait for it
 // forever, and the task is abandoned even if the executor scheduled it before panicking.
