@@ -59,7 +59,9 @@ func prepareAdaptation(t *testing.T, c *Cache[int, int], recencyBias bool) {
 	if recencyBias {
 		k = 1
 	}
-	c.cache.evictionPolicy.stepSize = float64(k) * math.Abs(c.cache.evictionPolicy.stepSize)
+	step := &c.cache.evictionPolicy.climber.reactive.step
+	require.False(t, c.cache.evictionPolicy.climber.dense)
+	step.size = float64(k) * step.magnitude()
 	maximum := c.cache.evictionPolicy.maximum
 	c.cache.evictionPolicy.windowMaximum = uint64(0.5 * float64(maximum))
 	c.cache.evictionPolicy.mainProtectedMaximum = uint64(percentMainProtected * float64(maximum-c.cache.evictionPolicy.windowMaximum))
@@ -80,9 +82,10 @@ func prepareAdaptation(t *testing.T, c *Cache[int, int], recencyBias bool) {
 }
 
 func adapt(t *testing.T, c *Cache[int, int], sampleSize uint64) {
-	c.cache.evictionPolicy.previousSampleHitRate = 0.8
-	c.cache.evictionPolicy.missesInSample = sampleSize / 2
-	c.cache.evictionPolicy.hitsInSample = sampleSize - c.cache.evictionPolicy.missesInSample
+	sample := &c.cache.evictionPolicy.climber.sample
+	sample.previousHitRate = 0.8
+	sample.misses = int64(sampleSize / 2)
+	sample.hits = int64(sampleSize) - sample.misses
 	c.cache.climb()
 
 	for k := range c.All() {

@@ -128,21 +128,19 @@ Audits read this file **after** recording their findings (Phase 1.5 of the audit
   `queueTransferThreshold` (1000) transfers per maintenance; the regions can lag behind them.
 - **Hashing is randomized per cache**, so hit rates of one simulator run vary by up to ±3
   points on small traces. Compare policies over repeated runs.
-- **The frequency sketch keeps its table and sample when the maximum shrinks.** The sample
-  (ten times the maximum the table was sized for) is both the aging period of the counters and
-  the length of a hill-climber sample, so after `SetMaximum` lowers the maximum both run at the
-  old pace: from 100,000 to 1000 entries, the climber's first adjustment comes a million
-  requests later, and until then the regions keep their initial split. Resizing the sample
-  alone is not enough: `reset` subtracts the number of odd counters, which a table filled at
-  the old pace can hold more of than a cut `size` allows, and the subtraction would wrap and
-  stop the aging for good. A lower maximum is rare, and the split it starts from is safe.
-- **The hill climber does not move the window of a cache below 16 entries.** It steps by a
-  sixteenth of the maximum, and the adjustment truncates the step to whole entries, so below 16
-  every adjustment is zero and the window keeps its initial split. A floor of 2 on the step
-  makes it move, and costs hit rate: on the simulator at capacities 4 to 16 (5 interleaved runs),
-  OLTP lost 0.1 to 1.2 points (2.33% to 1.18% at 15) and Glimpse 0.2 to 0.3, with Mixed
-  unchanged. A sample of ten times such a maximum is too noisy for the climber to find a better
-  window than the initial one.
+- **The frequency sketch keeps its table when the maximum shrinks, but not its sample.** The
+  sample (ten times the maximum, at least 2560) is both the aging period of the counters and the
+  length of a reactive climber's sample, so it follows the new maximum; a `size` above the new
+  sample is cut to it, which makes the next increment age the counters.
+- **The hill climber is a line-by-line port of Caffeine's climber (`WindowClimber`)**,
+  constants and thresholds included. With the sketch hashing a key as Caffeine does, the
+  simulator gives the same hit rate to a hundredth on traces where admission takes no random
+  decision; the remaining difference on others comes from otter's per-cache random hash. Tuning
+  a constant to win a trace breaks that parity, so changes to the climber follow Caffeine.
+- **The climber holds the window until the cache is half full.** An InitialCapacity hint creates
+  the sketch at construction, and a cache can empty after it filled; below half of the maximum
+  the cache is not evicting, so a full sample is discarded and the next one is compared with the
+  hit rate from before the gap.
 - **A load or `Compute` that finds its entry expired but not yet removed counts as a hit in the
   climber's sample.** The caller sees a miss, and the stats record one, but the write lands on
   the existing node, so the policy sees an access; had maintenance removed the entry first, the
