@@ -1523,6 +1523,10 @@ func TestCache_RefreshOfExpiredEntryIsDiscarded(t *testing.T) {
 	}
 }
 
+// A creation sees no expiration or refresh time, whether the key was absent or held an expired
+// entry that is still in the table. A non-positive duration keeps the time it sees: for an
+// absent key, never; over an expired entry, its deadline in the past, which made the new entry
+// invisible at once and refreshable on its first read.
 func TestCache_CreationOverExpiredEntrySeesNoDeadlines(t *testing.T) {
 	t.Parallel()
 
@@ -1576,6 +1580,9 @@ func TestCache_CleanUpAtDeadlineRemovesEntry(t *testing.T) {
 	})
 }
 
+// Maintenance replays the read buffer before the write buffer, so the timer wheel sees an access
+// to a node before the node's insertion, or after its removal, and must schedule it exactly once,
+// or not at all.
 func TestCache_ReadsReplayedAroundWrites(t *testing.T) {
 	t.Parallel()
 
@@ -1727,6 +1734,9 @@ func TestCache_DeletionListenerSeesEvictionCounted(t *testing.T) {
 	})
 }
 
+// The policy can choose a node that a write has already replaced, while the replacement's task is
+// still in the write buffer. Evicting it only drops it from the policy: the replaced value is
+// reported once, as replaced, and nothing is counted as an eviction for it.
 func TestCache_EvictionOfReplacedNodeReportsNothing(t *testing.T) {
 	t.Parallel()
 
