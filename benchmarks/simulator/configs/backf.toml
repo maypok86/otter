@@ -1,0 +1,17 @@
+type = "file"
+name = "Backf"
+capacities = [ 38, 75, 150, 260, 380, 560 ]
+caches = [
+    "otter",
+    "theine",
+    "ristretto",
+    "sturdyc",
+    "arc",
+    "lru",
+    "optimal",
+]
+
+[file]
+paths = [
+    { trace_type = "lirs", path = "trace/lirs/backf.gz" },
+]

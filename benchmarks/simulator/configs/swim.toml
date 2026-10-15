@@ -1,0 +1,17 @@
+type = "file"
+name = "Swim"
+capacities = [ 1100, 2300, 4500, 7900, 11_000, 17_000 ]
+caches = [
+    "otter",
+    "theine",
+    "ristretto",
+    "sturdyc",
+    "arc",
+    "lru",
+    "optimal",
+]
+
+[file]
+paths = [
+    { trace_type = "lirs", path = "trace/address/swim.lirs.xz" },
+]

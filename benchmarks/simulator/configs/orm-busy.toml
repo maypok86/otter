@@ -1,0 +1,17 @@
+type = "file"
+name = "ORM-Busy"
+capacities = [ 3800, 7600, 15_000, 27_000, 38_000, 57_000 ]
+caches = [
+    "otter",
+    "theine",
+    "ristretto",
+    "sturdyc",
+    "arc",
+    "lru",
+    "optimal",
+]
+
+[file]
+paths = [
+    { trace_type = "lirs", path = "trace/cache2k/orm-busy.lirs.xz" },
+]

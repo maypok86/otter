@@ -1,0 +1,17 @@
+type = "file"
+name = "GCC"
+capacities = [ 1800, 3500, 7000, 12_000, 18_000, 26_000 ]
+caches = [
+    "otter",
+    "theine",
+    "ristretto",
+    "sturdyc",
+    "arc",
+    "lru",
+    "optimal",
+]
+
+[file]
+paths = [
+    { trace_type = "lirs", path = "trace/address/gcc.lirs.xz" },
+]
