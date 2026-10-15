@@ -167,6 +167,14 @@ func TestLoadCacheFrom_RestoresTheSnapshot(t *testing.T) {
 	spec := cacheSpec{population: []populationKind{partialCache, fullCache}, executor: allExecutors}
 	forEachSpec(t, spec, func(t *testing.T, cc *cacheContext) {
 		cc.advance(10 * time.Second)
+		// The entries are taken before the save, so that a save that counted as a read of them
+		// would not change them on both sides.
+		saved := make(map[int]Entry[int, int], len(cc.original))
+		for _, key := range cc.keys() {
+			e, ok := cc.cache.GetEntryQuietly(key)
+			require.True(t, ok)
+			saved[key] = e
+		}
 		var buf bytes.Buffer
 		require.NoError(t, cc.cache.SaveTo(&buf))
 
@@ -174,11 +182,10 @@ func TestLoadCacheFrom_RestoresTheSnapshot(t *testing.T) {
 		loaded := cc.sibling(t)
 		require.NoError(t, loaded.cache.LoadFrom(&buf))
 		require.Equal(t, len(cc.original), loaded.cache.EstimatedSize())
-		for _, key := range cc.keys() {
-			want, ok := cc.cache.GetEntryQuietly(key)
-			require.True(t, ok)
+		for key, want := range saved {
 			got, ok := loaded.cache.GetEntryQuietly(key)
 			require.True(t, ok, "key %d", key)
+			got.SnapshotAtNano = want.SnapshotAtNano
 			require.Equal(t, want, got, "key %d", key)
 		}
 		require.Zero(t, loaded.stats.Snapshot().Hits)

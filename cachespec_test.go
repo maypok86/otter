@@ -247,14 +247,7 @@ func forEachSpec(t *testing.T, spec cacheSpec, test func(t *testing.T, cc *cache
 		t.Run(cfg.String(), func(t *testing.T) {
 			t.Parallel()
 
-			cc := newCacheContext(t, spec, cfg, newNonTickingClock())
-			t.Cleanup(func() {
-				// A failed test has left the cache in a state the checks would only add noise to.
-				if !t.Failed() {
-					cc.check(t)
-				}
-			})
-			test(t, cc)
+			test(t, newCacheContext(t, spec, cfg, newNonTickingClock()))
 		})
 	}
 }
@@ -315,6 +308,12 @@ func newCacheContext(t *testing.T, spec cacheSpec, cfg cacheConfig, clock *nonTi
 		cc.original[key] = -key
 	}
 	cc.run()
+	t.Cleanup(func() {
+		// A failed test has left the cache in a state the checks would only add noise to.
+		if !t.Failed() {
+			cc.check(t)
+		}
+	})
 	return cc
 }
 
@@ -325,13 +324,7 @@ func (cc *cacheContext) sibling(t *testing.T) *cacheContext {
 
 	cfg := cc.cacheConfig
 	cfg.population = emptyCache
-	s := newCacheContext(t, cacheSpec{logs: cc.logs, weigher: cc.weigher}, cfg, cc.clock)
-	t.Cleanup(func() {
-		if !t.Failed() {
-			s.check(t)
-		}
-	})
-	return s
+	return newCacheContext(t, cacheSpec{logs: cc.logs, weigher: cc.weigher}, cfg, cc.clock)
 }
 
 // keys returns the keys of the population in ascending order.
