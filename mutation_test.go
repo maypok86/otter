@@ -109,7 +109,7 @@ func mutationCases() []mutationCase {
 		inv  = CauseInvalidation
 		exp  = CauseExpiration
 	)
-	refreshes := cacheSpec{refresh: []refreshKind{refreshWriting}}
+	refreshes := cacheSpec{refresh: withRefresh}
 	noLoad := func(ctx context.Context, key int) (int, error) {
 		panic("the loader must not be called")
 	}
@@ -279,7 +279,7 @@ func mutationCases() []mutationCase {
 		},
 		{
 			name: "Refresh/error",
-			spec: cacheSpec{refresh: []refreshKind{refreshWriting}, logs: true},
+			spec: cacheSpec{refresh: withRefresh, logs: true},
 			run: func(t *testing.T, cc *cacheContext) any {
 				r := refreshNow(cc, LoaderFunc[int, int](func(context.Context, int) (int, error) { return 0, errMutationLoad }))
 				return loadResult{r.Value, r.Err}
@@ -395,7 +395,7 @@ func TestCache_KeyMutationsCancelPendingRefresh(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			spec := tt.state.spec(t, cacheSpec{refresh: []refreshKind{refreshWriting}})
+			spec := tt.state.spec(t, cacheSpec{refresh: withRefresh})
 			forEachSpec(t, spec, func(t *testing.T, cc *cacheContext) {
 				tt.state.populate(cc)
 

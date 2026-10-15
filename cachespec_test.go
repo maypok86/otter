@@ -67,10 +67,13 @@ type refreshKind int
 const (
 	noRefresh refreshKind = iota
 	refreshWriting
+	// refreshCreating keeps the refresh time an entry was created with, so that a test can tell a
+	// creation from an update.
+	refreshCreating
 )
 
 func (k refreshKind) String() string {
-	return [...]string{"noRefresh", "refresh"}[k]
+	return [...]string{"noRefresh", "refreshWriting", "refreshCreating"}[k]
 }
 
 // valueKind is a type of value, by the storage its node keeps it in. A test sees values as ints,
@@ -130,7 +133,8 @@ func (k executorKind) String() string {
 var (
 	allMaximums = []maximumKind{unbounded, sizeBounded, weightBounded}
 	allExpiries = []expiryKind{noExpiry, expiryWriting, expiryAccessing, expiryCreating}
-	allRefresh  = []refreshKind{noRefresh, refreshWriting}
+	allRefresh  = []refreshKind{noRefresh, refreshWriting, refreshCreating}
+	withRefresh = []refreshKind{refreshWriting, refreshCreating}
 	allValues   = []valueKind{wordValues, pointerValues, boxedValues}
 	// allPopulations is not the default: a spec that leaves the population out starts empty.
 	allPopulations = []populationKind{emptyCache, partialCache, fullCache}
@@ -162,6 +166,8 @@ type cacheSpec struct {
 	executor   []executorKind
 	// logs allows the cache to log; otherwise a logged message fails the test.
 	logs bool
+	// weigher replaces the weigher of a cache bounded by weight, which weighs every entry 1.
+	weigher func(key, value int) uint32
 }
 
 // cacheConfig is one combination of a cacheSpec.
@@ -255,16 +261,18 @@ func forEachSpec(t *testing.T, spec cacheSpec, test func(t *testing.T, cc *cache
 // processed by maintenance before the test starts.
 type cacheContext struct {
 	cacheConfig
-	// logs allows the cache to log, from the spec.
-	logs  bool
-	clock *nonTickingClock
-	stats *stats.Counter
-	cache testCache
+	// logs allows the cache to log, and weigher weighs the entries, from the spec.
+	logs    bool
+	weigher func(key, value int) uint32
+	clock   *nonTickingClock
+	stats   *stats.Counter
+	cache   testCache
 	// original is the population, which the test starts with.
 	original map[int]int
 	// onAtomicDeletion, if set, is called from OnAtomicDeletion after the event is recorded,
-	// while the cache still holds the bucket lock.
+	// while the cache still holds the bucket lock, and onDeletion from OnDeletion.
 	onAtomicDeletion func(e DeletionEvent[int, int])
+	onDeletion       func(e DeletionEvent[int, int])
 
 	mu              sync.Mutex
 	pending         []func()
@@ -276,7 +284,9 @@ type cacheContext struct {
 func newCacheContext(t *testing.T, spec cacheSpec, cfg cacheConfig) *cacheContext {
 	t.Helper()
 
-	cc := &cacheContext{cacheConfig: cfg, logs: spec.logs, clock: newNonTickingClock(), stats: stats.NewCounter()}
+	cc := &cacheContext{
+		cacheConfig: cfg, logs: spec.logs, weigher: spec.weigher, clock: newNonTickingClock(), stats: stats.NewCounter(),
+	}
 	switch cfg.values {
 	case wordValues:
 		cc.cache = newSpecCache(t, cc, func(v int) int { return v }, func(v int) int { return v })
@@ -394,7 +404,8 @@ func refreshNow(cc *cacheContext, loader Loader[int, int]) RefreshResult[int, in
 func (cc *cacheContext) requireValue(t *testing.T, key, want int) {
 	t.Helper()
 
-	v, ok := cc.cache.GetEntryQuietly(key)
+	e, ok := cc.cache.GetEntryQuietly(key)
+	v := e.Value
 	if want == 0 {
 		require.False(t, ok, "the key holds %d", v)
 		return
@@ -447,11 +458,10 @@ func (cc *cacheContext) check(t *testing.T) {
 
 // testCache is the cache of a cacheContext with its values seen as ints, whatever their type.
 type testCache interface {
-	Set(key, value int)
+	Set(key, value int) (int, bool)
 	SetIfAbsent(key, value int) (int, bool)
 	GetIfPresent(key int) (int, bool)
-	// GetEntryQuietly returns the value of the entry of key.
-	GetEntryQuietly(key int) (int, bool)
+	GetEntryQuietly(key int) (Entry[int, int], bool)
 	Get(key int, loader Loader[int, int]) (int, error)
 	GetContext(ctx context.Context, key int, loader Loader[int, int]) (int, error)
 	BulkGet(keys []int, bulkLoader BulkLoader[int, int]) (map[int]int, error)
@@ -471,6 +481,7 @@ type testCache interface {
 	Values() iter.Seq[int]
 	InvalidateAll()
 	EstimatedSize() int
+	WeightedSize() uint64
 	CleanUp()
 
 	// nodeID identifies the node of key, or is nil if the table has none.
@@ -508,6 +519,9 @@ func newSpecCache[V any](t *testing.T, cc *cacheContext, toV func(int) V, fromV 
 		},
 		OnDeletion: func(e DeletionEvent[int, V]) {
 			cc.record(&cc.deletions, event(e))
+			if cc.onDeletion != nil {
+				cc.onDeletion(event(e))
+			}
 		},
 	}
 	switch cc.maximum {
@@ -525,8 +539,15 @@ func newSpecCache[V any](t *testing.T, cc *cacheContext, toV func(int) V, fromV 
 	case expiryCreating:
 		o.ExpiryCalculator = ExpiryCreating[int, V](specExpiry)
 	}
-	if cc.refresh == refreshWriting {
+	switch cc.refresh {
+	case refreshWriting:
 		o.RefreshCalculator = RefreshWriting[int, V](specRefresh)
+	case refreshCreating:
+		o.RefreshCalculator = RefreshCreating[int, V](specRefresh)
+	}
+	if cc.maximum == weightBounded && cc.weigher != nil {
+		weigher := cc.weigher
+		o.Weigher = func(key int, value V) uint32 { return weigher(key, fromV(value)) }
 	}
 	c, err := New(o)
 	require.NoError(t, err)
@@ -598,8 +619,9 @@ func (s *specCache[V]) fromMap(m map[int]V) map[int]int {
 	return res
 }
 
-func (s *specCache[V]) Set(key, value int) {
-	s.c.Set(key, s.toV(value))
+func (s *specCache[V]) Set(key, value int) (int, bool) {
+	v, ok := s.c.Set(key, s.toV(value))
+	return s.fromV(v), ok
 }
 
 func (s *specCache[V]) SetIfAbsent(key, value int) (int, bool) {
@@ -612,9 +634,16 @@ func (s *specCache[V]) GetIfPresent(key int) (int, bool) {
 	return s.fromV(v), ok
 }
 
-func (s *specCache[V]) GetEntryQuietly(key int) (int, bool) {
+func (s *specCache[V]) GetEntryQuietly(key int) (Entry[int, int], bool) {
 	e, ok := s.c.GetEntryQuietly(key)
-	return s.fromV(e.Value), ok
+	return Entry[int, int]{
+		Key:               e.Key,
+		Value:             s.fromV(e.Value),
+		Weight:            e.Weight,
+		ExpiresAtNano:     e.ExpiresAtNano,
+		RefreshableAtNano: e.RefreshableAtNano,
+		SnapshotAtNano:    e.SnapshotAtNano,
+	}, ok
 }
 
 func (s *specCache[V]) Get(key int, loader Loader[int, int]) (int, error) {
@@ -639,7 +668,7 @@ func (s *specCache[V]) BulkGetContext(
 
 func (s *specCache[V]) Refresh(key int, loader Loader[int, int]) <-chan RefreshResult[int, int] {
 	res := s.c.Refresh(context.Background(), key, s.loader(loader))
-	require.NotNil(s.t, res, "Refresh of a cache without refresh: restrict the spec to refreshWriting")
+	require.NotNil(s.t, res, "Refresh of a cache without refresh: restrict the spec to withRefresh")
 	ch := make(chan RefreshResult[int, int], 1)
 	go func() {
 		r := <-res
@@ -650,7 +679,7 @@ func (s *specCache[V]) Refresh(key int, loader Loader[int, int]) <-chan RefreshR
 
 func (s *specCache[V]) BulkRefresh(keys []int, bulkLoader BulkLoader[int, int]) <-chan []RefreshResult[int, int] {
 	res := s.c.BulkRefresh(context.Background(), keys, s.bulkLoader(bulkLoader))
-	require.NotNil(s.t, res, "BulkRefresh of a cache without refresh: restrict the spec to refreshWriting")
+	require.NotNil(s.t, res, "BulkRefresh of a cache without refresh: restrict the spec to withRefresh")
 	ch := make(chan []RefreshResult[int, int], 1)
 	go func() {
 		rs := <-res
@@ -726,6 +755,10 @@ func (s *specCache[V]) InvalidateAll() {
 
 func (s *specCache[V]) EstimatedSize() int {
 	return s.c.EstimatedSize()
+}
+
+func (s *specCache[V]) WeightedSize() uint64 {
+	return s.c.WeightedSize()
 }
 
 func (s *specCache[V]) CleanUp() {

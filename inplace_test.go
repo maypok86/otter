@@ -598,7 +598,7 @@ func TestCache_InPlaceUpdateResurrectsExpiredEntry(t *testing.T) {
 func TestCache_InPlaceRefresh(t *testing.T) {
 	t.Parallel()
 
-	forEachSpec(t, cacheSpec{refresh: []refreshKind{refreshWriting}}, func(t *testing.T, cc *cacheContext) {
+	forEachSpec(t, cacheSpec{refresh: withRefresh}, func(t *testing.T, cc *cacheContext) {
 		cc.cache.Set(1, 1)
 		cc.cache.Set(1, 2) // an update, after which a maintained node of any value is updatable
 		before := cc.cache.nodeID(1)
