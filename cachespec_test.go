@@ -477,8 +477,12 @@ type testCache interface {
 	// Refresh fails the test on a cache without refresh, whose Refresh returns a nil channel
 	// that a receive would wait on forever.
 	Refresh(key int, loader Loader[int, int]) <-chan RefreshResult[int, int]
+	RefreshContext(ctx context.Context, key int, loader Loader[int, int]) <-chan RefreshResult[int, int]
 	// BulkRefresh fails the test on a cache without refresh, as Refresh does.
 	BulkRefresh(keys []int, bulkLoader BulkLoader[int, int]) <-chan []RefreshResult[int, int]
+	BulkRefreshContext(
+		ctx context.Context, keys []int, bulkLoader BulkLoader[int, int],
+	) <-chan []RefreshResult[int, int]
 	Invalidate(key int) (int, bool)
 	Compute(key int, fn func(oldValue int, found bool) (int, ComputeOp)) (int, bool)
 	ComputeIfAbsent(key int, fn func() (int, bool)) (int, bool)
@@ -675,7 +679,13 @@ func (s *specCache[V]) BulkGetContext(
 }
 
 func (s *specCache[V]) Refresh(key int, loader Loader[int, int]) <-chan RefreshResult[int, int] {
-	res := s.c.Refresh(context.Background(), key, s.loader(loader))
+	return s.RefreshContext(context.Background(), key, loader)
+}
+
+func (s *specCache[V]) RefreshContext(
+	ctx context.Context, key int, loader Loader[int, int],
+) <-chan RefreshResult[int, int] {
+	res := s.c.Refresh(ctx, key, s.loader(loader))
 	require.NotNil(s.t, res, "Refresh of a cache without refresh: restrict the spec to withRefresh")
 	ch := make(chan RefreshResult[int, int], 1)
 	go func() {
@@ -686,7 +696,13 @@ func (s *specCache[V]) Refresh(key int, loader Loader[int, int]) <-chan RefreshR
 }
 
 func (s *specCache[V]) BulkRefresh(keys []int, bulkLoader BulkLoader[int, int]) <-chan []RefreshResult[int, int] {
-	res := s.c.BulkRefresh(context.Background(), keys, s.bulkLoader(bulkLoader))
+	return s.BulkRefreshContext(context.Background(), keys, bulkLoader)
+}
+
+func (s *specCache[V]) BulkRefreshContext(
+	ctx context.Context, keys []int, bulkLoader BulkLoader[int, int],
+) <-chan []RefreshResult[int, int] {
+	res := s.c.BulkRefresh(ctx, keys, s.bulkLoader(bulkLoader))
 	require.NotNil(s.t, res, "BulkRefresh of a cache without refresh: restrict the spec to withRefresh")
 	ch := make(chan []RefreshResult[int, int], 1)
 	go func() {

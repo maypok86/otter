@@ -454,7 +454,11 @@ func TestCache_Refresh(t *testing.T) {
 			return 101, ctx.Err()
 		})
 
-		ch := cc.cache.Refresh(absentKey, tl1)
+		// The caller's context is cancelled before the refresh runs, and stays cancelled for the
+		// next one: the loader gets a context of its own and still loads.
+		ctx, cancel := context.WithCancel(context.Background())
+		ch := cc.cache.RefreshContext(ctx, absentKey, tl1)
+		cancel()
 		// the refresh is queued on the executor
 		cc.requireValue(t, absentKey, 0)
 		cc.run()
@@ -463,7 +467,7 @@ func TestCache_Refresh(t *testing.T) {
 		require.Equal(t, 100, r.Value)
 		cc.requireValue(t, absentKey, 100)
 
-		ch = cc.cache.Refresh(absentKey, tl2)
+		ch = cc.cache.RefreshContext(ctx, absentKey, tl2)
 		cc.run()
 		r = <-ch
 		require.NoError(t, r.Err)
@@ -757,8 +761,8 @@ func TestCache_BulkGetWithFakeCall(t *testing.T) {
 	require.Equal(t, m[CauseReplacement], len(keys))
 }
 
-// BulkRefresh loads the absent keys and reloads the present ones, and records neither hits nor
-// misses.
+// BulkRefresh loads the absent keys and reloads the present ones, with a context of its own, and
+// records neither hits nor misses.
 func TestCache_BulkRefresh(t *testing.T) {
 	t.Parallel()
 
@@ -781,7 +785,10 @@ func TestCache_BulkRefresh(t *testing.T) {
 			return m, ctx.Err()
 		})
 
-		ch := cc.cache.BulkRefresh(keys, tl)
+		// the caller's context is cancelled, but the bulk loader gets a context of its own
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		ch := cc.cache.BulkRefreshContext(ctx, keys, tl)
 		// the refresh is queued on the executor
 		for _, k := range unique {
 			if toUpdate[k] {
