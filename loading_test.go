@@ -250,48 +250,26 @@ func TestCache_BulkGetPanic(t *testing.T) {
 func TestCache_GetWithSuccessLoad(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
-	size := 100
-	statsCounter := stats.NewCounter()
-	c := Must(&Options[int, int]{
-		MaximumSize:      size,
-		StatsRecorder:    statsCounter,
-		ExpiryCalculator: ExpiryWriting[int, int](5 * time.Minute),
+	forEachSpec(t, cacheSpec{population: []populationKind{emptyCache, partialCache}, executor: allExecutors}, func(t *testing.T, cc *cacheContext) {
+		tl := newTestLoader[int, int](func(ctx context.Context, key int) (int, error) {
+			return 100, nil
+		})
+		for i := 0; i < 2; i++ {
+			v, err := cc.cache.Get(absentKey, tl)
+			require.NoError(t, err)
+			require.Equal(t, 100, v)
+		}
+		cc.requireValue(t, absentKey, 100)
+		require.Equal(t, len(cc.original)+1, cc.cache.EstimatedSize())
+		require.Equal(t, uint64(1), tl.loads.Load())
+		require.Zero(t, tl.reloads.Load())
+
+		snapshot := cc.stats.Snapshot()
+		require.Equal(t, uint64(1), snapshot.Hits)
+		require.Equal(t, uint64(1), snapshot.Misses)
+		require.Equal(t, uint64(1), snapshot.LoadSuccesses)
+		require.Zero(t, snapshot.LoadFailures)
 	})
-
-	k1 := 1
-	v1 := 100
-	tl := newTestLoader[int, int](func(ctx context.Context, key int) (int, error) {
-		return v1, nil
-	})
-
-	v, err := c.Get(ctx, k1, tl)
-	if err != nil {
-		t.Fatalf("Get error = %v", err)
-	}
-	if v != v1 {
-		t.Fatalf("Get value = %v; want = %v", v, v1)
-	}
-
-	v, err = c.Get(ctx, k1, tl)
-	if err != nil {
-		t.Fatalf("Get error = %v", err)
-	}
-	if v != v1 {
-		t.Fatalf("Get value = %v; want = %v", v, v1)
-	}
-
-	if e, ok := c.GetEntryQuietly(k1); c.EstimatedSize() != 1 || ok && e.Value != v1 {
-		t.Fatalf("the cache should only contain the key = %v", k1)
-	}
-
-	snapshot := statsCounter.Snapshot()
-	if snapshot.Hits != 1 ||
-		snapshot.Misses != 1 ||
-		snapshot.Loads() != 1 ||
-		snapshot.LoadSuccesses != 1 {
-		t.Fatalf("statistics are not recorded correctly. snapshot: %v", snapshot)
-	}
 }
 
 func TestCache_GetCoalescesConcurrentLoads(t *testing.T) {
@@ -363,338 +341,188 @@ func TestCache_GetDoesNotOverwriteConcurrentSet(t *testing.T) {
 func TestCache_GetWithNotFoundLoad(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
-	size := 100
-	statsCounter := stats.NewCounter()
-	c := Must(&Options[int, int]{
-		MaximumSize:      size,
-		StatsRecorder:    statsCounter,
-		ExpiryCalculator: ExpiryWriting[int, int](5 * time.Minute),
+	forEachSpec(t, cacheSpec{population: []populationKind{emptyCache, partialCache}, executor: allExecutors}, func(t *testing.T, cc *cacheContext) {
+		tl := newTestLoader[int, int](func(ctx context.Context, key int) (int, error) {
+			return 100, nil
+		})
+		for i := 0; i < 2; i++ {
+			v, err := cc.cache.Get(absentKey, tl)
+			require.NoError(t, err)
+			require.Equal(t, 100, v)
+		}
+
+		cc.cache.Invalidate(absentKey)
+		someErr := fmt.Errorf("olololo: %w", ErrNotFound)
+		v, err := cc.cache.Get(absentKey, newTestLoader[int, int](func(ctx context.Context, key int) (int, error) {
+			return 0, someErr
+		}))
+		require.Equal(t, someErr, err)
+		require.Zero(t, v)
+		cc.requireValue(t, absentKey, 0)
+		require.Equal(t, len(cc.original), cc.cache.EstimatedSize())
+
+		// a key that is not found is a successful load
+		snapshot := cc.stats.Snapshot()
+		require.Equal(t, uint64(1), snapshot.Hits)
+		require.Equal(t, uint64(2), snapshot.Misses)
+		require.Equal(t, uint64(2), snapshot.LoadSuccesses)
+		require.Zero(t, snapshot.LoadFailures)
+		cc.run()
+		cc.requireDeletions(t, DeletionEvent[int, int]{Key: absentKey, Value: 100, Cause: CauseInvalidation})
 	})
-
-	k1 := 1
-	v1 := 100
-	tl := newTestLoader[int, int](func(ctx context.Context, key int) (int, error) {
-		return v1, nil
-	})
-
-	v, err := c.Get(ctx, k1, tl)
-	if err != nil {
-		t.Fatalf("Get error = %v", err)
-	}
-	if v != v1 {
-		t.Fatalf("Get value = %v; want = %v", v, v1)
-	}
-
-	v, err = c.Get(ctx, k1, tl)
-	if err != nil {
-		t.Fatalf("Get error = %v", err)
-	}
-	if v != v1 {
-		t.Fatalf("Get value = %v; want = %v", v, v1)
-	}
-
-	someErr := fmt.Errorf("olololo: %w", ErrNotFound)
-	tl1 := newTestLoader[int, int](func(ctx context.Context, key int) (int, error) {
-		return 0, someErr
-	})
-
-	c.Invalidate(k1)
-	v, err = c.Get(ctx, k1, tl1)
-	require.Equal(t, someErr, err)
-	require.Zero(t, v)
-
-	if _, ok := c.GetEntryQuietly(k1); c.EstimatedSize() != 0 || ok {
-		t.Fatalf("the cache should only contain the key = %v", k1)
-	}
-
-	snapshot := statsCounter.Snapshot()
-	if snapshot.Hits != 1 ||
-		snapshot.Misses != 2 ||
-		snapshot.Loads() != 2 ||
-		snapshot.LoadSuccesses != 2 {
-		t.Fatalf("statistics are not recorded correctly. snapshot: %v", snapshot)
-	}
 }
 
+// A Get of an entry due for refresh returns the current value and reloads it with a context of its
+// own, which the caller's cancellation does not reach.
 func TestCache_GetWithSuccessRefresh(t *testing.T) {
 	t.Parallel()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	size := 100
-	statsCounter := stats.NewCounter()
-	fs := &fakeSource{}
-	c := Must(&Options[int, int]{
-		MaximumSize:   size,
-		StatsRecorder: statsCounter,
-		Clock:         fs,
-		Executor: func(fn func()) {
-			fn()
-		},
-		RefreshCalculator: RefreshWriting[int, int](10 * time.Minute),
+	forEachSpec(t, cacheSpec{refresh: []refreshKind{refreshWriting}, population: []populationKind{emptyCache, partialCache}, executor: allExecutors}, func(t *testing.T, cc *cacheContext) {
+		cc.cache.Set(absentKey, 100)
+		cc.advance(specRefresh + time.Second)
+		tl := newTestLoader[int, int](func(ctx context.Context, key int) (int, error) {
+			return 101, ctx.Err()
+		})
+
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		v, err := cc.cache.GetContext(ctx, absentKey, tl)
+		require.NoError(t, err)
+		require.Equal(t, 100, v)
+		cc.run()
+		cc.requireValue(t, absentKey, 101)
+
+		// a write moves the refresh time
+		cc.cache.Set(absentKey, 100)
+		v, err = cc.cache.Get(absentKey, tl)
+		require.NoError(t, err)
+		require.Equal(t, 100, v)
+		cc.run()
+		cc.requireValue(t, absentKey, 100)
+		require.Zero(t, tl.loads.Load())
+		require.Equal(t, uint64(1), tl.reloads.Load())
+
+		snapshot := cc.stats.Snapshot()
+		require.Equal(t, uint64(2), snapshot.Hits)
+		require.Zero(t, snapshot.Misses)
+		require.Equal(t, uint64(1), snapshot.LoadSuccesses)
+		cc.requireDeletions(t,
+			DeletionEvent[int, int]{Key: absentKey, Value: 100, Cause: CauseReplacement},
+			DeletionEvent[int, int]{Key: absentKey, Value: 101, Cause: CauseReplacement},
+		)
 	})
-
-	k1 := 1
-	v1 := 100
-	v2 := 101
-	c.Set(k1, v1)
-
-	fs.Sleep(10*time.Minute + time.Second)
-	tl := newTestLoader[int, int](func(ctx context.Context, key int) (int, error) {
-		if key == k1 {
-			return v2, ctx.Err()
-		}
-		panic("not valid key")
-	})
-
-	cancel()
-	v, err := c.Get(ctx, k1, tl)
-	if err != nil {
-		t.Fatalf("Get error = %v", err)
-	}
-	if v != v1 {
-		t.Fatalf("Get value = %v; want = %v", v, v1)
-	}
-
-	v, ok := c.GetIfPresent(k1)
-	if !ok {
-		t.Fatalf("not found key = %v", k1)
-	}
-	if v != v2 {
-		t.Fatalf("GetIfPresent value = %v; want = %v", v, v2)
-	}
-
-	c.Set(k1, v1)
-	v, err = c.Get(ctx, k1, tl)
-	if err != nil {
-		t.Fatalf("Get error = %v", err)
-	}
-	if v != v1 {
-		t.Fatalf("Get value = %v; want = %v", v, v1)
-	}
-
-	if tl.reloads.Load() != 1 && tl.loads.Load() != 0 {
-		t.Fatalf("not valid loader stats. loads = %v, reloads = %v", tl.loads.Load(), tl.reloads.Load())
-	}
-
-	snapshot := statsCounter.Snapshot()
-	if snapshot.Hits != 3 ||
-		snapshot.Misses != 0 ||
-		snapshot.Loads() != 1 ||
-		snapshot.LoadSuccesses != 1 {
-		t.Fatalf("statistics are not recorded correctly. snapshot: %v", snapshot)
-	}
 }
 
+// A refresh that does not find the key removes the entry.
 func TestCache_GetWithNotFoundRefresh(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
-	size := 100
-	statsCounter := stats.NewCounter()
-	fs := &fakeSource{}
-	c := Must(&Options[int, int]{
-		MaximumSize:   size,
-		StatsRecorder: statsCounter,
-		Clock:         fs,
-		Executor: func(fn func()) {
-			fn()
-		},
-		RefreshCalculator: RefreshWriting[int, int](time.Hour + time.Minute),
-	})
-
-	k1 := 1
-	v1 := 100
-	c.Set(k1, v1)
-
-	fs.Sleep(time.Hour + time.Minute + time.Second)
-	someErr := fmt.Errorf("olololo: %w", ErrNotFound)
-	tl := newTestLoader[int, int](func(ctx context.Context, key int) (int, error) {
-		if key == k1 {
+	forEachSpec(t, cacheSpec{refresh: []refreshKind{refreshWriting}, population: []populationKind{emptyCache, partialCache}, executor: allExecutors}, func(t *testing.T, cc *cacheContext) {
+		cc.cache.Set(absentKey, 100)
+		cc.advance(specRefresh + time.Second)
+		someErr := fmt.Errorf("olololo: %w", ErrNotFound)
+		tl := newTestLoader[int, int](func(ctx context.Context, key int) (int, error) {
 			return 0, someErr
-		}
-		panic("not valid key")
+		})
+
+		v, err := cc.cache.Get(absentKey, tl)
+		require.NoError(t, err)
+		require.Equal(t, 100, v)
+		cc.run()
+		cc.requireValue(t, absentKey, 0)
+		require.Zero(t, tl.loads.Load())
+		require.Equal(t, uint64(1), tl.reloads.Load())
+
+		snapshot := cc.stats.Snapshot()
+		require.Equal(t, uint64(1), snapshot.Hits)
+		require.Zero(t, snapshot.Misses)
+		require.Equal(t, uint64(1), snapshot.LoadSuccesses)
+		cc.requireDeletions(t, DeletionEvent[int, int]{Key: absentKey, Value: 100, Cause: CauseInvalidation})
 	})
-
-	v, err := c.Get(ctx, k1, tl)
-	if err != nil {
-		t.Fatalf("Get error = %v", err)
-	}
-	if v != v1 {
-		t.Fatalf("Get value = %v; want = %v", v, v1)
-	}
-
-	v, ok := c.GetIfPresent(k1)
-	require.False(t, ok)
-	require.Zero(t, v)
-
-	if tl.reloads.Load() != 1 && tl.loads.Load() != 0 {
-		t.Fatalf("not valid loader stats. loads = %v, reloads = %v", tl.loads.Load(), tl.reloads.Load())
-	}
-
-	snapshot := statsCounter.Snapshot()
-	if snapshot.Hits != 1 ||
-		snapshot.Misses != 1 ||
-		snapshot.Loads() != 1 ||
-		snapshot.LoadSuccesses != 1 {
-		t.Fatalf("statistics are not recorded correctly. snapshot: %v", snapshot)
-	}
 }
 
+// Refresh loads an absent key and reloads a present one, with a context of its own, and records
+// neither a hit nor a miss.
 func TestCache_Refresh(t *testing.T) {
 	t.Parallel()
 
-	size := 100
-	statsCounter := stats.NewCounter()
-	c := Must(&Options[int, int]{
-		MaximumSize:       size,
-		StatsRecorder:     statsCounter,
-		RefreshCalculator: RefreshWriting[int, int](time.Second),
+	forEachSpec(t, cacheSpec{refresh: []refreshKind{refreshWriting}, population: []populationKind{emptyCache, partialCache}}, func(t *testing.T, cc *cacheContext) {
+		tl1 := newTestLoader[int, int](func(ctx context.Context, key int) (int, error) {
+			return 100, ctx.Err()
+		})
+		tl2 := newTestLoader[int, int](func(ctx context.Context, key int) (int, error) {
+			return 101, ctx.Err()
+		})
+
+		ch := cc.cache.Refresh(absentKey, tl1)
+		// the refresh is queued on the executor
+		cc.requireValue(t, absentKey, 0)
+		cc.run()
+		r := <-ch
+		require.NoError(t, r.Err)
+		require.Equal(t, 100, r.Value)
+		cc.requireValue(t, absentKey, 100)
+
+		ch = cc.cache.Refresh(absentKey, tl2)
+		cc.run()
+		r = <-ch
+		require.NoError(t, r.Err)
+		require.Equal(t, 101, r.Value)
+		cc.requireValue(t, absentKey, 101)
+
+		require.Equal(t, uint64(1), tl1.loads.Load())
+		require.Zero(t, tl1.reloads.Load())
+		require.Zero(t, tl2.loads.Load())
+		require.Equal(t, uint64(1), tl2.reloads.Load())
+		snapshot := cc.stats.Snapshot()
+		require.Zero(t, snapshot.Hits)
+		require.Zero(t, snapshot.Misses)
+		require.Equal(t, uint64(2), snapshot.LoadSuccesses)
+		cc.requireDeletions(t, DeletionEvent[int, int]{Key: absentKey, Value: 100, Cause: CauseReplacement})
 	})
-
-	k1 := 1
-	v1 := 100
-	v2 := 101
-	ctx, cancel := context.WithCancel(context.Background())
-
-	done := make(chan struct{})
-	tl1 := newTestLoader[int, int](func(ctx context.Context, key int) (int, error) {
-		<-done
-		if key == k1 {
-			return v1, ctx.Err()
-		}
-		panic("not valid key")
-	})
-	tl2 := newTestLoader[int, int](func(ctx context.Context, key int) (int, error) {
-		if key == k1 {
-			return v2, ctx.Err()
-		}
-		panic("not valid key")
-	})
-
-	ch := c.Refresh(ctx, k1, tl1)
-	cancel()
-
-	v, ok := c.GetIfPresent(k1)
-	if ok {
-		t.Fatalf("found key = %v", k1)
-	}
-	if v != 0 {
-		t.Fatalf("GetIfPresent value = %v; want = %v", v, 0)
-	}
-	done <- struct{}{}
-
-	<-ch
-
-	v, ok = c.GetIfPresent(k1)
-	if !ok {
-		t.Fatalf("not found key = %v", k1)
-	}
-	if v != v1 {
-		t.Fatalf("GetIfPresent value = %v; want = %v", v, v1)
-	}
-
-	<-c.Refresh(ctx, k1, tl2)
-
-	v, ok = c.GetIfPresent(k1)
-	if !ok {
-		t.Fatalf("not found key = %v", k1)
-	}
-	if v != v2 {
-		t.Fatalf("GetIfPresent value = %v; want = %v", v, v2)
-	}
-
-	if tl1.reloads.Load() != 0 && tl1.loads.Load() != 1 {
-		t.Fatalf("not valid loader stats. loads = %v, reloads = %v", tl1.loads.Load(), tl1.reloads.Load())
-	}
-	if tl2.reloads.Load() != 1 && tl2.loads.Load() != 0 {
-		t.Fatalf("not valid loader stats. loads = %v, reloads = %v", tl2.loads.Load(), tl2.reloads.Load())
-	}
-
-	snapshot := statsCounter.Snapshot()
-	if snapshot.Hits != 2 ||
-		snapshot.Misses != 1 ||
-		snapshot.Loads() != 2 ||
-		snapshot.LoadSuccesses != 2 {
-		t.Fatalf("statistics are not recorded correctly. snapshot: %v", snapshot)
-	}
 }
 
 func TestCache_BulkGetWithSuccessLoad(t *testing.T) {
 	t.Parallel()
 
-	size := 100
-
-	keys := []int{0, 1, 1, 2, 3, 5, 6, 7, 8, 3, 9}
-	toSet := []int{3, 7, 0}
-	tl := newTestBulkLoader[int, int](func(ctx context.Context, keys []int) (map[int]int, error) {
-		m := make(map[int]int, len(keys))
-		for _, k := range keys {
-			m[k] = k + 100
-		}
-		return m, nil
-	})
-
-	ctx := context.Background()
-	statsCounter := stats.NewCounter()
-	c := Must(&Options[int, int]{
-		MaximumSize:      size,
-		StatsRecorder:    statsCounter,
-		ExpiryCalculator: ExpiryWriting[int, int](5 * time.Minute),
-	})
-
-	for _, k := range toSet {
-		c.Set(k, k)
-	}
-	ks := make(map[int]bool, len(toSet))
-	for _, k := range toSet {
-		ks[k] = true
-	}
-
-	res, err := c.BulkGet(ctx, keys, tl)
-	if err != nil {
-		t.Fatalf("BulkGet error = %v", err)
-	}
-
-	for k, v := range res {
-		if ks[k] {
-			if v != k {
-				t.Fatalf("value should be equal to key. key: %v, value: %v", k, v)
+	// nine distinct keys, with duplicates, that fit in an empty cache; none is 0, which
+	// requireValue takes for an absent value
+	keys := []int{10, 11, 11, 12, 13, 15, 16, 17, 18, 13, 19}
+	unique := []int{10, 11, 12, 13, 15, 16, 17, 18, 19}
+	toSet := []int{13, 17, 10}
+	forEachSpec(t, cacheSpec{executor: allExecutors}, func(t *testing.T, cc *cacheContext) {
+		tl := newTestBulkLoader[int, int](func(ctx context.Context, keys []int) (map[int]int, error) {
+			m := make(map[int]int, len(keys))
+			for _, k := range keys {
+				m[k] = k + 100
 			}
-			continue
+			return m, nil
+		})
+		want := make(map[int]int, len(unique))
+		for _, k := range unique {
+			want[k] = k + 100
 		}
-		if v != k+100 {
-			t.Fatalf("value should be equal to key+100. key: %v, value: %v", k, v)
+		for _, k := range toSet {
+			cc.cache.Set(k, k)
+			want[k] = k
 		}
-	}
 
-	if c.EstimatedSize() != 9 {
-		t.Fatalf("the cache should only contain unique keys")
-	}
+		res, err := cc.cache.BulkGet(keys, tl)
+		require.NoError(t, err)
+		require.Equal(t, want, res)
+		require.Equal(t, len(unique), cc.cache.EstimatedSize())
+		snapshot := cc.stats.Snapshot()
+		require.Equal(t, uint64(len(toSet)), snapshot.Hits)
+		require.Equal(t, uint64(len(unique)-len(toSet)), snapshot.Misses)
+		require.Equal(t, uint64(1), snapshot.LoadSuccesses)
 
-	snapshot := statsCounter.Snapshot()
-	if snapshot.Hits != 3 ||
-		snapshot.Misses != 6 ||
-		snapshot.Loads() != 1 ||
-		snapshot.LoadSuccesses != 1 {
-		t.Fatalf("statistics are not recorded correctly. snapshot: %v", snapshot)
-	}
-
-	res, err = c.BulkGet(ctx, []int{0}, tl)
-	if err != nil {
-		t.Fatalf("BulkGet error = %v", err)
-	}
-	if res[0] != 0 {
-		t.Fatalf("value should be equal to key. key: %v, value: %v", 0, 0)
-	}
-
-	snapshot = statsCounter.Snapshot()
-	if snapshot.Hits != 4 ||
-		snapshot.Misses != 6 ||
-		snapshot.Loads() != 1 ||
-		snapshot.LoadSuccesses != 1 {
-		t.Fatalf("statistics are not recorded correctly. snapshot: %v", snapshot)
-	}
+		res, err = cc.cache.BulkGet([]int{10}, tl)
+		require.NoError(t, err)
+		require.Equal(t, map[int]int{10: 10}, res)
+		require.Equal(t, uint64(len(toSet)+1), cc.stats.Snapshot().Hits)
+		require.Equal(t, uint64(1), tl.loads.Load())
+		require.Zero(t, tl.reloads.Load())
+	})
 }
 
 func TestCache_BulkGetCoalescesConcurrentLoads(t *testing.T) {
@@ -728,185 +556,112 @@ func TestCache_BulkGetCoalescesConcurrentLoads(t *testing.T) {
 	}
 }
 
+// A BulkGet of entries due for refresh returns the current values and reloads only the stale ones,
+// with a context of its own.
 func TestCache_BulkGetWithSuccessRefresh(t *testing.T) {
 	t.Parallel()
 
-	size := 100
-
-	keys := []int{0, 1, 1, 2, 3, 5, 6, 7, 8, 3, 9}
-	toUpdate := []int{3, 7, 0}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	statsCounter := stats.NewCounter()
-	fs := &fakeSource{}
-	c := Must(&Options[int, int]{
-		MaximumSize:   size,
-		StatsRecorder: statsCounter,
-		Clock:         fs,
-		Executor: func(fn func()) {
-			fn()
-		},
-		RefreshCalculator: RefreshWriting[int, int](10 * time.Minute),
-	})
-
-	for _, k := range keys {
-		c.Set(k, k)
-	}
-	ks := make(map[int]bool, len(toUpdate))
-	for _, k := range toUpdate {
-		ks[k] = true
-	}
-
-	fs.Sleep(10*time.Minute + time.Nanosecond)
-	for _, k := range toUpdate {
-		c.Set(k, k)
-	}
-
-	var calls atomic.Int64
-	tl := newTestBulkLoader[int, int](func(ctx context.Context, keys []int) (map[int]int, error) {
-		calls.Add(1)
-
-		m := make(map[int]int, len(keys))
-		for _, k := range keys {
-			if calls.Load() == 1 && ks[k] {
-				t.Fatalf("key should not be loaded. key: %v", k)
+	// nine distinct keys, with duplicates, that fit in an empty cache; none is 0, which
+	// requireValue takes for an absent value
+	keys := []int{10, 11, 11, 12, 13, 15, 16, 17, 18, 13, 19}
+	unique := []int{10, 11, 12, 13, 15, 16, 17, 18, 19}
+	toUpdate := map[int]bool{13: true, 17: true, 10: true}
+	spec := cacheSpec{refresh: []refreshKind{refreshWriting}, executor: allExecutors}
+	forEachSpec(t, spec, func(t *testing.T, cc *cacheContext) {
+		for _, k := range unique {
+			cc.cache.Set(k, k)
+		}
+		cc.advance(specRefresh + time.Second)
+		var events []DeletionEvent[int, int]
+		for k := range toUpdate {
+			cc.cache.Set(k, k)
+			events = append(events, DeletionEvent[int, int]{Key: k, Value: k, Cause: CauseReplacement})
+		}
+		tl := newTestBulkLoader[int, int](func(ctx context.Context, keys []int) (map[int]int, error) {
+			m := make(map[int]int, len(keys))
+			for _, k := range keys {
+				if toUpdate[k] {
+					t.Errorf("a fresh key is reloaded: %d", k)
+				}
+				m[k] = k + 100
 			}
-			m[k] = k + 100
-		}
-		return m, ctx.Err()
-	})
+			return m, ctx.Err()
+		})
 
-	cancel()
-	res, err := c.BulkGet(ctx, keys, tl)
-	if err != nil {
-		t.Fatalf("BulkGet error = %v", err)
-	}
-
-	for k, v := range res {
-		if v != k {
-			t.Fatalf("value should be equal to key. key: %v, value: %v", k, v)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		res, err := cc.cache.BulkGetContext(ctx, keys, tl)
+		require.NoError(t, err)
+		for k, v := range res {
+			require.Equal(t, k, v)
 		}
-	}
-	for _, k := range keys {
-		v, ok := c.GetIfPresent(k)
-		if !ok {
-			t.Fatalf("not found key = %v", k)
-		}
-		if ks[k] {
-			if v != k {
-				t.Fatalf("value should be equal to key. key: %v, value: %v", k, v)
+		cc.run()
+		for _, k := range unique {
+			if toUpdate[k] {
+				cc.requireValue(t, k, k)
+				continue
 			}
-			continue
+			cc.requireValue(t, k, k+100)
+			events = append(events, DeletionEvent[int, int]{Key: k, Value: k, Cause: CauseReplacement})
 		}
-		if v != k+100 {
-			t.Fatalf("value should be equal to key+100. key: %v, value: %v", k, v)
-		}
-	}
+		require.Equal(t, len(unique), cc.cache.EstimatedSize())
+		require.Zero(t, tl.loads.Load())
+		require.Equal(t, uint64(1), tl.reloads.Load())
 
-	if c.EstimatedSize() != 9 {
-		t.Fatalf("the cache should only contain unique keys")
-	}
-
-	snapshot := statsCounter.Snapshot()
-	if snapshot.Hits != 20 ||
-		snapshot.Misses != 0 ||
-		snapshot.Loads() != 1 ||
-		snapshot.LoadSuccesses != 1 {
-		t.Fatalf("statistics are not recorded correctly. snapshot: %v", snapshot)
-	}
+		snapshot := cc.stats.Snapshot()
+		require.Equal(t, uint64(len(unique)), snapshot.Hits)
+		require.Zero(t, snapshot.Misses)
+		require.Equal(t, uint64(1), snapshot.LoadSuccesses)
+		cc.requireDeletionsInAnyOrder(t, events...)
+	})
 }
 
+// A bulk refresh that leaves a key out of its result removes that key's entry.
 func TestCache_BulkGetWithNotFoundRefresh(t *testing.T) {
 	t.Parallel()
 
-	size := 100
+	const notFound = 13
+	keys := []int{10, 11, 12, notFound}
+	spec := cacheSpec{refresh: []refreshKind{refreshWriting}, executor: allExecutors}
+	forEachSpec(t, spec, func(t *testing.T, cc *cacheContext) {
+		for _, k := range keys {
+			cc.cache.Set(k, k)
+		}
+		cc.advance(specRefresh + time.Second)
+		tl := newTestBulkLoader[int, int](func(ctx context.Context, keys []int) (map[int]int, error) {
+			m := make(map[int]int, len(keys))
+			for _, k := range keys {
+				if k != notFound {
+					m[k] = k + 100
+				}
+			}
+			return m, nil
+		})
 
-	notFound := 3
-	keys := append([]int{0, 1, 2}, notFound)
-
-	ctx := context.Background()
-	statsCounter := stats.NewCounter()
-	var (
-		mutex sync.Mutex
-		wg    sync.WaitGroup
-	)
-	m := make(map[DeletionCause]int)
-	fs := &fakeSource{}
-	wg.Add(len(keys))
-	c := Must(&Options[int, int]{
-		MaximumSize:   size,
-		StatsRecorder: statsCounter,
-		Clock:         fs,
-		Executor: func(fn func()) {
-			fn()
-		},
-		RefreshCalculator: RefreshWriting[int, int](10 * time.Hour),
-		OnDeletion: func(e DeletionEvent[int, int]) {
-			mutex.Lock()
-			m[e.Cause]++
-			mutex.Unlock()
-			wg.Done()
-		},
-	})
-
-	for _, k := range keys {
-		c.Set(k, k)
-	}
-
-	fs.Sleep(10*time.Hour + time.Millisecond)
-	tl := newTestBulkLoader[int, int](func(ctx context.Context, keys []int) (map[int]int, error) {
-		m := make(map[int]int, len(keys))
+		res, err := cc.cache.BulkGet(keys, tl)
+		require.NoError(t, err)
+		for k, v := range res {
+			require.Equal(t, k, v)
+		}
+		cc.run()
+		events := make([]DeletionEvent[int, int], 0, len(keys))
 		for _, k := range keys {
 			if k == notFound {
+				cc.requireValue(t, k, 0)
+				events = append(events, DeletionEvent[int, int]{Key: k, Value: k, Cause: CauseInvalidation})
 				continue
 			}
-			m[k] = k + 100
+			cc.requireValue(t, k, k+100)
+			events = append(events, DeletionEvent[int, int]{Key: k, Value: k, Cause: CauseReplacement})
 		}
-		return m, nil
+		require.Equal(t, len(keys)-1, cc.cache.EstimatedSize())
+
+		snapshot := cc.stats.Snapshot()
+		require.Equal(t, uint64(len(keys)), snapshot.Hits)
+		require.Zero(t, snapshot.Misses)
+		require.Equal(t, uint64(1), snapshot.LoadSuccesses)
+		cc.requireDeletionsInAnyOrder(t, events...)
 	})
-
-	res, err := c.BulkGet(ctx, keys, tl)
-	if err != nil {
-		t.Fatalf("BulkGet error = %v", err)
-	}
-
-	for k, v := range res {
-		if v != k {
-			t.Fatalf("value should be equal to key. key: %v, value: %v", k, v)
-		}
-	}
-	for _, k := range keys {
-		v, ok := c.GetIfPresent(k)
-		if k == notFound {
-			require.False(t, ok)
-			require.Zero(t, v)
-		} else {
-			require.True(t, ok)
-			require.Equal(t, k+100, v)
-		}
-	}
-
-	if c.EstimatedSize() != len(keys)-1 {
-		t.Fatalf("the cache should only contain unique keys")
-	}
-
-	c.CleanUp()
-
-	snapshot := statsCounter.Snapshot()
-	if snapshot.Hits != uint64(2*len(keys)-1) ||
-		snapshot.Misses != 1 ||
-		snapshot.Loads() != 1 ||
-		snapshot.LoadSuccesses != 1 {
-		t.Fatalf("statistics are not recorded correctly. snapshot: %v", snapshot)
-	}
-
-	wg.Wait()
-	mutex.Lock()
-	defer mutex.Unlock()
-
-	require.Len(t, m, 2)
-	require.Equal(t, m[CauseInvalidation], 1)
-	require.Equal(t, m[CauseReplacement], 3)
 }
 
 func TestCache_BulkGetWithFakeCall(t *testing.T) {
@@ -1002,99 +757,60 @@ func TestCache_BulkGetWithFakeCall(t *testing.T) {
 	require.Equal(t, m[CauseReplacement], len(keys))
 }
 
+// BulkRefresh loads the absent keys and reloads the present ones, and records neither hits nor
+// misses.
 func TestCache_BulkRefresh(t *testing.T) {
 	t.Parallel()
 
-	size := 100
+	// nine distinct keys, with duplicates, that fit in an empty cache; none is 0, which
+	// requireValue takes for an absent value
+	keys := []int{10, 11, 11, 12, 13, 15, 16, 17, 18, 13, 19}
+	unique := []int{10, 11, 12, 13, 15, 16, 17, 18, 19}
+	toUpdate := map[int]bool{13: true, 17: true, 10: true}
+	forEachSpec(t, cacheSpec{refresh: []refreshKind{refreshWriting}}, func(t *testing.T, cc *cacheContext) {
+		events := make([]DeletionEvent[int, int], 0, len(toUpdate))
+		for k := range toUpdate {
+			cc.cache.Set(k, k+1)
+			events = append(events, DeletionEvent[int, int]{Key: k, Value: k + 1, Cause: CauseReplacement})
+		}
+		tl := newTestBulkLoader[int, int](func(ctx context.Context, keys []int) (map[int]int, error) {
+			m := make(map[int]int, len(keys))
+			for _, k := range keys {
+				m[k] = k + 100
+			}
+			return m, ctx.Err()
+		})
 
-	keys := []int{0, 1, 1, 2, 3, 5, 6, 7, 8, 3, 9}
-	toUpdate := []int{3, 7, 0}
-	ctx, cancel := context.WithCancel(context.Background())
+		ch := cc.cache.BulkRefresh(keys, tl)
+		// the refresh is queued on the executor
+		for _, k := range unique {
+			if toUpdate[k] {
+				cc.requireValue(t, k, k+1)
+			} else {
+				cc.requireValue(t, k, 0)
+			}
+		}
+		cc.run()
+		results := <-ch
+		got := make(map[int]int, len(results))
+		for _, r := range results {
+			require.NoError(t, r.Err)
+			got[r.Key] = r.Value
+		}
+		for _, k := range unique {
+			require.Equal(t, k+100, got[k])
+			cc.requireValue(t, k, k+100)
+		}
+		require.Equal(t, len(unique), cc.cache.EstimatedSize())
+		require.Equal(t, uint64(1), tl.loads.Load())
+		require.Equal(t, uint64(1), tl.reloads.Load())
 
-	statsCounter := stats.NewCounter()
-	c := Must(&Options[int, int]{
-		MaximumSize:       size,
-		StatsRecorder:     statsCounter,
-		RefreshCalculator: RefreshWriting[int, int](time.Second),
+		snapshot := cc.stats.Snapshot()
+		require.Zero(t, snapshot.Hits)
+		require.Zero(t, snapshot.Misses)
+		require.Equal(t, uint64(2), snapshot.LoadSuccesses)
+		cc.requireDeletionsInAnyOrder(t, events...)
 	})
-
-	ks := make(map[int]bool, len(toUpdate))
-	for _, k := range toUpdate {
-		ks[k] = true
-	}
-
-	for _, k := range toUpdate {
-		c.Set(k, k+1)
-	}
-
-	var calls atomic.Int64
-	done := make(chan struct{})
-	tl := newTestBulkLoader[int, int](func(ctx context.Context, keys []int) (map[int]int, error) {
-		calls.Add(1)
-		if calls.Load() == 1 {
-			<-done
-		}
-
-		m := make(map[int]int, len(keys))
-		for _, k := range keys {
-			if calls.Load() == 1 && ks[k] {
-				t.Fatalf("key should not be loaded. key: %v", k)
-			}
-			m[k] = k + 100
-		}
-		return m, ctx.Err()
-	})
-
-	cancel()
-	ch := c.BulkRefresh(ctx, keys, tl)
-
-	for _, k := range keys {
-		v, ok := c.GetIfPresent(k)
-		if ks[k] {
-			if !ok {
-				t.Fatalf("not found key = %v", k)
-			}
-			if v != k+1 {
-				t.Fatalf("value should be equal to key+1. key: %v, value: %v", k, v)
-			}
-			continue
-		}
-		if ok {
-			t.Fatalf("found key = %v", k)
-		}
-		if v != 0 {
-			t.Fatalf("value should be equal to 0. key: %v, value: %v", k, v)
-		}
-	}
-	done <- struct{}{}
-
-	<-ch
-
-	for _, k := range keys {
-		v, ok := c.GetIfPresent(k)
-		if !ok {
-			t.Fatalf("not found key = %v", k)
-		}
-		if v != k+100 {
-			t.Fatalf("value should be equal to key+100. key: %v, value: %v", k, v)
-		}
-	}
-
-	if c.EstimatedSize() != 9 {
-		t.Fatalf("the cache should only contain unique keys")
-	}
-
-	if tl.reloads.Load() != 1 && tl.loads.Load() != 1 {
-		t.Fatalf("not valid loader stats. loads = %v, reloads = %v", tl.loads.Load(), tl.reloads.Load())
-	}
-
-	snapshot := statsCounter.Snapshot()
-	if snapshot.Hits != 15 ||
-		snapshot.Misses != 7 ||
-		snapshot.Loads() != 2 ||
-		snapshot.LoadSuccesses != 2 {
-		t.Fatalf("statistics are not recorded correctly. snapshot: %v", snapshot)
-	}
 }
 
 func TestCache_BulkRefreshResults(t *testing.T) {
@@ -1202,118 +918,64 @@ func TestCache_BulkRefreshResults(t *testing.T) {
 func TestCache_GetWithFailedLoad(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
-	size := 100
-	statsCounter := stats.NewCounter()
-	c := Must(&Options[int, int]{
-		MaximumSize:      size,
-		StatsRecorder:    statsCounter,
-		ExpiryCalculator: ExpiryWriting[int, int](5 * time.Minute),
+	forEachSpec(t, cacheSpec{population: []populationKind{emptyCache, partialCache}, executor: allExecutors}, func(t *testing.T, cc *cacheContext) {
+		someErr := errors.New("some error")
+		v, err := cc.cache.Get(absentKey, newTestLoader[int, int](func(ctx context.Context, key int) (int, error) {
+			return 0, someErr
+		}))
+		require.Equal(t, someErr, err)
+		require.Zero(t, v)
+
+		v, err = cc.cache.Get(absentKey, newTestLoader[int, int](func(ctx context.Context, key int) (int, error) {
+			return 0, ErrNotFound
+		}))
+		require.Equal(t, ErrNotFound, err)
+		require.Zero(t, v)
+		cc.requireValue(t, absentKey, 0)
+		require.Equal(t, len(cc.original), cc.cache.EstimatedSize())
+
+		snapshot := cc.stats.Snapshot()
+		require.Zero(t, snapshot.Hits)
+		require.Equal(t, uint64(2), snapshot.Misses)
+		require.Equal(t, uint64(1), snapshot.LoadSuccesses)
+		require.Equal(t, uint64(1), snapshot.LoadFailures)
 	})
-
-	k1 := 1
-	someErr := errors.New("some error")
-	tl := newTestLoader[int, int](func(ctx context.Context, key int) (int, error) {
-		return 0, someErr
-	})
-
-	v, err := c.Get(ctx, k1, tl)
-	if err != someErr {
-		t.Fatalf("Get error = %v; want someErr %v", err, someErr)
-	}
-	if v != 0 {
-		t.Fatalf("unexpected non-zero value %#v", v)
-	}
-
-	v, err = c.Get(ctx, k1, newTestLoader[int, int](func(ctx context.Context, key int) (int, error) {
-		return 0, ErrNotFound
-	}))
-	if err != ErrNotFound {
-		t.Fatalf("Get error = %v; want ErrNotFound", err)
-	}
-	if v != 0 {
-		t.Fatalf("unexpected non-zero value %#v", v)
-	}
-
-	if c.EstimatedSize() > 0 {
-		t.Fatal("the cache should be empty")
-	}
-
-	snapshot := statsCounter.Snapshot()
-	if snapshot.Hits > 0 ||
-		snapshot.Misses != 2 ||
-		snapshot.Loads() != 2 ||
-		snapshot.LoadSuccesses != 1 ||
-		snapshot.LoadFailures != 1 {
-		t.Fatalf("statistics are not recorded correctly. snapshot: %v", snapshot)
-	}
 }
 
+// A failed refresh keeps the entry and logs the error; a later refresh that does not find the key
+// removes it.
 func TestCache_GetWithFailedRefresh(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
-	size := 100
-	statsCounter := stats.NewCounter()
-	l := newTestLogger()
-	fs := &fakeSource{}
-	c := Must(&Options[int, int]{
-		MaximumSize:   size,
-		StatsRecorder: statsCounter,
-		Clock:         fs,
-		Executor: func(fn func()) {
-			fn()
-		},
-		RefreshCalculator: RefreshCreating[int, int](5 * time.Second),
-		Logger:            l,
+	forEachSpec(t, cacheSpec{refresh: []refreshKind{refreshWriting}, population: []populationKind{emptyCache, partialCache}, executor: allExecutors, logs: true}, func(t *testing.T, cc *cacheContext) {
+		cc.cache.Set(absentKey, 100)
+		cc.advance(specRefresh + time.Second)
+		someErr := errors.New("some error")
+		v, err := cc.cache.Get(absentKey, newTestLoader[int, int](func(ctx context.Context, key int) (int, error) {
+			return 0, someErr
+		}))
+		require.NoError(t, err)
+		require.Equal(t, 100, v)
+		cc.run()
+		cc.requireValue(t, absentKey, 100)
+		cc.requireLogged(t, 1)
+
+		v, err = cc.cache.Get(absentKey, newTestLoader[int, int](func(ctx context.Context, key int) (int, error) {
+			return 0, ErrNotFound
+		}))
+		require.NoError(t, err)
+		require.Equal(t, 100, v)
+		cc.run()
+		cc.requireValue(t, absentKey, 0)
+		cc.requireLogged(t, 1)
+
+		snapshot := cc.stats.Snapshot()
+		require.Equal(t, uint64(2), snapshot.Hits)
+		require.Zero(t, snapshot.Misses)
+		require.Equal(t, uint64(1), snapshot.LoadSuccesses)
+		require.Equal(t, uint64(1), snapshot.LoadFailures)
+		cc.requireDeletions(t, DeletionEvent[int, int]{Key: absentKey, Value: 100, Cause: CauseInvalidation})
 	})
-
-	k1 := 1
-	someErr := errors.New("some error")
-	tl := newTestLoader[int, int](func(ctx context.Context, key int) (int, error) {
-		return 0, someErr
-	})
-
-	c.Set(k1, 0)
-	fs.Sleep(6 * time.Second)
-	v, err := c.Get(ctx, k1, tl)
-	if err != nil {
-		t.Fatalf("Get error = %v", err)
-	}
-	if v != 0 {
-		t.Fatalf("Get value = %v; want = %v", v, 0)
-	}
-
-	if l.calls.Load() != 1 && l.errs.Load() != 1 {
-		t.Fatalf("not valid logger stats. errs = %v, warns = %v", l.errs.Load(), l.warns.Load())
-	}
-
-	v, err = c.Get(ctx, k1, newTestLoader[int, int](func(ctx context.Context, key int) (int, error) {
-		return 0, ErrNotFound
-	}))
-	if err != nil {
-		t.Fatalf("Get error = %v", err)
-	}
-	if v != 0 {
-		t.Fatalf("Get value = %v; want = %v", v, 0)
-	}
-
-	if l.calls.Load() != 1 && l.errs.Load() != 1 {
-		t.Fatalf("not valid logger stats. errs = %v, warns = %v", l.errs.Load(), l.warns.Load())
-	}
-
-	if c.EstimatedSize() > 1 {
-		t.Fatal("the cache should not be empty")
-	}
-
-	snapshot := statsCounter.Snapshot()
-	if snapshot.Hits > 2 ||
-		snapshot.Misses != 0 ||
-		snapshot.Loads() != 2 ||
-		snapshot.LoadSuccesses != 1 ||
-		snapshot.LoadFailures != 1 {
-		t.Fatalf("statistics are not recorded correctly. snapshot: %v", snapshot)
-	}
 }
 
 func TestCache_BulkGetWithFailedLoad(t *testing.T) {
@@ -1384,62 +1046,38 @@ func TestCache_BulkGetWithFailedLoad(t *testing.T) {
 	}
 }
 
+// A failed bulk refresh keeps the entries and logs the error once.
 func TestCache_BulkGetWithFailedRefresh(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
-	size := 100
-	statsCounter := stats.NewCounter()
-	l := newTestLogger()
-	fs := &fakeSource{}
-	c := Must(&Options[int, int]{
-		MaximumSize:   size,
-		StatsRecorder: statsCounter,
-		Clock:         fs,
-		Executor: func(fn func()) {
-			fn()
-		},
-		RefreshCalculator: RefreshWriting[int, int](time.Minute),
-		Logger:            l,
-	})
-
-	ks := []int{0, 1}
-	someErr := errors.New("some error")
-	tbl := newTestBulkLoader[int, int](func(ctx context.Context, keys []int) (map[int]int, error) {
-		return nil, someErr
-	})
-
-	for _, k := range ks {
-		c.Set(k, 0)
-	}
-	fs.Sleep(time.Minute + time.Second)
-
-	res, err := c.BulkGet(ctx, ks, tbl)
-	if err != nil {
-		t.Fatalf("Get error = %v", err)
-	}
-	for _, v := range res {
-		if v != 0 {
-			t.Fatalf("value = %v; want = %v", v, 0)
+	keys := []int{10, 11}
+	spec := cacheSpec{refresh: []refreshKind{refreshWriting}, executor: allExecutors, logs: true}
+	forEachSpec(t, spec, func(t *testing.T, cc *cacheContext) {
+		for _, k := range keys {
+			cc.cache.Set(k, k)
 		}
-	}
+		cc.advance(specRefresh + time.Second)
+		someErr := errors.New("some error")
+		tbl := newTestBulkLoader[int, int](func(ctx context.Context, keys []int) (map[int]int, error) {
+			return nil, someErr
+		})
 
-	if l.calls.Load() != 1 && l.errs.Load() != 1 {
-		t.Fatalf("not valid logger stats. errs = %v, warns = %v", l.errs.Load(), l.warns.Load())
-	}
+		res, err := cc.cache.BulkGet(keys, tbl)
+		require.NoError(t, err)
+		require.Equal(t, map[int]int{10: 10, 11: 11}, res)
+		cc.run()
+		for _, k := range keys {
+			cc.requireValue(t, k, k)
+		}
+		cc.requireLogged(t, 1)
 
-	if c.EstimatedSize() > 2 {
-		t.Fatal("the cache should not be empty")
-	}
-
-	snapshot := statsCounter.Snapshot()
-	if snapshot.Hits > 2 ||
-		snapshot.Misses != 0 ||
-		snapshot.Loads() != 1 ||
-		snapshot.LoadSuccesses != 0 ||
-		snapshot.LoadFailures != 1 {
-		t.Fatalf("statistics are not recorded correctly. snapshot: %v", snapshot)
-	}
+		snapshot := cc.stats.Snapshot()
+		require.Equal(t, uint64(len(keys)), snapshot.Hits)
+		require.Zero(t, snapshot.Misses)
+		require.Zero(t, snapshot.LoadSuccesses)
+		require.Equal(t, uint64(1), snapshot.LoadFailures)
+		cc.requireDeletions(t)
+	})
 }
 
 func TestCache_GetWithSuppressedLoad(t *testing.T) {

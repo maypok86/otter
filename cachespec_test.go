@@ -113,6 +113,20 @@ func (k populationKind) size() int {
 	return [...]int{0, specMaximum / 2, specMaximum}[k]
 }
 
+// executorKind is how the executor runs the cache's tasks.
+type executorKind int
+
+const (
+	// queuedTasks keeps the tasks until the test calls run, so that it sees what is in flight.
+	queuedTasks executorKind = iota
+	// callerRuns runs each task on the goroutine that submits it.
+	callerRuns
+)
+
+func (k executorKind) String() string {
+	return [...]string{"queued", "callerRuns"}[k]
+}
+
 var (
 	allMaximums = []maximumKind{unbounded, sizeBounded, weightBounded}
 	allExpiries = []expiryKind{noExpiry, expiryWriting, expiryAccessing, expiryCreating}
@@ -120,6 +134,8 @@ var (
 	allValues   = []valueKind{wordValues, pointerValues, boxedValues}
 	// allPopulations is not the default: a spec that leaves the population out starts empty.
 	allPopulations = []populationKind{emptyCache, partialCache, fullCache}
+	// allExecutors is not the default either: a spec that leaves the executor out queues tasks.
+	allExecutors = []executorKind{queuedTasks, callerRuns}
 )
 
 const (
@@ -127,20 +143,23 @@ const (
 	specMaximum = 10
 	// specExpiry is the expiration duration of a cache that expires entries.
 	specExpiry = time.Minute
-	// specRefresh is the refresh duration of a cache that refreshes entries.
-	specRefresh = time.Hour
+	// specRefresh is the refresh duration of a cache that refreshes entries, shorter than
+	// specExpiry so that an entry can be refreshed before it expires.
+	specRefresh = 30 * time.Second
 	// absentKey is a key that the population never holds.
 	absentKey = 1000
 )
 
 // cacheSpec is the set of configurations a test holds for. An empty dimension means all of its
-// values, except for the population, where it means an empty cache.
+// values, except for the population, where it means an empty cache, and the executor, where it
+// means queuedTasks.
 type cacheSpec struct {
 	maximum    []maximumKind
 	expiry     []expiryKind
 	refresh    []refreshKind
 	values     []valueKind
 	population []populationKind
+	executor   []executorKind
 	// logs allows the cache to log; otherwise a logged message fails the test.
 	logs bool
 }
@@ -152,11 +171,13 @@ type cacheConfig struct {
 	refresh    refreshKind
 	values     valueKind
 	population populationKind
+	executor   executorKind
 }
 
 func (c cacheConfig) String() string {
 	return strings.Join([]string{
 		c.maximum.String(), c.expiry.String(), c.refresh.String(), c.values.String(), c.population.String(),
+		c.executor.String(),
 	}, "/")
 }
 
@@ -183,15 +204,20 @@ func (s cacheSpec) configs() []cacheConfig {
 	maximums, expiries := orAll(s.maximum, allMaximums), orAll(s.expiry, allExpiries)
 	refreshes, valueKinds := orAll(s.refresh, allRefresh), orAll(s.values, allValues)
 	populations := orAll(s.population, []populationKind{emptyCache})
-	configs := make([]cacheConfig, 0, len(maximums)*len(expiries)*len(refreshes)*len(valueKinds)*len(populations))
+	executors := orAll(s.executor, []executorKind{queuedTasks})
+	configs := make([]cacheConfig, 0,
+		len(maximums)*len(expiries)*len(refreshes)*len(valueKinds)*len(populations)*len(executors))
 	for _, maximum := range maximums {
 		for _, expiry := range expiries {
 			for _, refresh := range refreshes {
 				for _, values := range valueKinds {
 					for _, population := range populations {
-						configs = append(configs, cacheConfig{
-							maximum: maximum, expiry: expiry, refresh: refresh, values: values, population: population,
-						})
+						for _, executor := range executors {
+							configs = append(configs, cacheConfig{
+								maximum: maximum, expiry: expiry, refresh: refresh, values: values,
+								population: population, executor: executor,
+							})
+						}
 					}
 				}
 			}
@@ -223,8 +249,8 @@ func forEachSpec(t *testing.T, spec cacheSpec, test func(t *testing.T, cc *cache
 }
 
 // cacheContext is a cache of one configuration over int keys and values, with a clock that moves
-// only when told to, an executor that queues tasks until run is called (so an expired entry stays
-// in the table until then), a stats counter, and recorders of the deletion listeners and the
+// only when told to, an executor that by default queues tasks until run is called (so an expired
+// entry stays in the table until then), a stats counter, and recorders of the deletion listeners and the
 // logger. The population is the keys 1 to its size, each with the value -key, written and
 // processed by maintenance before the test starts.
 type cacheContext struct {
@@ -286,6 +312,10 @@ func (cc *cacheContext) keys() []int {
 }
 
 func (cc *cacheContext) submit(fn func()) {
+	if cc.executor == callerRuns {
+		fn()
+		return
+	}
 	cc.mu.Lock()
 	defer cc.mu.Unlock()
 	cc.pending = append(cc.pending, fn)
@@ -359,11 +389,12 @@ func refreshNow(cc *cacheContext, loader Loader[int, int]) RefreshResult[int, in
 	return <-res
 }
 
-// requireValue checks that key holds want, or is absent if want is 0.
+// requireValue checks that key holds want, or is absent if want is 0, without reading the entry
+// through the cache, so that the check records no stats and no access.
 func (cc *cacheContext) requireValue(t *testing.T, key, want int) {
 	t.Helper()
 
-	v, ok := cc.cache.GetIfPresent(key)
+	v, ok := cc.cache.GetEntryQuietly(key)
 	if want == 0 {
 		require.False(t, ok, "the key holds %d", v)
 		return
@@ -378,6 +409,15 @@ func (cc *cacheContext) Warn(_ context.Context, msg string, err error) {
 
 func (cc *cacheContext) Error(_ context.Context, msg string, err error) {
 	cc.log("error", msg, err)
+}
+
+// requireLogged checks that the cache logged n messages.
+func (cc *cacheContext) requireLogged(t *testing.T, n int) {
+	t.Helper()
+
+	cc.mu.Lock()
+	defer cc.mu.Unlock()
+	require.Len(t, cc.logged, n, "logged")
 }
 
 func (cc *cacheContext) log(level, msg string, err error) {
@@ -410,10 +450,17 @@ type testCache interface {
 	Set(key, value int)
 	SetIfAbsent(key, value int) (int, bool)
 	GetIfPresent(key int) (int, bool)
+	// GetEntryQuietly returns the value of the entry of key.
+	GetEntryQuietly(key int) (int, bool)
 	Get(key int, loader Loader[int, int]) (int, error)
+	GetContext(ctx context.Context, key int, loader Loader[int, int]) (int, error)
+	BulkGet(keys []int, bulkLoader BulkLoader[int, int]) (map[int]int, error)
+	BulkGetContext(ctx context.Context, keys []int, bulkLoader BulkLoader[int, int]) (map[int]int, error)
 	// Refresh fails the test on a cache without refresh, whose Refresh returns a nil channel
 	// that a receive would wait on forever.
 	Refresh(key int, loader Loader[int, int]) <-chan RefreshResult[int, int]
+	// BulkRefresh fails the test on a cache without refresh, as Refresh does.
+	BulkRefresh(keys []int, bulkLoader BulkLoader[int, int]) <-chan []RefreshResult[int, int]
 	Invalidate(key int) (int, bool)
 	Compute(key int, fn func(oldValue int, found bool) (int, ComputeOp)) (int, bool)
 	ComputeIfAbsent(key int, fn func() (int, bool)) (int, bool)
@@ -486,11 +533,69 @@ func newSpecCache[V any](t *testing.T, cc *cacheContext, toV func(int) V, fromV 
 	return &specCache[V]{t: t, c: c, toV: toV, fromV: fromV}
 }
 
+// specLoader is a Loader of values of type V over a Loader of ints, which keeps loads and
+// reloads apart.
+type specLoader[V any] struct {
+	s *specCache[V]
+	l Loader[int, int]
+}
+
+func (sl specLoader[V]) Load(ctx context.Context, key int) (V, error) {
+	v, err := sl.l.Load(ctx, key)
+	return sl.s.toV(v), err
+}
+
+func (sl specLoader[V]) Reload(ctx context.Context, key int, oldValue V) (V, error) {
+	v, err := sl.l.Reload(ctx, key, sl.s.fromV(oldValue))
+	return sl.s.toV(v), err
+}
+
+// specBulkLoader is a BulkLoader of values of type V over a BulkLoader of ints.
+type specBulkLoader[V any] struct {
+	s  *specCache[V]
+	bl BulkLoader[int, int]
+}
+
+func (sl specBulkLoader[V]) convert(m map[int]int, err error) (map[int]V, error) {
+	if m == nil {
+		return nil, err
+	}
+	res := make(map[int]V, len(m))
+	for k, v := range m {
+		res[k] = sl.s.toV(v)
+	}
+	return res, err
+}
+
+func (sl specBulkLoader[V]) BulkLoad(ctx context.Context, keys []int) (map[int]V, error) {
+	return sl.convert(sl.bl.BulkLoad(ctx, keys))
+}
+
+func (sl specBulkLoader[V]) BulkReload(ctx context.Context, keys []int, oldValues []V) (map[int]V, error) {
+	old := make([]int, 0, len(oldValues))
+	for _, v := range oldValues {
+		old = append(old, sl.s.fromV(v))
+	}
+	return sl.convert(sl.bl.BulkReload(ctx, keys, old))
+}
+
 func (s *specCache[V]) loader(l Loader[int, int]) Loader[int, V] {
-	return LoaderFunc[int, V](func(ctx context.Context, key int) (V, error) {
-		v, err := l.Load(ctx, key)
-		return s.toV(v), err
-	})
+	return specLoader[V]{s: s, l: l}
+}
+
+func (s *specCache[V]) bulkLoader(bl BulkLoader[int, int]) BulkLoader[int, V] {
+	return specBulkLoader[V]{s: s, bl: bl}
+}
+
+func (s *specCache[V]) fromMap(m map[int]V) map[int]int {
+	if m == nil {
+		return nil
+	}
+	res := make(map[int]int, len(m))
+	for k, v := range m {
+		res[k] = s.fromV(v)
+	}
+	return res
 }
 
 func (s *specCache[V]) Set(key, value int) {
@@ -507,9 +612,29 @@ func (s *specCache[V]) GetIfPresent(key int) (int, bool) {
 	return s.fromV(v), ok
 }
 
+func (s *specCache[V]) GetEntryQuietly(key int) (int, bool) {
+	e, ok := s.c.GetEntryQuietly(key)
+	return s.fromV(e.Value), ok
+}
+
 func (s *specCache[V]) Get(key int, loader Loader[int, int]) (int, error) {
-	v, err := s.c.Get(context.Background(), key, s.loader(loader))
+	return s.GetContext(context.Background(), key, loader)
+}
+
+func (s *specCache[V]) GetContext(ctx context.Context, key int, loader Loader[int, int]) (int, error) {
+	v, err := s.c.Get(ctx, key, s.loader(loader))
 	return s.fromV(v), err
+}
+
+func (s *specCache[V]) BulkGet(keys []int, bulkLoader BulkLoader[int, int]) (map[int]int, error) {
+	return s.BulkGetContext(context.Background(), keys, bulkLoader)
+}
+
+func (s *specCache[V]) BulkGetContext(
+	ctx context.Context, keys []int, bulkLoader BulkLoader[int, int],
+) (map[int]int, error) {
+	m, err := s.c.BulkGet(ctx, keys, s.bulkLoader(bulkLoader))
+	return s.fromMap(m), err
 }
 
 func (s *specCache[V]) Refresh(key int, loader Loader[int, int]) <-chan RefreshResult[int, int] {
@@ -519,6 +644,21 @@ func (s *specCache[V]) Refresh(key int, loader Loader[int, int]) <-chan RefreshR
 	go func() {
 		r := <-res
 		ch <- RefreshResult[int, int]{Key: r.Key, Value: s.fromV(r.Value), Err: r.Err}
+	}()
+	return ch
+}
+
+func (s *specCache[V]) BulkRefresh(keys []int, bulkLoader BulkLoader[int, int]) <-chan []RefreshResult[int, int] {
+	res := s.c.BulkRefresh(context.Background(), keys, s.bulkLoader(bulkLoader))
+	require.NotNil(s.t, res, "BulkRefresh of a cache without refresh: restrict the spec to refreshWriting")
+	ch := make(chan []RefreshResult[int, int], 1)
+	go func() {
+		rs := <-res
+		converted := make([]RefreshResult[int, int], 0, len(rs))
+		for _, r := range rs {
+			converted = append(converted, RefreshResult[int, int]{Key: r.Key, Value: s.fromV(r.Value), Err: r.Err})
+		}
+		ch <- converted
 	}()
 	return ch
 }
