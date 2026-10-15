@@ -106,7 +106,8 @@ func TestCache_Eviction(t *testing.T) {
 	t.Run("overflow_add_one", func(t *testing.T) {
 		t.Parallel()
 
-		forEachSpec(t, cacheSpec{maximum: []maximumKind{weightBounded}, weigher: overweight, executor: allExecutors}, func(t *testing.T, cc *cacheContext) {
+		spec := cacheSpec{maximum: []maximumKind{weightBounded}, weigher: overweight, executor: allExecutors}
+		forEachSpec(t, spec, func(t *testing.T, cc *cacheContext) {
 			v, ok := cc.cache.Set(1, heavyValue)
 			require.True(t, ok)
 			require.Equal(t, heavyValue, v)
@@ -119,7 +120,8 @@ func TestCache_Eviction(t *testing.T) {
 	t.Run("overflow_add_many", func(t *testing.T) {
 		t.Parallel()
 
-		forEachSpec(t, cacheSpec{maximum: []maximumKind{weightBounded}, weigher: overweight, executor: allExecutors}, func(t *testing.T, cc *cacheContext) {
+		spec := cacheSpec{maximum: []maximumKind{weightBounded}, weigher: overweight, executor: allExecutors}
+		forEachSpec(t, spec, func(t *testing.T, cc *cacheContext) {
 			events := make([]DeletionEvent[int, int], 0, 10)
 			for i := 0; i < 10; i++ {
 				v, ok := cc.cache.Set(i, heavyValue+i)
@@ -138,7 +140,8 @@ func TestCache_Eviction(t *testing.T) {
 	t.Run("overflow_update_many", func(t *testing.T) {
 		t.Parallel()
 
-		forEachSpec(t, cacheSpec{maximum: []maximumKind{weightBounded}, weigher: overweight, executor: allExecutors}, func(t *testing.T, cc *cacheContext) {
+		spec := cacheSpec{maximum: []maximumKind{weightBounded}, weigher: overweight, executor: allExecutors}
+		forEachSpec(t, spec, func(t *testing.T, cc *cacheContext) {
 			events := make([]DeletionEvent[int, int], 0, 20)
 			for i := 0; i < 10; i++ {
 				v, ok := cc.cache.Set(i, i)
@@ -1459,7 +1462,7 @@ func TestCache_WriteOverExpiredEntryIsCreation(t *testing.T) {
 			require.NoError(t, refreshNow(cc, loader).Err)
 		}},
 	}
-	spec := cacheSpec{expiry: []expiryKind{expiryWriting, expiryAccessing, expiryCreating}, refresh: []refreshKind{refreshCreating}}
+	spec := cacheSpec{expiry: withExpiry, refresh: []refreshKind{refreshCreating}}
 	for _, w := range writes {
 		t.Run(w.name, func(t *testing.T) {
 			t.Parallel()
@@ -1500,7 +1503,7 @@ func TestCache_RefreshOfExpiredEntryIsDiscarded(t *testing.T) {
 			cc.cache.Refresh(1, loader)
 		}},
 	}
-	spec := cacheSpec{expiry: []expiryKind{expiryWriting, expiryAccessing, expiryCreating}, refresh: withRefresh}
+	spec := cacheSpec{expiry: withExpiry, refresh: withRefresh}
 	for _, r := range refreshes {
 		t.Run(r.name, func(t *testing.T) {
 			t.Parallel()
@@ -1565,7 +1568,7 @@ func TestCache_CreationOverExpiredEntrySeesNoDeadlines(t *testing.T) {
 func TestCache_CleanUpAtDeadlineRemovesEntry(t *testing.T) {
 	t.Parallel()
 
-	spec := cacheSpec{expiry: []expiryKind{expiryWriting, expiryAccessing, expiryCreating}, executor: allExecutors}
+	spec := cacheSpec{expiry: withExpiry, executor: allExecutors}
 	forEachSpec(t, spec, func(t *testing.T, cc *cacheContext) {
 		cc.cache.Set(1, 1)
 		cc.run()
@@ -1724,7 +1727,7 @@ func TestCache_DeletionListenerSeesEvictionCounted(t *testing.T) {
 		t.Parallel()
 
 		spec := cacheSpec{
-			expiry:     []expiryKind{expiryWriting, expiryAccessing, expiryCreating},
+			expiry:     withExpiry,
 			population: []populationKind{partialCache, fullCache},
 			executor:   allExecutors,
 		}

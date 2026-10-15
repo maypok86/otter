@@ -18,10 +18,12 @@ import (
 	"container/heap"
 	"context"
 	"fmt"
+	"maps"
 	"math"
 	"math/rand"
 	"reflect"
 	"runtime"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -257,10 +259,7 @@ func TestCache_SetWithWeight(t *testing.T) {
 // and returns the entries that are still live. The expired entry stays in the table until
 // maintenance removes it.
 func liveAfterExpiringOne(cc *cacheContext) map[int]int {
-	live := make(map[int]int, len(cc.original))
-	for k, v := range cc.original {
-		live[k] = v
-	}
+	live := maps.Clone(cc.original)
 	if cc.expiry != noExpiry && len(live) > 0 {
 		cc.cache.SetExpiresAfter(1, time.Second)
 		cc.advance(2 * time.Second)
@@ -282,14 +281,27 @@ func TestCache_All(t *testing.T) {
 			got[k] = v
 		}
 		require.Equal(t, live, got)
-
-		visits := 0
-		for range cc.cache.All() {
-			visits++
-			break
-		}
-		require.Equal(t, min(1, len(live)), visits)
+		requireStopsEarly(t, len(live), func(yield func() bool) {
+			for range cc.cache.All() {
+				if !yield() {
+					return
+				}
+			}
+		})
 	})
+}
+
+// requireStopsEarly checks that an iteration over a cache of n live entries stops at the first
+// visit when the loop body breaks. visit runs the iteration, calling yield for each entry.
+func requireStopsEarly(t *testing.T, n int, visit func(yield func() bool)) {
+	t.Helper()
+
+	visits := 0
+	visit(func() bool {
+		visits++
+		return false
+	})
+	require.Equal(t, min(1, n), visits)
 }
 
 func TestCache_Keys(t *testing.T) {
@@ -297,21 +309,14 @@ func TestCache_Keys(t *testing.T) {
 
 	forEachSpec(t, cacheSpec{population: allPopulations}, func(t *testing.T, cc *cacheContext) {
 		live := liveAfterExpiringOne(cc)
-		want, got := make([]int, 0, len(live)), make([]int, 0, len(live))
-		for k := range live {
-			want = append(want, k)
-		}
-		for k := range cc.cache.Keys() {
-			got = append(got, k)
-		}
-		require.ElementsMatch(t, want, got)
-
-		visits := 0
-		for range cc.cache.Keys() {
-			visits++
-			break
-		}
-		require.Equal(t, min(1, len(live)), visits)
+		require.ElementsMatch(t, slices.Collect(maps.Keys(live)), slices.Collect(cc.cache.Keys()))
+		requireStopsEarly(t, len(live), func(yield func() bool) {
+			for range cc.cache.Keys() {
+				if !yield() {
+					return
+				}
+			}
+		})
 	})
 }
 
@@ -320,21 +325,14 @@ func TestCache_Values(t *testing.T) {
 
 	forEachSpec(t, cacheSpec{population: allPopulations}, func(t *testing.T, cc *cacheContext) {
 		live := liveAfterExpiringOne(cc)
-		want, got := make([]int, 0, len(live)), make([]int, 0, len(live))
-		for _, v := range live {
-			want = append(want, v)
-		}
-		for v := range cc.cache.Values() {
-			got = append(got, v)
-		}
-		require.ElementsMatch(t, want, got)
-
-		visits := 0
-		for range cc.cache.Values() {
-			visits++
-			break
-		}
-		require.Equal(t, min(1, len(live)), visits)
+		require.ElementsMatch(t, slices.Collect(maps.Values(live)), slices.Collect(cc.cache.Values()))
+		requireStopsEarly(t, len(live), func(yield func() bool) {
+			for range cc.cache.Values() {
+				if !yield() {
+					return
+				}
+			}
+		})
 	})
 }
 
@@ -477,7 +475,7 @@ func TestCache_Set(t *testing.T) {
 func TestCache_SetIfAbsent(t *testing.T) {
 	t.Parallel()
 
-	spec := cacheSpec{population: []populationKind{emptyCache, partialCache}}
+	spec := cacheSpec{population: withRoom}
 	forEachSpec(t, spec, func(t *testing.T, cc *cacheContext) {
 		for _, key := range cc.keys() {
 			v, ok := cc.cache.SetIfAbsent(key, key)
@@ -520,7 +518,7 @@ func TestCache_ComputeIfAbsent(t *testing.T) {
 
 		// a few absent keys fit in the cache without evictions
 		absent := []int{absentKey, absentKey + 1, absentKey + 2}
-		forEachSpec(t, cacheSpec{population: []populationKind{emptyCache, partialCache}}, func(t *testing.T, cc *cacheContext) {
+		forEachSpec(t, cacheSpec{population: withRoom}, func(t *testing.T, cc *cacheContext) {
 			for _, key := range absent {
 				v, ok := cc.cache.ComputeIfAbsent(key, func() (int, bool) { return key, true })
 				require.False(t, ok)
@@ -596,7 +594,7 @@ func TestCache_ComputeIfPresent(t *testing.T) {
 	t.Run("general", func(t *testing.T) {
 		t.Parallel()
 
-		forEachSpec(t, cacheSpec{population: []populationKind{emptyCache, partialCache}}, func(t *testing.T, cc *cacheContext) {
+		forEachSpec(t, cacheSpec{population: withRoom}, func(t *testing.T, cc *cacheContext) {
 			key, other := absentKey, absentKey+1
 
 			// Store a new value.
@@ -742,7 +740,7 @@ func TestCache_Compute(t *testing.T) {
 	t.Run("general", func(t *testing.T) {
 		t.Parallel()
 
-		forEachSpec(t, cacheSpec{population: []populationKind{emptyCache, partialCache}}, func(t *testing.T, cc *cacheContext) {
+		forEachSpec(t, cacheSpec{population: withRoom}, func(t *testing.T, cc *cacheContext) {
 			key, other := absentKey, absentKey+1
 
 			// Store a new value.

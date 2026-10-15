@@ -17,6 +17,7 @@ package otter
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -42,11 +43,10 @@ func (s prevState) spec(t *testing.T, in cacheSpec) cacheSpec {
 	t.Helper()
 
 	if s == prevExpired {
-		var expiries []expiryKind
-		for _, e := range orAll(in.expiry, allExpiries) {
-			if e != noExpiry {
-				expiries = append(expiries, e)
-			}
+		// keep the case's own restriction, if any, but only its expiring kinds
+		expiries := withExpiry
+		if len(in.expiry) > 0 {
+			expiries = slices.DeleteFunc(slices.Clone(in.expiry), func(e expiryKind) bool { return e == noExpiry })
 		}
 		// an empty dimension would mean all of them
 		require.NotEmpty(t, expiries, "the spec has no configuration that expires entries")

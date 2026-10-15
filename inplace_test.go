@@ -535,7 +535,7 @@ func TestCache_InPlaceUpdateShrinksExpiration(t *testing.T) {
 func TestCache_InPlaceUpdateResurrectsExpiredEntry(t *testing.T) {
 	t.Parallel()
 
-	spec := cacheSpec{expiry: []expiryKind{expiryWriting, expiryAccessing, expiryCreating}}
+	spec := cacheSpec{expiry: withExpiry}
 	forEachSpec(t, spec, func(t *testing.T, cc *cacheContext) {
 		nodes := make(map[int]any)
 		var events []DeletionEvent[int, int]

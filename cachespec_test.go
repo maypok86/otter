@@ -134,11 +134,14 @@ func (k executorKind) String() string {
 var (
 	allMaximums = []maximumKind{unbounded, sizeBounded, weightBounded}
 	allExpiries = []expiryKind{noExpiry, expiryWriting, expiryAccessing, expiryCreating}
+	withExpiry  = []expiryKind{expiryWriting, expiryAccessing, expiryCreating}
 	allRefresh  = []refreshKind{noRefresh, refreshWriting, refreshCreating}
 	withRefresh = []refreshKind{refreshWriting, refreshCreating}
 	allValues   = []valueKind{wordValues, pointerValues, boxedValues}
 	// allPopulations is not the default: a spec that leaves the population out starts empty.
 	allPopulations = []populationKind{emptyCache, partialCache, fullCache}
+	// withRoom is the populations that leave room for a few more entries without evictions.
+	withRoom = []populationKind{emptyCache, partialCache}
 	// allExecutors is not the default either: a spec that leaves the executor out queues tasks.
 	allExecutors = []executorKind{queuedTasks, callerRuns}
 )
