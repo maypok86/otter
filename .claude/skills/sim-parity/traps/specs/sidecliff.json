@@ -1,0 +1,36 @@
+{
+ "max": 8192,
+ "seed": 7,
+ "repeat": 1,
+ "members": {
+  "core": {
+   "kind": "zipf",
+   "n": 0.15,
+   "alpha": 1.0
+  },
+  "near": {
+   "kind": "pairs",
+   "dreq": 300,
+   "k": 2
+  },
+  "far": {
+   "kind": "pairs",
+   "dreq": 7000,
+   "k": 2
+  },
+  "scan": {
+   "kind": "scan"
+  }
+ },
+ "segments": [
+  {
+   "samples": 96,
+   "shares": {
+    "core": 0.5,
+    "near": 0.08,
+    "far": 0.3,
+    "scan": 0.12
+   }
+  }
+ ]
+}

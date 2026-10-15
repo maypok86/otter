@@ -25,3 +25,7 @@
 
 # agent audit reports, simulator runs and other machine-local scratch
 /.local/
+
+# Python bytecode of the agent tooling
+__pycache__/
+*.pyc

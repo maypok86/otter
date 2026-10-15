@@ -48,8 +48,10 @@ when the change is not about the benchmarks.
 - One bug fix per commit, with a test that fails before the fix.
 - Comments explain why, in full sentences; match the density of the surrounding code.
 - Every change to the eviction policy is checked with the invariant validator
-  (`validateCache` in `invariants_test.go`) and, if it can change hit rates, with the
-  simulator (`/sim-compare`).
+  (`validateCache` in `invariants_test.go`, which also checks the climber's invariants) and,
+  if it can change hit rates, with the simulator (`/sim-compare`). A change to the climber,
+  the policy or the sketch must keep parity with Caffeine, which the climber is ported
+  from (`/sim-parity`).
 - Performance claims need interleaved `benchstat` runs (`-count >= 8`); a single run means
   nothing on a loaded machine.
 
