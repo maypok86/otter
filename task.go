@@ -34,10 +34,9 @@ const (
 // task is a set of information to update the cache:
 // node, reason for write, difference after node weight change, etc.
 type task[K comparable, V any] struct {
-	n             node.Node[K, V]
-	old           node.Node[K, V]
-	writeReason   reason
-	deletionCause DeletionCause
+	n           node.Node[K, V]
+	old         node.Node[K, V]
+	writeReason reason
 	// quiet reports an update that is not an access: the completion of a refresh, whose
 	// request was counted by the read that started it.
 	quiet bool

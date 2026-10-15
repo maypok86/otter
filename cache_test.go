@@ -18,10 +18,12 @@ import (
 	"container/heap"
 	"context"
 	"fmt"
+	"maps"
 	"math"
 	"math/rand"
 	"reflect"
 	"runtime"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -29,7 +31,6 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/maypok86/otter/v2/internal/generated/node"
 	"github.com/maypok86/otter/v2/internal/xruntime"
 	"github.com/maypok86/otter/v2/stats"
 )
@@ -254,139 +255,73 @@ func TestCache_SetWithWeight(t *testing.T) {
 	}
 }
 
+// liveAfterExpiringOne expires the first entry of the population, if the cache expires entries,
+// and returns the entries that are still live. The expired entry stays in the table until
+// maintenance removes it.
+func liveAfterExpiringOne(cc *cacheContext) map[int]int {
+	live := maps.Clone(cc.original)
+	if cc.expiry != noExpiry && len(live) > 0 {
+		cc.cache.SetExpiresAfter(1, time.Second)
+		cc.advance(2 * time.Second)
+		delete(live, 1)
+	}
+	return live
+}
+
+// Iteration visits every live entry once, skips an expired one, and stops when the loop body
+// breaks.
 func TestCache_All(t *testing.T) {
 	t.Parallel()
 
-	size := 10
-	expiresAfter := time.Hour
-	c := Must[int, int](&Options[int, int]{
-		MaximumSize:      size,
-		ExpiryCalculator: ExpiryWriting[int, int](expiresAfter),
-	})
-
-	nm := node.NewManager[int, int](node.Config{
-		WithExpiration: true,
-		WithWeight:     true,
-	})
-
-	c.Set(1, 1)
-	c.cache.hashmap.Compute(2, func(n node.Node[int, int]) node.Node[int, int] {
-		return nm.Create(2, 2, 1, 1, 1)
-	})
-	c.Set(3, 3)
-	aliveNodes := 2
-	iters := 0
-	for key, value := range c.All() {
-		if key != value {
-			t.Fatalf("got unexpected key/value for iteration %d: %d/%d", iters, key, value)
-			break
+	forEachSpec(t, cacheSpec{population: allPopulations}, func(t *testing.T, cc *cacheContext) {
+		live := liveAfterExpiringOne(cc)
+		got := make(map[int]int)
+		for k, v := range cc.cache.All() {
+			require.NotContains(t, got, k, "visited twice")
+			got[k] = v
 		}
-		iters++
-	}
-	if iters != aliveNodes {
-		t.Fatalf("got unexpected number of iterations: %d", iters)
-	}
-	i := 0
-	foundKey := -1
-	foundValue := -1
-	for key, value := range c.All() {
-		if i == 1 {
-			foundKey = key
-			foundValue = value
-			break
-		}
-		i++
-	}
-	require.Contains(t, []int{1, 3}, foundKey)
-	require.Contains(t, []int{1, 3}, foundValue)
+		require.Equal(t, live, got)
+
+		// an iteration that went on after yield returned false would visit again
+		visits := 0
+		cc.cache.All()(func(int, int) bool {
+			visits++
+			return false
+		})
+		require.Equal(t, min(1, len(live)), visits)
+	})
 }
 
 func TestCache_Keys(t *testing.T) {
 	t.Parallel()
 
-	size := 10
-	expiresAfter := time.Hour
-	c := Must[int, int](&Options[int, int]{
-		MaximumSize:      size,
-		ExpiryCalculator: ExpiryWriting[int, int](expiresAfter),
-	})
+	forEachSpec(t, cacheSpec{population: allPopulations}, func(t *testing.T, cc *cacheContext) {
+		live := liveAfterExpiringOne(cc)
+		require.ElementsMatch(t, slices.Collect(maps.Keys(live)), slices.Collect(cc.cache.Keys()))
 
-	nm := node.NewManager[int, int](node.Config{
-		WithExpiration: true,
-		WithWeight:     true,
+		visits := 0
+		cc.cache.Keys()(func(int) bool {
+			visits++
+			return false
+		})
+		require.Equal(t, min(1, len(live)), visits)
 	})
-
-	c.Set(1, 1)
-	c.cache.hashmap.Compute(2, func(n node.Node[int, int]) node.Node[int, int] {
-		return nm.Create(2, 2, 1, 1, 1)
-	})
-	c.Set(3, 3)
-	aliveNodes := 2
-	iters := 0
-	for key := range c.Keys() {
-		if key != 1 && key != 3 {
-			t.Fatalf("got unexpected key for iteration %d: %d", iters, key)
-			break
-		}
-		iters++
-	}
-	if iters != aliveNodes {
-		t.Fatalf("got unexpected number of iterations: %d", iters)
-	}
-	i := 0
-	found := -1
-	for key := range c.Keys() {
-		if i == 1 {
-			found = key
-			break
-		}
-		i++
-	}
-	require.Contains(t, []int{1, 3}, found)
 }
 
 func TestCache_Values(t *testing.T) {
 	t.Parallel()
 
-	size := 10
-	expiresAfter := time.Hour
-	c := Must[int, int](&Options[int, int]{
-		MaximumSize:      size,
-		ExpiryCalculator: ExpiryWriting[int, int](expiresAfter),
-	})
+	forEachSpec(t, cacheSpec{population: allPopulations}, func(t *testing.T, cc *cacheContext) {
+		live := liveAfterExpiringOne(cc)
+		require.ElementsMatch(t, slices.Collect(maps.Values(live)), slices.Collect(cc.cache.Values()))
 
-	nm := node.NewManager[int, int](node.Config{
-		WithExpiration: true,
-		WithWeight:     true,
+		visits := 0
+		cc.cache.Values()(func(int) bool {
+			visits++
+			return false
+		})
+		require.Equal(t, min(1, len(live)), visits)
 	})
-
-	c.Set(1, 2)
-	c.cache.hashmap.Compute(2, func(n node.Node[int, int]) node.Node[int, int] {
-		return nm.Create(2, 3, 1, 1, 1)
-	})
-	c.Set(3, 4)
-	aliveNodes := 2
-	iters := 0
-	for value := range c.Values() {
-		if value != 2 && value != 4 {
-			t.Fatalf("got unexpected value for iteration %d: %d", iters, value)
-			break
-		}
-		iters++
-	}
-	if iters != aliveNodes {
-		t.Fatalf("got unexpected number of iterations: %d", iters)
-	}
-	i := 0
-	found := -1
-	for value := range c.Values() {
-		if i == 1 {
-			found = value
-			break
-		}
-		i++
-	}
-	require.Contains(t, []int{2, 4}, found)
 }
 
 func gcHelper(t *testing.T) *atomic.Bool {
@@ -466,139 +401,83 @@ func TestCache_CleanUp(t *testing.T) {
 func TestCache_InvalidateAll(t *testing.T) {
 	t.Parallel()
 
-	size := 10
-	c := Must(&Options[int, int]{
-		MaximumSize: size,
-		Executor: func(fn func()) {
-			fn()
-		},
+	forEachSpec(t, cacheSpec{population: allPopulations}, func(t *testing.T, cc *cacheContext) {
+		require.Equal(t, len(cc.original), cc.cache.EstimatedSize())
+
+		cc.cache.InvalidateAll()
+		require.Zero(t, cc.cache.EstimatedSize())
+		events := make([]DeletionEvent[int, int], 0, len(cc.original))
+		for _, key := range cc.keys() {
+			cc.requireValue(t, key, 0)
+			events = append(events, DeletionEvent[int, int]{Key: key, Value: cc.original[key], Cause: CauseInvalidation})
+		}
+		cc.run()
+		cc.requireDeletionsByKey(t, events...)
 	})
-
-	for i := 0; i < size; i++ {
-		c.Set(i, i)
-	}
-
-	if cacheSize := c.EstimatedSize(); cacheSize != size {
-		t.Fatalf("c.EstimatedSize() = %d, want = %d", cacheSize, size)
-	}
-
-	c.InvalidateAll()
-
-	if cacheSize := c.EstimatedSize(); cacheSize != 0 {
-		t.Fatalf("c.EstimatedSize() = %d, want = %d", cacheSize, 0)
-	}
 }
 
+// An update of every entry replaces each value once, and concurrent reads find every new value.
 func TestCache_Set(t *testing.T) {
 	t.Parallel()
 
-	size := getRandomSize(t)
-	var mutex sync.Mutex
-	m := make(map[DeletionCause]int)
-	statsCounter := stats.NewCounter()
-	done := make(chan struct{})
-	count := 0
-	c := Must(&Options[int, int]{
-		MaximumSize:      size,
-		StatsRecorder:    statsCounter,
-		ExpiryCalculator: ExpiryWriting[int, int](time.Minute),
-		OnDeletion: func(e DeletionEvent[int, int]) {
-			mutex.Lock()
-			count++
-			m[e.Cause]++
-			if count == size {
-				done <- struct{}{}
-			}
-			mutex.Unlock()
-		},
+	spec := cacheSpec{population: []populationKind{partialCache, fullCache}}
+	forEachSpec(t, spec, func(t *testing.T, cc *cacheContext) {
+		keys := cc.keys()
+		events := make([]DeletionEvent[int, int], 0, len(keys))
+		for _, key := range keys {
+			cc.cache.Set(key, key)
+			events = append(events, DeletionEvent[int, int]{Key: key, Value: cc.original[key], Cause: CauseReplacement})
+		}
+
+		var (
+			wg   sync.WaitGroup
+			errs = make(chan error, xruntime.Parallelism())
+		)
+		for i := 0; i < int(xruntime.Parallelism()); i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+
+				r := rand.New(rand.NewSource(time.Now().UnixNano()))
+				for a := 0; a < 1000; a++ {
+					key := keys[r.Intn(len(keys))]
+					if v, ok := cc.cache.GetIfPresent(key); !ok || v != key {
+						errs <- fmt.Errorf("key %d: got %d, %v", key, v, ok)
+						return
+					}
+				}
+			}()
+		}
+		wg.Wait()
+		close(errs)
+		require.NoError(t, <-errs)
+		require.Equal(t, 1.0, cc.stats.Snapshot().HitRatio())
+
+		cc.run()
+		cc.requireDeletions(t, events...)
 	})
-
-	for i := 0; i < size; i++ {
-		c.Set(i, i)
-	}
-
-	// update
-	for i := 0; i < size; i++ {
-		c.Set(i, i)
-	}
-
-	parallelism := xruntime.Parallelism()
-	var (
-		wg  sync.WaitGroup
-		err error
-	)
-	for i := 0; i < int(parallelism); i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-
-			r := rand.New(rand.NewSource(time.Now().UnixNano()))
-			for a := 0; a < 10000; a++ {
-				k := r.Int() % size
-				val, ok := c.GetIfPresent(k)
-				if !ok {
-					err = fmt.Errorf("expected %d but got nil", k)
-					break
-				}
-				if val != k {
-					err = fmt.Errorf("expected %d but got %d", k, val)
-					break
-				}
-			}
-		}()
-	}
-	wg.Wait()
-
-	if err != nil {
-		t.Fatalf("not found key: %v", err)
-	}
-	ratio := statsCounter.Snapshot().HitRatio()
-	if ratio != 1.0 {
-		t.Fatalf("cache hit ratio should be 1.0, but got %v", ratio)
-	}
-
-	<-done
-	mutex.Lock()
-	defer mutex.Unlock()
-	if len(m) != 1 || m[CauseReplacement] != size {
-		t.Fatalf("cache was supposed to replace %d, but replaced %d entries", size, m[CauseReplacement])
-	}
 }
 
+// SetIfAbsent keeps the value of a present key, and neither it nor its write of an absent key is
+// a miss.
 func TestCache_SetIfAbsent(t *testing.T) {
 	t.Parallel()
 
-	size := getRandomSize(t)
-	statsCounter := stats.NewCounter()
-	c := Must(&Options[int, int]{
-		MaximumSize:      size,
-		StatsRecorder:    statsCounter,
-		ExpiryCalculator: ExpiryWriting[int, int](time.Hour),
+	spec := cacheSpec{population: withRoom}
+	forEachSpec(t, spec, func(t *testing.T, cc *cacheContext) {
+		for _, key := range cc.keys() {
+			v, ok := cc.cache.SetIfAbsent(key, key)
+			require.False(t, ok, "set wasn't dropped: %d", key)
+			require.Equal(t, cc.original[key], v)
+			cc.requireValue(t, key, cc.original[key])
+		}
+		v, ok := cc.cache.SetIfAbsent(absentKey, 7)
+		require.True(t, ok)
+		require.Equal(t, 7, v)
+		cc.requireValue(t, absentKey, 7)
+		require.Zero(t, cc.stats.Snapshot().Misses)
+		cc.requireDeletions(t)
 	})
-
-	for i := 0; i < size; i++ {
-		if _, ok := c.SetIfAbsent(i, i); !ok {
-			t.Fatalf("set was dropped. key: %d", i)
-		}
-	}
-
-	for i := 0; i < size; i++ {
-		if !c.has(i) {
-			t.Fatalf("the key must exist: %d", i)
-		}
-	}
-
-	for i := 0; i < size; i++ {
-		if _, ok := c.SetIfAbsent(i, i); ok {
-			t.Fatalf("set wasn't dropped. key: %d", i)
-		}
-	}
-
-	c.InvalidateAll()
-
-	if hitRatio := statsCounter.Snapshot().HitRatio(); hitRatio != 1.0 {
-		t.Fatalf("hit rate should be 100%%. Hite rate: %.2f", hitRatio*100)
-	}
 }
 
 func TestCache_ComputeIfAbsent(t *testing.T) {
@@ -625,42 +504,33 @@ func TestCache_ComputeIfAbsent(t *testing.T) {
 	t.Run("general", func(t *testing.T) {
 		t.Parallel()
 
-		const entries = 1000
-		counter := stats.NewCounter()
-		deletions := uint64(0)
-		c := Must(&Options[int, int]{
-			StatsRecorder: counter,
-			OnAtomicDeletion: func(e DeletionEvent[int, int]) {
-				deletions++
-			},
-		})
-		for i := 0; i < entries; i++ {
-			v, ok := c.ComputeIfAbsent(i, func() (newValue int, cancel bool) {
-				return i, true
-			})
-			require.False(t, ok)
-			require.Equal(t, 0, v)
-		}
-		require.Equal(t, 0, c.EstimatedSize())
+		// a few absent keys fit in the cache without evictions
+		absent := []int{absentKey, absentKey + 1, absentKey + 2}
+		forEachSpec(t, cacheSpec{population: withRoom}, func(t *testing.T, cc *cacheContext) {
+			for _, key := range absent {
+				v, ok := cc.cache.ComputeIfAbsent(key, func() (int, bool) { return key, true })
+				require.False(t, ok)
+				require.Equal(t, 0, v)
+			}
+			require.Equal(t, len(cc.original), cc.cache.EstimatedSize())
 
-		for i := 0; i < entries; i++ {
-			v, ok := c.ComputeIfAbsent(i, func() (newValue int, cancel bool) {
-				return i, false
-			})
-			require.True(t, ok)
-			require.Equal(t, i, v)
-		}
-		for i := 0; i < entries; i++ {
-			v, ok := c.ComputeIfAbsent(i, func() (newValue int, cancel bool) {
-				return i + 1, false
-			})
-			require.True(t, ok)
-			require.Equal(t, i, v)
-		}
-		snapshot := counter.Snapshot()
-		require.Equal(t, uint64(entries), snapshot.Hits)
-		require.Equal(t, uint64(2*entries), snapshot.Misses)
-		require.Equal(t, uint64(0), deletions)
+			for _, key := range absent {
+				v, ok := cc.cache.ComputeIfAbsent(key, func() (int, bool) { return key, false })
+				require.True(t, ok)
+				require.Equal(t, key, v)
+			}
+			for _, key := range append(cc.keys(), absent...) {
+				want, _ := cc.cache.GetIfPresent(key)
+				v, ok := cc.cache.ComputeIfAbsent(key, func() (int, bool) { return key + 1, false })
+				require.True(t, ok)
+				require.Equal(t, want, v)
+			}
+			snapshot := cc.stats.Snapshot()
+			// each present key is a hit twice: by ComputeIfAbsent and by the read before it
+			require.Equal(t, uint64(2*(len(cc.original)+len(absent))), snapshot.Hits)
+			require.Equal(t, uint64(2*len(absent)), snapshot.Misses)
+			cc.requireDeletions(t)
+		})
 	})
 	t.Run("failedRead", func(t *testing.T) {
 		t.Parallel()
@@ -712,63 +582,58 @@ func TestCache_ComputeIfPresent(t *testing.T) {
 	t.Run("general", func(t *testing.T) {
 		t.Parallel()
 
-		counter := stats.NewCounter()
-		deletions := uint64(0)
-		c := Must(&Options[string, int]{
-			StatsRecorder: counter,
-			OnAtomicDeletion: func(e DeletionEvent[string, int]) {
-				deletions++
-			},
+		forEachSpec(t, cacheSpec{population: withRoom}, func(t *testing.T, cc *cacheContext) {
+			key, other := absentKey, absentKey+1
+
+			// Store a new value.
+			v, ok := cc.cache.Compute(key, func(oldValue int, found bool) (int, ComputeOp) {
+				require.Equal(t, 0, oldValue)
+				require.False(t, found)
+				return 42, WriteOp
+			})
+			require.True(t, ok)
+			require.Equal(t, 42, v)
+
+			// Update an existing value.
+			v, ok = cc.cache.ComputeIfPresent(key, func(oldValue int) (int, ComputeOp) {
+				require.Equal(t, 42, oldValue)
+				return oldValue + 42, WriteOp
+			})
+			require.True(t, ok)
+			require.Equal(t, 84, v)
+
+			// noop
+			v, ok = cc.cache.ComputeIfPresent(key, func(oldValue int) (int, ComputeOp) {
+				require.Equal(t, 84, oldValue)
+				return 1, CancelOp
+			})
+			require.True(t, ok)
+			require.Equal(t, 84, v)
+
+			// noop
+			v, ok = cc.cache.ComputeIfPresent(other, func(oldValue int) (int, ComputeOp) {
+				panic("incorrect call")
+			})
+			require.False(t, ok)
+			require.Equal(t, 0, v)
+
+			// Delete an existing value.
+			v, ok = cc.cache.ComputeIfPresent(key, func(oldValue int) (int, ComputeOp) {
+				require.Equal(t, 84, oldValue)
+				return 57, InvalidateOp
+			})
+			require.False(t, ok)
+			require.Equal(t, 0, v)
+
+			snapshot := cc.stats.Snapshot()
+			require.Equal(t, uint64(3), snapshot.Hits)
+			require.Equal(t, uint64(2), snapshot.Misses)
+			cc.run()
+			cc.requireDeletions(t,
+				DeletionEvent[int, int]{Key: key, Value: 42, Cause: CauseReplacement},
+				DeletionEvent[int, int]{Key: key, Value: 84, Cause: CauseInvalidation},
+			)
 		})
-
-		// Store a new value.
-		v, ok := c.Compute("foobar", func(oldValue int, found bool) (newValue int, op ComputeOp) {
-			require.Equal(t, 0, oldValue)
-			require.False(t, found)
-
-			return 42, WriteOp
-		})
-		require.True(t, ok)
-		require.Equal(t, 42, v)
-
-		// Update an existing value.
-		v, ok = c.ComputeIfPresent("foobar", func(oldValue int) (newValue int, op ComputeOp) {
-			require.Equal(t, 42, oldValue)
-
-			return oldValue + 42, WriteOp
-		})
-		require.True(t, ok)
-		require.Equal(t, 84, v)
-
-		// noop
-		v, ok = c.ComputeIfPresent("foobar", func(oldValue int) (newValue int, op ComputeOp) {
-			require.Equal(t, 84, oldValue)
-
-			return 1, CancelOp
-		})
-		require.True(t, ok)
-		require.Equal(t, 84, v)
-
-		// noop
-		v, ok = c.ComputeIfPresent("fizz", func(oldValue int) (newValue int, op ComputeOp) {
-			panic("incorrect call")
-		})
-		require.False(t, ok)
-		require.Equal(t, 0, v)
-
-		// Delete an existing value.
-		v, ok = c.ComputeIfPresent("foobar", func(oldValue int) (newValue int, op ComputeOp) {
-			require.Equal(t, 84, oldValue)
-
-			return 57, InvalidateOp
-		})
-		require.False(t, ok)
-		require.Equal(t, 0, v)
-
-		snapshot := counter.Snapshot()
-		require.Equal(t, uint64(3), snapshot.Hits)
-		require.Equal(t, uint64(2), snapshot.Misses)
-		require.Equal(t, uint64(2), deletions)
 	})
 	t.Run("failedRead", func(t *testing.T) {
 		t.Parallel()
@@ -863,70 +728,63 @@ func TestCache_Compute(t *testing.T) {
 	t.Run("general", func(t *testing.T) {
 		t.Parallel()
 
-		counter := stats.NewCounter()
-		deletions := uint64(0)
-		c := Must(&Options[string, int]{
-			StatsRecorder: counter,
-			OnAtomicDeletion: func(e DeletionEvent[string, int]) {
-				deletions++
-			},
+		forEachSpec(t, cacheSpec{population: withRoom}, func(t *testing.T, cc *cacheContext) {
+			key, other := absentKey, absentKey+1
+
+			// Store a new value.
+			v, ok := cc.cache.Compute(key, func(oldValue int, found bool) (int, ComputeOp) {
+				require.Equal(t, 0, oldValue)
+				require.False(t, found)
+				return 42, WriteOp
+			})
+			require.True(t, ok)
+			require.Equal(t, 42, v)
+
+			// Update an existing value.
+			v, ok = cc.cache.Compute(key, func(oldValue int, found bool) (int, ComputeOp) {
+				require.Equal(t, 42, oldValue)
+				require.True(t, found)
+				return oldValue + 42, WriteOp
+			})
+			require.True(t, ok)
+			require.Equal(t, 84, v)
+
+			// noop
+			v, ok = cc.cache.Compute(key, func(oldValue int, found bool) (int, ComputeOp) {
+				require.Equal(t, 84, oldValue)
+				require.True(t, found)
+				return 1, CancelOp
+			})
+			require.True(t, ok)
+			require.Equal(t, 84, v)
+
+			// Delete an existing value.
+			v, ok = cc.cache.Compute(key, func(oldValue int, found bool) (int, ComputeOp) {
+				require.Equal(t, 84, oldValue)
+				require.True(t, found)
+				return 0, InvalidateOp
+			})
+			require.False(t, ok)
+			require.Equal(t, 0, v)
+
+			// Try to delete an absent key: the returned value is ignored.
+			v, ok = cc.cache.Compute(other, func(oldValue int, found bool) (int, ComputeOp) {
+				require.Equal(t, 0, oldValue)
+				require.False(t, found)
+				return 42, InvalidateOp
+			})
+			require.False(t, ok)
+			require.Equal(t, 0, v)
+
+			snapshot := cc.stats.Snapshot()
+			require.Equal(t, uint64(3), snapshot.Hits)
+			require.Equal(t, uint64(2), snapshot.Misses)
+			cc.run()
+			cc.requireDeletions(t,
+				DeletionEvent[int, int]{Key: key, Value: 42, Cause: CauseReplacement},
+				DeletionEvent[int, int]{Key: key, Value: 84, Cause: CauseInvalidation},
+			)
 		})
-
-		// Store a new value.
-		v, ok := c.Compute("foobar", func(oldValue int, found bool) (newValue int, op ComputeOp) {
-			require.Equal(t, 0, oldValue)
-			require.False(t, found)
-
-			return 42, WriteOp
-		})
-		require.True(t, ok)
-		require.Equal(t, 42, v)
-
-		// Update an existing value.
-		v, ok = c.Compute("foobar", func(oldValue int, found bool) (newValue int, op ComputeOp) {
-			require.Equal(t, 42, oldValue)
-			require.True(t, found)
-
-			return oldValue + 42, WriteOp
-		})
-		require.True(t, ok)
-		require.Equal(t, 84, v)
-
-		// noop
-		v, ok = c.Compute("foobar", func(oldValue int, found bool) (newValue int, op ComputeOp) {
-			require.Equal(t, 84, oldValue)
-			require.True(t, found)
-
-			return 1, CancelOp
-		})
-		require.True(t, ok)
-		require.Equal(t, 84, v)
-
-		// Delete an existing value.
-		v, ok = c.Compute("foobar", func(oldValue int, found bool) (newValue int, op ComputeOp) {
-			require.Equal(t, 84, oldValue)
-			require.True(t, found)
-
-			return 0, InvalidateOp
-		})
-		require.False(t, ok)
-		require.Equal(t, 0, v)
-
-		// Try to delete a non-existing value. Notice different key.
-		v, ok = c.Compute("barbaz", func(oldValue int, found bool) (newValue int, op ComputeOp) {
-			require.Equal(t, 0, oldValue)
-			require.False(t, found)
-
-			// We're returning a non-zero value, but the cache should ignore it.
-			return 42, InvalidateOp
-		})
-		require.False(t, ok)
-		require.Equal(t, 0, v)
-
-		snapshot := counter.Snapshot()
-		require.Equal(t, uint64(3), snapshot.Hits)
-		require.Equal(t, uint64(2), snapshot.Misses)
-		require.Equal(t, uint64(2), deletions)
 	})
 	t.Run("panic", func(t *testing.T) {
 		t.Parallel()
@@ -1294,51 +1152,22 @@ func TestCache_EvictionStatsMatchDeletionListener(t *testing.T) {
 func TestCache_Invalidate(t *testing.T) {
 	t.Parallel()
 
-	size := getRandomSize(t)
-	var mutex sync.Mutex
-	m := make(map[DeletionCause]int)
-	var wg sync.WaitGroup
-	wg.Add(size)
-	c := Must(&Options[int, int]{
-		MaximumSize:      size,
-		InitialCapacity:  size,
-		ExpiryCalculator: ExpiryWriting[int, int](time.Hour),
-		OnDeletion: func(e DeletionEvent[int, int]) {
-			mutex.Lock()
-			m[e.Cause]++
-			mutex.Unlock()
-			wg.Done()
-		},
+	forEachSpec(t, cacheSpec{population: allPopulations}, func(t *testing.T, cc *cacheContext) {
+		events := make([]DeletionEvent[int, int], 0, len(cc.original))
+		for _, key := range cc.keys() {
+			v, ok := cc.cache.Invalidate(key)
+			require.True(t, ok)
+			require.Equal(t, cc.original[key], v)
+			cc.requireValue(t, key, 0)
+			events = append(events, DeletionEvent[int, int]{Key: key, Value: cc.original[key], Cause: CauseInvalidation})
+		}
+		v, ok := cc.cache.Invalidate(absentKey)
+		require.False(t, ok)
+		require.Zero(t, v)
+
+		cc.run()
+		cc.requireDeletions(t, events...)
 	})
-
-	for i := 0; i < size; i++ {
-		c.Set(i, i)
-	}
-
-	for i := 0; i < size; i++ {
-		if !c.has(i) {
-			t.Fatalf("the key must exist: %d", i)
-		}
-	}
-
-	for i := 0; i < size; i++ {
-		c.Invalidate(i)
-	}
-
-	for i := 0; i < size; i++ {
-		if c.has(i) {
-			t.Fatalf("the key must not exist: %d", i)
-		}
-	}
-
-	c.CleanUp()
-	wg.Wait()
-
-	mutex.Lock()
-	defer mutex.Unlock()
-	if len(m) != 1 || m[CauseInvalidation] != size {
-		t.Fatalf("cache was supposed to delete %d, but deleted %d entries", size, m[CauseInvalidation])
-	}
 }
 
 func TestCache_ConcurrentInvalidateAll(t *testing.T) {

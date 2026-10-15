@@ -17,7 +17,6 @@ package otter
 import (
 	"context"
 	"runtime"
-	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -294,58 +293,35 @@ func TestCache_FailedInPlaceUpdateCallsCallbacksOnce(t *testing.T) {
 	})
 }
 
-// Replacement notifications of an in-place update must carry the replaced value, fire once
-// per listener, and the synchronous listener must run before readers can see the new value,
-// as it does when the node is replaced.
+// Replacement notifications of an update must carry the replaced value and fire once per
+// listener, and the synchronous listener must run before readers can see the new value, whether
+// the update is applied in place or replaces the node.
 func TestCache_InPlaceUpdateNotifications(t *testing.T) {
 	t.Parallel()
 
-	var (
-		mu           sync.Mutex
-		atomicEvents []DeletionEvent[int, int]
-		events       []DeletionEvent[int, int]
-		visible      []int
-	)
-	var c *Cache[int, int]
-	c = Must(&Options[int, int]{
-		MaximumSize: 10,
-		Executor: func(fn func()) {
-			fn()
-		},
-		OnAtomicDeletion: func(e DeletionEvent[int, int]) {
+	forEachSpec(t, cacheSpec{}, func(t *testing.T, cc *cacheContext) {
+		var visible []int
+		cc.onAtomicDeletion = func(e DeletionEvent[int, int]) {
 			// what a lock-free reader sees while the synchronous listener runs
-			n := c.cache.hashmap.Get(e.Key)
-			mu.Lock()
-			defer mu.Unlock()
-			atomicEvents = append(atomicEvents, e)
-			visible = append(visible, n.Value())
-		},
-		OnDeletion: func(e DeletionEvent[int, int]) {
-			mu.Lock()
-			defer mu.Unlock()
-			events = append(events, e)
-		},
+			v, _ := cc.cache.peek(e.Key)
+			visible = append(visible, v)
+		}
+
+		cc.cache.Set(1, 1)
+		cc.cache.Set(1, 2)
+		cc.cache.Set(1, 3)
+		v, ok := cc.cache.Compute(1, func(int, bool) (int, ComputeOp) { return 4, WriteOp })
+		require.True(t, ok)
+		require.Equal(t, 4, v)
+		cc.run()
+
+		cc.requireDeletions(t,
+			DeletionEvent[int, int]{Key: 1, Value: 1, Cause: CauseReplacement},
+			DeletionEvent[int, int]{Key: 1, Value: 2, Cause: CauseReplacement},
+			DeletionEvent[int, int]{Key: 1, Value: 3, Cause: CauseReplacement},
+		)
+		require.Equal(t, []int{1, 2, 3}, visible, "readers saw the new value before OnAtomicDeletion ran")
 	})
-
-	c.Set(1, 1)
-	c.Set(1, 2) // in place: an int is kept in one atomic word
-	c.Set(1, 3) // in place
-	v, ok := c.Compute(1, func(oldValue int, found bool) (int, ComputeOp) {
-		return 4, WriteOp
-	}) // in place
-	require.True(t, ok)
-	require.Equal(t, 4, v)
-
-	mu.Lock()
-	defer mu.Unlock()
-	want := []DeletionEvent[int, int]{
-		{Key: 1, Value: 1, Cause: CauseReplacement},
-		{Key: 1, Value: 2, Cause: CauseReplacement},
-		{Key: 1, Value: 3, Cause: CauseReplacement},
-	}
-	require.Equal(t, want, atomicEvents)
-	require.Equal(t, want, events)
-	require.Equal(t, []int{1, 2, 3}, visible, "readers saw the new value before OnAtomicDeletion ran")
 }
 
 type recordingRefresh struct {
@@ -523,23 +499,6 @@ func TestCache_InPlaceWeightChange(t *testing.T) {
 	validateCache(t, c)
 }
 
-type deletionRecorder struct {
-	mu     sync.Mutex
-	events []DeletionEvent[int, int]
-}
-
-func (r *deletionRecorder) record(e DeletionEvent[int, int]) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.events = append(r.events, e)
-}
-
-func (r *deletionRecorder) get() []DeletionEvent[int, int] {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return slices.Clone(r.events)
-}
-
 // An update that moves the expiration time earlier is applied in place, and the entry still
 // expires on time: the timer wheel alone only reschedules a deadline that moved later.
 func TestCache_InPlaceUpdateShrinksExpiration(t *testing.T) {
@@ -571,105 +530,69 @@ func TestCache_InPlaceUpdateShrinksExpiration(t *testing.T) {
 }
 
 // A write over an expired entry that is still in the table reuses its node, and reports the
-// old value as expired rather than replaced.
+// old value as expired rather than replaced. The nodes are taken after an update, which leaves the
+// node of any value updatable in place.
 func TestCache_InPlaceUpdateResurrectsExpiredEntry(t *testing.T) {
 	t.Parallel()
 
-	clk := newNonTickingClock()
-	deleted := &deletionRecorder{}
-	atomicDeleted := &deletionRecorder{}
-	counter := stats.NewCounter()
-	// Maintenance is deferred: a read of an expired entry schedules it, and it would remove the
-	// entry before the write, which is correct but not what this test is about.
-	var pending []func()
-	runPending := func() {
-		for len(pending) > 0 {
-			fn := pending[0]
-			pending = pending[1:]
-			fn()
-		}
-	}
-	c := Must(&Options[int, int]{
-		MaximumSize:      10,
-		Clock:            clk,
-		ExpiryCalculator: ExpiryWriting[int, int](time.Minute),
-		StatsRecorder:    counter,
-		OnDeletion:       deleted.record,
-		OnAtomicDeletion: atomicDeleted.record,
-		Executor: func(fn func()) {
-			pending = append(pending, fn)
-		},
-	})
-	updatable := func(key int) node.Node[int, int] {
-		c.Set(key, 1)
-		c.Set(key, 2) // an update, applied in place
-		return c.cache.hashmap.Get(key)
-	}
-	n1, n2, n3, n4 := updatable(1), updatable(2), updatable(3), updatable(4)
-	runPending()
-	clk.Sleep(2 * time.Minute) // all four expire, but stay in the table
-
-	c.Set(1, 10)
-	v, ok := c.SetIfAbsent(2, 20)
-	require.True(t, ok, "SetIfAbsent over an expired entry must write")
-	require.Equal(t, 20, v)
-	missesBefore := counter.Snapshot().Misses
-	v, ok = c.Compute(3, func(oldValue int, found bool) (int, ComputeOp) {
-		require.False(t, found)
-		return 30, WriteOp
-	})
-	require.True(t, ok)
-	require.Equal(t, 30, v)
-	require.Equal(t, missesBefore+1, counter.Snapshot().Misses, "Compute over an expired entry is a miss")
-	v, err := c.Get(context.Background(), 4, LoaderFunc[int, int](func(ctx context.Context, key int) (int, error) {
-		return 40, nil
-	}))
-	require.NoError(t, err)
-	require.Equal(t, 40, v)
-
-	for key, n := range map[int]node.Node[int, int]{1: n1, 2: n2, 3: n3, 4: n4} {
-		require.True(t, n.AsPointer() == c.cache.hashmap.Get(key).AsPointer(), "key %d: the node was replaced", key)
-		v, ok := c.GetIfPresent(key)
-		require.True(t, ok, "key %d", key)
-		require.Equal(t, key*10, v)
-	}
-	runPending()
-	for _, events := range [][]DeletionEvent[int, int]{deleted.get(), atomicDeleted.get()} {
+	spec := cacheSpec{expiry: withExpiry}
+	forEachSpec(t, spec, func(t *testing.T, cc *cacheContext) {
+		nodes := make(map[int]any)
+		var events []DeletionEvent[int, int]
 		for key := 1; key <= 4; key++ {
-			require.Contains(t, events, DeletionEvent[int, int]{Key: key, Value: 2, Cause: CauseExpiration})
+			cc.cache.Set(key, 1)
+			cc.cache.Set(key, 2)
+			nodes[key] = cc.cache.nodeID(key)
+			events = append(events, DeletionEvent[int, int]{Key: key, Value: 1, Cause: CauseReplacement})
 		}
-	}
+		cc.run()
+		cc.advance(2 * specExpiry) // all four expire, but stay in the table
 
-	c.CleanUp()
-	runPending()
-	validateCache(t, c)
+		cc.cache.Set(1, 10)
+		v, ok := cc.cache.SetIfAbsent(2, 20)
+		require.True(t, ok, "SetIfAbsent over an expired entry must write")
+		require.Equal(t, 20, v)
+		missesBefore := cc.stats.Snapshot().Misses
+		v, ok = cc.cache.Compute(3, func(_ int, found bool) (int, ComputeOp) {
+			require.False(t, found)
+			return 30, WriteOp
+		})
+		require.True(t, ok)
+		require.Equal(t, 30, v)
+		require.Equal(t, missesBefore+1, cc.stats.Snapshot().Misses, "Compute over an expired entry is a miss")
+		v, err := cc.cache.Get(4, LoaderFunc[int, int](func(context.Context, int) (int, error) {
+			return 40, nil
+		}))
+		require.NoError(t, err)
+		require.Equal(t, 40, v)
+
+		for key := 1; key <= 4; key++ {
+			require.True(t, nodes[key] == cc.cache.nodeID(key), "key %d: the node was replaced", key)
+			cc.requireValue(t, key, key*10)
+			events = append(events, DeletionEvent[int, int]{Key: key, Value: 2, Cause: CauseExpiration})
+		}
+		cc.run()
+		cc.requireDeletions(t, events...)
+	})
 }
 
-// A refresh of an entry that can be updated in place is applied in place.
+// A refresh of an entry whose node can be updated in place is applied to that node.
 func TestCache_InPlaceRefresh(t *testing.T) {
 	t.Parallel()
 
-	c := Must(&Options[int, int]{
-		MaximumSize:       10,
-		RefreshCalculator: RefreshWriting[int, int](time.Hour),
-		Executor: func(fn func()) {
-			fn()
-		},
-	})
-	c.Set(1, 1)
-	c.Set(1, 2) // an update, applied in place
-	n := c.cache.hashmap.Get(1)
+	forEachSpec(t, cacheSpec{refresh: withRefresh}, func(t *testing.T, cc *cacheContext) {
+		cc.cache.Set(1, 1)
+		cc.cache.Set(1, 2) // an update, after which a maintained node of any value is updatable
+		before := cc.cache.nodeID(1)
 
-	res := <-c.Refresh(context.Background(), 1, LoaderFunc[int, int](func(ctx context.Context, key int) (int, error) {
-		return 42, nil
-	}))
-	require.NoError(t, res.Err)
-	require.Equal(t, 42, res.Value)
-	require.True(t, n.AsPointer() == c.cache.hashmap.Get(1).AsPointer(), "the node was replaced")
-	v, ok := c.GetIfPresent(1)
-	require.True(t, ok)
-	require.Equal(t, 42, v)
-	validateCache(t, c)
+		res := refreshNow(cc, LoaderFunc[int, int](func(context.Context, int) (int, error) {
+			return 42, nil
+		}))
+		require.NoError(t, res.Err)
+		require.Equal(t, 42, res.Value)
+		require.Equal(t, cc.maintained(), before == cc.cache.nodeID(1), "updated in place")
+		cc.requireValue(t, 1, 42)
+	})
 }
 
 // The access that an in-place update reports goes through the lossy read buffer and may be
@@ -695,7 +618,7 @@ func TestCache_ReconcileReschedulesEarlierExpiration(t *testing.T) {
 	ci.maintenance(nil)
 	// an in-place update moved the deadline from 100s to 10s, and its access was dropped
 	n.SetExpiresAt(clk.NowNano() + int64(10*time.Second))
-	ci.runTask(newTask(n, nil, reconcileReason, causeUnknown))
+	ci.runTask(newTask(n, nil, reconcileReason))
 	ci.evictionMutex.Unlock()
 
 	clk.Sleep(20 * time.Second)
@@ -728,7 +651,7 @@ func TestCache_ReconcileAfterDeadlinePassed(t *testing.T) {
 	n.SetExpiresAt(clk.NowNano() + int64(10*time.Second))
 	clk.Sleep(20 * time.Second)
 	ci.maintenance(nil)
-	ci.runTask(newTask(n, nil, reconcileReason, causeUnknown))
+	ci.runTask(newTask(n, nil, reconcileReason))
 	ci.evictionMutex.Unlock()
 
 	clk.Sleep(2 * time.Second)

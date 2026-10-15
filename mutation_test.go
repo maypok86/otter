@@ -17,7 +17,7 @@ package otter
 import (
 	"context"
 	"errors"
-	"sync"
+	"slices"
 	"testing"
 	"time"
 
@@ -38,6 +38,35 @@ func (s prevState) String() string {
 	return [...]string{"absent", "live", "expired"}[s]
 }
 
+// spec narrows in down to the configurations in which the key can be in state.
+func (s prevState) spec(t *testing.T, in cacheSpec) cacheSpec {
+	t.Helper()
+
+	if s == prevExpired {
+		// keep the case's own restriction, if any, but only its expiring kinds
+		expiries := withExpiry
+		if len(in.expiry) > 0 {
+			expiries = slices.DeleteFunc(slices.Clone(in.expiry), func(e expiryKind) bool { return e == noExpiry })
+		}
+		// an empty dimension would mean all of them
+		require.NotEmpty(t, expiries, "the spec has no configuration that expires entries")
+		in.expiry = expiries
+	}
+	return in
+}
+
+// populate puts the key 1 in the state, with the value 1.
+func (s prevState) populate(cc *cacheContext) {
+	if s == prevAbsent {
+		return
+	}
+	cc.cache.Set(1, 1)
+	cc.run()
+	if s == prevExpired {
+		cc.advance(2 * specExpiry)
+	}
+}
+
 // mutationOutcome is what a mutation must leave behind, in values of the int domain: 1 is the
 // value the key held before, 2 the one the mutation writes, 3 the one a concurrent write stores.
 type mutationOutcome struct {
@@ -53,145 +82,11 @@ type mutationOutcome struct {
 
 type mutationCase struct {
 	name string
+	// spec is the configurations the mutation can run in.
+	spec cacheSpec
 	// run performs the mutation and returns what the call returned, in the int domain.
-	run  func(t *testing.T, m *mutationHarness) any
+	run  func(t *testing.T, cc *cacheContext) any
 	want map[prevState]mutationOutcome
-}
-
-// mutationHarness is a cache whose executor queues tasks until run is called, so that an
-// expired entry stays in the table, and whose deletion listeners are recorded.
-type mutationHarness struct {
-	clk      *nonTickingClock
-	run      func()
-	set      func(key, value int)
-	get      func(key int) (int, bool)
-	compute  func(key int, fn func(oldValue int, found bool) (int, ComputeOp)) (int, bool)
-	loader   func(load func(ctx context.Context, key int) (int, error)) Loader[int, int]
-	refresh  func(key int, loader Loader[int, int]) <-chan RefreshResult[int, int]
-	getLoad  func(key int, loader Loader[int, int]) (int, error)
-	setIfAbs func(key, value int) (int, bool)
-	inval    func(key int) (int, bool)
-	cia      func(key int, fn func() (int, bool)) (int, bool)
-	cip      func(key int, fn func(oldValue int) (int, ComputeOp)) (int, bool)
-	nodeID   func(key int) any
-	// startRefresh requests a refresh that loads value and leaves it queued on the executor.
-	startRefresh func(key, value int)
-	cleanUp      func()
-	validate     func(t *testing.T)
-
-	mu            sync.Mutex
-	atomicEvents  []DeletionEvent[int, int]
-	deleteEvents  []DeletionEvent[int, int]
-	pendingLength func() int
-}
-
-// newMutationHarness builds a harness over a cache of V, which tells the int domain apart from
-// V with toV and fromV.
-func newMutationHarness[V comparable](toV func(int) V, fromV func(V) int) *mutationHarness {
-	m := &mutationHarness{clk: newNonTickingClock()}
-	var pending []func()
-	m.run = func() {
-		for len(pending) > 0 {
-			fn := pending[0]
-			pending = pending[1:]
-			fn()
-		}
-	}
-	m.pendingLength = func() int { return len(pending) }
-	record := func(events *[]DeletionEvent[int, int]) func(e DeletionEvent[int, V]) {
-		return func(e DeletionEvent[int, V]) {
-			m.mu.Lock()
-			defer m.mu.Unlock()
-			*events = append(*events, DeletionEvent[int, int]{Key: e.Key, Value: fromV(e.Value), Cause: e.Cause})
-		}
-	}
-	c := Must(&Options[int, V]{
-		MaximumSize:       10,
-		Clock:             m.clk,
-		ExpiryCalculator:  ExpiryWriting[int, V](time.Minute),
-		RefreshCalculator: RefreshWriting[int, V](time.Hour),
-		OnAtomicDeletion:  record(&m.atomicEvents),
-		OnDeletion:        record(&m.deleteEvents),
-		Logger:            &NoopLogger{},
-		Executor: func(fn func()) {
-			pending = append(pending, fn)
-		},
-	})
-	toLoader := func(l Loader[int, int]) Loader[int, V] {
-		return LoaderFunc[int, V](func(ctx context.Context, key int) (V, error) {
-			v, err := l.Load(ctx, key)
-			return toV(v), err
-		})
-	}
-	m.set = func(key, value int) { c.Set(key, toV(value)) }
-	m.get = func(key int) (int, bool) {
-		v, ok := c.GetIfPresent(key)
-		return fromV(v), ok
-	}
-	m.compute = func(key int, fn func(int, bool) (int, ComputeOp)) (int, bool) {
-		v, ok := c.Compute(key, func(oldValue V, found bool) (V, ComputeOp) {
-			nv, op := fn(fromV(oldValue), found)
-			return toV(nv), op
-		})
-		return fromV(v), ok
-	}
-	m.loader = func(load func(ctx context.Context, key int) (int, error)) Loader[int, int] {
-		return LoaderFunc[int, int](load)
-	}
-	m.refresh = func(key int, l Loader[int, int]) <-chan RefreshResult[int, int] {
-		ch := make(chan RefreshResult[int, int], 1)
-		res := c.Refresh(context.Background(), key, toLoader(l))
-		m.run()
-		r := <-res
-		ch <- RefreshResult[int, int]{Key: r.Key, Value: fromV(r.Value), Err: r.Err}
-		return ch
-	}
-	m.getLoad = func(key int, l Loader[int, int]) (int, error) {
-		v, err := c.Get(context.Background(), key, toLoader(l))
-		return fromV(v), err
-	}
-	m.setIfAbs = func(key, value int) (int, bool) {
-		v, ok := c.SetIfAbsent(key, toV(value))
-		return fromV(v), ok
-	}
-	m.inval = func(key int) (int, bool) {
-		v, ok := c.Invalidate(key)
-		return fromV(v), ok
-	}
-	m.cia = func(key int, fn func() (int, bool)) (int, bool) {
-		v, ok := c.ComputeIfAbsent(key, func() (V, bool) {
-			nv, cancel := fn()
-			return toV(nv), cancel
-		})
-		return fromV(v), ok
-	}
-	m.cip = func(key int, fn func(int) (int, ComputeOp)) (int, bool) {
-		v, ok := c.ComputeIfPresent(key, func(oldValue V) (V, ComputeOp) {
-			nv, op := fn(fromV(oldValue))
-			return toV(nv), op
-		})
-		return fromV(v), ok
-	}
-	m.startRefresh = func(key, value int) {
-		c.Refresh(context.Background(), key, LoaderFunc[int, V](func(context.Context, int) (V, error) {
-			return toV(value), nil
-		}))
-	}
-	m.cleanUp = c.CleanUp
-	m.nodeID = func(key int) any {
-		n := c.cache.hashmap.Get(key)
-		if n == nil {
-			return nil
-		}
-		return n.AsPointer()
-	}
-	m.validate = func(t *testing.T) {
-		t.Helper()
-		c.CleanUp()
-		m.run()
-		validateCache(t, c)
-	}
-	return m
 }
 
 type pair struct {
@@ -214,14 +109,15 @@ func mutationCases() []mutationCase {
 		inv  = CauseInvalidation
 		exp  = CauseExpiration
 	)
+	refreshes := cacheSpec{refresh: withRefresh}
 	noLoad := func(ctx context.Context, key int) (int, error) {
 		panic("the loader must not be called")
 	}
 	return []mutationCase{
 		{
 			name: "Set",
-			run: func(t *testing.T, m *mutationHarness) any {
-				m.set(1, 2)
+			run: func(t *testing.T, cc *cacheContext) any {
+				cc.cache.Set(1, 2)
 				return nil
 			},
 			want: map[prevState]mutationOutcome{
@@ -232,8 +128,8 @@ func mutationCases() []mutationCase {
 		},
 		{
 			name: "SetIfAbsent",
-			run: func(t *testing.T, m *mutationHarness) any {
-				v, ok := m.setIfAbs(1, 2)
+			run: func(t *testing.T, cc *cacheContext) any {
+				v, ok := cc.cache.SetIfAbsent(1, 2)
 				return pair{v, ok}
 			},
 			want: map[prevState]mutationOutcome{
@@ -244,8 +140,8 @@ func mutationCases() []mutationCase {
 		},
 		{
 			name: "Compute/WriteOp",
-			run: func(t *testing.T, m *mutationHarness) any {
-				v, ok := m.compute(1, func(int, bool) (int, ComputeOp) { return 2, WriteOp })
+			run: func(t *testing.T, cc *cacheContext) any {
+				v, ok := cc.cache.Compute(1, func(int, bool) (int, ComputeOp) { return 2, WriteOp })
 				return pair{v, ok}
 			},
 			want: map[prevState]mutationOutcome{
@@ -256,8 +152,8 @@ func mutationCases() []mutationCase {
 		},
 		{
 			name: "Compute/InvalidateOp",
-			run: func(t *testing.T, m *mutationHarness) any {
-				v, ok := m.compute(1, func(int, bool) (int, ComputeOp) { return 0, InvalidateOp })
+			run: func(t *testing.T, cc *cacheContext) any {
+				v, ok := cc.cache.Compute(1, func(int, bool) (int, ComputeOp) { return 0, InvalidateOp })
 				return pair{v, ok}
 			},
 			want: map[prevState]mutationOutcome{
@@ -268,8 +164,8 @@ func mutationCases() []mutationCase {
 		},
 		{
 			name: "Compute/CancelOp",
-			run: func(t *testing.T, m *mutationHarness) any {
-				v, ok := m.compute(1, func(int, bool) (int, ComputeOp) { return 0, CancelOp })
+			run: func(t *testing.T, cc *cacheContext) any {
+				v, ok := cc.cache.Compute(1, func(int, bool) (int, ComputeOp) { return 0, CancelOp })
 				return pair{v, ok}
 			},
 			want: map[prevState]mutationOutcome{
@@ -280,8 +176,8 @@ func mutationCases() []mutationCase {
 		},
 		{
 			name: "Invalidate",
-			run: func(t *testing.T, m *mutationHarness) any {
-				v, ok := m.inval(1)
+			run: func(t *testing.T, cc *cacheContext) any {
+				v, ok := cc.cache.Invalidate(1)
 				return pair{v, ok}
 			},
 			want: map[prevState]mutationOutcome{
@@ -292,8 +188,8 @@ func mutationCases() []mutationCase {
 		},
 		{
 			name: "ComputeIfAbsent",
-			run: func(t *testing.T, m *mutationHarness) any {
-				v, ok := m.cia(1, func() (int, bool) { return 2, false })
+			run: func(t *testing.T, cc *cacheContext) any {
+				v, ok := cc.cache.ComputeIfAbsent(1, func() (int, bool) { return 2, false })
 				return pair{v, ok}
 			},
 			want: map[prevState]mutationOutcome{
@@ -304,21 +200,20 @@ func mutationCases() []mutationCase {
 		},
 		{
 			name: "ComputeIfPresent",
-			run: func(t *testing.T, m *mutationHarness) any {
-				v, ok := m.cip(1, func(int) (int, ComputeOp) { return 2, WriteOp })
+			run: func(t *testing.T, cc *cacheContext) any {
+				v, ok := cc.cache.ComputeIfPresent(1, func(int) (int, ComputeOp) { return 2, WriteOp })
 				return pair{v, ok}
 			},
 			want: map[prevState]mutationOutcome{
-				prevAbsent: {result: pair{0, false}},
-				prevLive:   {result: pair{2, true}, value: 2, causes: []DeletionCause{repl}},
-				// the miss schedules maintenance, and the timer wheel removes the expired entry
+				prevAbsent:  {result: pair{0, false}},
+				prevLive:    {result: pair{2, true}, value: 2, causes: []DeletionCause{repl}},
 				prevExpired: {result: pair{0, false}, causes: []DeletionCause{exp}},
 			},
 		},
 		{
 			name: "Get/load",
-			run: func(t *testing.T, m *mutationHarness) any {
-				v, err := m.getLoad(1, m.loader(func(context.Context, int) (int, error) { return 2, nil }))
+			run: func(t *testing.T, cc *cacheContext) any {
+				v, err := cc.cache.Get(1, LoaderFunc[int, int](func(context.Context, int) (int, error) { return 2, nil }))
 				return loadResult{v, err}
 			},
 			want: map[prevState]mutationOutcome{
@@ -329,8 +224,8 @@ func mutationCases() []mutationCase {
 		},
 		{
 			name: "Get/not found",
-			run: func(t *testing.T, m *mutationHarness) any {
-				v, err := m.getLoad(1, m.loader(func(context.Context, int) (int, error) { return 0, ErrNotFound }))
+			run: func(t *testing.T, cc *cacheContext) any {
+				v, err := cc.cache.Get(1, LoaderFunc[int, int](func(context.Context, int) (int, error) { return 0, ErrNotFound }))
 				return loadResult{v, err}
 			},
 			want: map[prevState]mutationOutcome{
@@ -343,9 +238,9 @@ func mutationCases() []mutationCase {
 			// A write during the load cancels it: the loaded value is discarded, and Get returns
 			// the written one.
 			name: "Get/stale",
-			run: func(t *testing.T, m *mutationHarness) any {
-				v, err := m.getLoad(1, m.loader(func(context.Context, int) (int, error) {
-					m.set(1, 3)
+			run: func(t *testing.T, cc *cacheContext) any {
+				v, err := cc.cache.Get(1, LoaderFunc[int, int](func(context.Context, int) (int, error) {
+					cc.cache.Set(1, 3)
 					return 2, nil
 				}))
 				return loadResult{v, err}
@@ -358,8 +253,9 @@ func mutationCases() []mutationCase {
 		},
 		{
 			name: "Refresh",
-			run: func(t *testing.T, m *mutationHarness) any {
-				r := <-m.refresh(1, m.loader(func(context.Context, int) (int, error) { return 2, nil }))
+			spec: refreshes,
+			run: func(t *testing.T, cc *cacheContext) any {
+				r := refreshNow(cc, LoaderFunc[int, int](func(context.Context, int) (int, error) { return 2, nil }))
 				return loadResult{r.Value, r.Err}
 			},
 			want: map[prevState]mutationOutcome{
@@ -370,8 +266,9 @@ func mutationCases() []mutationCase {
 		},
 		{
 			name: "Refresh/not found",
-			run: func(t *testing.T, m *mutationHarness) any {
-				r := <-m.refresh(1, m.loader(func(context.Context, int) (int, error) { return 0, ErrNotFound }))
+			spec: refreshes,
+			run: func(t *testing.T, cc *cacheContext) any {
+				r := refreshNow(cc, LoaderFunc[int, int](func(context.Context, int) (int, error) { return 0, ErrNotFound }))
 				return loadResult{r.Value, r.Err}
 			},
 			want: map[prevState]mutationOutcome{
@@ -382,8 +279,9 @@ func mutationCases() []mutationCase {
 		},
 		{
 			name: "Refresh/error",
-			run: func(t *testing.T, m *mutationHarness) any {
-				r := <-m.refresh(1, m.loader(func(context.Context, int) (int, error) { return 0, errMutationLoad }))
+			spec: cacheSpec{refresh: withRefresh, logs: true},
+			run: func(t *testing.T, cc *cacheContext) any {
+				r := refreshNow(cc, LoaderFunc[int, int](func(context.Context, int) (int, error) { return 0, errMutationLoad }))
 				return loadResult{r.Value, r.Err}
 			},
 			want: map[prevState]mutationOutcome{
@@ -395,9 +293,10 @@ func mutationCases() []mutationCase {
 		{
 			// A write during the refresh cancels it, and the loaded value is discarded.
 			name: "Refresh/stale",
-			run: func(t *testing.T, m *mutationHarness) any {
-				r := <-m.refresh(1, m.loader(func(context.Context, int) (int, error) {
-					m.set(1, 3)
+			spec: refreshes,
+			run: func(t *testing.T, cc *cacheContext) any {
+				r := refreshNow(cc, LoaderFunc[int, int](func(context.Context, int) (int, error) {
+					cc.cache.Set(1, 3)
 					return 2, nil
 				}))
 				return loadResult{r.Value, r.Err}
@@ -410,8 +309,8 @@ func mutationCases() []mutationCase {
 		},
 		{
 			name: "Get/hit",
-			run: func(t *testing.T, m *mutationHarness) any {
-				v, err := m.getLoad(1, m.loader(noLoad))
+			run: func(t *testing.T, cc *cacheContext) any {
+				v, err := cc.cache.Get(1, LoaderFunc[int, int](noLoad))
 				return loadResult{v, err}
 			},
 			want: map[prevState]mutationOutcome{
@@ -422,24 +321,10 @@ func mutationCases() []mutationCase {
 }
 
 // Every key mutation (Set, SetIfAbsent, the Compute family, Invalidate, and the completion of a
-// load or refresh) over an absent, live or expired key, for values updated in place (int) and
-// values whose node is replaced on the first update ([2]int64, which does not fit in a word on any
-// platform).
+// load or refresh) over an absent, live or expired key, in every configuration of the cache the
+// mutation and the state of the key can occur in.
 func TestCache_KeyMutations(t *testing.T) {
 	t.Parallel()
-
-	t.Run("in place", func(t *testing.T) {
-		t.Parallel()
-		testKeyMutations(t, true, func(v int) int { return v }, func(v int) int { return v })
-	})
-	t.Run("replacement", func(t *testing.T) {
-		t.Parallel()
-		testKeyMutations(t, false, func(v int) [2]int64 { return [2]int64{int64(v), int64(v)} }, func(v [2]int64) int { return int(v[0]) })
-	})
-}
-
-func testKeyMutations[V comparable](t *testing.T, inPlace bool, toV func(int) V, fromV func(V) int) {
-	t.Helper()
 
 	for _, tc := range mutationCases() {
 		for _, state := range []prevState{prevAbsent, prevLive, prevExpired} {
@@ -450,43 +335,25 @@ func testKeyMutations[V comparable](t *testing.T, inPlace bool, toV func(int) V,
 			t.Run(tc.name+"/"+state.String(), func(t *testing.T) {
 				t.Parallel()
 
-				m := newMutationHarness(toV, fromV)
-				if state != prevAbsent {
-					m.set(1, 1)
-					m.run()
-				}
-				if state == prevExpired {
-					m.clk.Sleep(2 * time.Minute)
-				}
-				before := m.nodeID(1)
+				forEachSpec(t, state.spec(t, tc.spec), func(t *testing.T, cc *cacheContext) {
+					state.populate(cc)
+					before := cc.cache.nodeID(1)
 
-				got := tc.run(t, m)
-				m.run()
-				require.Equal(t, want.result, got, "result")
-				v, found := m.get(1)
-				if want.value == 0 {
-					require.False(t, found, "the key holds %d", v)
-				} else {
-					require.True(t, found)
-					require.Equal(t, want.value, v)
-				}
-				if state != prevAbsent && want.value == 2 && want.replacedBy == 0 {
-					// the previous node was written over: in place for words, replaced for the rest
-					require.Equal(t, inPlace, m.nodeID(1) == before, "updated in place")
-				}
+					got := tc.run(t, cc)
+					cc.run()
+					require.Equal(t, want.result, got, "result")
+					cc.requireValue(t, 1, want.value)
+					if state != prevAbsent && want.value == 2 && want.replacedBy == 0 {
+						// the previous node was written over in place, if the configuration allows
+						require.Equal(t, cc.updatesInPlace(), cc.cache.nodeID(1) == before, "updated in place")
+					}
 
-				var events []DeletionEvent[int, int]
-				for _, cause := range want.causes {
-					events = append(events, DeletionEvent[int, int]{Key: 1, Value: 1, Cause: cause})
-				}
-				m.mu.Lock()
-				atomicEvents, deleteEvents := m.atomicEvents, m.deleteEvents
-				m.mu.Unlock()
-				require.Equal(t, events, atomicEvents, "OnAtomicDeletion")
-				require.Equal(t, events, deleteEvents, "OnDeletion")
-
-				m.validate(t)
-				require.Zero(t, m.pendingLength())
+					var events []DeletionEvent[int, int]
+					for _, cause := range want.causes {
+						events = append(events, DeletionEvent[int, int]{Key: 1, Value: 1, Cause: cause})
+					}
+					cc.requireDeletions(t, events...)
+				})
 			})
 		}
 	}
@@ -501,51 +368,43 @@ func TestCache_KeyMutationsCancelPendingRefresh(t *testing.T) {
 	tests := []struct {
 		name  string
 		state prevState
-		op    func(m *mutationHarness)
+		op    func(cc *cacheContext)
 		// want is the key's value afterwards: 2 if the refresh was applied, 0 if absent
 		want int
 	}{
-		{name: "Set", state: prevLive, op: func(m *mutationHarness) { m.set(1, 3) }, want: 3},
-		{name: "Compute/WriteOp", state: prevLive, op: func(m *mutationHarness) {
-			m.compute(1, func(int, bool) (int, ComputeOp) { return 3, WriteOp })
+		{name: "Set", state: prevLive, op: func(cc *cacheContext) { cc.cache.Set(1, 3) }, want: 3},
+		{name: "Compute/WriteOp", state: prevLive, op: func(cc *cacheContext) {
+			cc.cache.Compute(1, func(int, bool) (int, ComputeOp) { return 3, WriteOp })
 		}, want: 3},
-		{name: "Compute/InvalidateOp", state: prevLive, op: func(m *mutationHarness) {
-			m.compute(1, func(int, bool) (int, ComputeOp) { return 0, InvalidateOp })
+		{name: "Compute/InvalidateOp", state: prevLive, op: func(cc *cacheContext) {
+			cc.cache.Compute(1, func(int, bool) (int, ComputeOp) { return 0, InvalidateOp })
 		}},
-		{name: "Invalidate", state: prevLive, op: func(m *mutationHarness) { m.inval(1) }},
-		{name: "Compute/CancelOp", state: prevLive, op: func(m *mutationHarness) {
-			m.compute(1, func(int, bool) (int, ComputeOp) { return 0, CancelOp })
+		{name: "Invalidate", state: prevLive, op: func(cc *cacheContext) { cc.cache.Invalidate(1) }},
+		{name: "Compute/CancelOp", state: prevLive, op: func(cc *cacheContext) {
+			cc.cache.Compute(1, func(int, bool) (int, ComputeOp) { return 0, CancelOp })
 		}, want: 2},
-		{name: "SetIfAbsent", state: prevLive, op: func(m *mutationHarness) { m.setIfAbs(1, 3) }, want: 2},
+		{name: "SetIfAbsent", state: prevLive, op: func(cc *cacheContext) { cc.cache.SetIfAbsent(1, 3) }, want: 2},
 		// The removal of an expired entry is not a change of the key: the refresh of the absent
 		// key loads it, as a Get would.
-		{name: "Compute/CancelOp/expired", state: prevExpired, op: func(m *mutationHarness) {
-			m.compute(1, func(int, bool) (int, ComputeOp) { return 0, CancelOp })
+		{name: "Compute/CancelOp/expired", state: prevExpired, op: func(cc *cacheContext) {
+			cc.cache.Compute(1, func(int, bool) (int, ComputeOp) { return 0, CancelOp })
 		}, want: 2},
-		{name: "expiration", state: prevExpired, op: func(m *mutationHarness) { m.cleanUp() }, want: 2},
+		{name: "expiration", state: prevExpired, op: func(cc *cacheContext) { cc.cache.CleanUp() }, want: 2},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			m := newMutationHarness(func(v int) int { return v }, func(v int) int { return v })
-			m.set(1, 1)
-			m.run()
-			if tt.state == prevExpired {
-				m.clk.Sleep(2 * time.Minute)
-			}
+			spec := tt.state.spec(t, cacheSpec{refresh: withRefresh})
+			forEachSpec(t, spec, func(t *testing.T, cc *cacheContext) {
+				tt.state.populate(cc)
 
-			m.startRefresh(1, 2)
-			tt.op(m)
-			m.run()
-			v, ok := m.get(1)
-			if tt.want == 0 {
-				require.False(t, ok, "the key holds %d", v)
-			} else {
-				require.True(t, ok)
-				require.Equal(t, tt.want, v)
-			}
-			m.validate(t)
+				res := cc.cache.Refresh(1, LoaderFunc[int, int](func(context.Context, int) (int, error) { return 2, nil }))
+				tt.op(cc)
+				cc.run()
+				<-res
+				cc.requireValue(t, 1, tt.want)
+			})
 		})
 	}
 }
@@ -630,4 +489,54 @@ func TestCache_MutationDecidesWithTimeTakenUnderLock(t *testing.T) {
 			require.True(t, <-absent, "the mutation found the entry that expired while it waited for the lock")
 		})
 	}
+}
+
+// The OnDeletion listener runs on the executor, so its events of one key arrive in the order of
+// the mutations only if every mutation submits its event when it is applied. A mutation that
+// replaced the node, or removed it, submitted its event only when maintenance replayed its task,
+// while an update in place submitted it at once: with an executor that runs tasks in order, the
+// event of an in-place update overtook that of the replacement or removal before it.
+func TestCache_DeletionEventsFollowMutations(t *testing.T) {
+	t.Parallel()
+
+	forEachSpec(t, cacheSpec{}, func(t *testing.T, cc *cacheContext) {
+		cc.cache.Set(1, 1)
+		cc.cache.Set(1, 2) // replaces the node of a boxed value
+		cc.cache.Set(1, 3) // in place
+		cc.cache.Invalidate(1)
+		cc.cache.Set(1, 4)
+		cc.cache.Compute(1, func(int, bool) (int, ComputeOp) { return 5, WriteOp }) // in place
+		cc.cache.Compute(1, func(int, bool) (int, ComputeOp) { return 0, InvalidateOp })
+		cc.run()
+
+		cc.requireDeletions(t,
+			DeletionEvent[int, int]{Key: 1, Value: 1, Cause: CauseReplacement},
+			DeletionEvent[int, int]{Key: 1, Value: 2, Cause: CauseReplacement},
+			DeletionEvent[int, int]{Key: 1, Value: 3, Cause: CauseInvalidation},
+			DeletionEvent[int, int]{Key: 1, Value: 4, Cause: CauseReplacement},
+			DeletionEvent[int, int]{Key: 1, Value: 5, Cause: CauseInvalidation},
+		)
+	})
+}
+
+// The previous value is reported before the write reaches the policies, so a listener that
+// writes the key it is told about, on an executor that runs it on the caller, hands its own write
+// to the policies first. The policies replay tasks in any order, and the cache stays consistent.
+func TestCache_DeletionListenerWritesTheKey(t *testing.T) {
+	t.Parallel()
+
+	const nested = 50
+	forEachSpec(t, cacheSpec{executor: []executorKind{callerRuns}}, func(t *testing.T, cc *cacheContext) {
+		writes := 0
+		cc.onDeletion = func(e DeletionEvent[int, int]) {
+			if e.Cause == CauseReplacement && writes < nested {
+				writes++
+				cc.cache.Set(e.Key, 2+writes)
+			}
+		}
+		cc.cache.Set(1, 1)
+		cc.cache.Set(1, 2)
+		require.Equal(t, nested, writes)
+		cc.requireValue(t, 1, 2+nested)
+	})
 }

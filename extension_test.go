@@ -20,7 +20,6 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"slices"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -28,189 +27,104 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/maypok86/otter/v2/internal/generated/node"
-	"github.com/maypok86/otter/v2/stats"
 )
 
+// SetExpiresAfter sets the deadline of a present entry only, and the entry expires at it, not at
+// the deadline it had before.
 func TestCache_SetExpiresAfter(t *testing.T) {
-	size := 100
-	statsCounter := stats.NewCounter()
-	var mutex sync.Mutex
-	m := make(map[DeletionCause]int)
-	done := make(chan struct{})
-	c := Must(&Options[int, int]{
-		MaximumSize:      size,
-		StatsRecorder:    statsCounter,
-		ExpiryCalculator: ExpiryWriting[int, int](time.Second),
-		OnDeletion: func(e DeletionEvent[int, int]) {
-			defer func() {
-				done <- struct{}{}
-			}()
+	t.Parallel()
 
-			mutex.Lock()
-			m[e.Cause]++
-			mutex.Unlock()
-		},
+	forEachSpec(t, cacheSpec{expiry: withExpiry, executor: allExecutors}, func(t *testing.T, cc *cacheContext) {
+		cc.cache.SetExpiresAfter(1, -2*time.Second)
+		cc.cache.SetExpiresAfter(1, 2*time.Second)
+		_, ok := cc.cache.GetEntry(1)
+		require.False(t, ok, "a deadline brought an absent key in")
+
+		cc.cache.Set(1, 100)
+		e, ok := cc.cache.GetEntry(1)
+		require.True(t, ok)
+		require.Equal(t, 100, e.Value)
+		require.Equal(t, specExpiry, e.ExpiresAfter())
+
+		cc.cache.SetExpiresAfter(1, 2*specExpiry)
+		e, ok = cc.cache.GetEntryQuietly(1)
+		require.True(t, ok)
+		require.Equal(t, 100, e.Value)
+		require.Equal(t, 2*specExpiry, e.ExpiresAfter())
+
+		cc.advance(specExpiry) // the former deadline
+		cc.cache.CleanUp()
+		cc.run()
+		cc.requireValue(t, 1, 100)
+		cc.requireDeletions(t)
+
+		cc.advance(specExpiry)
+		cc.cache.CleanUp()
+		cc.run()
+		cc.requireDeletions(t, DeletionEvent[int, int]{Key: 1, Value: 100, Cause: CauseExpiration})
+		snapshot := cc.stats.Snapshot()
+		require.Equal(t, uint64(1), snapshot.Hits)
+		require.Equal(t, uint64(1), snapshot.Misses)
+		require.Equal(t, uint64(1), snapshot.Evictions)
+		require.Equal(t, uint64(1), snapshot.EvictionWeight)
 	})
-
-	k1 := 1
-	v1 := 100
-
-	c.SetExpiresAfter(k1, -2*time.Second)
-	_, ok := c.GetEntryQuietly(k1)
-	if ok {
-		t.Fatalf("found key = %v", k1)
-	}
-	c.SetExpiresAfter(k1, 2*time.Second)
-	_, ok = c.GetEntry(k1)
-	if ok {
-		t.Fatalf("found key = %v", k1)
-	}
-	c.Set(k1, v1)
-	e, ok := c.GetEntry(k1)
-	if !ok {
-		t.Fatalf("not found key = %v", k1)
-	}
-	if e.Value != v1 {
-		t.Fatalf("value should be equal to v1. key: %v, value: %v", k1, e.Value)
-	}
-	if expiresAfter := e.ExpiresAfter(); expiresAfter < 800*time.Millisecond || expiresAfter > time.Second {
-		t.Fatalf("expiresAfter should be equal to %v. expiresAfter: %v", 200*time.Millisecond, expiresAfter)
-	}
-	c.SetExpiresAfter(k1, 2*time.Second)
-	e, ok = c.GetEntryQuietly(k1)
-	if !ok {
-		t.Fatalf("not found key = %v", k1)
-	}
-	if e.Value != v1 {
-		t.Fatalf("value should be equal to v1. key: %v, value: %v", k1, e.Value)
-	}
-	if expiresAfter := e.ExpiresAfter(); expiresAfter > 2*time.Second || expiresAfter < time.Second+800*time.Millisecond {
-		t.Fatalf("expiresAfter should be equal to %v. expiresAfter: %v", time.Second, expiresAfter)
-	}
-
-	c.CleanUp()
-	<-done
-	mutex.Lock()
-	if len(m) != 1 || m[CauseExpiration] != 1 {
-		t.Fatalf("cache was supposed to expire %d, but expired %d entries", 1, m[CauseExpiration])
-	}
-	mutex.Unlock()
-	snapshot := statsCounter.Snapshot()
-	if snapshot.Hits != 1 ||
-		snapshot.Misses != 1 ||
-		snapshot.Evictions != 1 ||
-		snapshot.EvictionWeight != 1 {
-		t.Fatalf("statistics are not recorded correctly. snapshot: %v", snapshot)
-	}
 }
 
+// SetRefreshableAfter sets the refresh time of a present entry only.
 func TestCache_SetRefreshableAfter(t *testing.T) {
 	t.Parallel()
 
-	size := 100
-	statsCounter := stats.NewCounter()
-	c := Must(&Options[int, int]{
-		MaximumSize:       size,
-		StatsRecorder:     statsCounter,
-		RefreshCalculator: RefreshCreating[int, int](200 * time.Millisecond),
+	forEachSpec(t, cacheSpec{refresh: withRefresh, executor: allExecutors}, func(t *testing.T, cc *cacheContext) {
+		cc.cache.SetRefreshableAfter(1, -2*time.Second)
+		cc.cache.SetRefreshableAfter(1, 2*time.Second)
+		_, ok := cc.cache.GetEntry(1)
+		require.False(t, ok, "a refresh time brought an absent key in")
+
+		cc.cache.Set(1, 100)
+		e, ok := cc.cache.GetEntry(1)
+		require.True(t, ok)
+		require.Equal(t, 100, e.Value)
+		require.Equal(t, specRefresh, e.RefreshableAfter())
+
+		cc.cache.SetRefreshableAfter(1, 2*specRefresh)
+		e, ok = cc.cache.GetEntryQuietly(1)
+		require.True(t, ok)
+		require.Equal(t, 100, e.Value)
+		require.Equal(t, 2*specRefresh, e.RefreshableAfter())
+
+		snapshot := cc.stats.Snapshot()
+		require.Equal(t, uint64(1), snapshot.Hits)
+		require.Equal(t, uint64(1), snapshot.Misses)
 	})
-
-	k1 := 1
-	v1 := 100
-
-	c.SetRefreshableAfter(k1, -2*time.Second)
-	_, ok := c.GetEntryQuietly(k1)
-	if ok {
-		t.Fatalf("found key = %v", k1)
-	}
-	c.SetRefreshableAfter(k1, 2*time.Second)
-	_, ok = c.GetEntry(k1)
-	if ok {
-		t.Fatalf("found key = %v", k1)
-	}
-	c.Set(k1, v1)
-	e, ok := c.GetEntry(k1)
-	if !ok {
-		t.Fatalf("not found key = %v", k1)
-	}
-	if e.Value != v1 {
-		t.Fatalf("value should be equal to v1. key: %v, value: %v", k1, e.Value)
-	}
-	if refreshableAfter := e.RefreshableAfter(); refreshableAfter > 200*time.Millisecond {
-		t.Fatalf("refreshableAfter should be equal to %v. refreshableAfter: %v", 200*time.Millisecond, refreshableAfter)
-	}
-	c.SetRefreshableAfter(k1, time.Second)
-	e, ok = c.GetEntryQuietly(k1)
-	if !ok {
-		t.Fatalf("not found key = %v", k1)
-	}
-	if e.Value != v1 {
-		t.Fatalf("value should be equal to v1. key: %v, value: %v", k1, e.Value)
-	}
-	if refreshableAfter := e.RefreshableAfter(); refreshableAfter > time.Second || refreshableAfter < 500*time.Millisecond {
-		t.Fatalf("refreshableAfter should be equal to %v. refreshableAfter: %v", time.Second, refreshableAfter)
-	}
-
-	snapshot := statsCounter.Snapshot()
-	if snapshot.Hits != 1 ||
-		snapshot.Misses != 1 {
-		t.Fatalf("statistics are not recorded correctly. snapshot: %v", snapshot)
-	}
 }
 
+// GetEntry and GetEntryQuietly return the same entry, and neither returns an absent key.
 func TestCache_Extension(t *testing.T) {
-	size := getRandomSize(t)
+	t.Parallel()
 
-	duration := time.Hour
-	c := Must(&Options[int, int]{
-		MaximumSize:       size,
-		ExpiryCalculator:  ExpiryWriting[int, int](duration),
-		RefreshCalculator: RefreshWriting[int, int](duration),
+	spec := cacheSpec{expiry: withExpiry, refresh: withRefresh, population: []populationKind{partialCache, fullCache}}
+	forEachSpec(t, spec, func(t *testing.T, cc *cacheContext) {
+		for _, key := range cc.keys() {
+			quiet, ok := cc.cache.GetEntryQuietly(key)
+			require.True(t, ok)
+			read, ok := cc.cache.GetEntry(key)
+			require.True(t, ok)
+			read.SnapshotAtNano = quiet.SnapshotAtNano
+			require.Equal(t, quiet, read)
+			require.Equal(t, Entry[int, int]{
+				Key:               key,
+				Value:             cc.original[key],
+				Weight:            1,
+				ExpiresAtNano:     quiet.SnapshotAtNano + int64(specExpiry),
+				RefreshableAtNano: quiet.SnapshotAtNano + int64(specRefresh),
+				SnapshotAtNano:    quiet.SnapshotAtNano,
+			}, quiet)
+		}
+		_, ok := cc.cache.GetEntryQuietly(absentKey)
+		require.False(t, ok)
+		_, ok = cc.cache.GetEntry(absentKey)
+		require.False(t, ok)
 	})
-
-	for i := 0; i < size; i++ {
-		c.Set(i, i)
-	}
-
-	k1 := 4
-	v1 := k1
-	e1, ok := c.GetEntryQuietly(k1)
-	if !ok {
-		t.Fatalf("not found key %d", k1)
-	}
-
-	e2, ok := c.GetEntry(k1)
-	if !ok {
-		t.Fatalf("not found key %d", k1)
-	}
-
-	time.Sleep(time.Second)
-
-	isEqualEntries := func(a, b Entry[int, int]) bool {
-		return a.Key == b.Key &&
-			a.Value == b.Value &&
-			a.Weight == b.Weight &&
-			a.ExpiresAtNano == b.ExpiresAtNano &&
-			a.RefreshableAtNano == b.RefreshableAtNano
-	}
-
-	isValidEntries := e1.Key == k1 &&
-		e1.Value == v1 &&
-		e1.Weight == 1 &&
-		isEqualEntries(e1, e2) &&
-		e1.ExpiresAfter() < duration &&
-		!e1.HasExpired()
-
-	if !isValidEntries {
-		t.Fatalf("found not valid entries. e1: %+v, e2: %+v, v1:%d", e1, e2, v1)
-	}
-
-	if _, ok := c.GetEntryQuietly(size); ok {
-		t.Fatalf("found not valid key: %d", size)
-	}
-	if _, ok := c.GetEntry(size); ok {
-		t.Fatalf("found not valid key: %d", size)
-	}
 }
 
 func TestCache_Coldest(t *testing.T) {
@@ -473,42 +387,17 @@ func TestCache_EvictionOrderMergesByFrequency(t *testing.T) {
 	require.Equal(t, wantHottest, collect(c.Hottest()))
 }
 
-// newCacheWithExpiredEntry returns a cache whose key 1 has expired but is still in the table:
-// the executor never runs maintenance, which would remove it.
-func newCacheWithExpiredEntry(t *testing.T, bounded bool) *Cache[int, int] {
-	t.Helper()
-
-	clk := newNonTickingClock()
-	opts := &Options[int, int]{
-		Clock:            clk,
-		ExpiryCalculator: ExpiryWriting[int, int](time.Minute),
-		Executor:         func(fn func()) {},
-	}
-	if bounded {
-		opts.MaximumSize = 10
-	}
-	c := Must(opts)
-	c.Set(1, 1)
-	clk.Sleep(2 * time.Minute)
-	require.NotNil(t, c.cache.hashmap.Get(1), "the expired entry must still be in the table")
-	return c
-}
-
 // Set over an expired entry reports that the key had no value, as SetIfAbsent, Compute and
 // reads do.
 func TestCache_SetOverExpiredEntryReportsAbsent(t *testing.T) {
 	t.Parallel()
 
-	for _, bounded := range []bool{false, true} {
-		t.Run(fmt.Sprintf("bounded=%v", bounded), func(t *testing.T) {
-			t.Parallel()
-
-			c := newCacheWithExpiredEntry(t, bounded)
-			v, ok := c.Set(1, 2)
-			require.True(t, ok)
-			require.Equal(t, 2, v)
-		})
-	}
+	forEachSpec(t, prevExpired.spec(t, cacheSpec{}), func(t *testing.T, cc *cacheContext) {
+		prevExpired.populate(cc)
+		v, ok := cc.cache.Set(1, 2)
+		require.True(t, ok)
+		require.Equal(t, 2, v)
+	})
 }
 
 // Invalidate of an expired entry reports that the key was not present. The listeners still get
@@ -516,17 +405,15 @@ func TestCache_SetOverExpiredEntryReportsAbsent(t *testing.T) {
 func TestCache_InvalidateOfExpiredEntryReportsAbsent(t *testing.T) {
 	t.Parallel()
 
-	for _, bounded := range []bool{false, true} {
-		t.Run(fmt.Sprintf("bounded=%v", bounded), func(t *testing.T) {
-			t.Parallel()
-
-			c := newCacheWithExpiredEntry(t, bounded)
-			v, ok := c.Invalidate(1)
-			require.False(t, ok)
-			require.Zero(t, v)
-			require.Nil(t, c.cache.hashmap.Get(1), "the expired entry was not removed")
-		})
-	}
+	forEachSpec(t, prevExpired.spec(t, cacheSpec{}), func(t *testing.T, cc *cacheContext) {
+		prevExpired.populate(cc)
+		v, ok := cc.cache.Invalidate(1)
+		require.False(t, ok)
+		require.Zero(t, v)
+		require.Nil(t, cc.cache.nodeID(1), "the expired entry was not removed")
+		cc.run()
+		cc.requireDeletions(t, DeletionEvent[int, int]{Key: 1, Value: 1, Cause: CauseExpiration})
+	})
 }
 
 // SetExpiresAfter does not bring back an expired entry that is still in the table: the entry is
@@ -534,16 +421,11 @@ func TestCache_InvalidateOfExpiredEntryReportsAbsent(t *testing.T) {
 func TestCache_SetExpiresAfterDoesNotReviveExpiredEntry(t *testing.T) {
 	t.Parallel()
 
-	for _, bounded := range []bool{false, true} {
-		t.Run(fmt.Sprintf("bounded=%v", bounded), func(t *testing.T) {
-			t.Parallel()
-
-			c := newCacheWithExpiredEntry(t, bounded)
-			c.SetExpiresAfter(1, time.Hour)
-			_, ok := c.GetIfPresent(1)
-			require.False(t, ok, "SetExpiresAfter revived an expired entry")
-		})
-	}
+	forEachSpec(t, prevExpired.spec(t, cacheSpec{}), func(t *testing.T, cc *cacheContext) {
+		prevExpired.populate(cc)
+		cc.cache.SetExpiresAfter(1, time.Hour)
+		cc.requireValue(t, 1, 0)
+	})
 }
 
 // A deadline that SetExpiresAfter moves earlier reaches the timer wheel through the write buffer,

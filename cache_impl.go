@@ -463,7 +463,7 @@ func (c *cache[K, V]) SetExpiresAfter(key K, expiresAfter time.Duration) {
 		// bucket for its former deadline, so an earlier deadline goes through the write buffer,
 		// as for an in-place write. A later one needs nothing: the wheel re-checks the node when
 		// its former bucket expires.
-		c.afterWriteTask(newTask(n, nil, reconcileReason, causeUnknown))
+		c.afterWriteTask(newTask(n, nil, reconcileReason))
 	}
 }
 
@@ -1527,13 +1527,12 @@ func (c *cache[K, V]) afterDelete(deleted node.Node[K, V], cause DeletionCause, 
 		return
 	}
 
+	// Reported by the removal, before its task, as afterWrite reports a write.
+	c.notifyDeletionFrom(onExecutor, deleted.Key(), deleted.Value(), cause)
 	if !c.withMaintenance {
-		c.notifyDeletionFrom(onExecutor, deleted.Key(), deleted.Value(), cause)
 		return
 	}
-
-	// delete
-	t := newTask(deleted, nil, deleteReason, cause)
+	t := newTask(deleted, nil, deleteReason)
 	if alreadyLocked {
 		c.runTask(t)
 	} else {
@@ -1643,7 +1642,8 @@ func (c *cache[K, V]) expireNode(n node.Node[K, V], nowNanos int64) bool {
 }
 
 // removeNode removes n from the hash table and the timer wheel, and reports the removal unless n
-// had already left the table (it was replaced or removed, and that is reported by its own task).
+// had already left the table (it was replaced or removed, and that is reported by the mutation
+// that did it).
 // It returns false if n is kept, as described by removal. The caller unlinks n from the eviction
 // policy.
 func (c *cache[K, V]) removeNode(n node.Node[K, V], nowNanos int64, removal nodeRemoval) bool {
@@ -2025,7 +2025,6 @@ func (c *cache[K, V]) runTask(t *task[K, V]) {
 		if c.withEviction {
 			c.evictionPolicy.update(n, old, t.quiet)
 		}
-		c.notifyDeletion(old.Key(), old.Value(), t.deletionCause)
 	case reconcileReason:
 		// A weight or an expiration time changed in place. Both are brought in line with the
 		// node's current state, so replaying the task late, twice or out of order is harmless.
@@ -2042,7 +2041,6 @@ func (c *cache[K, V]) runTask(t *task[K, V]) {
 		if c.withEviction {
 			c.evictionPolicy.makeDead(n)
 		}
-		c.notifyDeletion(n.Key(), n.Value(), t.deletionCause)
 	default:
 		panic(fmt.Sprintf("Invalid task type: %d", t.writeReason))
 	}
@@ -2080,12 +2078,11 @@ func (c *cache[K, V]) climb() {
 // newTask allocates a task. Tasks are not pooled: writers on every P would take them and
 // maintenance on one P would return them, so writers would mostly steal from the pool of that P,
 // which costs more than the allocation.
-func newTask[K comparable, V any](n, old node.Node[K, V], writeReason reason, cause DeletionCause) *task[K, V] {
+func newTask[K comparable, V any](n, old node.Node[K, V], writeReason reason) *task[K, V] {
 	return &task[K, V]{
-		n:             n,
-		old:           old,
-		writeReason:   writeReason,
-		deletionCause: cause,
+		n:           n,
+		old:         old,
+		writeReason: writeReason,
 	}
 }
 

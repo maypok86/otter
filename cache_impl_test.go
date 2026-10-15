@@ -90,95 +90,78 @@ func adapt(t *testing.T, c *Cache[int, int], sampleSize uint64) {
 	}
 }
 
+// overweight weighs values from heavyValue on more than the cache can hold, and the others 1.
+func overweight(_, value int) uint32 {
+	if value >= heavyValue {
+		return unreachable
+	}
+	return 1
+}
+
+const heavyValue = 1000
+
 func TestCache_Eviction(t *testing.T) {
 	t.Parallel()
 
 	t.Run("overflow_add_one", func(t *testing.T) {
 		t.Parallel()
 
-		m := make(map[DeletionCause]int)
-		c := Must(&Options[int, int]{
-			MaximumWeight: unreachable - 1,
-			Weigher: func(key int, value int) uint32 {
-				return unreachable
-			},
-			Executor: func(fn func()) {
-				fn()
-			},
-			OnAtomicDeletion: func(e DeletionEvent[int, int]) {
-				m[e.Cause]++
-			},
+		spec := cacheSpec{maximum: []maximumKind{weightBounded}, weigher: overweight, executor: allExecutors}
+		forEachSpec(t, spec, func(t *testing.T, cc *cacheContext) {
+			v, ok := cc.cache.Set(1, heavyValue)
+			require.True(t, ok)
+			require.Equal(t, heavyValue, v)
+			cc.cache.CleanUp()
+			cc.run()
+			require.Zero(t, cc.cache.WeightedSize())
+			cc.requireDeletions(t, DeletionEvent[int, int]{Key: 1, Value: heavyValue, Cause: CauseOverflow})
 		})
-
-		v, ok := c.Set(1, 1)
-		require.True(t, ok)
-		require.Equal(t, 1, v)
-		require.Equal(t, uint64(0), c.WeightedSize())
-		require.Equal(t, 1, m[CauseOverflow])
-		require.Equal(t, 1, len(m))
 	})
 	t.Run("overflow_add_many", func(t *testing.T) {
 		t.Parallel()
 
-		m := make(map[DeletionCause]int)
-		c := Must(&Options[int, int]{
-			MaximumWeight: unreachable - 1,
-			Weigher: func(key int, value int) uint32 {
-				return unreachable
-			},
-			Executor: func(fn func()) {
-				fn()
-			},
-			OnDeletion: func(e DeletionEvent[int, int]) {
-				m[e.Cause]++
-			},
+		spec := cacheSpec{maximum: []maximumKind{weightBounded}, weigher: overweight, executor: allExecutors}
+		forEachSpec(t, spec, func(t *testing.T, cc *cacheContext) {
+			events := make([]DeletionEvent[int, int], 0, 10)
+			for i := 0; i < 10; i++ {
+				v, ok := cc.cache.Set(i, heavyValue+i)
+				require.True(t, ok)
+				require.Equal(t, heavyValue+i, v)
+				events = append(events, DeletionEvent[int, int]{Key: i, Value: heavyValue + i, Cause: CauseOverflow})
+			}
+			cc.cache.CleanUp()
+			cc.run()
+			require.Zero(t, cc.cache.WeightedSize())
+			cc.requireDeletionsByKey(t, events...)
 		})
-
-		for i := 0; i < 10; i++ {
-			v, ok := c.Set(i, i)
-			require.True(t, ok)
-			require.Equal(t, i, v)
-		}
-		require.Equal(t, uint64(0), c.WeightedSize())
-		require.Equal(t, 10, m[CauseOverflow])
-		require.Equal(t, 1, len(m))
 	})
+	// An update that makes an entry too heavy evicts it, whether the weight changes in place or
+	// with a new node.
 	t.Run("overflow_update_many", func(t *testing.T) {
 		t.Parallel()
 
-		m := make(map[DeletionCause][]int)
-		count := make(map[int]int)
-		c := Must(&Options[int, int]{
-			MaximumWeight: unreachable - 1,
-			Weigher: func(key int, value int) uint32 {
-				count[key]++
-				if count[key] == 1 {
-					return 1
-				}
-				return unreachable
-			},
-			Executor: func(fn func()) {
-				fn()
-			},
-			OnAtomicDeletion: func(e DeletionEvent[int, int]) {
-				m[e.Cause] = append(m[e.Cause], e.Key)
-			},
+		spec := cacheSpec{maximum: []maximumKind{weightBounded}, weigher: overweight, executor: allExecutors}
+		forEachSpec(t, spec, func(t *testing.T, cc *cacheContext) {
+			events := make([]DeletionEvent[int, int], 0, 20)
+			for i := 0; i < 10; i++ {
+				v, ok := cc.cache.Set(i, i)
+				require.True(t, ok)
+				require.Equal(t, i, v)
+			}
+			for i := 0; i < 10; i++ {
+				v, ok := cc.cache.Set(i, heavyValue+i)
+				require.False(t, ok)
+				require.Equal(t, i, v)
+				events = append(events,
+					DeletionEvent[int, int]{Key: i, Value: i, Cause: CauseReplacement},
+					DeletionEvent[int, int]{Key: i, Value: heavyValue + i, Cause: CauseOverflow},
+				)
+			}
+			cc.cache.CleanUp()
+			cc.run()
+			require.Zero(t, cc.cache.WeightedSize())
+			cc.requireDeletionsByKey(t, events...)
 		})
-
-		for i := 0; i < 10; i++ {
-			v, ok := c.Set(i, i)
-			require.True(t, ok)
-			require.Equal(t, i, v)
-		}
-		for i := 0; i < 10; i++ {
-			v, ok := c.Set(i, i+1)
-			require.False(t, ok)
-			require.Equal(t, i, v)
-		}
-		require.Equal(t, uint64(0), c.WeightedSize())
-		require.Equal(t, []int{0, 1, 2, 3, 4, 5, 6, 7, 8, 9}, m[CauseOverflow])
-		require.Equal(t, []int{0, 1, 2, 3, 4, 5, 6, 7, 8, 9}, m[CauseReplacement])
-		require.Equal(t, 2, len(m))
 	})
 	t.Run("evict_alreadyRemoved", func(t *testing.T) {
 		t.Parallel()
@@ -1454,9 +1437,8 @@ func newDeferredCache(
 	return c, run
 }
 
-// A write over an expired entry that is still in the table creates the entry, for the refresh
-// calculator as for the expiry calculator. As an update, it kept the expired entry's refresh
-// time under RefreshCreating, and the new value was refreshed on its first read.
+// A write over an expired entry that is still in the table creates the entry: its refresh time is
+// that of a creation, which RefreshCreating keeps through later updates.
 func TestCache_WriteOverExpiredEntryIsCreation(t *testing.T) {
 	t.Parallel()
 
@@ -1465,41 +1447,39 @@ func TestCache_WriteOverExpiredEntryIsCreation(t *testing.T) {
 	})
 	writes := []struct {
 		name  string
-		write func(c *Cache[int, int], run func())
+		write func(t *testing.T, cc *cacheContext)
 	}{
-		{"Set", func(c *Cache[int, int], _ func()) { c.Set(1, 2) }},
-		{"SetIfAbsent", func(c *Cache[int, int], _ func()) { c.SetIfAbsent(1, 2) }},
-		{"Compute", func(c *Cache[int, int], _ func()) {
-			c.Compute(1, func(int, bool) (int, ComputeOp) { return 2, WriteOp })
+		{"Set", func(_ *testing.T, cc *cacheContext) { cc.cache.Set(1, 2) }},
+		{"SetIfAbsent", func(_ *testing.T, cc *cacheContext) { cc.cache.SetIfAbsent(1, 2) }},
+		{"Compute", func(_ *testing.T, cc *cacheContext) {
+			cc.cache.Compute(1, func(int, bool) (int, ComputeOp) { return 2, WriteOp })
 		}},
-		{"Get", func(c *Cache[int, int], _ func()) {
-			_, err := c.Get(context.Background(), 1, loader)
+		{"Get", func(t *testing.T, cc *cacheContext) {
+			_, err := cc.cache.Get(1, loader)
 			require.NoError(t, err)
 		}},
-		{"Refresh", func(c *Cache[int, int], run func()) {
-			ch := c.Refresh(context.Background(), 1, loader)
-			run()
-			require.NoError(t, (<-ch).Err)
+		{"Refresh", func(t *testing.T, cc *cacheContext) {
+			require.NoError(t, refreshNow(cc, loader).Err)
 		}},
 	}
+	spec := cacheSpec{expiry: withExpiry, refresh: []refreshKind{refreshCreating}}
 	for _, w := range writes {
 		t.Run(w.name, func(t *testing.T) {
 			t.Parallel()
 
-			clk := newNonTickingClock()
-			c, run := newDeferredCache(clk, ExpiryWriting[int, int](time.Minute), RefreshCreating[int, int](10*time.Second))
-			c.Set(1, 1)
-			run()
-			clk.Sleep(2 * time.Minute) // expired, but still in the table
+			forEachSpec(t, spec, func(t *testing.T, cc *cacheContext) {
+				cc.cache.Set(1, 1)
+				cc.run()
+				cc.advance(2 * specExpiry) // expired, but still in the table
 
-			w.write(c, run)
-			e, ok := c.GetEntryQuietly(1)
-			require.True(t, ok)
-			require.Equal(t, 2, e.Value)
-			require.Equal(t, 10*time.Second, e.RefreshableAfter())
-
-			run()
-			validateCache(t, c)
+				w.write(t, cc)
+				e, ok := cc.cache.GetEntryQuietly(1)
+				require.True(t, ok)
+				require.Equal(t, 2, e.Value)
+				require.Equal(t, specRefresh, e.RefreshableAfter())
+				cc.run()
+				cc.requireDeletions(t, DeletionEvent[int, int]{Key: 1, Value: 1, Cause: CauseExpiration})
+			})
 		})
 	}
 }
@@ -1512,41 +1492,36 @@ func TestCache_RefreshOfExpiredEntryIsDiscarded(t *testing.T) {
 
 	refreshes := []struct {
 		name    string
-		refresh func(c *Cache[int, int], loader Loader[int, int])
+		refresh func(t *testing.T, cc *cacheContext, loader Loader[int, int])
 	}{
-		{"Get", func(c *Cache[int, int], loader Loader[int, int]) {
-			v, err := c.Get(context.Background(), 1, loader)
+		{"Get", func(t *testing.T, cc *cacheContext, loader Loader[int, int]) {
+			v, err := cc.cache.Get(1, loader)
 			require.NoError(t, err)
 			require.Equal(t, 1, v)
 		}},
-		{"Refresh", func(c *Cache[int, int], loader Loader[int, int]) {
-			c.Refresh(context.Background(), 1, loader)
+		{"Refresh", func(_ *testing.T, cc *cacheContext, loader Loader[int, int]) {
+			cc.cache.Refresh(1, loader)
 		}},
 	}
+	spec := cacheSpec{expiry: withExpiry, refresh: withRefresh}
 	for _, r := range refreshes {
 		t.Run(r.name, func(t *testing.T) {
 			t.Parallel()
 
-			var reloads atomic.Int64
-			loader := LoaderFunc[int, int](func(ctx context.Context, key int) (int, error) {
-				reloads.Add(1)
-				return 2, nil
+			forEachSpec(t, spec, func(t *testing.T, cc *cacheContext) {
+				tl := newTestLoader[int, int](func(ctx context.Context, key int) (int, error) {
+					return 2, nil
+				})
+				cc.cache.Set(1, 1)
+				cc.run()
+				cc.advance(specRefresh + time.Second) // refreshable, not expired yet
+
+				r.refresh(t, cc, tl)
+				cc.advance(specExpiry) // expires before the refresh runs
+				cc.run()
+				require.Equal(t, uint64(1), tl.calls.Load())
+				cc.requireValue(t, 1, 0)
 			})
-			clk := newNonTickingClock()
-			c, run := newDeferredCache(clk, ExpiryWriting[int, int](time.Minute), RefreshWriting[int, int](10*time.Second))
-			c.Set(1, 1)
-			run()
-			clk.Sleep(30 * time.Second) // refreshable, expires at 1m
-
-			r.refresh(c, loader)
-			clk.Sleep(time.Minute) // expires before the refresh runs
-			run()
-			require.Equal(t, int64(1), reloads.Load())
-			_, ok := c.GetIfPresent(1)
-			require.False(t, ok, "the refresh brought the expired entry back")
-
-			run()
-			validateCache(t, c)
 		})
 	}
 }
@@ -1593,18 +1568,19 @@ func TestCache_CreationOverExpiredEntrySeesNoDeadlines(t *testing.T) {
 func TestCache_CleanUpAtDeadlineRemovesEntry(t *testing.T) {
 	t.Parallel()
 
-	clk := newNonTickingClock()
-	c, run := newDeferredCache(clk, ExpiryWriting[int, int](time.Minute), nil)
-	c.Set(1, 1)
-	run()
-	clk.Sleep(time.Minute) // exactly the deadline
+	spec := cacheSpec{expiry: withExpiry, executor: allExecutors}
+	forEachSpec(t, spec, func(t *testing.T, cc *cacheContext) {
+		cc.cache.Set(1, 1)
+		cc.run()
+		cc.advance(specExpiry) // exactly the deadline
 
-	_, ok := c.GetIfPresent(1)
-	require.False(t, ok)
-	c.CleanUp()
-	run()
-	require.Zero(t, c.EstimatedSize())
-	validateCache(t, c)
+		_, ok := cc.cache.GetIfPresent(1)
+		require.False(t, ok)
+		cc.cache.CleanUp()
+		cc.run()
+		require.Zero(t, cc.cache.EstimatedSize())
+		cc.requireDeletions(t, DeletionEvent[int, int]{Key: 1, Value: 1, Cause: CauseExpiration})
+	})
 }
 
 // Maintenance replays the read buffer before the write buffer, so the timer wheel sees an access
@@ -1720,31 +1696,45 @@ func TestCache_SizeEvictionOfExpiredEntryReportsExpiration(t *testing.T) {
 func TestCache_DeletionListenerSeesEvictionCounted(t *testing.T) {
 	t.Parallel()
 
-	for _, expire := range []bool{false, true} {
-		clk := newNonTickingClock()
-		counter := stats.NewCounter()
+	check := func(t *testing.T, cc *cacheContext, remove func()) {
+		t.Helper()
+
 		var seen []uint64
-		c := Must(&Options[int, int]{
-			MaximumSize:      1,
-			Clock:            clk,
-			ExpiryCalculator: ExpiryWriting[int, int](time.Minute),
-			StatsRecorder:    counter,
-			OnDeletion: func(e DeletionEvent[int, int]) {
-				seen = append(seen, counter.Snapshot().Evictions)
-			},
-			Executor: func(fn func()) {
-				fn()
-			},
-		})
-		c.Set(1, 1)
-		if expire {
-			clk.Sleep(time.Minute)
-		} else {
-			c.Set(2, 2)
+		cc.onDeletion = func(DeletionEvent[int, int]) {
+			seen = append(seen, cc.stats.Snapshot().Evictions)
 		}
-		c.CleanUp()
-		require.Equal(t, []uint64{1}, seen, "expire=%v", expire)
+		remove()
+		cc.cache.CleanUp()
+		cc.run()
+		require.NotEmpty(t, seen)
+		for i, evictions := range seen {
+			require.GreaterOrEqual(t, evictions, uint64(i+1), "deletion %d", i)
+		}
 	}
+	t.Run("overflow", func(t *testing.T) {
+		t.Parallel()
+
+		spec := cacheSpec{
+			maximum:    []maximumKind{sizeBounded, weightBounded},
+			population: []populationKind{fullCache},
+			executor:   allExecutors,
+		}
+		forEachSpec(t, spec, func(t *testing.T, cc *cacheContext) {
+			check(t, cc, func() { cc.cache.Set(absentKey, 1) })
+		})
+	})
+	t.Run("expiration", func(t *testing.T) {
+		t.Parallel()
+
+		spec := cacheSpec{
+			expiry:     withExpiry,
+			population: []populationKind{partialCache, fullCache},
+			executor:   allExecutors,
+		}
+		forEachSpec(t, spec, func(t *testing.T, cc *cacheContext) {
+			check(t, cc, func() { cc.advance(specExpiry) })
+		})
+	})
 }
 
 // The policy can choose a node that a write has already replaced, while the replacement's task is

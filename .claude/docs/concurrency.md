@@ -82,7 +82,14 @@ Every change decided from a key's current value (`set`, `doCompute`, `Invalidate
    - the completion of a refresh is not an access, since the read that started it was one: in
      place it skips the read buffer (the timer wheel reschedules a deadline that moved later
      when it finds the node unexpired), and its `updateReason` task is `quiet`, so
-     `policy.update` only reorders the node.
+     `policy.update` only reorders the node;
+   - `OnDeletion` of the previous value is submitted here on every path, not when maintenance
+     replays the task, and before the task is handed to the write buffer, where maintenance
+     running on the writer (a caller-runs executor, a full buffer) could evict the new value
+     first. The events of one key thus reach the executor in the order of the mutations, for
+     mutations ordered by happens-before; two goroutines that write a key submit after the
+     lock is released, in either order. Maintenance submits only the removals it decides
+     itself (evictions, expirations found by the timer wheel).
 4. Tasks go to the bounded MPSC write buffer. When it is full, the writer runs
    `performCleanUp` itself under `evictionMutex`.
 
