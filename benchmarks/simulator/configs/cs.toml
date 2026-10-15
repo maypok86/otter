@@ -1,0 +1,17 @@
+type = "file"
+name = "CS"
+capacities = [ 70, 140, 280, 490, 700, 1100 ]
+caches = [
+    "otter",
+    "theine",
+    "ristretto",
+    "sturdyc",
+    "arc",
+    "lru",
+    "optimal",
+]
+
+[file]
+paths = [
+    { trace_type = "lirs", path = "trace/lirs/cs.gz" },
+]

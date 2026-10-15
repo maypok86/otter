@@ -1,0 +1,17 @@
+type = "file"
+name = "Multi1"
+capacities = [ 130, 260, 520, 910, 1300, 2000 ]
+caches = [
+    "otter",
+    "theine",
+    "ristretto",
+    "sturdyc",
+    "arc",
+    "lru",
+    "optimal",
+]
+
+[file]
+paths = [
+    { trace_type = "lirs", path = "trace/lirs/multi1.gz" },
+]

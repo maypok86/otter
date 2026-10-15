@@ -1,0 +1,17 @@
+type = "file"
+name = "CloudPhysics-W106"
+capacities = [ 14_000, 28_000, 55_000, 96_000, 140_000, 210_000 ]
+caches = [
+    "otter",
+    "theine",
+    "ristretto",
+    "sturdyc",
+    "arc",
+    "lru",
+    "optimal",
+]
+
+[file]
+paths = [
+    { trace_type = "lirs", path = "trace/cloud_physics/w106.lirs.xz" },
+]

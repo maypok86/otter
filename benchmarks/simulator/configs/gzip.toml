@@ -1,0 +1,17 @@
+type = "file"
+name = "Gzip"
+capacities = [ 8000, 16_000, 32_000, 56_000, 80_000, 120_000 ]
+caches = [
+    "otter",
+    "theine",
+    "ristretto",
+    "sturdyc",
+    "arc",
+    "lru",
+    "optimal",
+]
+
+[file]
+paths = [
+    { trace_type = "lirs", path = "trace/address/gzip.lirs.xz" },
+]

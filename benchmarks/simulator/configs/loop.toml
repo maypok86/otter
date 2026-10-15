@@ -1,0 +1,17 @@
+type = "file"
+name = "Loop"
+capacities = [ 51, 100, 200, 350, 510, 760 ]
+caches = [
+    "otter",
+    "theine",
+    "ristretto",
+    "sturdyc",
+    "arc",
+    "lru",
+    "optimal",
+]
+
+[file]
+paths = [
+    { trace_type = "lirs", path = "trace/lirs/loop.gz" },
+]

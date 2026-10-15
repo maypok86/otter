@@ -1,0 +1,17 @@
+type = "file"
+name = "CPP"
+capacities = [ 61, 120, 240, 430, 610, 920 ]
+caches = [
+    "otter",
+    "theine",
+    "ristretto",
+    "sturdyc",
+    "arc",
+    "lru",
+    "optimal",
+]
+
+[file]
+paths = [
+    { trace_type = "lirs", path = "trace/lirs/cpp.gz" },
+]
