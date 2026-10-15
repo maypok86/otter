@@ -22,6 +22,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/maypok86/otter/v2/stats"
 )
 
 // A test that depends on the configuration of the cache declares the configurations it holds for
@@ -131,10 +133,16 @@ func (c cacheConfig) String() string {
 	return strings.Join([]string{c.maximum.String(), c.expiry.String(), c.refresh.String(), c.values.String()}, "/")
 }
 
-// updatesInPlace reports whether the first update of a live entry is applied to its node. The
-// nodes of a cache that neither bounds nor expires entries keep no state and are always replaced.
+// maintained reports whether the nodes of the cache keep state. The nodes of a cache that
+// neither bounds nor expires entries keep none, and an update always replaces them.
+func (c cacheConfig) maintained() bool {
+	return c.maximum != unbounded || c.expiry != noExpiry
+}
+
+// updatesInPlace reports whether the first update of a live entry is applied to its node. After
+// it, the node of a maintained cache can be updated in place whatever the value is.
 func (c cacheConfig) updatesInPlace() bool {
-	return c.values.inPlace() && (c.maximum != unbounded || c.expiry != noExpiry)
+	return c.values.inPlace() && c.maintained()
 }
 
 func orAll[T any](dimension, all []T) []T {
@@ -184,13 +192,18 @@ func forEachSpec(t *testing.T, spec cacheSpec, test func(t *testing.T, cc *cache
 
 // cacheContext is a cache of one configuration over int keys and values, with a clock that moves
 // only when told to, an executor that queues tasks until run is called (so an expired entry stays
-// in the table until then), and recorders of the deletion listeners and the logger.
+// in the table until then), a stats counter, and recorders of the deletion listeners and the
+// logger.
 type cacheContext struct {
 	cacheConfig
 	// logs allows the cache to log, from the spec.
 	logs  bool
 	clock *nonTickingClock
+	stats *stats.Counter
 	cache testCache
+	// onAtomicDeletion, if set, is called from OnAtomicDeletion after the event is recorded,
+	// while the cache still holds the bucket lock.
+	onAtomicDeletion func(e DeletionEvent[int, int])
 
 	mu              sync.Mutex
 	pending         []func()
@@ -202,7 +215,7 @@ type cacheContext struct {
 func newCacheContext(t *testing.T, spec cacheSpec, cfg cacheConfig) *cacheContext {
 	t.Helper()
 
-	cc := &cacheContext{cacheConfig: cfg, logs: spec.logs, clock: newNonTickingClock()}
+	cc := &cacheContext{cacheConfig: cfg, logs: spec.logs, clock: newNonTickingClock(), stats: stats.NewCounter()}
 	switch cfg.values {
 	case wordValues:
 		cc.cache = newSpecCache(t, cc, func(v int) int { return v }, func(v int) int { return v })
@@ -253,6 +266,13 @@ func (cc *cacheContext) advance(d time.Duration) {
 	cc.clock.Sleep(d)
 }
 
+// record appends a deletion event to the events of one listener.
+func (cc *cacheContext) record(events *[]DeletionEvent[int, int], e DeletionEvent[int, int]) {
+	cc.mu.Lock()
+	defer cc.mu.Unlock()
+	*events = append(*events, e)
+}
+
 // requireDeletions checks that both deletion listeners got exactly events, in order.
 func (cc *cacheContext) requireDeletions(t *testing.T, events ...DeletionEvent[int, int]) {
 	t.Helper()
@@ -262,6 +282,13 @@ func (cc *cacheContext) requireDeletions(t *testing.T, events ...DeletionEvent[i
 	cc.mu.Unlock()
 	require.Equal(t, events, atomicDeletions, "OnAtomicDeletion")
 	require.Equal(t, events, deletions, "OnDeletion")
+}
+
+// refreshNow refreshes the key 1 and runs the refresh.
+func refreshNow(cc *cacheContext, loader Loader[int, int]) RefreshResult[int, int] {
+	res := cc.cache.Refresh(1, loader)
+	cc.run()
+	return <-res
 }
 
 // requireValue checks that key holds want, or is absent if want is 0.
@@ -327,6 +354,9 @@ type testCache interface {
 
 	// nodeID identifies the node of key, or is nil if the table has none.
 	nodeID(key int) any
+	// peek returns the value of the node of key as a lock-free reader sees it, without reading
+	// it through the cache.
+	peek(key int) (int, bool)
 	validate(t *testing.T)
 }
 
@@ -341,19 +371,23 @@ type specCache[V any] struct {
 func newSpecCache[V any](t *testing.T, cc *cacheContext, toV func(int) V, fromV func(V) int) *specCache[V] {
 	t.Helper()
 
-	record := func(events *[]DeletionEvent[int, int]) func(e DeletionEvent[int, V]) {
-		return func(e DeletionEvent[int, V]) {
-			cc.mu.Lock()
-			defer cc.mu.Unlock()
-			*events = append(*events, DeletionEvent[int, int]{Key: e.Key, Value: fromV(e.Value), Cause: e.Cause})
-		}
+	event := func(e DeletionEvent[int, V]) DeletionEvent[int, int] {
+		return DeletionEvent[int, int]{Key: e.Key, Value: fromV(e.Value), Cause: e.Cause}
 	}
 	o := &Options[int, V]{
-		Clock:            cc.clock,
-		Executor:         cc.submit,
-		Logger:           cc,
-		OnAtomicDeletion: record(&cc.atomicDeletions),
-		OnDeletion:       record(&cc.deletions),
+		Clock:         cc.clock,
+		Executor:      cc.submit,
+		Logger:        cc,
+		StatsRecorder: cc.stats,
+		OnAtomicDeletion: func(e DeletionEvent[int, V]) {
+			cc.record(&cc.atomicDeletions, event(e))
+			if cc.onAtomicDeletion != nil {
+				cc.onAtomicDeletion(event(e))
+			}
+		},
+		OnDeletion: func(e DeletionEvent[int, V]) {
+			cc.record(&cc.deletions, event(e))
+		},
 	}
 	switch cc.maximum {
 	case sizeBounded:
@@ -454,6 +488,14 @@ func (s *specCache[V]) nodeID(key int) any {
 		return nil
 	}
 	return n.AsPointer()
+}
+
+func (s *specCache[V]) peek(key int) (int, bool) {
+	n := s.c.cache.hashmap.Get(key)
+	if n == nil {
+		return 0, false
+	}
+	return s.fromV(n.Value()), true
 }
 
 func (s *specCache[V]) validate(t *testing.T) {

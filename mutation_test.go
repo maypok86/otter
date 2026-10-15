@@ -101,13 +101,6 @@ type loadResult struct {
 
 var errMutationLoad = errors.New("load failed")
 
-// refreshNow refreshes the key 1 and runs the refresh.
-func refreshNow(cc *cacheContext, loader Loader[int, int]) RefreshResult[int, int] {
-	res := cc.cache.Refresh(1, loader)
-	cc.run()
-	return <-res
-}
-
 // mutationCases is the behavior every key mutation keeps: what the call returns, what the key
 // holds afterwards, and which deletion events both listeners get, for each state of the key.
 func mutationCases() []mutationCase {
