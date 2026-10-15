@@ -497,3 +497,31 @@ func TestCache_MutationDecidesWithTimeTakenUnderLock(t *testing.T) {
 		})
 	}
 }
+
+// The OnDeletion listener runs on the executor, so its events of one key arrive in the order of
+// the mutations only if every mutation submits its event when it is applied. A mutation that
+// replaced the node, or removed it, submitted its event only when maintenance replayed its task,
+// while an update in place submitted it at once: with an executor that runs tasks in order, the
+// event of an in-place update overtook that of the replacement or removal before it.
+func TestCache_DeletionEventsFollowMutations(t *testing.T) {
+	t.Parallel()
+
+	forEachSpec(t, cacheSpec{}, func(t *testing.T, cc *cacheContext) {
+		cc.cache.Set(1, 1)
+		cc.cache.Set(1, 2) // replaces the node of a boxed value
+		cc.cache.Set(1, 3) // in place
+		cc.cache.Invalidate(1)
+		cc.cache.Set(1, 4)
+		cc.cache.Compute(1, func(int, bool) (int, ComputeOp) { return 5, WriteOp }) // in place
+		cc.cache.Compute(1, func(int, bool) (int, ComputeOp) { return 0, InvalidateOp })
+		cc.run()
+
+		cc.requireDeletions(t,
+			DeletionEvent[int, int]{Key: 1, Value: 1, Cause: CauseReplacement},
+			DeletionEvent[int, int]{Key: 1, Value: 2, Cause: CauseReplacement},
+			DeletionEvent[int, int]{Key: 1, Value: 3, Cause: CauseInvalidation},
+			DeletionEvent[int, int]{Key: 1, Value: 4, Cause: CauseReplacement},
+			DeletionEvent[int, int]{Key: 1, Value: 5, Cause: CauseInvalidation},
+		)
+	})
+}

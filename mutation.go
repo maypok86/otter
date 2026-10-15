@@ -183,7 +183,7 @@ func (c *cache[K, V]) afterWrite(m mutation[K, V], onExecutor bool) {
 			c.afterRead(n, m.nowNano, false, false)
 		}
 		if m.reconcile {
-			c.afterWriteTask(newTask(n, nil, reconcileReason, causeUnknown))
+			c.afterWriteTask(newTask(n, nil, reconcileReason))
 		}
 		c.notifyDeletionFrom(onExecutor, n.Key(), m.value, m.cause)
 		return
@@ -191,14 +191,17 @@ func (c *cache[K, V]) afterWrite(m mutation[K, V], onExecutor bool) {
 
 	if old == nil {
 		// insert
-		c.afterWriteTask(newTask(n, nil, addReason, causeUnknown))
+		c.afterWriteTask(newTask(n, nil, addReason))
 		return
 	}
 
 	// update
-	t := newTask(n, old, updateReason, m.cause)
+	t := newTask(n, old, updateReason)
 	t.quiet = quiet
 	c.afterWriteTask(t)
+	// The event is submitted now, as an update in place submits it, and not when maintenance
+	// replays the task: the events of one key then reach an executor in the order of the writes.
+	c.notifyDeletionFrom(onExecutor, old.Key(), m.value, m.cause)
 }
 
 // atomicSet applies a write of value to the key whose current node is old (nil if absent).
