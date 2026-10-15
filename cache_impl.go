@@ -1527,20 +1527,17 @@ func (c *cache[K, V]) afterDelete(deleted node.Node[K, V], cause DeletionCause, 
 		return
 	}
 
+	// Reported by the removal, before its task, as afterWrite reports a write.
+	c.notifyDeletionFrom(onExecutor, deleted.Key(), deleted.Value(), cause)
 	if !c.withMaintenance {
-		c.notifyDeletionFrom(onExecutor, deleted.Key(), deleted.Value(), cause)
 		return
 	}
-
-	// delete
 	t := newTask(deleted, nil, deleteReason)
 	if alreadyLocked {
 		c.runTask(t)
 	} else {
 		c.afterWriteTask(t)
 	}
-	// Submitted by the removal, not by the replay of its task, as afterWrite does.
-	c.notifyDeletionFrom(onExecutor, deleted.Key(), deleted.Value(), cause)
 }
 
 // countEviction is called for every removal, and counts it in the stats when the cause the
@@ -1645,7 +1642,8 @@ func (c *cache[K, V]) expireNode(n node.Node[K, V], nowNanos int64) bool {
 }
 
 // removeNode removes n from the hash table and the timer wheel, and reports the removal unless n
-// had already left the table (it was replaced or removed, and that is reported by its own task).
+// had already left the table (it was replaced or removed, and that is reported by the mutation
+// that did it).
 // It returns false if n is kept, as described by removal. The caller unlinks n from the eviction
 // policy.
 func (c *cache[K, V]) removeNode(n node.Node[K, V], nowNanos int64, removal nodeRemoval) bool {

@@ -426,7 +426,7 @@ func TestCache_InvalidateAll(t *testing.T) {
 			events = append(events, DeletionEvent[int, int]{Key: key, Value: cc.original[key], Cause: CauseInvalidation})
 		}
 		cc.run()
-		cc.requireDeletionsInAnyOrder(t, events...)
+		cc.requireDeletionsByKey(t, events...)
 	})
 }
 

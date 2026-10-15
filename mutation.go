@@ -164,17 +164,23 @@ func (c *cache[K, V]) publish(m mutation[K, V]) {
 // in-place update the previous node is the written one.
 func (c *cache[K, V]) afterWrite(m mutation[K, V], onExecutor bool) {
 	n, old := m.next, m.node
+	// The previous value is reported when the write is applied, not when maintenance replays its
+	// task, and before the write reaches the policies: a task handed to the write buffer may be
+	// replayed at once on this goroutine (by an executor that runs tasks on the caller, or when the
+	// buffer is full), and that maintenance may evict or expire the new value, whose event must not
+	// come first.
+	if old != nil {
+		c.notifyDeletionFrom(onExecutor, old.Key(), m.value, m.cause)
+	}
 	if !c.withMaintenance {
-		if old != nil {
-			c.notifyDeletionFrom(onExecutor, old.Key(), m.value, m.cause)
-		}
 		return
 	}
 
 	// The read that started a refresh was the request's access, so its completion is not another
 	// one.
 	quiet := m.from == fromRefresh
-	if m.inPlace {
+	switch {
+	case m.inPlace:
 		// Updated in place: the policies observe an access through the lossy read buffer, and a
 		// changed weight or an earlier expiration time through a task, which must not be lost. A
 		// later expiration time needs no task: the timer wheel reschedules a node that it finds
@@ -185,23 +191,13 @@ func (c *cache[K, V]) afterWrite(m mutation[K, V], onExecutor bool) {
 		if m.reconcile {
 			c.afterWriteTask(newTask(n, nil, reconcileReason))
 		}
-		c.notifyDeletionFrom(onExecutor, n.Key(), m.value, m.cause)
-		return
-	}
-
-	if old == nil {
-		// insert
+	case old == nil:
 		c.afterWriteTask(newTask(n, nil, addReason))
-		return
+	default:
+		t := newTask(n, old, updateReason)
+		t.quiet = quiet
+		c.afterWriteTask(t)
 	}
-
-	// update
-	t := newTask(n, old, updateReason)
-	t.quiet = quiet
-	c.afterWriteTask(t)
-	// The event is submitted now, as an update in place submits it, and not when maintenance
-	// replays the task: the events of one key then reach an executor in the order of the writes.
-	c.notifyDeletionFrom(onExecutor, old.Key(), m.value, m.cause)
 }
 
 // atomicSet applies a write of value to the key whose current node is old (nil if absent).

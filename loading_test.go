@@ -612,7 +612,7 @@ func TestCache_BulkGetWithSuccessRefresh(t *testing.T) {
 		require.Equal(t, uint64(len(unique)), snapshot.Hits)
 		require.Zero(t, snapshot.Misses)
 		require.Equal(t, uint64(1), snapshot.LoadSuccesses)
-		cc.requireDeletionsInAnyOrder(t, events...)
+		cc.requireDeletionsByKey(t, events...)
 	})
 }
 
@@ -660,7 +660,7 @@ func TestCache_BulkGetWithNotFoundRefresh(t *testing.T) {
 		require.Equal(t, uint64(len(keys)), snapshot.Hits)
 		require.Zero(t, snapshot.Misses)
 		require.Equal(t, uint64(1), snapshot.LoadSuccesses)
-		cc.requireDeletionsInAnyOrder(t, events...)
+		cc.requireDeletionsByKey(t, events...)
 	})
 }
 
@@ -809,7 +809,7 @@ func TestCache_BulkRefresh(t *testing.T) {
 		require.Zero(t, snapshot.Hits)
 		require.Zero(t, snapshot.Misses)
 		require.Equal(t, uint64(2), snapshot.LoadSuccesses)
-		cc.requireDeletionsInAnyOrder(t, events...)
+		cc.requireDeletionsByKey(t, events...)
 	})
 }
 

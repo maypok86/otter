@@ -380,16 +380,24 @@ func (cc *cacheContext) requireDeletions(t *testing.T, events ...DeletionEvent[i
 	require.Equal(t, events, deletions, "OnDeletion")
 }
 
-// requireDeletionsInAnyOrder checks that both deletion listeners got exactly events, in any
-// order, for a call that removes entries in the order of the table.
-func (cc *cacheContext) requireDeletionsInAnyOrder(t *testing.T, events ...DeletionEvent[int, int]) {
+// requireDeletionsByKey checks that both deletion listeners got exactly events, those of each key
+// in the given order and those of different keys in any order, for a call that removes entries
+// in the order of the table or a test whose maintenance evicts them in the policy's order.
+func (cc *cacheContext) requireDeletionsByKey(t *testing.T, events ...DeletionEvent[int, int]) {
 	t.Helper()
 
+	byKey := func(events []DeletionEvent[int, int]) map[int][]DeletionEvent[int, int] {
+		m := make(map[int][]DeletionEvent[int, int])
+		for _, e := range events {
+			m[e.Key] = append(m[e.Key], e)
+		}
+		return m
+	}
 	cc.mu.Lock()
 	atomicDeletions, deletions := cc.atomicDeletions, cc.deletions
 	cc.mu.Unlock()
-	require.ElementsMatch(t, events, atomicDeletions, "OnAtomicDeletion")
-	require.ElementsMatch(t, events, deletions, "OnDeletion")
+	require.Equal(t, byKey(events), byKey(atomicDeletions), "OnAtomicDeletion")
+	require.Equal(t, byKey(events), byKey(deletions), "OnDeletion")
 }
 
 // refreshNow refreshes the key 1 and runs the refresh.

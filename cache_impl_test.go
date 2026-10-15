@@ -130,7 +130,7 @@ func TestCache_Eviction(t *testing.T) {
 			cc.cache.CleanUp()
 			cc.run()
 			require.Zero(t, cc.cache.WeightedSize())
-			cc.requireDeletionsInAnyOrder(t, events...)
+			cc.requireDeletionsByKey(t, events...)
 		})
 	})
 	// An update that makes an entry too heavy evicts it, whether the weight changes in place or
@@ -157,7 +157,7 @@ func TestCache_Eviction(t *testing.T) {
 			cc.cache.CleanUp()
 			cc.run()
 			require.Zero(t, cc.cache.WeightedSize())
-			cc.requireDeletionsInAnyOrder(t, events...)
+			cc.requireDeletionsByKey(t, events...)
 		})
 	})
 	t.Run("evict_alreadyRemoved", func(t *testing.T) {
