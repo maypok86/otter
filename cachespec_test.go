@@ -432,6 +432,13 @@ func (cc *cacheContext) requireLogged(t *testing.T, n int) {
 	require.Len(t, cc.logged, n, "logged")
 }
 
+// loggedMessages returns what the cache logged, each as "level: message: error".
+func (cc *cacheContext) loggedMessages() []string {
+	cc.mu.Lock()
+	defer cc.mu.Unlock()
+	return slices.Clone(cc.logged)
+}
+
 func (cc *cacheContext) log(level, msg string, err error) {
 	cc.mu.Lock()
 	defer cc.mu.Unlock()

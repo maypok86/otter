@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -71,38 +72,38 @@ func syncExecutor(fn func()) {
 	fn()
 }
 
-// A panicking weigher or expiry calculator propagates to the caller, does not apply the write,
-// and leaves the bucket usable.
+// A panicking weigher propagates to the caller, does not apply the write, and leaves the bucket
+// usable, whether the write would have updated the entry in place or replaced its node.
 func TestCache_PanicInCalculatorDoesNotApplyTheWrite(t *testing.T) {
 	t.Parallel()
 
-	c := Must(&Options[int, int]{
-		MaximumWeight: 100,
-		Weigher: func(key, value int) uint32 {
+	spec := cacheSpec{
+		maximum: []maximumKind{weightBounded},
+		weigher: func(_, value int) uint32 {
 			if value < 0 {
 				panic("weigher boom")
 			}
 			return 1
 		},
-		ExpiryCalculator: ExpiryWriting[int, int](time.Hour),
-	})
-	c.Set(1, 1)
+		executor: allExecutors,
+	}
+	forEachSpec(t, spec, func(t *testing.T, cc *cacheContext) {
+		cc.cache.Set(1, 1)
+		require.PanicsWithValue(t, "weigher boom", func() { cc.cache.Set(1, -1) })
+		require.PanicsWithValue(t, "weigher boom", func() { cc.cache.Set(2, -1) })
+		cc.requireValue(t, 1, 1)
+		cc.requireValue(t, 2, 0)
 
-	require.PanicsWithValue(t, "weigher boom", func() { c.Set(1, -1) })
-	require.PanicsWithValue(t, "weigher boom", func() { c.Set(2, -1) })
-	completes(t, "Set after a panicking weigher", func() {
-		v, ok := c.GetIfPresent(1)
-		require.True(t, ok)
-		require.Equal(t, 1, v)
-		_, ok = c.GetIfPresent(2)
-		require.False(t, ok)
-
-		c.Set(1, 2)
-		c.Set(2, 2)
-		c.CleanUp()
+		completes(t, "Set after a panicking weigher", func() {
+			cc.cache.Set(1, 2)
+			cc.cache.Set(2, 2)
+			cc.cache.CleanUp()
+		})
+		cc.run()
+		cc.requireValue(t, 1, 2)
+		cc.requireValue(t, 2, 2)
+		cc.requireDeletions(t, DeletionEvent[int, int]{Key: 1, Value: 1, Cause: CauseReplacement})
 	})
-	v, _ := c.GetIfPresent(1)
-	require.Equal(t, 2, v)
 }
 
 // A panicking ExpireAfterRead on SetIfAbsent of a live key runs under the bucket lock.
@@ -140,34 +141,55 @@ func (e *expiryFunc) ExpireAfterUpdate(entry Entry[int, int], oldValue int) time
 
 func (e *expiryFunc) ExpireAfterRead(entry Entry[int, int]) time.Duration { return e.read(entry) }
 
-// A panic of a deletion listener or a stats recorder is logged: the operation completes and the
-// cache stays consistent, also when the panic happens during maintenance.
-func TestCache_PanicInListenersAndStatsIsLogged(t *testing.T) {
+// A panic of a deletion listener is logged: the operation completes and the cache stays
+// consistent, also when the panic happens during maintenance or on the caller's goroutine.
+func TestCache_PanicInListenersIsLogged(t *testing.T) {
+	t.Parallel()
+
+	spec := cacheSpec{population: []populationKind{fullCache}, executor: allExecutors, logs: true}
+	forEachSpec(t, spec, func(t *testing.T, cc *cacheContext) {
+		cc.onDeletion = func(DeletionEvent[int, int]) { panic("on deletion boom") }
+		cc.onAtomicDeletion = func(DeletionEvent[int, int]) { panic("on atomic deletion boom") }
+
+		completes(t, "writes with panicking listeners", func() {
+			// replacements, removals and, past the full population, evictions; every panic is
+			// recovered and logged with its stack, so the loop is kept short
+			for i := 0; i < 20; i++ {
+				cc.cache.Set(i%15, i)
+				cc.cache.Compute(i%15, func(int, bool) (int, ComputeOp) { return i, WriteOp })
+				if i%7 == 0 {
+					cc.cache.Invalidate(i % 15)
+				}
+			}
+			cc.cache.CleanUp()
+			cc.run()
+		})
+		if cc.maximum != unbounded {
+			require.LessOrEqual(t, cc.cache.EstimatedSize(), specMaximum)
+		}
+		logged := strings.Join(cc.loggedMessages(), "\n")
+		require.Contains(t, logged, "OnDeletion panicked")
+		require.Contains(t, logged, "OnAtomicDeletion panicked")
+	})
+}
+
+// A panic of a stats recorder is logged: the operation completes and the cache stays consistent,
+// also when the panic happens during maintenance.
+func TestCache_PanicInStatsIsLogged(t *testing.T) {
 	t.Parallel()
 
 	logger := &recordingLogger{}
 	c := Must(&Options[int, int]{
-		MaximumSize: 10,
-		Executor:    syncExecutor,
-		Logger:      logger,
-		OnDeletion: func(e DeletionEvent[int, int]) {
-			panic("on deletion boom")
-		},
-		OnAtomicDeletion: func(e DeletionEvent[int, int]) {
-			panic("on atomic deletion boom")
-		},
+		MaximumSize:   10,
+		Executor:      syncExecutor,
+		Logger:        logger,
 		StatsRecorder: &panickingRecorder{Counter: stats.NewCounter()},
 	})
 
-	completes(t, "writes with panicking listeners", func() {
+	completes(t, "writes with a panicking stats recorder", func() {
 		for i := 0; i < 1000; i++ {
 			c.Set(i%50, i)
-			c.Compute(i%50, func(old int, found bool) (int, ComputeOp) {
-				return i, WriteOp
-			})
-			if i%7 == 0 {
-				c.Invalidate(i % 50)
-			}
+			c.GetIfPresent(i % 50)
 		}
 		c.CleanUp()
 	})
@@ -175,8 +197,6 @@ func TestCache_PanicInListenersAndStatsIsLogged(t *testing.T) {
 	validateCache(t, c)
 
 	msgs := logger.get()
-	require.Contains(t, msgs, "OnDeletion panicked")
-	require.Contains(t, msgs, "OnAtomicDeletion panicked")
 	require.Contains(t, msgs, "StatsRecorder.RecordHits panicked")
 	require.Contains(t, msgs, "StatsRecorder.RecordEviction panicked")
 }
