@@ -29,7 +29,8 @@ import (
 	"github.com/maypok86/otter/v2/internal/generated/node"
 )
 
-// SetExpiresAfter sets the deadline of a present entry only, and the entry expires at it.
+// SetExpiresAfter sets the deadline of a present entry only, and the entry expires at it, not at
+// the deadline it had before.
 func TestCache_SetExpiresAfter(t *testing.T) {
 	t.Parallel()
 
@@ -48,9 +49,16 @@ func TestCache_SetExpiresAfter(t *testing.T) {
 		cc.cache.SetExpiresAfter(1, 2*specExpiry)
 		e, ok = cc.cache.GetEntryQuietly(1)
 		require.True(t, ok)
+		require.Equal(t, 100, e.Value)
 		require.Equal(t, 2*specExpiry, e.ExpiresAfter())
 
-		cc.advance(2 * specExpiry)
+		cc.advance(specExpiry) // the former deadline
+		cc.cache.CleanUp()
+		cc.run()
+		cc.requireValue(t, 1, 100)
+		cc.requireDeletions(t)
+
+		cc.advance(specExpiry)
 		cc.cache.CleanUp()
 		cc.run()
 		cc.requireDeletions(t, DeletionEvent[int, int]{Key: 1, Value: 100, Cause: CauseExpiration})
@@ -81,6 +89,7 @@ func TestCache_SetRefreshableAfter(t *testing.T) {
 		cc.cache.SetRefreshableAfter(1, 2*specRefresh)
 		e, ok = cc.cache.GetEntryQuietly(1)
 		require.True(t, ok)
+		require.Equal(t, 100, e.Value)
 		require.Equal(t, 2*specRefresh, e.RefreshableAfter())
 
 		snapshot := cc.stats.Snapshot()

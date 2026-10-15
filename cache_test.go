@@ -281,27 +281,15 @@ func TestCache_All(t *testing.T) {
 			got[k] = v
 		}
 		require.Equal(t, live, got)
-		requireStopsEarly(t, len(live), func(yield func() bool) {
-			for range cc.cache.All() {
-				if !yield() {
-					return
-				}
-			}
+
+		// an iteration that went on after yield returned false would visit again
+		visits := 0
+		cc.cache.All()(func(int, int) bool {
+			visits++
+			return false
 		})
+		require.Equal(t, min(1, len(live)), visits)
 	})
-}
-
-// requireStopsEarly checks that an iteration over a cache of n live entries stops at the first
-// visit when the loop body breaks. visit runs the iteration, calling yield for each entry.
-func requireStopsEarly(t *testing.T, n int, visit func(yield func() bool)) {
-	t.Helper()
-
-	visits := 0
-	visit(func() bool {
-		visits++
-		return false
-	})
-	require.Equal(t, min(1, n), visits)
 }
 
 func TestCache_Keys(t *testing.T) {
@@ -310,13 +298,13 @@ func TestCache_Keys(t *testing.T) {
 	forEachSpec(t, cacheSpec{population: allPopulations}, func(t *testing.T, cc *cacheContext) {
 		live := liveAfterExpiringOne(cc)
 		require.ElementsMatch(t, slices.Collect(maps.Keys(live)), slices.Collect(cc.cache.Keys()))
-		requireStopsEarly(t, len(live), func(yield func() bool) {
-			for range cc.cache.Keys() {
-				if !yield() {
-					return
-				}
-			}
+
+		visits := 0
+		cc.cache.Keys()(func(int) bool {
+			visits++
+			return false
 		})
+		require.Equal(t, min(1, len(live)), visits)
 	})
 }
 
@@ -326,13 +314,13 @@ func TestCache_Values(t *testing.T) {
 	forEachSpec(t, cacheSpec{population: allPopulations}, func(t *testing.T, cc *cacheContext) {
 		live := liveAfterExpiringOne(cc)
 		require.ElementsMatch(t, slices.Collect(maps.Values(live)), slices.Collect(cc.cache.Values()))
-		requireStopsEarly(t, len(live), func(yield func() bool) {
-			for range cc.cache.Values() {
-				if !yield() {
-					return
-				}
-			}
+
+		visits := 0
+		cc.cache.Values()(func(int) bool {
+			visits++
+			return false
 		})
+		require.Equal(t, min(1, len(live)), visits)
 	})
 }
 

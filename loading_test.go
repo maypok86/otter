@@ -18,7 +18,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"maps"
 	"regexp"
 	"runtime"
 	"slices"
@@ -505,8 +504,6 @@ var (
 func TestCache_BulkGetWithSuccessLoad(t *testing.T) {
 	t.Parallel()
 
-	keys, unique := bulkKeys, bulkUnique
-	toSet := slices.Collect(maps.Keys(bulkFresh))
 	forEachSpec(t, cacheSpec{executor: allExecutors}, func(t *testing.T, cc *cacheContext) {
 		tl := newTestBulkLoader[int, int](func(ctx context.Context, keys []int) (map[int]int, error) {
 			m := make(map[int]int, len(keys))
@@ -515,28 +512,28 @@ func TestCache_BulkGetWithSuccessLoad(t *testing.T) {
 			}
 			return m, nil
 		})
-		want := make(map[int]int, len(unique))
-		for _, k := range unique {
+		want := make(map[int]int, len(bulkUnique))
+		for _, k := range bulkUnique {
 			want[k] = k + 100
 		}
-		for _, k := range toSet {
+		for k := range bulkFresh {
 			cc.cache.Set(k, k)
 			want[k] = k
 		}
 
-		res, err := cc.cache.BulkGet(keys, tl)
+		res, err := cc.cache.BulkGet(bulkKeys, tl)
 		require.NoError(t, err)
 		require.Equal(t, want, res)
-		require.Equal(t, len(unique), cc.cache.EstimatedSize())
+		require.Equal(t, len(bulkUnique), cc.cache.EstimatedSize())
 		snapshot := cc.stats.Snapshot()
-		require.Equal(t, uint64(len(toSet)), snapshot.Hits)
-		require.Equal(t, uint64(len(unique)-len(toSet)), snapshot.Misses)
+		require.Equal(t, uint64(len(bulkFresh)), snapshot.Hits)
+		require.Equal(t, uint64(len(bulkUnique)-len(bulkFresh)), snapshot.Misses)
 		require.Equal(t, uint64(1), snapshot.LoadSuccesses)
 
 		res, err = cc.cache.BulkGet([]int{10}, tl)
 		require.NoError(t, err)
 		require.Equal(t, map[int]int{10: 10}, res)
-		require.Equal(t, uint64(len(toSet)+1), cc.stats.Snapshot().Hits)
+		require.Equal(t, uint64(len(bulkFresh)+1), cc.stats.Snapshot().Hits)
 		require.Equal(t, uint64(1), tl.loads.Load())
 		require.Zero(t, tl.reloads.Load())
 	})
@@ -578,23 +575,21 @@ func TestCache_BulkGetCoalescesConcurrentLoads(t *testing.T) {
 func TestCache_BulkGetWithSuccessRefresh(t *testing.T) {
 	t.Parallel()
 
-	keys, unique := bulkKeys, bulkUnique
-	toUpdate := bulkFresh
 	spec := cacheSpec{refresh: []refreshKind{refreshWriting}, executor: allExecutors}
 	forEachSpec(t, spec, func(t *testing.T, cc *cacheContext) {
-		for _, k := range unique {
+		for _, k := range bulkUnique {
 			cc.cache.Set(k, k)
 		}
 		cc.advance(specRefresh + time.Second)
 		var events []DeletionEvent[int, int]
-		for k := range toUpdate {
+		for k := range bulkFresh {
 			cc.cache.Set(k, k)
 			events = append(events, DeletionEvent[int, int]{Key: k, Value: k, Cause: CauseReplacement})
 		}
 		tl := newTestBulkLoader[int, int](func(ctx context.Context, keys []int) (map[int]int, error) {
 			m := make(map[int]int, len(keys))
 			for _, k := range keys {
-				if toUpdate[k] {
+				if bulkFresh[k] {
 					t.Errorf("a fresh key is reloaded: %d", k)
 				}
 				m[k] = k + 100
@@ -604,26 +599,26 @@ func TestCache_BulkGetWithSuccessRefresh(t *testing.T) {
 
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
-		res, err := cc.cache.BulkGetContext(ctx, keys, tl)
+		res, err := cc.cache.BulkGetContext(ctx, bulkKeys, tl)
 		require.NoError(t, err)
 		for k, v := range res {
 			require.Equal(t, k, v)
 		}
 		cc.run()
-		for _, k := range unique {
-			if toUpdate[k] {
+		for _, k := range bulkUnique {
+			if bulkFresh[k] {
 				cc.requireValue(t, k, k)
 				continue
 			}
 			cc.requireValue(t, k, k+100)
 			events = append(events, DeletionEvent[int, int]{Key: k, Value: k, Cause: CauseReplacement})
 		}
-		require.Equal(t, len(unique), cc.cache.EstimatedSize())
+		require.Equal(t, len(bulkUnique), cc.cache.EstimatedSize())
 		require.Zero(t, tl.loads.Load())
 		require.Equal(t, uint64(1), tl.reloads.Load())
 
 		snapshot := cc.stats.Snapshot()
-		require.Equal(t, uint64(len(unique)), snapshot.Hits)
+		require.Equal(t, uint64(len(bulkUnique)), snapshot.Hits)
 		require.Zero(t, snapshot.Misses)
 		require.Equal(t, uint64(1), snapshot.LoadSuccesses)
 		cc.requireDeletionsByKey(t, events...)
@@ -771,34 +766,54 @@ func TestCache_BulkGetWithFakeCall(t *testing.T) {
 	require.Equal(t, m[CauseReplacement], len(keys))
 }
 
+// splitBulkLoader loads and reloads with different functions, so that a test can tell which keys
+// the cache loads and which it reloads.
+type splitBulkLoader struct {
+	load, reload   func(ctx context.Context, keys []int) (map[int]int, error)
+	loads, reloads atomic.Uint64
+}
+
+func (l *splitBulkLoader) BulkLoad(ctx context.Context, keys []int) (map[int]int, error) {
+	l.loads.Add(1)
+	return l.load(ctx, keys)
+}
+
+func (l *splitBulkLoader) BulkReload(ctx context.Context, keys, _ []int) (map[int]int, error) {
+	l.reloads.Add(1)
+	return l.reload(ctx, keys)
+}
+
 // BulkRefresh loads the absent keys and reloads the present ones, with a context of its own, and
 // records neither hits nor misses.
 func TestCache_BulkRefresh(t *testing.T) {
 	t.Parallel()
 
-	keys, unique := bulkKeys, bulkUnique
-	toUpdate := bulkFresh
 	forEachSpec(t, cacheSpec{refresh: []refreshKind{refreshWriting}}, func(t *testing.T, cc *cacheContext) {
-		events := make([]DeletionEvent[int, int], 0, len(toUpdate))
-		for k := range toUpdate {
+		events := make([]DeletionEvent[int, int], 0, len(bulkFresh))
+		for k := range bulkFresh {
 			cc.cache.Set(k, k+1)
 			events = append(events, DeletionEvent[int, int]{Key: k, Value: k + 1, Cause: CauseReplacement})
 		}
-		tl := newTestBulkLoader[int, int](func(ctx context.Context, keys []int) (map[int]int, error) {
-			m := make(map[int]int, len(keys))
-			for _, k := range keys {
-				m[k] = k + 100
+		// the absent keys are loaded and the present ones reloaded, each once
+		load := func(present bool) func(ctx context.Context, keys []int) (map[int]int, error) {
+			return func(ctx context.Context, keys []int) (map[int]int, error) {
+				m := make(map[int]int, len(keys))
+				for _, k := range keys {
+					require.Equal(t, present, bulkFresh[k], "key %d", k)
+					m[k] = k + 100
+				}
+				return m, ctx.Err()
 			}
-			return m, ctx.Err()
-		})
+		}
+		tl := &splitBulkLoader{load: load(false), reload: load(true)}
 
 		// the caller's context is cancelled, but the bulk loader gets a context of its own
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
-		ch := cc.cache.BulkRefreshContext(ctx, keys, tl)
+		ch := cc.cache.BulkRefreshContext(ctx, bulkKeys, tl)
 		// the refresh is queued on the executor
-		for _, k := range unique {
-			if toUpdate[k] {
+		for _, k := range bulkUnique {
+			if bulkFresh[k] {
 				cc.requireValue(t, k, k+1)
 			} else {
 				cc.requireValue(t, k, 0)
@@ -811,11 +826,11 @@ func TestCache_BulkRefresh(t *testing.T) {
 			require.NoError(t, r.Err)
 			got[r.Key] = r.Value
 		}
-		for _, k := range unique {
+		for _, k := range bulkUnique {
 			require.Equal(t, k+100, got[k])
 			cc.requireValue(t, k, k+100)
 		}
-		require.Equal(t, len(unique), cc.cache.EstimatedSize())
+		require.Equal(t, len(bulkUnique), cc.cache.EstimatedSize())
 		require.Equal(t, uint64(1), tl.loads.Load())
 		require.Equal(t, uint64(1), tl.reloads.Load())
 
