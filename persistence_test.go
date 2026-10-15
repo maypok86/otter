@@ -288,8 +288,9 @@ func TestLoadCacheFrom_FillsInTheCacheUnits(t *testing.T) {
 }
 
 // The warm-up reaches the frequency sketch of a cache without InitialCapacity, which sizes its
-// sketch only once it is half full: the hottest entry of the snapshot ends up more frequent than
-// the coldest.
+// sketch only once it is half full: the hottest quarter of the snapshot ends up more frequent than
+// the coldest one. Quarters are compared, not single keys, because a key's frequency is an
+// estimate that a collision in the sketch, whose hash seed is random, can raise by one.
 func TestLoadCacheFrom_WarmUpReachesTheSketch(t *testing.T) {
 	t.Parallel()
 
@@ -312,7 +313,11 @@ func TestLoadCacheFrom_WarmUpReachesTheSketch(t *testing.T) {
 	ci := loaded.cache
 	ci.evictionMutex.Lock()
 	defer ci.evictionMutex.Unlock()
-	hottest := ci.evictionPolicy.sketch.frequency(order[0])
-	coldest := ci.evictionPolicy.sketch.frequency(order[len(order)-1])
+	quarter := len(order) / 4
+	var hottest, coldest uint64
+	for i := range quarter {
+		hottest += ci.evictionPolicy.sketch.frequency(order[i])
+		coldest += ci.evictionPolicy.sketch.frequency(order[len(order)-1-i])
+	}
 	require.Greater(t, hottest, coldest)
 }
