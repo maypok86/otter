@@ -16,6 +16,7 @@ package otter
 
 import (
 	"context"
+	"iter"
 	"strings"
 	"sync"
 	"testing"
@@ -94,11 +95,31 @@ func (k valueKind) inPlace() bool {
 	return k != boxedValues
 }
 
+// populationKind is how many entries the cache holds when the test starts.
+type populationKind int
+
+const (
+	emptyCache populationKind = iota
+	// partialCache holds half of specMaximum entries, so that a few more fit without evictions.
+	partialCache
+	fullCache
+)
+
+func (k populationKind) String() string {
+	return [...]string{"empty", "partial", "full"}[k]
+}
+
+func (k populationKind) size() int {
+	return [...]int{0, specMaximum / 2, specMaximum}[k]
+}
+
 var (
 	allMaximums = []maximumKind{unbounded, sizeBounded, weightBounded}
 	allExpiries = []expiryKind{noExpiry, expiryWriting, expiryAccessing, expiryCreating}
 	allRefresh  = []refreshKind{noRefresh, refreshWriting}
 	allValues   = []valueKind{wordValues, pointerValues, boxedValues}
+	// allPopulations is not the default: a spec that leaves the population out starts empty.
+	allPopulations = []populationKind{emptyCache, partialCache, fullCache}
 )
 
 const (
@@ -108,29 +129,35 @@ const (
 	specExpiry = time.Minute
 	// specRefresh is the refresh duration of a cache that refreshes entries.
 	specRefresh = time.Hour
+	// absentKey is a key that the population never holds.
+	absentKey = 1000
 )
 
 // cacheSpec is the set of configurations a test holds for. An empty dimension means all of its
-// values.
+// values, except for the population, where it means an empty cache.
 type cacheSpec struct {
-	maximum []maximumKind
-	expiry  []expiryKind
-	refresh []refreshKind
-	values  []valueKind
+	maximum    []maximumKind
+	expiry     []expiryKind
+	refresh    []refreshKind
+	values     []valueKind
+	population []populationKind
 	// logs allows the cache to log; otherwise a logged message fails the test.
 	logs bool
 }
 
 // cacheConfig is one combination of a cacheSpec.
 type cacheConfig struct {
-	maximum maximumKind
-	expiry  expiryKind
-	refresh refreshKind
-	values  valueKind
+	maximum    maximumKind
+	expiry     expiryKind
+	refresh    refreshKind
+	values     valueKind
+	population populationKind
 }
 
 func (c cacheConfig) String() string {
-	return strings.Join([]string{c.maximum.String(), c.expiry.String(), c.refresh.String(), c.values.String()}, "/")
+	return strings.Join([]string{
+		c.maximum.String(), c.expiry.String(), c.refresh.String(), c.values.String(), c.population.String(),
+	}, "/")
 }
 
 // maintained reports whether the nodes of the cache keep state. The nodes of a cache that
@@ -155,12 +182,17 @@ func orAll[T any](dimension, all []T) []T {
 func (s cacheSpec) configs() []cacheConfig {
 	maximums, expiries := orAll(s.maximum, allMaximums), orAll(s.expiry, allExpiries)
 	refreshes, valueKinds := orAll(s.refresh, allRefresh), orAll(s.values, allValues)
-	configs := make([]cacheConfig, 0, len(maximums)*len(expiries)*len(refreshes)*len(valueKinds))
+	populations := orAll(s.population, []populationKind{emptyCache})
+	configs := make([]cacheConfig, 0, len(maximums)*len(expiries)*len(refreshes)*len(valueKinds)*len(populations))
 	for _, maximum := range maximums {
 		for _, expiry := range expiries {
 			for _, refresh := range refreshes {
 				for _, values := range valueKinds {
-					configs = append(configs, cacheConfig{maximum: maximum, expiry: expiry, refresh: refresh, values: values})
+					for _, population := range populations {
+						configs = append(configs, cacheConfig{
+							maximum: maximum, expiry: expiry, refresh: refresh, values: values, population: population,
+						})
+					}
 				}
 			}
 		}
@@ -193,7 +225,8 @@ func forEachSpec(t *testing.T, spec cacheSpec, test func(t *testing.T, cc *cache
 // cacheContext is a cache of one configuration over int keys and values, with a clock that moves
 // only when told to, an executor that queues tasks until run is called (so an expired entry stays
 // in the table until then), a stats counter, and recorders of the deletion listeners and the
-// logger.
+// logger. The population is the keys 1 to its size, each with the value -key, written and
+// processed by maintenance before the test starts.
 type cacheContext struct {
 	cacheConfig
 	// logs allows the cache to log, from the spec.
@@ -201,6 +234,8 @@ type cacheContext struct {
 	clock *nonTickingClock
 	stats *stats.Counter
 	cache testCache
+	// original is the population, which the test starts with.
+	original map[int]int
 	// onAtomicDeletion, if set, is called from OnAtomicDeletion after the event is recorded,
 	// while the cache still holds the bucket lock.
 	onAtomicDeletion func(e DeletionEvent[int, int])
@@ -231,7 +266,23 @@ func newCacheContext(t *testing.T, spec cacheSpec, cfg cacheConfig) *cacheContex
 			func(v int) [2]int64 { return [2]int64{int64(v), int64(v)} },
 			func(v [2]int64) int { return int(v[0]) })
 	}
+
+	cc.original = make(map[int]int, cfg.population.size())
+	for key := 1; key <= cfg.population.size(); key++ {
+		cc.cache.Set(key, -key)
+		cc.original[key] = -key
+	}
+	cc.run()
 	return cc
+}
+
+// keys returns the keys of the population in ascending order.
+func (cc *cacheContext) keys() []int {
+	keys := make([]int, 0, len(cc.original))
+	for key := 1; key <= len(cc.original); key++ {
+		keys = append(keys, key)
+	}
+	return keys
 }
 
 func (cc *cacheContext) submit(fn func()) {
@@ -280,8 +331,25 @@ func (cc *cacheContext) requireDeletions(t *testing.T, events ...DeletionEvent[i
 	cc.mu.Lock()
 	atomicDeletions, deletions := cc.atomicDeletions, cc.deletions
 	cc.mu.Unlock()
+	if len(events) == 0 {
+		require.Empty(t, atomicDeletions, "OnAtomicDeletion")
+		require.Empty(t, deletions, "OnDeletion")
+		return
+	}
 	require.Equal(t, events, atomicDeletions, "OnAtomicDeletion")
 	require.Equal(t, events, deletions, "OnDeletion")
+}
+
+// requireDeletionsInAnyOrder checks that both deletion listeners got exactly events, in any
+// order, for a call that removes entries in the order of the table.
+func (cc *cacheContext) requireDeletionsInAnyOrder(t *testing.T, events ...DeletionEvent[int, int]) {
+	t.Helper()
+
+	cc.mu.Lock()
+	atomicDeletions, deletions := cc.atomicDeletions, cc.deletions
+	cc.mu.Unlock()
+	require.ElementsMatch(t, events, atomicDeletions, "OnAtomicDeletion")
+	require.ElementsMatch(t, events, deletions, "OnDeletion")
 }
 
 // refreshNow refreshes the key 1 and runs the refresh.
@@ -350,6 +418,12 @@ type testCache interface {
 	Compute(key int, fn func(oldValue int, found bool) (int, ComputeOp)) (int, bool)
 	ComputeIfAbsent(key int, fn func() (int, bool)) (int, bool)
 	ComputeIfPresent(key int, fn func(oldValue int) (int, ComputeOp)) (int, bool)
+	SetExpiresAfter(key int, expiresAfter time.Duration)
+	All() iter.Seq2[int, int]
+	Keys() iter.Seq[int]
+	Values() iter.Seq[int]
+	InvalidateAll()
+	EstimatedSize() int
 	CleanUp()
 
 	// nodeID identifies the node of key, or is nil if the table has none.
@@ -476,6 +550,42 @@ func (s *specCache[V]) ComputeIfPresent(key int, fn func(oldValue int) (int, Com
 		return s.toV(nv), op
 	})
 	return s.fromV(v), ok
+}
+
+func (s *specCache[V]) SetExpiresAfter(key int, expiresAfter time.Duration) {
+	s.c.SetExpiresAfter(key, expiresAfter)
+}
+
+func (s *specCache[V]) All() iter.Seq2[int, int] {
+	return func(yield func(int, int) bool) {
+		for k, v := range s.c.All() {
+			if !yield(k, s.fromV(v)) {
+				return
+			}
+		}
+	}
+}
+
+func (s *specCache[V]) Keys() iter.Seq[int] {
+	return s.c.Keys()
+}
+
+func (s *specCache[V]) Values() iter.Seq[int] {
+	return func(yield func(int) bool) {
+		for v := range s.c.Values() {
+			if !yield(s.fromV(v)) {
+				return
+			}
+		}
+	}
+}
+
+func (s *specCache[V]) InvalidateAll() {
+	s.c.InvalidateAll()
+}
+
+func (s *specCache[V]) EstimatedSize() int {
+	return s.c.EstimatedSize()
 }
 
 func (s *specCache[V]) CleanUp() {
