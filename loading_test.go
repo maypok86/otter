@@ -1965,6 +1965,27 @@ func TestCache_InvalidateAllDiscardsEntriesReplacedDuringIt(t *testing.T) {
 	}
 }
 
+// newCacheWithExpiredEntry returns a cache whose key 1 has expired but is still in the table:
+// the executor never runs maintenance, which would remove it.
+func newCacheWithExpiredEntry(t *testing.T, bounded bool) *Cache[int, int] {
+	t.Helper()
+
+	clk := newNonTickingClock()
+	opts := &Options[int, int]{
+		Clock:            clk,
+		ExpiryCalculator: ExpiryWriting[int, int](time.Minute),
+		Executor:         func(fn func()) {},
+	}
+	if bounded {
+		opts.MaximumSize = 10
+	}
+	c := Must(opts)
+	c.Set(1, 1)
+	clk.Sleep(2 * time.Minute)
+	require.NotNil(t, c.cache.hashmap.Get(1), "the expired entry must still be in the table")
+	return c
+}
+
 // Compute that cancels over an expired entry removes the entry, but keeps a load of the key that
 // is in flight, which most likely started because the entry expired. Before, the load's value
 // was returned to its caller but not cached, and the next Get loaded the key again.

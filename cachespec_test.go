@@ -446,6 +446,7 @@ type testCache interface {
 	SetIfAbsent(key, value int) (int, bool)
 	GetIfPresent(key int) (int, bool)
 	GetEntryQuietly(key int) (Entry[int, int], bool)
+	GetEntry(key int) (Entry[int, int], bool)
 	Get(key int, loader Loader[int, int]) (int, error)
 	GetContext(ctx context.Context, key int, loader Loader[int, int]) (int, error)
 	BulkGet(keys []int, bulkLoader BulkLoader[int, int]) (map[int]int, error)
@@ -464,6 +465,7 @@ type testCache interface {
 	ComputeIfAbsent(key int, fn func() (int, bool)) (int, bool)
 	ComputeIfPresent(key int, fn func(oldValue int) (int, ComputeOp)) (int, bool)
 	SetExpiresAfter(key int, expiresAfter time.Duration)
+	SetRefreshableAfter(key int, refreshableAfter time.Duration)
 	All() iter.Seq2[int, int]
 	Keys() iter.Seq[int]
 	Values() iter.Seq[int]
@@ -623,6 +625,15 @@ func (s *specCache[V]) GetIfPresent(key int) (int, bool) {
 
 func (s *specCache[V]) GetEntryQuietly(key int) (Entry[int, int], bool) {
 	e, ok := s.c.GetEntryQuietly(key)
+	return s.entry(e), ok
+}
+
+func (s *specCache[V]) GetEntry(key int) (Entry[int, int], bool) {
+	e, ok := s.c.GetEntry(key)
+	return s.entry(e), ok
+}
+
+func (s *specCache[V]) entry(e Entry[int, V]) Entry[int, int] {
 	return Entry[int, int]{
 		Key:               e.Key,
 		Value:             s.fromV(e.Value),
@@ -630,7 +641,7 @@ func (s *specCache[V]) GetEntryQuietly(key int) (Entry[int, int], bool) {
 		ExpiresAtNano:     e.ExpiresAtNano,
 		RefreshableAtNano: e.RefreshableAtNano,
 		SnapshotAtNano:    e.SnapshotAtNano,
-	}, ok
+	}
 }
 
 func (s *specCache[V]) Get(key int, loader Loader[int, int]) (int, error) {
@@ -722,6 +733,10 @@ func (s *specCache[V]) ComputeIfPresent(key int, fn func(oldValue int) (int, Com
 
 func (s *specCache[V]) SetExpiresAfter(key int, expiresAfter time.Duration) {
 	s.c.SetExpiresAfter(key, expiresAfter)
+}
+
+func (s *specCache[V]) SetRefreshableAfter(key int, refreshableAfter time.Duration) {
+	s.c.SetRefreshableAfter(key, refreshableAfter)
 }
 
 func (s *specCache[V]) All() iter.Seq2[int, int] {
