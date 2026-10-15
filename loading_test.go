@@ -3335,7 +3335,7 @@ func TestCache_RefreshCompletionIsNotAnAccess(t *testing.T) {
 		ci.evictionMutex.Lock()
 		p := ci.evictionPolicy
 		require.False(t, p.sketch.isNotInitialized())
-		hits, misses, freq := p.hitsInSample, p.missesInSample, p.sketch.frequency(1)
+		hits, misses, freq := p.climber.sample.hits, p.climber.sample.misses, p.sketch.frequency(1)
 		ci.evictionMutex.Unlock()
 
 		res := <-c.Refresh(context.Background(), 1, LoaderFunc[int, string](func(ctx context.Context, key int) (string, error) {
@@ -3346,8 +3346,8 @@ func TestCache_RefreshCompletionIsNotAnAccess(t *testing.T) {
 		c.CleanUp()
 
 		ci.evictionMutex.Lock()
-		require.Equal(t, hits, p.hitsInSample, "in place %v: climber hits", inPlace)
-		require.Equal(t, misses, p.missesInSample, "in place %v: climber misses", inPlace)
+		require.Equal(t, hits, p.climber.sample.hits, "in place %v: climber hits", inPlace)
+		require.Equal(t, misses, p.climber.sample.misses, "in place %v: climber misses", inPlace)
 		require.Equal(t, freq, p.sketch.frequency(1), "in place %v: sketch frequency", inPlace)
 		ci.evictionMutex.Unlock()
 		validateCache(t, c)

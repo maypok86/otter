@@ -292,8 +292,8 @@ func TestPolicy_SetMaximumSizeRestartsClimber(t *testing.T) {
 		}
 		p.evictNodes()
 		// what climb leaves when increaseWindow or decreaseWindow has not moved all of its quota
-		p.adjustment = adjustment
-		p.previousSampleHitRate = 0.9
+		p.climber.adjustment = adjustment
+		p.climber.sample.previousHitRate = 0.9
 
 		p.setMaximumSize(1000)
 		window, protected := p.windowMaximum, p.mainProtectedMaximum
@@ -302,7 +302,7 @@ func TestPolicy_SetMaximumSizeRestartsClimber(t *testing.T) {
 
 		require.Equal(t, window, p.windowMaximum, "adjustment %d", adjustment)
 		require.Equal(t, protected, p.mainProtectedMaximum, "adjustment %d", adjustment)
-		require.Zero(t, p.previousSampleHitRate, "adjustment %d", adjustment)
+		require.Zero(t, p.climber.sample.previousHitRate, "adjustment %d", adjustment)
 	}
 }
 

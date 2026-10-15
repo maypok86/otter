@@ -26,6 +26,11 @@ import (
 const (
 	resetMask = 0x7777777777777777
 	oneMask   = 0x1111111111111111
+	// minSketchSize is the smallest table, which keeps a small cache's sample long enough for the
+	// climber to measure.
+	minSketchSize = 256
+	// maxSketchSize bounds the table.
+	maxSketchSize = math.MaxInt32 >> 1
 )
 
 // sketch is a probabilistic multiset for estimating the popularity of an element within a time window. The
@@ -47,23 +52,24 @@ func newSketch[K comparable]() *sketch[K] {
 }
 
 func (s *sketch[K]) ensureCapacity(maximumSize uint64) {
-	if uint64(len(s.table)) >= maximumSize {
+	maximum := max(min(maximumSize, maxSketchSize), minSketchSize)
+	sample := min(10*maximum, math.MaxInt32)
+	if uint64(len(s.table)) >= maximum {
+		// The table never shrinks, but the sample follows the maximum, so that the counters age at
+		// the pace of the current one (reset tolerates the counters left by the previous pace).
+		if sample != s.sampleSize {
+			s.sampleSize = sample
+			s.size = min(s.size, sample-1)
+		}
 		return
 	}
 
 	if !s.isInitialized.Load() {
 		s.isInitialized.Store(true)
 	}
-	newSize := xmath.RoundUpPowerOf264(maximumSize)
-	if newSize < 8 {
-		newSize = 8
-	}
 
-	s.table = make([]uint64, newSize)
-	s.sampleSize = 10
-	if maximumSize != 0 {
-		s.sampleSize = 10 * maximumSize
-	}
+	s.table = make([]uint64, xmath.RoundUpPowerOf264(maximum))
+	s.sampleSize = sample
 	s.blockMask = (uint64(len(s.table)) >> 3) - 1
 	s.size = 0
 	s.hasher = xruntime.NewHasher[K]()
@@ -148,8 +154,10 @@ func (s *sketch[K]) reset() {
 		count += bits.OnesCount64(s.table[i] & oneMask)
 		s.table[i] = (s.table[i] >> 1) & resetMask
 	}
-	//nolint:gosec // there's no overflow
-	s.size = (s.size - (uint64(count) >> 2)) >> 1
+	// A sample cut by a lower maximum leaves counters filled at the old pace, which can hold more
+	// odd counters than four times the cut size: the subtraction is clamped, or it would wrap and
+	// stop the aging for good.
+	s.size = (s.size - min(s.size, uint64(count)>>2)) >> 1
 }
 
 func (s *sketch[K]) hash(k K) uint64 {
