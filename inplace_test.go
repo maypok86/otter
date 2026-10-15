@@ -17,7 +17,6 @@ package otter
 import (
 	"context"
 	"runtime"
-	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -498,23 +497,6 @@ func TestCache_InPlaceWeightChange(t *testing.T) {
 	require.False(t, ok)
 	require.LessOrEqual(t, c.WeightedSize(), uint64(100))
 	validateCache(t, c)
-}
-
-type deletionRecorder struct {
-	mu     sync.Mutex
-	events []DeletionEvent[int, int]
-}
-
-func (r *deletionRecorder) record(e DeletionEvent[int, int]) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.events = append(r.events, e)
-}
-
-func (r *deletionRecorder) get() []DeletionEvent[int, int] {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return slices.Clone(r.events)
 }
 
 // An update that moves the expiration time earlier is applied in place, and the entry still

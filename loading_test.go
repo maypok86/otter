@@ -1556,35 +1556,6 @@ func TestCache_BulkLoadOmittedKeyIsNotFound(t *testing.T) {
 	})
 }
 
-// queuedExecutor holds the submitted tasks until run is called, so that a test decides when a
-// refresh starts.
-type queuedExecutor struct {
-	mu    sync.Mutex
-	tasks []func()
-}
-
-func (e *queuedExecutor) execute(fn func()) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	e.tasks = append(e.tasks, fn)
-}
-
-// run runs the queued tasks, including the ones they submit, until none are left.
-func (e *queuedExecutor) run() {
-	for {
-		e.mu.Lock()
-		tasks := e.tasks
-		e.tasks = nil
-		e.mu.Unlock()
-		if len(tasks) == 0 {
-			return
-		}
-		for _, task := range tasks {
-			task()
-		}
-	}
-}
-
 // A refresh is registered when it is requested, not when the executor starts it, so a write
 // that follows the request cancels it. Before, the refresh replaced a later Set, or brought an
 // invalidated key back, whenever the executor started it after the write.

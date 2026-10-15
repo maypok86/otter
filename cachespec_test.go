@@ -17,6 +17,7 @@ package otter
 import (
 	"context"
 	"iter"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -274,11 +275,12 @@ type cacheContext struct {
 	onAtomicDeletion func(e DeletionEvent[int, int])
 	onDeletion       func(e DeletionEvent[int, int])
 
-	mu              sync.Mutex
-	pending         []func()
-	atomicDeletions []DeletionEvent[int, int]
-	deletions       []DeletionEvent[int, int]
-	logged          []string
+	queue           queuedExecutor
+	atomicDeletions deletionRecorder
+	deletions       deletionRecorder
+
+	mu     sync.Mutex
+	logged []string
 }
 
 func newCacheContext(t *testing.T, spec cacheSpec, cfg cacheConfig) *cacheContext {
@@ -326,30 +328,12 @@ func (cc *cacheContext) submit(fn func()) {
 		fn()
 		return
 	}
-	cc.mu.Lock()
-	defer cc.mu.Unlock()
-	cc.pending = append(cc.pending, fn)
+	cc.queue.execute(fn)
 }
 
 // run runs the queued tasks, and those they queue, in order.
 func (cc *cacheContext) run() {
-	for {
-		cc.mu.Lock()
-		if len(cc.pending) == 0 {
-			cc.mu.Unlock()
-			return
-		}
-		fn := cc.pending[0]
-		cc.pending = cc.pending[1:]
-		cc.mu.Unlock()
-		fn()
-	}
-}
-
-func (cc *cacheContext) pendingTasks() int {
-	cc.mu.Lock()
-	defer cc.mu.Unlock()
-	return len(cc.pending)
+	cc.queue.run()
 }
 
 // advance moves the clock forward.
@@ -357,20 +341,11 @@ func (cc *cacheContext) advance(d time.Duration) {
 	cc.clock.Sleep(d)
 }
 
-// record appends a deletion event to the events of one listener.
-func (cc *cacheContext) record(events *[]DeletionEvent[int, int], e DeletionEvent[int, int]) {
-	cc.mu.Lock()
-	defer cc.mu.Unlock()
-	*events = append(*events, e)
-}
-
 // requireDeletions checks that both deletion listeners got exactly events, in order.
 func (cc *cacheContext) requireDeletions(t *testing.T, events ...DeletionEvent[int, int]) {
 	t.Helper()
 
-	cc.mu.Lock()
-	atomicDeletions, deletions := cc.atomicDeletions, cc.deletions
-	cc.mu.Unlock()
+	atomicDeletions, deletions := cc.atomicDeletions.get(), cc.deletions.get()
 	if len(events) == 0 {
 		require.Empty(t, atomicDeletions, "OnAtomicDeletion")
 		require.Empty(t, deletions, "OnDeletion")
@@ -393,9 +368,7 @@ func (cc *cacheContext) requireDeletionsByKey(t *testing.T, events ...DeletionEv
 		}
 		return m
 	}
-	cc.mu.Lock()
-	atomicDeletions, deletions := cc.atomicDeletions, cc.deletions
-	cc.mu.Unlock()
+	atomicDeletions, deletions := cc.atomicDeletions.get(), cc.deletions.get()
 	require.Equal(t, byKey(events), byKey(atomicDeletions), "OnAtomicDeletion")
 	require.Equal(t, byKey(events), byKey(deletions), "OnDeletion")
 }
@@ -454,11 +427,11 @@ func (cc *cacheContext) check(t *testing.T) {
 	cc.cache.CleanUp()
 	cc.run()
 	cc.cache.validate(t)
-	require.Zero(t, cc.pendingTasks(), "tasks left queued")
+	require.Zero(t, cc.queue.pending(), "tasks left queued")
+	require.ElementsMatch(t, cc.atomicDeletions.get(), cc.deletions.get(), "the deletion listeners got different events")
 
 	cc.mu.Lock()
 	defer cc.mu.Unlock()
-	require.ElementsMatch(t, cc.atomicDeletions, cc.deletions, "the deletion listeners got different events")
 	if !cc.logs {
 		require.Empty(t, cc.logged, "logged")
 	}
@@ -524,13 +497,13 @@ func newSpecCache[V any](t *testing.T, cc *cacheContext, toV func(int) V, fromV 
 		Logger:        cc,
 		StatsRecorder: cc.stats,
 		OnAtomicDeletion: func(e DeletionEvent[int, V]) {
-			cc.record(&cc.atomicDeletions, event(e))
+			cc.atomicDeletions.record(event(e))
 			if cc.onAtomicDeletion != nil {
 				cc.onAtomicDeletion(event(e))
 			}
 		},
 		OnDeletion: func(e DeletionEvent[int, V]) {
-			cc.record(&cc.deletions, event(e))
+			cc.deletions.record(event(e))
 			if cc.onDeletion != nil {
 				cc.onDeletion(event(e))
 			}
@@ -542,6 +515,9 @@ func newSpecCache[V any](t *testing.T, cc *cacheContext, toV func(int) V, fromV 
 	case weightBounded:
 		o.MaximumWeight = specMaximum
 		o.Weigher = func(int, V) uint32 { return 1 }
+		if weigher := cc.weigher; weigher != nil {
+			o.Weigher = func(key int, value V) uint32 { return weigher(key, fromV(value)) }
+		}
 	}
 	switch cc.expiry {
 	case expiryWriting:
@@ -556,10 +532,6 @@ func newSpecCache[V any](t *testing.T, cc *cacheContext, toV func(int) V, fromV 
 		o.RefreshCalculator = RefreshWriting[int, V](specRefresh)
 	case refreshCreating:
 		o.RefreshCalculator = RefreshCreating[int, V](specRefresh)
-	}
-	if cc.maximum == weightBounded && cc.weigher != nil {
-		weigher := cc.weigher
-		o.Weigher = func(key int, value V) uint32 { return weigher(key, fromV(value)) }
 	}
 	c, err := New(o)
 	require.NoError(t, err)
@@ -808,4 +780,58 @@ func (s *specCache[V]) peek(key int) (int, bool) {
 func (s *specCache[V]) validate(t *testing.T) {
 	t.Helper()
 	validateCache(t, s.c)
+}
+
+// queuedExecutor holds the submitted tasks until run is called, so that a test decides when a
+// refresh starts.
+type queuedExecutor struct {
+	mu    sync.Mutex
+	tasks []func()
+}
+
+func (e *queuedExecutor) execute(fn func()) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.tasks = append(e.tasks, fn)
+}
+
+// pending returns the number of queued tasks.
+func (e *queuedExecutor) pending() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return len(e.tasks)
+}
+
+// run runs the queued tasks, including the ones they submit, until none are left.
+func (e *queuedExecutor) run() {
+	for {
+		e.mu.Lock()
+		tasks := e.tasks
+		e.tasks = nil
+		e.mu.Unlock()
+		if len(tasks) == 0 {
+			return
+		}
+		for _, task := range tasks {
+			task()
+		}
+	}
+}
+
+// deletionRecorder records the events of a deletion listener.
+type deletionRecorder struct {
+	mu     sync.Mutex
+	events []DeletionEvent[int, int]
+}
+
+func (r *deletionRecorder) record(e DeletionEvent[int, int]) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.events = append(r.events, e)
+}
+
+func (r *deletionRecorder) get() []DeletionEvent[int, int] {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.events)
 }
