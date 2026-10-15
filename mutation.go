@@ -181,25 +181,35 @@ func (c *cache[K, V]) afterWrite(m mutation[K, V], onExecutor bool) {
 func (c *cache[K, V]) afterWritePolicies(m mutation[K, V]) {
 	n, old := m.next, m.node
 	// The read that started a refresh was the request's access, so its completion is not another
-	// one.
-	quiet := m.from == fromRefresh
+	// one. A write over an expired entry is the caller's miss, not a hit; only the eviction policy
+	// tells the two apart.
+	access := accessHit
+	switch {
+	case m.from == fromRefresh:
+		access = accessQuiet
+	case m.cause == CauseExpiration && c.withEviction:
+		access = accessReload
+	}
 	switch {
 	case m.inPlace:
 		// Updated in place: the policies observe an access through the lossy read buffer, and a
 		// changed weight or an earlier expiration time through a task, which must not be lost. A
 		// later expiration time needs no task: the timer wheel reschedules a node that it finds
-		// has not expired yet.
-		if !quiet {
+		// has not expired yet. The read buffer cannot say that an access was a miss, so a reload
+		// of an expired entry goes through the task, which reconciles the node as well.
+		if access == accessHit {
 			c.afterRead(n, m.nowNano, false, false)
 		}
-		if m.reconcile {
-			c.afterWriteTask(newTask(n, nil, reconcileReason))
+		if m.reconcile || access == accessReload {
+			t := newTask(n, nil, reconcileReason)
+			t.access = access
+			c.afterWriteTask(t)
 		}
 	case old == nil:
 		c.afterWriteTask(newTask(n, nil, addReason))
 	default:
 		t := newTask(n, old, updateReason)
-		t.quiet = quiet
+		t.access = access
 		c.afterWriteTask(t)
 	}
 }

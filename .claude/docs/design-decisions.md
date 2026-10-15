@@ -30,12 +30,12 @@ Audits read this file **after** recording their findings (Phase 1.5 of the audit
   A read that checks liveness with the time it read before looking the key up is linearizable:
   the node it finds was live at that time or when it was written.
 - **The read buffer is lossy.** A dropped access is a lost policy signal, not a bug. Anything
-  that must reach the policy (insert, replacement, weight change, earlier deadline) goes
-  through the lossless write buffer. One exception: a read whose `ExpireAfterRead` moves the
-  deadline earlier only offers the node to the read buffer, which keeps write-buffer traffic
-  off the read path. If the access is dropped, the entry is already invisible to reads but is
-  removed at its former deadline. `SetExpiresAfter` sends an earlier deadline through the
-  write buffer.
+  that must reach the policy (insert, replacement, weight change, earlier deadline, reload of
+  an expired entry) goes through the lossless write buffer. One exception: a read whose
+  `ExpireAfterRead` moves the deadline earlier only offers the node to the read buffer, which
+  keeps write-buffer traffic off the read path. If the access is dropped, the entry is already
+  invisible to reads but is removed at its former deadline. `SetExpiresAfter` sends an earlier
+  deadline through the write buffer.
 - **With the default executor, a drain can wait about 10 ms when every P is busy, and the reads
   in between are dropped.** `go fn()` puts the drain goroutine in the scheduling P's `runnext`,
   and `wakep` only wakes an idle P, so with every P running readers the drain starts when the
@@ -141,15 +141,6 @@ Audits read this file **after** recording their findings (Phase 1.5 of the audit
   the sketch at construction, and a cache can empty after it filled; below half of the maximum
   the cache is not evicting, so a full sample is discarded and the next one is compared with the
   hit rate from before the gap.
-- **A load or `Compute` that finds its entry expired but not yet removed counts as a hit in the
-  climber's sample.** The caller sees a miss, and the stats record one, but the write lands on
-  the existing node, so the policy sees an access; had maintenance removed the entry first, the
-  same operation would have been an insertion and a miss. The climber compares the hit rate of
-  a sample with the previous one, and a steady share of such hits cancels in that difference.
-  Counting them as misses would need a write-buffer task for every reload of an expired entry,
-  since the read buffer cannot say that an access was a miss, which undoes part of what writing
-  in place saves. The simulator cannot measure it either way: its traces do not expire. Worth
-  revisiting with a climber that uses a sample's hit rate on its own rather than its change.
 
 ## Memory and layout
 

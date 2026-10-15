@@ -38,6 +38,21 @@ const (
 	queueTransferThreshold = 1_000
 )
 
+// accessKind is how the eviction policy observes a write to a key that is already in the cache.
+type accessKind uint8
+
+const (
+	// accessHit is an update of a live entry: a use of the key and a hit in the climber's sample.
+	accessHit accessKind = iota
+	// accessReload is a write over an expired entry that has not been removed yet. The caller
+	// missed, so the climber's sample takes the miss that an insertion would have recorded, while
+	// the sketch still observes the use of the key.
+	accessReload
+	// accessQuiet is the completion of a refresh, whose request was counted by the read that
+	// started it: the entry is only reordered.
+	accessQuiet
+)
+
 type policy[K comparable, V any] struct {
 	sketch                    *sketch[K]
 	window                    *deque.Linked[K, V]
@@ -83,6 +98,16 @@ func newPolicy[K comparable, V any](
 
 // access updates the eviction policy based on node accesses.
 func (p *policy[K, V]) access(n node.Node[K, V]) {
+	p.accessAs(n, accessHit)
+}
+
+// accessAs observes an access of the given kind: a quiet one only reorders n, and only a hit
+// counts in the climber's sample.
+func (p *policy[K, V]) accessAs(n node.Node[K, V], kind accessKind) {
+	if kind == accessQuiet {
+		p.reorderNode(n)
+		return
+	}
 	if !n.IsAlive() {
 		// a stale access to an entry that has already left the cache
 		return
@@ -92,7 +117,7 @@ func (p *policy[K, V]) access(n node.Node[K, V]) {
 	inWindow := n.InWindow()
 	inProbation := !inWindow && n.InMainProbation()
 	p.reorderNode(n)
-	if n.PolicyWeight() != 0 {
+	if kind == accessHit && n.PolicyWeight() != 0 {
 		// A zero-weight entry earns hits without occupying capacity, so it must not steer the
 		// split between the regions; the sketch still observes the key.
 		p.climber.recordHit(inWindow, inProbation)
@@ -112,13 +137,23 @@ func (p *policy[K, V]) reorderNode(n node.Node[K, V]) {
 	}
 }
 
-// accessUpdated is the access of an update; a quiet update only reorders n.
-func (p *policy[K, V]) accessUpdated(n node.Node[K, V], quiet bool) {
-	if quiet {
-		p.reorderNode(n)
+// reload observes a write over an expired entry that kept its node, once reweigh has brought the
+// weight accounted for it in line.
+func (p *policy[K, V]) reload(n node.Node[K, V]) {
+	p.climber.recordMiss()
+	p.accessWritten(n, accessReload)
+}
+
+// accessWritten observes a write to n, whose weight is accounted and within the maximum: an
+// entry heavier than the window stays at its front, any other entry is accessed.
+func (p *policy[K, V]) accessWritten(n node.Node[K, V], kind accessKind) {
+	if n.InWindow() && uint64(n.PolicyWeight()) > p.windowMaximum {
+		if p.window.Contains(n) {
+			p.window.MoveToFront(n)
+		}
 		return
 	}
-	p.access(n)
+	p.accessAs(n, kind)
 }
 
 // add adds node to the eviction policy.
@@ -166,8 +201,11 @@ func (p *policy[K, V]) add(n node.Node[K, V]) {
 	}
 }
 
-func (p *policy[K, V]) update(n, old node.Node[K, V], quiet bool) {
+func (p *policy[K, V]) update(n, old node.Node[K, V], kind accessKind) {
 	if !n.IsAlive() {
+		if kind == accessReload {
+			p.climber.recordMiss()
+		}
 		// n was replaced or removed before this update was replayed. The task that replaced or
 		// removed it accounts for n, so only old, which n replaced, leaves the policy. Linking n
 		// here would leave a node that is no longer in the map in a queue.
@@ -179,38 +217,24 @@ func (p *policy[K, V]) update(n, old node.Node[K, V], quiet bool) {
 		// been replaced (add skips linking non-alive nodes), or it was evicted before this update
 		// was replayed. There is nothing to swap n into, so track it as a new entry. Otherwise n
 		// would stay in the map and in weightedSize while being unreachable for eviction.
+		// add records the miss of a reload
 		p.makeDead(old)
 		p.add(n)
 		return
+	}
+	if kind == accessReload {
+		p.climber.recordMiss()
 	}
 
 	nodeWeight := uint64(n.Weight())
 	p.updateNode(n, old)
 	n.SetPolicyWeight(uint32(nodeWeight))
 	p.adjustAccounted(n, 0, nodeWeight)
-	switch {
-	case n.InWindow():
-		switch {
-		case nodeWeight > p.maximum:
-			p.evictNode(n)
-		case nodeWeight <= p.windowMaximum:
-			p.accessUpdated(n, quiet)
-		case p.window.Contains(n):
-			p.window.MoveToFront(n)
-		}
-	case n.InMainProbation():
-		if nodeWeight <= p.maximum {
-			p.accessUpdated(n, quiet)
-		} else {
-			p.evictNode(n)
-		}
-	case n.InMainProtected():
-		if nodeWeight <= p.maximum {
-			p.accessUpdated(n, quiet)
-		} else {
-			p.evictNode(n)
-		}
+	if nodeWeight > p.maximum {
+		p.evictNode(n)
+		return
 	}
+	p.accessWritten(n, kind)
 }
 
 // updateNode puts n in the place of old, which must be linked, and stops accounting old.

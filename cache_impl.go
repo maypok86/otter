@@ -2056,13 +2056,17 @@ func (c *cache[K, V]) runTask(t *task[K, V]) {
 			c.timerWheel.Schedule(n)
 		}
 		if c.withEviction {
-			c.evictionPolicy.update(n, old, t.quiet)
+			c.evictionPolicy.update(n, old, t.access)
 		}
 	case reconcileReason:
 		// A weight or an expiration time changed in place. Both are brought in line with the
-		// node's current state, so replaying the task late, twice or out of order is harmless.
+		// node's current state, so replaying it late or out of order is harmless. A reload of an
+		// expired entry rides on the task as well and is observed once, as the access it replaces.
 		if c.withEviction {
 			c.evictionPolicy.reweigh(n)
+			if t.access == accessReload {
+				c.evictionPolicy.reload(n)
+			}
 		}
 		if c.withExpiration {
 			c.timerWheel.Schedule(n)
