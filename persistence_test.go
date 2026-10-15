@@ -23,8 +23,6 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
-
-	"github.com/maypok86/otter/v2/stats"
 )
 
 func TestSaveLoadCache(t *testing.T) {
@@ -158,42 +156,33 @@ func (w *updatingWriter) Write(p []byte) (int, error) {
 	return w.buf.Write(p)
 }
 
-// LoadCacheFrom credits the restored entries to the eviction policy as reads, but they are not
-// reads of the caller: they record no hits, and under ExpiryAccessing they keep the remaining
-// lifetime the snapshot restored instead of getting a full one.
-func TestLoadCacheFrom_WarmUpIsNotARead(t *testing.T) {
+// A snapshot loaded into a cache of the same configuration restores every entry with the value,
+// weight, deadline and refresh time it was saved with. LoadCacheFrom credits the restored entries
+// to the eviction policy as reads, but they are not reads of the caller: they record no hits, and
+// under ExpiryAccessing they keep the remaining lifetime the snapshot restored instead of getting
+// a full one.
+func TestLoadCacheFrom_RestoresTheSnapshot(t *testing.T) {
 	t.Parallel()
 
-	const keys = 10
-	for _, maximumSize := range []int{0, 100} {
-		newCache := func(clk *nonTickingClock, recorder stats.Recorder) *Cache[int, int] {
-			return Must(&Options[int, int]{
-				MaximumSize:      maximumSize,
-				ExpiryCalculator: ExpiryAccessing[int, int](time.Hour),
-				Clock:            clk,
-				StatsRecorder:    recorder,
-			})
-		}
-		clk := newNonTickingClock()
-		saved := newCache(clk, nil)
-		for k := range keys {
-			saved.Set(k, k)
-		}
-		clk.Sleep(30 * time.Minute)
+	spec := cacheSpec{population: []populationKind{partialCache, fullCache}, executor: allExecutors}
+	forEachSpec(t, spec, func(t *testing.T, cc *cacheContext) {
+		cc.advance(10 * time.Second)
 		var buf bytes.Buffer
-		require.NoError(t, SaveCacheTo(saved, &buf))
+		require.NoError(t, cc.cache.SaveTo(&buf))
 
-		counter := stats.NewCounter()
-		loaded := newCache(clk, counter)
-		require.NoError(t, LoadCacheFrom(loaded, &buf))
-
-		require.Zero(t, loaded.Stats().Hits, "MaximumSize=%d", maximumSize)
-		for k := range keys {
-			entry, ok := loaded.GetEntryQuietly(k)
+		cc.advance(5 * time.Second)
+		loaded := cc.sibling(t)
+		require.NoError(t, loaded.cache.LoadFrom(&buf))
+		require.Equal(t, len(cc.original), loaded.cache.EstimatedSize())
+		for _, key := range cc.keys() {
+			want, ok := cc.cache.GetEntryQuietly(key)
 			require.True(t, ok)
-			require.Equal(t, 30*time.Minute, entry.ExpiresAfter(), "MaximumSize=%d, key %d", maximumSize, k)
+			got, ok := loaded.cache.GetEntryQuietly(key)
+			require.True(t, ok, "key %d", key)
+			require.Equal(t, want, got, "key %d", key)
 		}
-	}
+		require.Zero(t, loaded.stats.Snapshot().Hits)
+	})
 }
 
 // An entry is expired at its deadline, as the cache's own entries are, so a load at that instant
@@ -201,23 +190,17 @@ func TestLoadCacheFrom_WarmUpIsNotARead(t *testing.T) {
 func TestLoadCacheFrom_SkipsEntryAtItsDeadline(t *testing.T) {
 	t.Parallel()
 
-	clk := newNonTickingClock()
-	newCache := func() *Cache[int, int] {
-		return Must(&Options[int, int]{
-			ExpiryCalculator: ExpiryWriting[int, int](time.Hour),
-			Clock:            clk,
-		})
-	}
-	saved := newCache()
-	saved.Set(1, 1)
-	clk.Sleep(30 * time.Minute)
-	var buf bytes.Buffer
-	require.NoError(t, SaveCacheTo(saved, &buf))
+	spec := cacheSpec{expiry: withExpiry, population: []populationKind{partialCache, fullCache}}
+	forEachSpec(t, spec, func(t *testing.T, cc *cacheContext) {
+		cc.advance(specExpiry / 2)
+		var buf bytes.Buffer
+		require.NoError(t, cc.cache.SaveTo(&buf))
 
-	clk.Sleep(30 * time.Minute)
-	loaded := newCache()
-	require.NoError(t, LoadCacheFrom(loaded, &buf))
-	require.Zero(t, loaded.EstimatedSize())
+		cc.advance(specExpiry / 2) // the deadline of every entry
+		loaded := cc.sibling(t)
+		require.NoError(t, loaded.cache.LoadFrom(&buf))
+		require.Zero(t, loaded.cache.EstimatedSize())
+	})
 }
 
 // A save that fails leaves the file it would have replaced as it was, and no temporary file

@@ -16,6 +16,7 @@ package otter
 
 import (
 	"context"
+	"io"
 	"iter"
 	"slices"
 	"strings"
@@ -246,7 +247,7 @@ func forEachSpec(t *testing.T, spec cacheSpec, test func(t *testing.T, cc *cache
 		t.Run(cfg.String(), func(t *testing.T) {
 			t.Parallel()
 
-			cc := newCacheContext(t, spec, cfg)
+			cc := newCacheContext(t, spec, cfg, newNonTickingClock())
 			t.Cleanup(func() {
 				// A failed test has left the cache in a state the checks would only add noise to.
 				if !t.Failed() {
@@ -286,11 +287,11 @@ type cacheContext struct {
 	logged []string
 }
 
-func newCacheContext(t *testing.T, spec cacheSpec, cfg cacheConfig) *cacheContext {
+func newCacheContext(t *testing.T, spec cacheSpec, cfg cacheConfig, clock *nonTickingClock) *cacheContext {
 	t.Helper()
 
 	cc := &cacheContext{
-		cacheConfig: cfg, logs: spec.logs, weigher: spec.weigher, clock: newNonTickingClock(), stats: stats.NewCounter(),
+		cacheConfig: cfg, logs: spec.logs, weigher: spec.weigher, clock: clock, stats: stats.NewCounter(),
 	}
 	switch cfg.values {
 	case wordValues:
@@ -315,6 +316,22 @@ func newCacheContext(t *testing.T, spec cacheSpec, cfg cacheConfig) *cacheContex
 	}
 	cc.run()
 	return cc
+}
+
+// sibling returns an empty cache of the same configuration on the same clock, which is checked as
+// the test ends, as cc is.
+func (cc *cacheContext) sibling(t *testing.T) *cacheContext {
+	t.Helper()
+
+	cfg := cc.cacheConfig
+	cfg.population = emptyCache
+	s := newCacheContext(t, cacheSpec{logs: cc.logs, weigher: cc.weigher}, cfg, cc.clock)
+	t.Cleanup(func() {
+		if !t.Failed() {
+			s.check(t)
+		}
+	})
+	return s
 }
 
 // keys returns the keys of the population in ascending order.
@@ -471,6 +488,8 @@ type testCache interface {
 	Values() iter.Seq[int]
 	InvalidateAll()
 	EstimatedSize() int
+	SaveTo(w io.Writer) error
+	LoadFrom(r io.Reader) error
 	WeightedSize() uint64
 	CleanUp()
 
@@ -765,6 +784,14 @@ func (s *specCache[V]) Values() iter.Seq[int] {
 
 func (s *specCache[V]) InvalidateAll() {
 	s.c.InvalidateAll()
+}
+
+func (s *specCache[V]) SaveTo(w io.Writer) error {
+	return SaveCacheTo(s.c, w)
+}
+
+func (s *specCache[V]) LoadFrom(r io.Reader) error {
+	return LoadCacheFrom(s.c, r)
 }
 
 func (s *specCache[V]) EstimatedSize() int {
