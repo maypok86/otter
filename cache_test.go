@@ -401,7 +401,7 @@ func TestCache_CleanUp(t *testing.T) {
 func TestCache_InvalidateAll(t *testing.T) {
 	t.Parallel()
 
-	forEachSpec(t, cacheSpec{population: allPopulations}, func(t *testing.T, cc *cacheContext) {
+	forEachSpec(t, cacheSpec{population: allPopulations, executor: allExecutors}, func(t *testing.T, cc *cacheContext) {
 		require.Equal(t, len(cc.original), cc.cache.EstimatedSize())
 
 		cc.cache.InvalidateAll()

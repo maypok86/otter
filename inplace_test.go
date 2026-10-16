@@ -299,12 +299,12 @@ func TestCache_FailedInPlaceUpdateCallsCallbacksOnce(t *testing.T) {
 func TestCache_InPlaceUpdateNotifications(t *testing.T) {
 	t.Parallel()
 
-	forEachSpec(t, cacheSpec{}, func(t *testing.T, cc *cacheContext) {
+	forEachSpec(t, cacheSpec{executor: allExecutors}, func(t *testing.T, cc *cacheContext) {
 		var visible []int
 		cc.onAtomicDeletion = func(e DeletionEvent[int, int]) {
 			// what a lock-free reader sees while the synchronous listener runs
-			v, _ := cc.cache.peek(e.Key)
-			visible = append(visible, v)
+			entry, _ := cc.cache.GetEntryQuietly(e.Key)
+			visible = append(visible, entry.Value)
 		}
 
 		cc.cache.Set(1, 1)
@@ -580,7 +580,7 @@ func TestCache_InPlaceUpdateResurrectsExpiredEntry(t *testing.T) {
 func TestCache_InPlaceRefresh(t *testing.T) {
 	t.Parallel()
 
-	forEachSpec(t, cacheSpec{refresh: withRefresh}, func(t *testing.T, cc *cacheContext) {
+	forEachSpec(t, cacheSpec{refresh: withRefresh, executor: allExecutors}, func(t *testing.T, cc *cacheContext) {
 		cc.cache.Set(1, 1)
 		cc.cache.Set(1, 2) // an update, after which a maintained node of any value is updatable
 		before := cc.cache.nodeID(1)

@@ -259,12 +259,11 @@ func forEachSpec(t *testing.T, spec cacheSpec, test func(t *testing.T, cc *cache
 // processed by maintenance before the test starts.
 type cacheContext struct {
 	cacheConfig
-	// logs allows the cache to log, and weigher weighs the entries, from the spec.
-	logs    bool
-	weigher func(key, value int) uint32
-	clock   *nonTickingClock
-	stats   *stats.Counter
-	cache   testCache
+	// spec is the spec of the test; its logs and weigher apply to every configuration.
+	spec  cacheSpec
+	clock *nonTickingClock
+	stats *stats.Counter
+	cache testCache
 	// original is the population, which the test starts with.
 	original map[int]int
 	// onAtomicDeletion, if set, is called from OnAtomicDeletion after the event is recorded,
@@ -284,7 +283,7 @@ func newCacheContext(t *testing.T, spec cacheSpec, cfg cacheConfig, clock *nonTi
 	t.Helper()
 
 	cc := &cacheContext{
-		cacheConfig: cfg, logs: spec.logs, weigher: spec.weigher, clock: clock, stats: stats.NewCounter(),
+		cacheConfig: cfg, spec: spec, clock: clock, stats: stats.NewCounter(),
 	}
 	switch cfg.values {
 	case wordValues:
@@ -324,7 +323,7 @@ func (cc *cacheContext) sibling(t *testing.T) *cacheContext {
 
 	cfg := cc.cacheConfig
 	cfg.population = emptyCache
-	return newCacheContext(t, cacheSpec{logs: cc.logs, weigher: cc.weigher}, cfg, cc.clock)
+	return newCacheContext(t, cc.spec, cfg, cc.clock)
 }
 
 // keys returns the keys of the population in ascending order.
@@ -452,7 +451,7 @@ func (cc *cacheContext) check(t *testing.T) {
 
 	cc.mu.Lock()
 	defer cc.mu.Unlock()
-	if !cc.logs {
+	if !cc.spec.logs {
 		require.Empty(t, cc.logged, "logged")
 	}
 }
@@ -472,8 +471,7 @@ type testCache interface {
 	// that a receive would wait on forever.
 	Refresh(key int, loader Loader[int, int]) <-chan RefreshResult[int, int]
 	RefreshContext(ctx context.Context, key int, loader Loader[int, int]) <-chan RefreshResult[int, int]
-	// BulkRefresh fails the test on a cache without refresh, as Refresh does.
-	BulkRefresh(keys []int, bulkLoader BulkLoader[int, int]) <-chan []RefreshResult[int, int]
+	// BulkRefreshContext fails the test on a cache without refresh, as Refresh does.
 	BulkRefreshContext(
 		ctx context.Context, keys []int, bulkLoader BulkLoader[int, int],
 	) <-chan []RefreshResult[int, int]
@@ -495,9 +493,6 @@ type testCache interface {
 
 	// nodeID identifies the node of key, or is nil if the table has none.
 	nodeID(key int) any
-	// peek returns the value of the node of key as a lock-free reader sees it, without reading
-	// it through the cache.
-	peek(key int) (int, bool)
 	validate(t *testing.T)
 }
 
@@ -539,7 +534,7 @@ func newSpecCache[V any](t *testing.T, cc *cacheContext, toV func(int) V, fromV 
 	case weightBounded:
 		o.MaximumWeight = specMaximum
 		o.Weigher = func(int, V) uint32 { return 1 }
-		if weigher := cc.weigher; weigher != nil {
+		if weigher := cc.spec.weigher; weigher != nil {
 			o.Weigher = func(key int, value V) uint32 { return weigher(key, fromV(value)) }
 		}
 	}
@@ -700,10 +695,6 @@ func (s *specCache[V]) RefreshContext(
 	return ch
 }
 
-func (s *specCache[V]) BulkRefresh(keys []int, bulkLoader BulkLoader[int, int]) <-chan []RefreshResult[int, int] {
-	return s.BulkRefreshContext(context.Background(), keys, bulkLoader)
-}
-
 func (s *specCache[V]) BulkRefreshContext(
 	ctx context.Context, keys []int, bulkLoader BulkLoader[int, int],
 ) <-chan []RefreshResult[int, int] {
@@ -812,14 +803,6 @@ func (s *specCache[V]) nodeID(key int) any {
 		return nil
 	}
 	return n.AsPointer()
-}
-
-func (s *specCache[V]) peek(key int) (int, bool) {
-	n := s.c.cache.hashmap.Get(key)
-	if n == nil {
-		return 0, false
-	}
-	return s.fromV(n.Value()), true
 }
 
 func (s *specCache[V]) validate(t *testing.T) {
