@@ -1,0 +1,17 @@
+type = "file"
+name = "Web12"
+capacities = [ 690, 1400, 2800, 4800, 6900, 10_000 ]
+caches = [
+    "otter",
+    "theine",
+    "ristretto",
+    "sturdyc",
+    "arc",
+    "lru",
+    "optimal",
+]
+
+[file]
+paths = [
+    { trace_type = "lirs", path = "trace/cache2k/web12.lirs.xz" },
+]

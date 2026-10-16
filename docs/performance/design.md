@@ -58,7 +58,7 @@ Otter uses the [adaptive W-TinyLfu](https://dl.acm.org/citation.cfm?id=3274816) 
 
 ### Adaptivity
 
-The size of the admission window and main space are dynamically determined based on the workload characteristics. A large window is favored if recency-biased and a smaller one by frequency-biased. Otter uses hill climbing to sample the hit rate, adjust, and configure itself to the optimal balance.
+The size of the admission window and main space are dynamically determined based on the workload characteristics. A large window is favored if recency-biased and a smaller one by frequency-biased. Otter uses hill climbing to configure itself to the optimal balance: a small cache samples the hit rate and adjusts in the direction that improves it, while a cache of more than 4096 entries compares the hits per unit of capacity of the two spaces within a sample, probing and auditing the positions this signal cannot judge.
 
 ### Fastpath
 

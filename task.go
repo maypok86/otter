@@ -27,7 +27,8 @@ const (
 	deleteReason
 	updateReason
 	// reconcileReason reports a weight changed or an expiration time moved earlier by an
-	// in-place update.
+	// in-place update, or an in-place reload of an expired entry, which the eviction policy
+	// observes as a miss.
 	reconcileReason
 )
 
@@ -37,9 +38,9 @@ type task[K comparable, V any] struct {
 	n           node.Node[K, V]
 	old         node.Node[K, V]
 	writeReason reason
-	// quiet reports an update that is not an access: the completion of a refresh, whose
-	// request was counted by the read that started it.
-	quiet bool
+	// access is how the eviction policy observes an update, or a reconciliation that carries a
+	// reload of an expired entry.
+	access accessKind
 }
 
 // node returns the node contained in the task. If node was not specified, it returns nil.

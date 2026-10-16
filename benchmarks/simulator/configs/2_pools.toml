@@ -1,0 +1,17 @@
+type = "file"
+name = "2Pools"
+capacities = [ 500, 990, 2000, 3500, 5000, 7500 ]
+caches = [
+    "otter",
+    "theine",
+    "ristretto",
+    "sturdyc",
+    "arc",
+    "lru",
+    "optimal",
+]
+
+[file]
+paths = [
+    { trace_type = "lirs", path = "trace/lirs/2_pools.gz" },
+]

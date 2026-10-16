@@ -1,0 +1,17 @@
+type = "file"
+name = "PS"
+capacities = [ 150, 310, 620, 1100, 1500, 2300 ]
+caches = [
+    "otter",
+    "theine",
+    "ristretto",
+    "sturdyc",
+    "arc",
+    "lru",
+    "optimal",
+]
+
+[file]
+paths = [
+    { trace_type = "lirs", path = "trace/lirs/ps.gz" },
+]

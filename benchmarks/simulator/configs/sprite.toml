@@ -1,0 +1,17 @@
+type = "file"
+name = "Sprite"
+capacities = [ 350, 710, 1400, 2500, 3500, 5300 ]
+caches = [
+    "otter",
+    "theine",
+    "ristretto",
+    "sturdyc",
+    "arc",
+    "lru",
+    "optimal",
+]
+
+[file]
+paths = [
+    { trace_type = "lirs", path = "trace/lirs/sprite.gz" },
+]

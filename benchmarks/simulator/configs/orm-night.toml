@@ -1,0 +1,17 @@
+type = "file"
+name = "ORM-Night"
+capacities = [ 4300, 8600, 17_000, 30_000, 43_000, 65_000 ]
+caches = [
+    "otter",
+    "theine",
+    "ristretto",
+    "sturdyc",
+    "arc",
+    "lru",
+    "optimal",
+]
+
+[file]
+paths = [
+    { trace_type = "lirs", path = "trace/cache2k/orm-night.lirs.xz" },
+]

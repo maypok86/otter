@@ -1,0 +1,17 @@
+type = "file"
+name = "Twolf"
+capacities = [ 370, 740, 1500, 2600, 3700, 5500 ]
+caches = [
+    "otter",
+    "theine",
+    "ristretto",
+    "sturdyc",
+    "arc",
+    "lru",
+    "optimal",
+]
+
+[file]
+paths = [
+    { trace_type = "lirs", path = "trace/address/twolf.lirs.xz" },
+]

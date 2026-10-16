@@ -3308,6 +3308,82 @@ func TestCache_EvictionDropsLoadThatAdoptedItsValue(t *testing.T) {
 	})
 }
 
+// A write over an expired entry that has not been removed yet is the caller's miss: the climber's
+// sample takes a miss rather than a hit, and the sketch still observes the key, whether the write
+// is applied in place or replaces the node.
+func TestCache_ReloadOfExpiredEntryIsAMiss(t *testing.T) {
+	t.Parallel()
+
+	writes := []struct {
+		name  string
+		write func(t *testing.T, c *Cache[int, string])
+	}{
+		{"set", func(t *testing.T, c *Cache[int, string]) {
+			c.Set(1, "reloaded")
+		}},
+		{"compute", func(t *testing.T, c *Cache[int, string]) {
+			v, ok := c.Compute(1, func(oldValue string, found bool) (string, ComputeOp) {
+				require.False(t, found, "an expired entry is absent")
+				return "reloaded", WriteOp
+			})
+			require.True(t, ok)
+			require.Equal(t, "reloaded", v)
+		}},
+		{"load", func(t *testing.T, c *Cache[int, string]) {
+			v, err := c.Get(context.Background(), 1, LoaderFunc[int, string](func(ctx context.Context, key int) (string, error) {
+				return "reloaded", nil
+			}))
+			require.NoError(t, err)
+			require.Equal(t, "reloaded", v)
+		}},
+	}
+	for _, w := range writes {
+		for _, inPlace := range []bool{true, false} {
+			// no periodic clean-up, which could remove the expired entry before the write
+			clk := newNonTickingClock()
+			c := Must(&Options[int, string]{
+				MaximumSize:      100,
+				Clock:            clk,
+				ExpiryCalculator: ExpiryWriting[int, string](time.Second),
+				Executor: func(fn func()) {
+					fn()
+				},
+			})
+			ci := c.cache
+			for k := range 60 {
+				c.Set(k, "v")
+				if inPlace {
+					// the second write boxes the node, so that the reload is applied in place
+					c.Set(k, "v")
+				}
+			}
+			c.CleanUp()
+			// expired, but not removed until the next maintenance
+			clk.Sleep(2 * time.Second)
+			before := ci.hashmap.Get(1)
+
+			ci.evictionMutex.Lock()
+			p := ci.evictionPolicy
+			require.False(t, p.sketch.isNotInitialized())
+			hits, misses, freq := p.climber.sample.hits, p.climber.sample.misses, p.sketch.frequency(1)
+			ci.evictionMutex.Unlock()
+
+			w.write(t, c)
+			if w.name != "load" {
+				require.Equal(t, inPlace, before == ci.hashmap.Get(1), "%s: in place", w.name)
+			}
+			c.CleanUp()
+
+			ci.evictionMutex.Lock()
+			require.Equal(t, hits, p.climber.sample.hits, "%s, in place %v: climber hits", w.name, inPlace)
+			require.Equal(t, misses+1, p.climber.sample.misses, "%s, in place %v: climber misses", w.name, inPlace)
+			require.Equal(t, freq+1, p.sketch.frequency(1), "%s, in place %v: sketch frequency", w.name, inPlace)
+			ci.evictionMutex.Unlock()
+			validateCache(t, c)
+		}
+	}
+}
+
 // The read that starts a refresh is the request's access. Writing the reloaded value is not
 // another one, whether it is applied in place or replaces the node.
 func TestCache_RefreshCompletionIsNotAnAccess(t *testing.T) {
@@ -3335,7 +3411,7 @@ func TestCache_RefreshCompletionIsNotAnAccess(t *testing.T) {
 		ci.evictionMutex.Lock()
 		p := ci.evictionPolicy
 		require.False(t, p.sketch.isNotInitialized())
-		hits, misses, freq := p.hitsInSample, p.missesInSample, p.sketch.frequency(1)
+		hits, misses, freq := p.climber.sample.hits, p.climber.sample.misses, p.sketch.frequency(1)
 		ci.evictionMutex.Unlock()
 
 		res := <-c.Refresh(context.Background(), 1, LoaderFunc[int, string](func(ctx context.Context, key int) (string, error) {
@@ -3346,8 +3422,8 @@ func TestCache_RefreshCompletionIsNotAnAccess(t *testing.T) {
 		c.CleanUp()
 
 		ci.evictionMutex.Lock()
-		require.Equal(t, hits, p.hitsInSample, "in place %v: climber hits", inPlace)
-		require.Equal(t, misses, p.missesInSample, "in place %v: climber misses", inPlace)
+		require.Equal(t, hits, p.climber.sample.hits, "in place %v: climber hits", inPlace)
+		require.Equal(t, misses, p.climber.sample.misses, "in place %v: climber misses", inPlace)
 		require.Equal(t, freq, p.sketch.frequency(1), "in place %v: sketch frequency", inPlace)
 		ci.evictionMutex.Unlock()
 		validateCache(t, c)

@@ -1,0 +1,17 @@
+type = "file"
+name = "Web07"
+capacities = [ 1000, 2000, 4100, 7200, 10_000, 15_000 ]
+caches = [
+    "otter",
+    "theine",
+    "ristretto",
+    "sturdyc",
+    "arc",
+    "lru",
+    "optimal",
+]
+
+[file]
+paths = [
+    { trace_type = "lirs", path = "trace/cache2k/web07.lirs.xz" },
+]

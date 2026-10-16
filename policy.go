@@ -17,6 +17,7 @@ package otter
 import (
 	"cmp"
 	"iter"
+	"math"
 
 	"github.com/maypok86/otter/v2/internal/deque"
 	"github.com/maypok86/otter/v2/internal/generated/node"
@@ -31,16 +32,25 @@ const (
 	percentMain = 0.99
 	// percentMainProtected is the percent of the maximum weighted capacity dedicated to the main's protected space.
 	percentMainProtected = 0.80
-	// The difference in hit rates that restarts the climber.
-	hillClimberRestartThreshold = 0.05
-	// The percent of the total size to adapt the window by.
-	hillClimberStepPercent = 0.0625
-	// The rate to decrease the step size to adapt by.
-	hillClimberStepDecayRate = 0.98
 	// admitHashdosThreshold is the minimum popularity for allowing randomized admission.
 	admitHashdosThreshold = 6
 	// The maximum number of entries that can be transferred between queues.
 	queueTransferThreshold = 1_000
+)
+
+// accessKind is how the eviction policy observes a write to a key that is already in the cache.
+type accessKind uint8
+
+const (
+	// accessHit is an update of a live entry: a use of the key and a hit in the climber's sample.
+	accessHit accessKind = iota
+	// accessReload is a write over an expired entry that has not been removed yet. The caller
+	// missed, so the climber's sample takes the miss that an insertion would have recorded, while
+	// the sketch still observes the use of the key.
+	accessReload
+	// accessQuiet is the completion of a refresh, whose request was counted by the read that
+	// started it: the entry is only reordered.
+	accessQuiet
 )
 
 type policy[K comparable, V any] struct {
@@ -54,11 +64,7 @@ type policy[K comparable, V any] struct {
 	windowWeightedSize        uint64
 	mainProtectedMaximum      uint64
 	mainProtectedWeightedSize uint64
-	stepSize                  float64
-	adjustment                int64
-	hitsInSample              uint64
-	missesInSample            uint64
-	previousSampleHitRate     float64
+	climber                   windowClimber
 	isWeighted                bool
 	rand                      func() uint32
 	// evict asks the cache to remove a node chosen for eviction, and reports whether the node
@@ -79,6 +85,7 @@ func newPolicy[K comparable, V any](
 		window:     deque.NewLinked[K, V](isExp),
 		probation:  deque.NewLinked[K, V](isExp),
 		protected:  deque.NewLinked[K, V](isExp),
+		climber:    newWindowClimber(),
 		isWeighted: isWeighted,
 		rand:       xruntime.Fastrand,
 		evict:      evict,
@@ -91,9 +98,30 @@ func newPolicy[K comparable, V any](
 
 // access updates the eviction policy based on node accesses.
 func (p *policy[K, V]) access(n node.Node[K, V]) {
+	p.accessAs(n, accessHit)
+}
+
+// accessAs observes an access of the given kind: a quiet one only reorders n, and only a hit
+// counts in the climber's sample.
+func (p *policy[K, V]) accessAs(n node.Node[K, V], kind accessKind) {
+	if kind == accessQuiet {
+		p.reorderNode(n)
+		return
+	}
+	if !n.IsAlive() {
+		// a stale access to an entry that has already left the cache
+		return
+	}
 	p.sketch.increment(n.Key())
+	// the region that earned the hit, before the access promotes a probation entry
+	inWindow := n.InWindow()
+	inProbation := !inWindow && n.InMainProbation()
 	p.reorderNode(n)
-	p.hitsInSample++
+	if kind == accessHit && n.PolicyWeight() != 0 {
+		// A zero-weight entry earns hits without occupying capacity, so it must not steer the
+		// split between the regions; the sketch still observes the key.
+		p.climber.recordHit(inWindow, inProbation)
+	}
 }
 
 // reorderNode moves n as an access does, without counting one in the sketch or the climber's
@@ -109,13 +137,23 @@ func (p *policy[K, V]) reorderNode(n node.Node[K, V]) {
 	}
 }
 
-// accessUpdated is the access of an update; a quiet update only reorders n.
-func (p *policy[K, V]) accessUpdated(n node.Node[K, V], quiet bool) {
-	if quiet {
-		p.reorderNode(n)
+// reload observes a write over an expired entry that kept its node, once reweigh has brought the
+// weight accounted for it in line.
+func (p *policy[K, V]) reload(n node.Node[K, V]) {
+	p.climber.recordMiss()
+	p.accessWritten(n, accessReload)
+}
+
+// accessWritten observes a write to n, whose weight is accounted and within the maximum: an
+// entry heavier than the window stays at its front, any other entry is accessed.
+func (p *policy[K, V]) accessWritten(n node.Node[K, V], kind accessKind) {
+	if n.InWindow() && uint64(n.PolicyWeight()) > p.windowMaximum {
+		if p.window.Contains(n) {
+			p.window.MoveToFront(n)
+		}
 		return
 	}
-	p.access(n)
+	p.accessAs(n, kind)
 }
 
 // add adds node to the eviction policy.
@@ -145,7 +183,7 @@ func (p *policy[K, V]) add(n node.Node[K, V]) {
 	}
 
 	p.sketch.increment(n.Key())
-	p.missesInSample++
+	p.climber.recordMiss()
 
 	if !isAlive {
 		return
@@ -163,8 +201,11 @@ func (p *policy[K, V]) add(n node.Node[K, V]) {
 	}
 }
 
-func (p *policy[K, V]) update(n, old node.Node[K, V], quiet bool) {
+func (p *policy[K, V]) update(n, old node.Node[K, V], kind accessKind) {
 	if !n.IsAlive() {
+		if kind == accessReload {
+			p.climber.recordMiss()
+		}
 		// n was replaced or removed before this update was replayed. The task that replaced or
 		// removed it accounts for n, so only old, which n replaced, leaves the policy. Linking n
 		// here would leave a node that is no longer in the map in a queue.
@@ -176,38 +217,24 @@ func (p *policy[K, V]) update(n, old node.Node[K, V], quiet bool) {
 		// been replaced (add skips linking non-alive nodes), or it was evicted before this update
 		// was replayed. There is nothing to swap n into, so track it as a new entry. Otherwise n
 		// would stay in the map and in weightedSize while being unreachable for eviction.
+		// add records the miss of a reload
 		p.makeDead(old)
 		p.add(n)
 		return
+	}
+	if kind == accessReload {
+		p.climber.recordMiss()
 	}
 
 	nodeWeight := uint64(n.Weight())
 	p.updateNode(n, old)
 	n.SetPolicyWeight(uint32(nodeWeight))
 	p.adjustAccounted(n, 0, nodeWeight)
-	switch {
-	case n.InWindow():
-		switch {
-		case nodeWeight > p.maximum:
-			p.evictNode(n)
-		case nodeWeight <= p.windowMaximum:
-			p.accessUpdated(n, quiet)
-		case p.window.Contains(n):
-			p.window.MoveToFront(n)
-		}
-	case n.InMainProbation():
-		if nodeWeight <= p.maximum {
-			p.accessUpdated(n, quiet)
-		} else {
-			p.evictNode(n)
-		}
-	case n.InMainProtected():
-		if nodeWeight <= p.maximum {
-			p.accessUpdated(n, quiet)
-		} else {
-			p.evictNode(n)
-		}
+	if nodeWeight > p.maximum {
+		p.evictNode(n)
+		return
 	}
+	p.accessWritten(n, kind)
 }
 
 // updateNode puts n in the place of old, which must be linked, and stops accounting old.
@@ -322,15 +349,9 @@ func (p *policy[K, V]) setMaximumSize(maximum uint64) {
 
 	// The hill climber starts over: the quota it has not moved yet and the hit rate of its last
 	// sample were measured for the previous maximum.
-	p.hitsInSample = 0
-	p.missesInSample = 0
-	p.previousSampleHitRate = 0
-	p.adjustment = 0
-	p.stepSize = -hillClimberStepPercent * float64(maximum)
+	p.climber.resized(climberMaximum(maximum))
 
-	// The sketch never shrinks, and neither does its sample: after a lower maximum, the counters
-	// age and the climber samples at the pace of the largest maximum the sketch was sized for (see
-	// design-decisions.md).
+	// The sketch never shrinks, but its sample follows the new maximum.
 	if p.sketch != nil && !p.isWeighted && p.weightedSize >= (maximum>>1) {
 		// Lazily initialize when close to the maximum size
 		p.sketch.ensureCapacity(maximum)
@@ -525,9 +546,25 @@ func (p *policy[K, V]) admit(candidateKey, victimKey K) bool {
 }
 
 func (p *policy[K, V]) climb() {
-	p.determineAdjustment()
+	maximum := climberMaximum(p.maximum)
+	sampleSize := int64(min(p.sketch.sampleSize, math.MaxInt64))
+	switch {
+	case p.sketch.isNotInitialized():
+		p.climber.resetSample()
+	case p.weightedSize >= p.maximum>>1:
+		//nolint:gosec // the window and the protected region are within the maximum
+		p.climber.determineAdjustment(maximum, int64(p.windowMaximum), int64(p.mainProtectedMaximum), sampleSize)
+	default:
+		// An InitialCapacity hint creates the sketch at construction, and a cache can also empty
+		// after it filled. Below half of the maximum, the size at which the sketch is created
+		// otherwise, the cache is not evicting, so the hit rate says nothing about the split
+		// between the window and the main space: the sample is discarded, and the next one is
+		// compared with the hit rate from before the gap.
+		p.climber.discardSample(maximum, sampleSize)
+	}
+
 	p.demoteFromMainProtected()
-	amount := p.adjustment
+	amount := p.climber.adjustment
 	if amount == 0 {
 		return
 	}
@@ -538,49 +575,10 @@ func (p *policy[K, V]) climb() {
 	}
 }
 
-func (p *policy[K, V]) determineAdjustment() {
-	if p.sketch.isNotInitialized() {
-		p.previousSampleHitRate = 0.0
-		p.missesInSample = 0
-		p.hitsInSample = 0
-		return
-	}
-
-	requestCount := p.hitsInSample + p.missesInSample
-	if requestCount < p.sketch.sampleSize {
-		return
-	}
-	if p.weightedSize < p.maximum>>1 {
-		// An InitialCapacity hint creates the sketch at construction, and a cache can also empty
-		// after it filled. Below half of the maximum, the size at which the sketch is created
-		// otherwise, the cache is not evicting, so the hit rate says nothing about the split
-		// between the window and the main space: the sample is discarded.
-		p.missesInSample = 0
-		p.hitsInSample = 0
-		return
-	}
-
-	hitRate := float64(p.hitsInSample) / float64(requestCount)
-	hitRateChange := hitRate - p.previousSampleHitRate
-	amount := p.stepSize
-	if hitRateChange < 0 {
-		amount = -p.stepSize
-	}
-	var nextStepSize float64
-	if abs(hitRateChange) >= hillClimberRestartThreshold {
-		k := float64(-1)
-		if amount >= 0 {
-			k = float64(1)
-		}
-		nextStepSize = hillClimberStepPercent * float64(p.maximum) * k
-	} else {
-		nextStepSize = hillClimberStepDecayRate * amount
-	}
-	p.previousSampleHitRate = hitRate
-	p.adjustment = int64(amount)
-	p.stepSize = nextStepSize
-	p.missesInSample = 0
-	p.hitsInSample = 0
+// climberMaximum returns the maximum in the climber's signed arithmetic.
+func climberMaximum(maximum uint64) int64 {
+	//nolint:gosec // bounded by maxClimberMaximum
+	return int64(min(maximum, maxClimberMaximum))
 }
 
 func (p *policy[K, V]) demoteFromMainProtected() {
@@ -612,8 +610,8 @@ func (p *policy[K, V]) increaseWindow() {
 		return
 	}
 
-	quota := p.adjustment
-	if p.mainProtectedMaximum < uint64(p.adjustment) {
+	quota := p.climber.adjustment
+	if p.mainProtectedMaximum < uint64(quota) {
 		quota = int64(p.mainProtectedMaximum)
 	}
 	p.mainProtectedMaximum -= uint64(quota)
@@ -650,7 +648,7 @@ func (p *policy[K, V]) increaseWindow() {
 
 	p.mainProtectedMaximum += uint64(quota)
 	p.windowMaximum -= uint64(quota)
-	p.adjustment = quota
+	p.climber.carryOver(quota)
 }
 
 func (p *policy[K, V]) decreaseWindow() {
@@ -658,9 +656,9 @@ func (p *policy[K, V]) decreaseWindow() {
 		return
 	}
 
-	quota := -p.adjustment
-	windowMaximum := max(0, p.windowMaximum-1)
-	if windowMaximum < uint64(-p.adjustment) {
+	quota := -p.climber.adjustment
+	windowMaximum := p.windowMaximum - 1
+	if windowMaximum < uint64(quota) {
 		quota = int64(windowMaximum)
 	}
 	p.mainProtectedMaximum += uint64(quota)
@@ -686,14 +684,7 @@ func (p *policy[K, V]) decreaseWindow() {
 
 	p.mainProtectedMaximum -= uint64(quota)
 	p.windowMaximum += uint64(quota)
-	p.adjustment = -quota
-}
-
-func abs(a float64) float64 {
-	if a < 0 {
-		return -a
-	}
-	return a
+	p.climber.carryOver(-quota)
 }
 
 func reorder[K comparable, V any](d *deque.Linked[K, V], n node.Node[K, V]) {

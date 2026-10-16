@@ -77,12 +77,14 @@ Every change decided from a key's current value (`set`, `doCompute`, `Invalidate
 3. After the lock is released, `publish` (`afterWrite` for a write, `afterDelete` for a
    removal):
    - in place: an access through the read buffer, plus a `reconcileReason` task if the weight
-     changed or the deadline moved earlier;
+     changed or the deadline moved earlier; a write over an expired entry in a cache with
+     eviction (a reload) skips the read buffer and always sends the `reconcileReason` task,
+     tagged `accessReload`, so that the climber counts a miss rather than a hit;
    - insert: an `addReason` task; replacement: an `updateReason` task;
    - the completion of a refresh is not an access, since the read that started it was one: in
      place it skips the read buffer (the timer wheel reschedules a deadline that moved later
-     when it finds the node unexpired), and its `updateReason` task is `quiet`, so
-     `policy.update` only reorders the node;
+     when it finds the node unexpired), and its `updateReason` task carries `accessQuiet`, so
+     `policy.update` only reorders the node (a replaced reload carries `accessReload`);
    - `OnDeletion` of the previous value is submitted here on every path, not when maintenance
      replays the task, and before the task is handed to the write buffer, where maintenance
      running on the writer (a caller-runs executor, a full buffer) could evict the new value

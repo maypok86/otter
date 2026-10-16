@@ -1,0 +1,17 @@
+type = "file"
+name = "MCF"
+capacities = [ 36_000, 72_000, 140_000, 250_000, 360_000, 540_000 ]
+caches = [
+    "otter",
+    "theine",
+    "ristretto",
+    "sturdyc",
+    "arc",
+    "lru",
+    "optimal",
+]
+
+[file]
+paths = [
+    { trace_type = "lirs", path = "trace/address/mcf.lirs.xz" },
+]

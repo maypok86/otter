@@ -17,6 +17,7 @@ package otter
 import (
 	"context"
 	"fmt"
+	"math"
 	"math/rand/v2"
 	"strings"
 	"sync"
@@ -136,6 +137,9 @@ func validateCache[K comparable, V any](t testing.TB, c *Cache[K, V]) {
 		} else if p.mainProtectedMaximum > p.maximum-p.windowMaximum {
 			report("mainProtectedMaximum = %d exceeds the main region's maximum %d", p.mainProtectedMaximum, p.maximum-p.windowMaximum)
 		}
+		for _, v := range climberInvariantViolations(&p.climber, climberMaximum(p.maximum)) {
+			report("climber: %s", v)
+		}
 	}
 
 	if ci.withExpiration {
@@ -197,6 +201,7 @@ func TestValidateCache_ReportsBrokenPolicy(t *testing.T) {
 	}{
 		{"window maximum", func(p *policy[int, int]) { p.windowMaximum = p.maximum + 1 }, "windowMaximum"},
 		{"protected maximum", func(p *policy[int, int]) { p.mainProtectedMaximum = p.maximum }, "mainProtectedMaximum"},
+		{"climber", func(p *policy[int, int]) { p.climber.reactive.step.size = math.NaN() }, "climber: the step size is finite"},
 		{"back-link", func(p *policy[int, int]) { p.probation.Tail().SetPrev(nil) }, "back-link"},
 		{"length", func(p *policy[int, int]) {
 			// unlinked by its neighbours, which keeps the links consistent but not the length

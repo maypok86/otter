@@ -1,0 +1,17 @@
+type = "file"
+name = "Scan"
+capacities = [ 100, 200, 400, 700, 1000, 1500 ]
+caches = [
+    "otter",
+    "theine",
+    "ristretto",
+    "sturdyc",
+    "arc",
+    "lru",
+    "optimal",
+]
+
+[file]
+paths = [
+    { trace_type = "lirs", path = "trace/lirs/scan.gz" },
+]

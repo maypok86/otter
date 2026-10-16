@@ -47,10 +47,22 @@ func TestSketch_Basic(t *testing.T) {
 			name: "ensureCapacity_smaller",
 			do: func(t *testing.T, s *sketch[int]) {
 				size := uint64(len(s.table))
+				s.size = 10*size - 1
 				s.ensureCapacity(size / 2)
 				require.Len(t, s.table, int(size))
-				require.Equal(t, 10*size, s.sampleSize)
+				// the table is kept, but the sample follows the smaller maximum
+				require.Equal(t, 10*(size/2), s.sampleSize)
+				require.Equal(t, s.sampleSize-1, s.size)
 				require.Equal(t, (size>>3)-1, s.blockMask)
+			},
+		},
+		{
+			name:          "ensureCapacity_minimum",
+			withoutEnsure: true,
+			do: func(t *testing.T, s *sketch[int]) {
+				s.ensureCapacity(1)
+				require.Len(t, s.table, minSketchSize)
+				require.Equal(t, uint64(10*minSketchSize), s.sampleSize)
 			},
 		},
 		{
@@ -186,4 +198,30 @@ func TestSketch_HeavyHitters(t *testing.T) {
 			require.LessOrEqual(t, popularity[6], popularity[8])
 		}
 	}
+}
+
+// A lower maximum cuts the sample of a table filled at the old pace, which can hold more odd
+// counters than four times the cut size. The counters must keep aging after the first reset.
+func TestSketch_ResetAfterShrink(t *testing.T) {
+	t.Parallel()
+
+	s := newSketch[int]()
+	s.ensureCapacity(1 << 16)
+	for i := range 40 << 16 {
+		s.increment(i)
+	}
+
+	s.ensureCapacity(1000)
+	resets := 0
+	maxSize := uint64(0)
+	for i := range 1 << 20 {
+		before := s.size
+		s.increment(i)
+		if s.size < before {
+			resets++
+		}
+		maxSize = max(maxSize, s.size)
+	}
+	require.Greater(t, resets, 1)
+	require.Less(t, maxSize, s.sampleSize)
 }
