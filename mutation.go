@@ -163,19 +163,23 @@ func (c *cache[K, V]) publish(m mutation[K, V]) {
 // afterWrite publishes a write. It takes the previous value from the mutation, because after an
 // in-place update the previous node is the written one.
 func (c *cache[K, V]) afterWrite(m mutation[K, V], onExecutor bool) {
-	n, old := m.next, m.node
 	// The previous value is reported when the write is applied, not when maintenance replays its
 	// task, and before the write reaches the policies: a task handed to the write buffer may be
 	// replayed at once on this goroutine (by an executor that runs tasks on the caller, or when the
 	// buffer is full), and that maintenance may evict or expire the new value, whose event must not
-	// come first.
-	if old != nil {
-		c.notifyDeletionFrom(onExecutor, old.Key(), m.value, m.cause)
+	// come first. The write reaches the policies even if the listener or the executor calls
+	// runtime.Goexit: the table has changed already.
+	if c.withMaintenance {
+		defer c.afterWritePolicies(m)
 	}
-	if !c.withMaintenance {
-		return
+	if m.node != nil {
+		c.notifyDeletionFrom(onExecutor, m.node.Key(), m.value, m.cause)
 	}
+}
 
+// afterWritePolicies hands a write to the policies.
+func (c *cache[K, V]) afterWritePolicies(m mutation[K, V]) {
+	n, old := m.next, m.node
 	// The read that started a refresh was the request's access, so its completion is not another
 	// one.
 	quiet := m.from == fromRefresh
