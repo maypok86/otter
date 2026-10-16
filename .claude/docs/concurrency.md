@@ -86,11 +86,14 @@ Every change decided from a key's current value (`set`, `doCompute`, `Invalidate
    - `OnDeletion` of the previous value is submitted here on every path, not when maintenance
      replays the task, and before the task is handed to the write buffer, where maintenance
      running on the writer (a caller-runs executor, a full buffer) could evict the new value
-     first. The events of one key thus reach the executor in the order of the mutations, for
-     mutations ordered by happens-before; two goroutines that write a key submit after the
-     lock is released, in either order. Maintenance submits only the removals it decides
-     itself (evictions, expirations found by the timer wheel). The task is handed off in a
-     `defer`, so a listener or an executor that calls `runtime.Goexit` does not lose it.
+     first. The events that writers submit for one key thus reach the executor in the order of
+     the mutations, for mutations ordered by happens-before; two goroutines that write a key
+     submit after the lock is released, in either order. Maintenance submits only the
+     removals it decides itself (evictions, expirations found by the timer wheel). On another
+     goroutine it can make one between a write's release of the lock and its submission: a
+     node updated in place stays linked, so its eviction or expiration can be reported before
+     the value the update replaced. The task is handed off in a `defer`, so a listener or an
+     executor that calls `runtime.Goexit` does not lose it.
 4. Tasks go to the bounded MPSC write buffer. When it is full, the writer runs
    `performCleanUp` itself under `evictionMutex`.
 
