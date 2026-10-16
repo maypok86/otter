@@ -8,6 +8,8 @@ disable-model-invocation: true
 
 Analyze the cache for defects caused by user callbacks calling back into the cache.
 
+Adapted from Caffeine's `audit-reentrancy`.
+
 ## Callbacks
 
 1. `Loader.Load` / `Reload`, `BulkLoader.BulkLoad` / `BulkReload`
