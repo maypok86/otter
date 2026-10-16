@@ -251,6 +251,10 @@ func (c *cache[K, V]) atomicSet(
 		// after the expiration time, so that the refresh calculator sees the new one
 		entry.RefreshableAtNano = refreshableAtAfterWrite(c.refreshCalculator, kind, entry, oldValue, nil, nowNano)
 	}
+	// The calls are cancelled before the new value is published: a refresh requested by a read
+	// that saw it must not join a call that this write cancels, which would discard the refresh.
+	// When the node is updated in place, superseded cannot tell such a call from a live one.
+	c.cancelCalls(key, from)
 
 	if old != nil && c.withMaintenance && old.IsAlive() && old.CanSetValue() {
 		written := writeResult{
@@ -277,7 +281,6 @@ func (c *cache[K, V]) atomicSet(
 		if c.withRefresh {
 			old.SetRefreshableAt(entry.RefreshableAtNano)
 		}
-		c.cancelCalls(key, from)
 		return old, written
 	}
 
@@ -288,15 +291,13 @@ func (c *cache[K, V]) atomicSet(
 		written.cause = getCause(old, nowNano, CauseReplacement)
 		c.notifyAtomicDeletion(old.Key(), oldValue, written.cause)
 	}
-	c.cancelCalls(key, from)
 	return n, written
 }
 
 // cancelCalls cancels the pending load or refresh of key when a write from the cache's API
-// changes it. It runs after the new value is published, including the OnAtomicDeletion call
-// before that: a refresh requested from the previous value while the write was in progress is
-// cancelled too. A load or refresh requested after this point either sees the new value or, if
-// the node is replaced, finds that its base node is gone.
+// changes it. It runs under the key's bucket lock before the new value is published, and a
+// refresh is registered under that lock too: a refresh requested while the write is in progress
+// either is cancelled or sees the new value.
 func (c *cache[K, V]) cancelCalls(key K, from origin) {
 	if from == fromCaller {
 		c.singleflight.delete(key)

@@ -99,10 +99,11 @@ Audits read this file **after** recording their findings (Phase 1.5 of the audit
 ## Loading and refresh
 
 - **A refresh is registered under the key's bucket lock.** Writes cancel calls under that lock,
-  so a refresh is either cancelled by a write or registered after it. A refresh that joins a
-  registered call takes no lock, but one that registers does. It waits for whatever holds the lock: a `Compute`
-  function, a weigher, a calculator or `OnAtomicDeletion` of a key in the bucket, or a growth
-  of the table. With an instant loader every stale read registers, and such reads cost about
+  so a refresh is either cancelled by a write or registered after it, and a read that saw a
+  write never joins a refresh the write cancelled. A refresh that joins a registered call takes
+  no lock, but one that registers does. It waits for whatever holds the lock: a `Compute`
+  function, a weigher, a calculator or `OnAtomicDeletion` of a key in the bucket, or a growth of
+  the table. With an instant loader every stale read registers, and such reads cost about
   19% more on 8 cores; with a 1 ms loader they are no slower. A refresh that a read started
   is skipped if its key is gone by the registration.
 

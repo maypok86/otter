@@ -1847,6 +1847,50 @@ func TestCache_RefreshOfKeyInsertedBeforeItsRegistration(t *testing.T) {
 	}
 }
 
+func TestCache_InPlaceWriteCancelsRefreshBeforePublishing(t *testing.T) {
+	t.Parallel()
+
+	// A write that updated a node in place used to cancel the key's refresh only after it had
+	// stored the new value. A read that saw the new value in between found that refresh and
+	// joined it: it got a reload of the previous value, which was then discarded, and the new
+	// value was not refreshed. The synchronous listener runs before the new value is published,
+	// so the refresh must be cancelled by the time it runs.
+	clock := newNonTickingClock()
+	executor := &queuedExecutor{}
+	var (
+		c       *Cache[int, int]
+		checked atomic.Bool
+		pending atomic.Bool
+	)
+	c = Must(&Options[int, int]{
+		MaximumSize:       100,
+		RefreshCalculator: RefreshWriting[int, int](time.Second),
+		Clock:             clock,
+		Executor:          executor.execute,
+		OnAtomicDeletion: func(e DeletionEvent[int, int]) {
+			if e.Cause == CauseReplacement {
+				checked.Store(true)
+				pending.Store(c.cache.singleflight.getCall(1) != nil)
+			}
+		},
+	})
+	c.Set(1, 1)
+	clock.Sleep(2 * time.Second)
+	n := c.cache.getNodeQuietly(1, c.cache.clock.NowNano())
+	require.True(t, n.CanSetValue(), "the write would not update the node in place")
+	c.Refresh(context.Background(), 1, reloadAdds{})
+	require.NotNil(t, c.cache.singleflight.getCall(1))
+
+	c.Set(1, 2)
+	require.True(t, checked.Load())
+	require.False(t, pending.Load(), "the refresh was still registered when the new value was published")
+	require.Same(t, n, c.cache.getNodeQuietly(1, c.cache.clock.NowNano()), "the node was replaced")
+	executor.run()
+	v, ok := c.GetIfPresent(1)
+	require.True(t, ok)
+	require.Equal(t, 2, v)
+}
+
 // A key that the bulk loader returns without being asked for only fills a gap: it is cached if the
 // key has no value and is not being loaded when the bulk load completes. Nothing registered the
 // key before the load, so a write during the load could not cancel it, and it used to overwrite

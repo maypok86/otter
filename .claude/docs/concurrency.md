@@ -207,9 +207,12 @@ hold together:
   finishes them if the executor panics). A refresh that a read started is not registered if the
   node is fresh by then or the key is gone. A refresh that finds a call it would join takes no
   lock;
-- writes and invalidations cancel pending calls under the same lock (`cancelCalls`). A refresh
-  requested by another goroutine during a write waits for the lock and starts from what the
-  write left. A replacing node is stored only after the callback, which the next point covers;
+- writes and invalidations cancel pending calls under the same lock, before the change is
+  published (`cancelCalls`, before `OnAtomicDeletion` and `SetValue`). A refresh requested by
+  another goroutine during a write waits for the lock and starts from what the write left, and
+  a read that saw the new value does not find a call that the write cancelled: joining it would
+  discard the refresh. A replacing node is stored only after the callback, which the next point
+  covers;
 - a call records the node it was started for (`call.base`, nil for a load), and its result is
   written only if that node is still the key's node and has not expired (`isRefreshBase` in
   `group.authoritative`), which covers a replacement or removal published after the write's
