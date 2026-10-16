@@ -45,8 +45,8 @@ Compare return values, hit/miss stats, listener events, deadlines and refresh ti
   (`atomicSet`): events, causes, weight accounting, deadlines, refresh scheduling
 - C2: `set` vs `doCompute` vs `commitCall` (load or refresh completion), each calling
   `atomicSet`: what each passes in, what each does after the lock
-- C3: `afterWrite` vs `afterDelete` vs `runTask`: which events reach `OnDeletion` and with
-  which cause
+- C3: `afterWrite` vs `afterDelete` vs `removeNode` (maintenance): which events reach
+  `OnDeletion`, with which cause and in which order
 
 **Group D: removal paths**
 - D1: `Invalidate` vs expiration (`expireNode`) vs eviction (`evictNode`) vs `Compute`
