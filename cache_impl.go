@@ -868,7 +868,7 @@ func (c *cache[K, V]) loadOrJoin(
 		value, ok := c.valueAfterRefusal(key)
 		return value, !ok, nil
 	}
-	if cl.expiredBefore(nowNano) {
+	if c.withExpiration && cl.expiredBefore(nowNano) {
 		// The Get joined a load after its value had been committed and had expired: a Get that
 		// started after the expiration loads the key again.
 		return zeroValue[V](), true, nil
@@ -1267,7 +1267,7 @@ func (c *cache[K, V]) bulkLoadOrJoin(
 			retry[key] = nil
 			continue
 		}
-		if _, own := toLoadCalls[key]; !own && cl.expiredBefore(nowNano) {
+		if _, own := toLoadCalls[key]; !own && c.withExpiration && cl.expiredBefore(nowNano) {
 			// a value that expired before this load, see loadOrJoin
 			if retry == nil {
 				retry = make(map[K]*call[K, V], len(misses)-i+1)
