@@ -268,6 +268,77 @@ func TestCache_GoexitInExecutorDoesNotStopMaintenance(t *testing.T) {
 	require.LessOrEqual(t, c.EstimatedSize(), 10)
 }
 
+// The OnDeletion listener, when it runs on the writer, or an executor handed it may call
+// runtime.Goexit. The write it reports has changed the table already, so it still reaches the
+// policies: a new value is linked into them and can be evicted, and a removed one leaves them.
+func TestCache_GoexitInOnDeletionStillUpdatesThePolicies(t *testing.T) {
+	t.Parallel()
+
+	for _, exiter := range []string{"listener", "executor"} {
+		for _, tt := range []struct {
+			name  string
+			write func(c *Cache[int, [2]int])
+		}{
+			// The first update of an inline value replaces the node, and later ones are in place.
+			{"replacement", func(c *Cache[int, [2]int]) { c.Set(1, [2]int{2}) }},
+			{"reweigh", func(c *Cache[int, [2]int]) { c.Set(1, [2]int{5}) }},
+			{"invalidation", func(c *Cache[int, [2]int]) { c.Invalidate(1) }},
+		} {
+			t.Run(exiter+"/"+tt.name, func(t *testing.T) {
+				t.Parallel()
+
+				var exit atomic.Bool
+				exitOnce := func() {
+					if exit.CompareAndSwap(true, false) {
+						runtime.Goexit()
+					}
+				}
+				opts := &Options[int, [2]int]{
+					MaximumWeight: 10,
+					Weigher:       func(_ int, v [2]int) uint32 { return uint32(v[0]) },
+					OnDeletion:    func(DeletionEvent[int, [2]int]) {},
+					Executor:      syncExecutor,
+				}
+				if exiter == "listener" {
+					opts.OnDeletion = func(DeletionEvent[int, [2]int]) { exitOnce() }
+				} else {
+					opts.Executor = func(fn func()) {
+						exitOnce()
+						fn()
+					}
+				}
+				c := Must(opts)
+				c.Set(1, [2]int{1})
+				if tt.name == "reweigh" {
+					c.Set(1, [2]int{2})
+				}
+				c.CleanUp()
+
+				exit.Store(true)
+				done := make(chan struct{})
+				go func() {
+					defer close(done)
+					tt.write(c)
+				}()
+				<-done
+				require.False(t, exit.Load(), "the %s was not called", exiter)
+
+				validateCache(t, c)
+				for i := 2; i < 100; i++ {
+					c.Set(i, [2]int{1})
+				}
+				c.CleanUp()
+				var weight int
+				for _, v := range c.All() {
+					weight += v[0]
+				}
+				require.LessOrEqual(t, weight, 10)
+				validateCache(t, c)
+			})
+		}
+	}
+}
+
 // A refresh that a read starts is the cache's own work. If a custom executor panics when it is
 // handed one, the panic is logged and the read returns what it found, as when the executor
 // panics on maintenance or OnDeletion. The refresh is finished, so a later read starts another.

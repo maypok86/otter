@@ -1534,10 +1534,14 @@ func (c *cache[K, V]) afterDelete(deleted node.Node[K, V], cause DeletionCause, 
 	}
 
 	// Reported by the removal, before its task, as afterWrite reports a write.
-	c.notifyDeletionFrom(onExecutor, deleted.Key(), deleted.Value(), cause)
-	if !c.withMaintenance {
-		return
+	if c.withMaintenance {
+		defer c.afterDeletePolicies(deleted, alreadyLocked)
 	}
+	c.notifyDeletionFrom(onExecutor, deleted.Key(), deleted.Value(), cause)
+}
+
+// afterDeletePolicies hands a removal to the policies.
+func (c *cache[K, V]) afterDeletePolicies(deleted node.Node[K, V], alreadyLocked bool) {
 	t := newTask(deleted, nil, deleteReason)
 	if alreadyLocked {
 		c.runTask(t)

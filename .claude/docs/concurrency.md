@@ -89,7 +89,8 @@ Every change decided from a key's current value (`set`, `doCompute`, `Invalidate
      first. The events of one key thus reach the executor in the order of the mutations, for
      mutations ordered by happens-before; two goroutines that write a key submit after the
      lock is released, in either order. Maintenance submits only the removals it decides
-     itself (evictions, expirations found by the timer wheel).
+     itself (evictions, expirations found by the timer wheel). The task is handed off in a
+     `defer`, so a listener or an executor that calls `runtime.Goexit` does not lose it.
 4. Tasks go to the bounded MPSC write buffer. When it is full, the writer runs
    `performCleanUp` itself under `evictionMutex`.
 
