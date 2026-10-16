@@ -303,8 +303,8 @@ func TestCache_InPlaceUpdateNotifications(t *testing.T) {
 		var visible []int
 		cc.onAtomicDeletion = func(e DeletionEvent[int, int]) {
 			// what a lock-free reader sees while the synchronous listener runs
-			v, _ := cc.cache.peek(e.Key)
-			visible = append(visible, v)
+			entry, _ := cc.cache.GetEntryQuietly(e.Key)
+			visible = append(visible, entry.Value)
 		}
 
 		cc.cache.Set(1, 1)

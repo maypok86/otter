@@ -493,9 +493,6 @@ type testCache interface {
 
 	// nodeID identifies the node of key, or is nil if the table has none.
 	nodeID(key int) any
-	// peek returns the value of the node of key as a lock-free reader sees it, without reading
-	// it through the cache.
-	peek(key int) (int, bool)
 	validate(t *testing.T)
 }
 
@@ -806,14 +803,6 @@ func (s *specCache[V]) nodeID(key int) any {
 		return nil
 	}
 	return n.AsPointer()
-}
-
-func (s *specCache[V]) peek(key int) (int, bool) {
-	n := s.c.cache.hashmap.Get(key)
-	if n == nil {
-		return 0, false
-	}
-	return s.fromV(n.Value()), true
 }
 
 func (s *specCache[V]) validate(t *testing.T) {
