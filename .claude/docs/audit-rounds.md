@@ -16,5 +16,6 @@ Read when starting or triaging a batch of `/audit-*` runs.
   branch from `main` and a `fix:` commit with the failing test.
 
 Expected value, highest first, for otter: `audit-panic-safety`, `audit-state-machine`,
-`audit-sibling-divergence`, `audit-linearizability`, `audit-liveness`, `audit-policy`,
-`audit-lifecycle`, `audit-reentrancy`, `audit-contract-drift`, `audit-arithmetic`.
+`audit-sibling-divergence`, `audit-feature-interaction`, `audit-linearizability`,
+`audit-liveness`, `audit-policy`, `audit-lifecycle`, `audit-reentrancy`, `audit-contract-drift`,
+`audit-arithmetic`.
