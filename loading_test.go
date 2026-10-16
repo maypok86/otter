@@ -2952,33 +2952,14 @@ func TestCache_GetJoinedRefreshNotWritten(t *testing.T) {
 			// Tasks wait in a queue until run: the refresh until a Get has joined it, and the
 			// maintenance, which would remove an expired node and drop its refresh before the Get
 			// joins it.
-			var (
-				mu    sync.Mutex
-				tasks []func()
-			)
-			run := func() {
-				for {
-					mu.Lock()
-					if len(tasks) == 0 {
-						mu.Unlock()
-						return
-					}
-					fn := tasks[0]
-					tasks = tasks[1:]
-					mu.Unlock()
-					fn()
-				}
-			}
+			var q queuedExecutor
+			run := q.run
 			clock := newNonTickingClock()
 			c := Must(&Options[int, int]{
 				ExpiryCalculator:  ExpiryWriting[int, int](time.Minute),
 				RefreshCalculator: RefreshWriting[int, int](10 * time.Second),
 				Clock:             clock,
-				Executor: func(fn func()) {
-					mu.Lock()
-					defer mu.Unlock()
-					tasks = append(tasks, fn)
-				},
+				Executor:          q.execute,
 			})
 			tt.start(c, clock)
 
