@@ -266,6 +266,11 @@ func (c *cache[K, V]) writeEntry(key K, value V, weight uint32, old node.Node[K,
 }
 
 func (c *cache[K, V]) nodeToEntry(n node.Node[K, V], nanos int64) Entry[K, V] {
+	return c.nodeValueToEntry(n, n.Value(), nanos)
+}
+
+// nodeValueToEntry is nodeToEntry with the value the caller loaded from the node.
+func (c *cache[K, V]) nodeValueToEntry(n node.Node[K, V], value V, nanos int64) Entry[K, V] {
 	nowNano := noTime
 	if c.withTime {
 		nowNano = nanos
@@ -283,7 +288,7 @@ func (c *cache[K, V]) nodeToEntry(n node.Node[K, V], nanos int64) Entry[K, V] {
 
 	return Entry[K, V]{
 		Key:               n.Key(),
-		Value:             n.Value(),
+		Value:             value,
 		Weight:            n.Weight(),
 		ExpiresAtNano:     expiresAt,
 		RefreshableAtNano: refreshableAt,
@@ -300,33 +305,40 @@ func (c *cache[K, V]) has(key K) bool {
 // GetIfPresent returns the value associated with the key in this cache.
 func (c *cache[K, V]) GetIfPresent(key K) (V, bool) {
 	nowNano := c.clock.NowNano()
-	n := c.getNode(key, nowNano)
+	n, value := c.getNode(key, nowNano)
 	if n == nil {
 		return zeroValue[V](), false
 	}
 
-	return n.Value(), true
+	return value, true
 }
 
-// getNode returns the node associated with the key in this cache.
-func (c *cache[K, V]) getNode(key K, nowNano int64) node.Node[K, V] {
-	n := c.hashmap.Get(key)
+// getNode returns the node associated with the key in this cache, and its value. The value is
+// loaded once and is the one ExpireAfterRead is shown, so a read that returns it comes before an
+// update in place that replaces it.
+func (c *cache[K, V]) getNode(key K, nowNano int64) (n node.Node[K, V], value V) {
+	n = c.hashmap.Get(key)
 	if n == nil {
 		c.stats.RecordMisses(1)
 		if c.drainStatus.Load() == required {
 			c.scheduleDrainBuffers()
 		}
-		return nil
+		return nil, value
 	}
 	if n.HasExpired(nowNano) {
 		c.stats.RecordMisses(1)
 		c.scheduleDrainBuffers()
-		return nil
+		return nil, value
 	}
 
-	c.afterRead(n, nowNano, true, true)
+	if c.withReadExpiry {
+		value = c.calcExpiresAtAfterRead(n, nowNano)
+	} else {
+		value = n.Value()
+	}
+	c.afterRead(n, true)
 
-	return n
+	return n, value
 }
 
 // getNodeQuietly returns the node associated with the key in this cache.
@@ -343,13 +355,9 @@ func (c *cache[K, V]) getNodeQuietly(key K, nowNano int64) node.Node[K, V] {
 	return n
 }
 
-func (c *cache[K, V]) afterRead(got node.Node[K, V], nowNano int64, recordHit, calcExpiresAt bool) {
+func (c *cache[K, V]) afterRead(got node.Node[K, V], recordHit bool) {
 	if recordHit {
 		c.stats.RecordHits(1)
-	}
-
-	if calcExpiresAt {
-		c.calcExpiresAtAfterRead(got, nowNano)
 	}
 
 	delayable := c.skipReadBuffer() || c.readBuffer.Add(got) != lossy.Full
@@ -377,12 +385,12 @@ func (c *cache[K, V]) SetIfAbsent(key K, value V) (V, bool) {
 	return c.set(key, value, true)
 }
 
-func (c *cache[K, V]) calcExpiresAtAfterRead(n node.Node[K, V], nowNano int64) {
-	if !c.withReadExpiry {
-		return
-	}
-
-	entry := c.nodeToEntry(n, nowNano)
+// calcExpiresAtAfterRead moves the deadline of n as ExpireAfterRead asks for the entry with the
+// value it loads, and returns that value for the read to return. The cache must have read expiry
+// (withReadExpiry).
+func (c *cache[K, V]) calcExpiresAtAfterRead(n node.Node[K, V], nowNano int64) V {
+	value, valuePtr, valueWord := n.ValueAndIdentity()
+	entry := c.nodeValueToEntry(n, value, nowNano)
 	// The new deadline is derived from the entry the calculator was shown, so it may only replace
 	// that entry's deadline. A writer can store a new deadline in place in the meantime, and
 	// comparing against a fresh read of the node would revert it to one derived from the old value.
@@ -391,20 +399,29 @@ func (c *cache[K, V]) calcExpiresAtAfterRead(n node.Node[K, V], nowNano int64) {
 		// absent: moving the deadline of an expired entry would bring it back. The clock is
 		// read again only here, since the deadline rarely moves (see expireTolerance).
 		if entry.ExpiresAtNano <= c.clock.NowNano() {
-			return
+			return value
+		}
+		// The read returns value, so it comes before an update in place that replaced the value
+		// while the calculator ran, and the update's deadline stands. The CAS alone would not
+		// tell: the update may store the very deadline the entry had, for example when the clock
+		// has not moved. An update in the few instructions between this check and the CAS still
+		// can, as the writer stores the value before the deadline.
+		if _, p, w := n.ValueAndIdentity(); p != valuePtr || w != valueWord {
+			return value
 		}
 		n.CASExpiresAt(entry.ExpiresAtNano, next)
 	}
+	return value
 }
 
 // GetEntry returns the cache entry associated with the key in this cache.
 func (c *cache[K, V]) GetEntry(key K) (Entry[K, V], bool) {
 	nowNano := c.clock.NowNano()
-	n := c.getNode(key, nowNano)
+	n, value := c.getNode(key, nowNano)
 	if n == nil {
 		return Entry[K, V]{}, false
 	}
-	return c.nodeToEntry(n, nowNano), true
+	return c.nodeValueToEntry(n, value, nowNano), true
 }
 
 // GetEntryQuietly returns the cache entry associated with the key in this cache.
@@ -467,7 +484,7 @@ func (c *cache[K, V]) setExpiresAt(key K, deadline func(nowNano int64) int64) {
 	if n == nil {
 		return
 	}
-	c.afterRead(n, nowNano, false, false)
+	c.afterRead(n, false)
 	if earlier {
 		// The read buffer may drop the access, and the node would then wait in the timer wheel's
 		// bucket for its former deadline, so an earlier deadline goes through the write buffer,
@@ -507,7 +524,9 @@ func (c *cache[K, V]) setRefreshableAt(key K, deadline func(nowNano int64) int64
 func (c *cache[K, V]) set(key K, value V, onlyIfAbsent bool) (V, bool) {
 	m := c.mutate(key, fromCaller, func(prev previous[K, V]) (mutationOp, V) {
 		if onlyIfAbsent && prev.live {
-			c.calcExpiresAtAfterRead(prev.node, prev.nowNano)
+			if c.withReadExpiry {
+				c.calcExpiresAtAfterRead(prev.node, prev.nowNano)
+			}
 			return opKeep, value
 		}
 		return opWrite, value
@@ -518,7 +537,7 @@ func (c *cache[K, V]) set(key K, value V, onlyIfAbsent bool) (V, bool) {
 		return value, true
 	}
 	if onlyIfAbsent {
-		c.afterRead(m.node, m.nowNano, false, false)
+		c.afterRead(m.node, false)
 	}
 	return m.value, false
 }
@@ -570,8 +589,8 @@ func (c *cache[K, V]) ComputeIfAbsent(
 	mappingFunc func() (newValue V, cancel bool),
 ) (V, bool) {
 	nowNano := c.clock.NowNano()
-	if n := c.getNode(key, nowNano); n != nil {
-		return n.Value(), true
+	if n, value := c.getNode(key, nowNano); n != nil {
+		return value, true
 	}
 
 	return c.doCompute(key, func(oldValue V, found bool) (newValue V, op ComputeOp) {
@@ -810,11 +829,10 @@ func (c *cache[K, V]) Get(ctx context.Context, key K, loader Loader[K, V]) (V, e
 	c.singleflight.init()
 
 	nowNano := c.clock.NowNano()
-	n := c.getNode(key, nowNano)
+	// The value is read before the refresh starts: the node may be updated in place by then
+	// (with a synchronous executor, by the refresh itself).
+	n, value := c.getNode(key, nowNano)
 	if n != nil {
-		// Read before the refresh starts: the node may be updated in place by then (with a
-		// synchronous executor, by the refresh itself).
-		value := n.Value()
 		// A node that is being removed is not fresh either, but there is nothing to refresh. It is
 		// checked after IsFresh: a node retired in between would pass the check before.
 		if !n.IsFresh(nowNano) && n.IsAlive() {
@@ -1167,7 +1185,7 @@ func (c *cache[K, V]) BulkGet(ctx context.Context, keys []K, bulkLoader BulkLoad
 			continue
 		}
 
-		n := c.getNode(key, nowNano)
+		n, value := c.getNode(key, nowNano)
 		if n != nil {
 			// a node that is being removed is not refreshed, see Get
 			if !n.IsFresh(nowNano) && n.IsAlive() {
@@ -1181,7 +1199,7 @@ func (c *cache[K, V]) BulkGet(ctx context.Context, keys []K, bulkLoader BulkLoad
 				})
 			}
 
-			result[key] = n.Value()
+			result[key] = value
 			continue
 		}
 

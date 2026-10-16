@@ -183,3 +183,7 @@ func (n *B[K, V]) SetValue(v V) {
 func (n *B[K, V]) CanSetValue() bool {
 	return false
 }
+
+func (n *B[K, V]) ValueAndIdentity() (V, unsafe.Pointer, uint64) {
+	return n.value, nil, 0
+}

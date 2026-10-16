@@ -285,3 +285,22 @@ func (n *BER[K, V]) setBoxedValue(v V) {
 func (n *BER[K, V]) CanSetValue() bool {
 	return n.variant != inlineVariant
 }
+
+func (n *BER[K, V]) ValueAndIdentity() (V, unsafe.Pointer, uint64) {
+	switch n.variant {
+	case boxedVariant:
+		p := (*BERBoxed[K, V])(unsafe.Pointer(n)).value.Load()
+		return *p, unsafe.Pointer(p), 0
+	case pointerVariant:
+		p := atomic.LoadPointer(&(*BERP[K, V])(unsafe.Pointer(n)).value)
+		return *(*V)(unsafe.Pointer(&p)), p, 0
+	case wordVariant:
+		w := (*BERU64[K, V])(unsafe.Pointer(n)).value.Load()
+		return *(*V)(unsafe.Pointer(&w)), nil, w
+	case emptyVariant:
+		var zero V
+		return zero, nil, 0
+	default:
+		return (*BERInline[K, V])(unsafe.Pointer(n)).value, nil, 0
+	}
+}

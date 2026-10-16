@@ -43,6 +43,11 @@ type Node[K comparable, V any] interface {
 	// CanSetValue reports whether the value can be replaced in place with SetValue without a
 	// concurrent reader observing a torn value: it is kept in one atomic word, or behind a pointer.
 	CanSetValue() bool
+	// ValueAndIdentity returns the value with what SetValue stored for it: its box or pointer,
+	// or its word. Identities that differ tell a reader that the value was replaced in place in
+	// between; a box is not reused while an identity holds it. Equal identities mean an equal
+	// value. A node whose value is never replaced in place always returns the same identity.
+	ValueAndIdentity() (V, unsafe.Pointer, uint64)
 	// AsPointer returns the node as a pointer.
 	AsPointer() unsafe.Pointer
 	// Prev returns the previous node in the eviction policy.

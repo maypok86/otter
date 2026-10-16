@@ -67,6 +67,18 @@ Audits read this file **after** recording their findings (Phase 1.5 of the audit
   every read under `ExpiryAccessing` would CAS the node. Entries can expire up to 1 s early,
   or late when `ExpireAfterRead` shortens the lifetime by less than that. `SetExpiresAfter`
   passes no tolerance and stays exact.
+- **A read comes before an in-place update that races with it.** `getNode` loads the value
+  once; `ExpireAfterRead` is shown that value and the read returns it. Before its CAS, the read
+  checks that the node still stores the same value (`ValueAndIdentity`) and otherwise leaves the
+  deadline to the update: the CAS compares only the deadline, and the update may store the very
+  deadline the read saw, for example when the clock has not moved. Two cases stay inexact. An
+  update in the few instructions between that check and the CAS can still store the same
+  deadline, and the new value then gets the read's. An update whose `ExpireAfterUpdate` keeps the
+  deadline keeps the one it saw, so the read loses its extension. Exact handling needs a write
+  version in every node or the bucket lock on reads. Two other fixes were rejected: comparing
+  the values bitwise (Go does not keep padding bytes, so copies of a padded struct differ), and
+  undoing the CAS after the fact, which broke updates that keep the deadline and needed a
+  write-buffer task that can block a read under a bucket lock.
 
 ## In-place updates
 

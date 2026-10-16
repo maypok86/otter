@@ -49,16 +49,21 @@ layouts whose first field is that header; an immutable `variant` byte records wh
 | `Empty` | nothing (zero-size `V`) | true |
 
 `Value`/`SetValue` convert the header pointer back to the layout it was taken from.
-`SetValue` on a published node is legal only when `CanSetValue` is true. Nodes without state
+`SetValue` on a published node is legal only when `CanSetValue` is true. `ValueAndIdentity`
+returns the value with what identifies the stored copy (the box or the pointer, or the word), so
+that a reader can tell whether it was replaced in place. Nodes without state
 (`B`, `BR`) keep the value inline in the node type itself and are never updated in place.
 
 ## Read path
 
-`GetIfPresent` → `getNode`: lock-free `hashmap.Get`, `HasExpired`, then `afterRead`, which
-recalculates the deadline (`ExpireAfterRead`, CAS on `expiresAt`, refused if the entry expired
-while the calculator ran; skipped for `ExpiryCreating` and `ExpiryWriting`, whose reads keep it,
-see `withReadExpiry`) and offers the node to the
-lossy read buffer. A full buffer drops the access; it never blocks.
+`GetIfPresent` → `getNode`: lock-free `hashmap.Get`, `HasExpired`, then loads the value once,
+recalculates the deadline from it (`calcExpiresAtAfterRead`: `ExpireAfterRead`, then a CAS on
+`expiresAt`, refused if the entry expired while the calculator ran or if the node no longer
+stores that value; skipped for `ExpiryCreating` and `ExpiryWriting`, whose reads keep it, see
+`withReadExpiry`), and `afterRead` offers the node to the lossy read buffer. A full buffer
+drops the access; it never blocks. The read returns the value it loaded, so it comes before an
+in-place update that replaces the value while the calculator runs, and the update's deadline
+stands (see `design-decisions.md`).
 
 ## Write path
 

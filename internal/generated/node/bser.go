@@ -304,3 +304,22 @@ func (n *BSER[K, V]) setBoxedValue(v V) {
 func (n *BSER[K, V]) CanSetValue() bool {
 	return n.variant != inlineVariant
 }
+
+func (n *BSER[K, V]) ValueAndIdentity() (V, unsafe.Pointer, uint64) {
+	switch n.variant {
+	case boxedVariant:
+		p := (*BSERBoxed[K, V])(unsafe.Pointer(n)).value.Load()
+		return *p, unsafe.Pointer(p), 0
+	case pointerVariant:
+		p := atomic.LoadPointer(&(*BSERP[K, V])(unsafe.Pointer(n)).value)
+		return *(*V)(unsafe.Pointer(&p)), p, 0
+	case wordVariant:
+		w := (*BSERU64[K, V])(unsafe.Pointer(n)).value.Load()
+		return *(*V)(unsafe.Pointer(&w)), nil, w
+	case emptyVariant:
+		var zero V
+		return zero, nil, 0
+	default:
+		return (*BSERInline[K, V])(unsafe.Pointer(n)).value, nil, 0
+	}
+}
