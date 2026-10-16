@@ -380,6 +380,7 @@ func TestCache_GetWithNotFoundLoad(t *testing.T) {
 func TestCache_GetWithSuccessRefresh(t *testing.T) {
 	t.Parallel()
 
+	// Only a refresh time computed from the last write is moved by the writes.
 	spec := cacheSpec{refresh: []refreshKind{refreshWriting}, population: withRoom, executor: allExecutors}
 	forEachSpec(t, spec, func(t *testing.T, cc *cacheContext) {
 		cc.cache.Set(absentKey, 100)
@@ -421,7 +422,7 @@ func TestCache_GetWithSuccessRefresh(t *testing.T) {
 func TestCache_GetWithNotFoundRefresh(t *testing.T) {
 	t.Parallel()
 
-	spec := cacheSpec{refresh: []refreshKind{refreshWriting}, population: withRoom, executor: allExecutors}
+	spec := cacheSpec{refresh: withRefresh, population: withRoom, executor: allExecutors}
 	forEachSpec(t, spec, func(t *testing.T, cc *cacheContext) {
 		cc.cache.Set(absentKey, 100)
 		cc.advance(specRefresh + time.Second)
@@ -451,7 +452,7 @@ func TestCache_GetWithNotFoundRefresh(t *testing.T) {
 func TestCache_Refresh(t *testing.T) {
 	t.Parallel()
 
-	spec := cacheSpec{refresh: []refreshKind{refreshWriting}, population: withRoom}
+	spec := cacheSpec{refresh: withRefresh, population: withRoom}
 	forEachSpec(t, spec, func(t *testing.T, cc *cacheContext) {
 		tl1 := newTestLoader[int, int](func(ctx context.Context, key int) (int, error) {
 			return 100, ctx.Err()
@@ -575,6 +576,7 @@ func TestCache_BulkGetCoalescesConcurrentLoads(t *testing.T) {
 func TestCache_BulkGetWithSuccessRefresh(t *testing.T) {
 	t.Parallel()
 
+	// Only a refresh time computed from the last write is moved by the writes.
 	spec := cacheSpec{refresh: []refreshKind{refreshWriting}, executor: allExecutors}
 	forEachSpec(t, spec, func(t *testing.T, cc *cacheContext) {
 		for _, k := range bulkUnique {
@@ -631,7 +633,7 @@ func TestCache_BulkGetWithNotFoundRefresh(t *testing.T) {
 
 	const notFound = 13
 	keys := []int{10, 11, 12, notFound}
-	spec := cacheSpec{refresh: []refreshKind{refreshWriting}, executor: allExecutors}
+	spec := cacheSpec{refresh: withRefresh, executor: allExecutors}
 	forEachSpec(t, spec, func(t *testing.T, cc *cacheContext) {
 		for _, k := range keys {
 			cc.cache.Set(k, k)
@@ -788,7 +790,7 @@ func (l *splitBulkLoader) BulkReload(ctx context.Context, keys, _ []int) (map[in
 func TestCache_BulkRefresh(t *testing.T) {
 	t.Parallel()
 
-	forEachSpec(t, cacheSpec{refresh: []refreshKind{refreshWriting}}, func(t *testing.T, cc *cacheContext) {
+	forEachSpec(t, cacheSpec{refresh: withRefresh}, func(t *testing.T, cc *cacheContext) {
 		events := make([]DeletionEvent[int, int], 0, len(bulkFresh))
 		for k := range bulkFresh {
 			cc.cache.Set(k, k+1)
@@ -977,7 +979,7 @@ func TestCache_GetWithFailedLoad(t *testing.T) {
 func TestCache_GetWithFailedRefresh(t *testing.T) {
 	t.Parallel()
 
-	spec := cacheSpec{refresh: []refreshKind{refreshWriting}, population: withRoom, executor: allExecutors, logs: true}
+	spec := cacheSpec{refresh: withRefresh, population: withRoom, executor: allExecutors, logs: true}
 	forEachSpec(t, spec, func(t *testing.T, cc *cacheContext) {
 		cc.cache.Set(absentKey, 100)
 		cc.advance(specRefresh + time.Second)
@@ -1082,7 +1084,7 @@ func TestCache_BulkGetWithFailedRefresh(t *testing.T) {
 	t.Parallel()
 
 	keys := []int{10, 11}
-	spec := cacheSpec{refresh: []refreshKind{refreshWriting}, executor: allExecutors, logs: true}
+	spec := cacheSpec{refresh: withRefresh, executor: allExecutors, logs: true}
 	forEachSpec(t, spec, func(t *testing.T, cc *cacheContext) {
 		for _, k := range keys {
 			cc.cache.Set(k, k)
