@@ -29,6 +29,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/maypok86/otter/v2/internal/generated/node"
 	"github.com/maypok86/otter/v2/stats"
 )
 
@@ -3384,13 +3385,13 @@ func TestCache_GetDoesNotReturnLoadOfInvalidatedKey(t *testing.T) {
 	}
 }
 
-func TestCache_WriteCancelsCallRegisteredWhileItIsApplied(t *testing.T) {
+func TestCache_LoadRegisteredWhileInvalidationIsAppliedDoesNotAdoptOldValue(t *testing.T) {
 	t.Parallel()
 
 	// An invalidation cancels the calls of its key before the hash table removes the node. A
-	// Get that registers a load in between still finds the old value on its re-check and adopts
-	// it, and a Get that starts after the invalidation returned would join that call and get
-	// the invalidated value. The call is cancelled again once the change is visible.
+	// Get that registers a load in between still finds the old node, but its re-check reads the
+	// value under the bucket lock, so it waits for the removal: it loads the key rather than
+	// adopt the invalidated value, which a Get that starts after the invalidation would join.
 	tests := []struct {
 		name       string
 		invalidate func(c *Cache[int, int])
@@ -3408,26 +3409,41 @@ func TestCache_WriteCancelsCallRegisteredWhileItIsApplied(t *testing.T) {
 				c        *Cache[int, int]
 				adopting *call[int, int]
 				sawOld   bool
+				early    bool
+				// the node the re-check adopted, nil if none
+				adopted = make(chan node.Node[int, int], 1)
 			)
 			c = Must(&Options[int, int]{
 				OnAtomicDeletion: func(DeletionEvent[int, int]) {
-					// A Get registers its load and re-checks the table: the node is still there.
-					// The listener runs under the bucket lock, so nothing here may fail the test.
+					// A Get registers its load, looks the key up and re-checks it: the node is
+					// still there. The listener runs under the bucket lock, so nothing here may
+					// fail the test.
 					adopting, _ = c.cache.singleflight.startLoad(1)
 					sawOld = c.cache.getNodeQuietly(1, c.cache.clock.NowNano()) != nil
+					go func() {
+						_, _, n := c.cache.readForAdoption(adopting, c.cache.clock.NowNano())
+						adopted <- n
+					}()
+					select {
+					case n := <-adopted:
+						early = true
+						adopted <- n
+					case <-time.After(50 * time.Millisecond):
+					}
 				},
 			})
 			c.cache.singleflight.init()
 			c.Set(1, 1)
 			tt.invalidate(c)
 			require.NotNil(t, adopting)
-			defer c.cache.singleflight.adopt(adopting, 1, 0, nil)
 			require.True(t, sawOld)
-
-			require.Nil(t, c.cache.singleflight.getCall(1))
+			require.False(t, early, "the re-check did not wait for the invalidation")
+			require.Nil(t, <-adopted, "the re-check adopted the invalidated value")
+			load5 := func(context.Context, int) (int, error) { return 5, nil }
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 			defer cancel()
-			v, err := c.Get(ctx, 1, LoaderFunc[int, int](func(context.Context, int) (int, error) { return 5, nil }))
+			require.NoError(t, c.cache.singleflight.doCall(ctx, adopting, load5))
+			v, err := c.Get(ctx, 1, LoaderFunc[int, int](load5))
 			require.NoError(t, err)
 			require.Equal(t, 5, v)
 		})

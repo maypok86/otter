@@ -46,6 +46,15 @@ jobs:
       - name: Unit tests
         run: make test.unit
 
+      # The weekly run in lincheck.yml checks for long. This one catches a change that breaks
+      # linearizability often enough to show within a minute, which some races only do without
+      # the race detector.
+      - name: Check linearizability
+        working-directory: lincheck
+        env:
+          LINCHECK_DURATION: 1m
+        run: go test -timeout 10m .
+
       - name: Process coverage report
         if: matrix.platform == 'ubuntu-latest'
         run: bash ./.github/workflows/scripts/coverage-report.sh

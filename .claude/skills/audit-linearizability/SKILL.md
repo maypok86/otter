@@ -22,9 +22,10 @@ Judge every history against this model, per key:
   loader, stores the result and returns it (an error or `ErrNotFound` stores nothing).
 - Expiration and eviction are spontaneous removals. An expired entry is absent for every
   operation (`design-decisions.md`), however long it stays in the table.
-- `Refresh` and `BulkRefresh` are asynchronous. The refresh is requested when its call is
-  registered (on the requesting goroutine, inside `Refresh` or the read that found the entry
-  stale), and takes effect when its result is committed. Its result is discarded if the key is
+- `Refresh` and `BulkRefresh` are asynchronous. The refresh is requested when it registers its
+  call or joins one already registered for the same base (on the requesting goroutine, inside
+  `Refresh` or the read that found the entry stale), and takes effect when its result is
+  committed. Its result is discarded if the key is
   written or invalidated after the request, or if the node it was requested for expires
   (`cache.go`, `Refresh`). A `RefreshResult` reports what was loaded, even when the cache
   discarded it: it is not a read of the cache.
@@ -36,6 +37,10 @@ Judge every history against this model, per key:
 Do not report these again unless the mechanism or the consequence differs:
 
 - `InvalidateAll` while loads are in flight is documented as undefined.
+- A refresh is discarded by any write or invalidation of its key after its request, even one
+  that leaves the key as it was (`design-decisions.md`). A refresh result that overwrites a
+  write or an invalidation made after the refresh was requested is not an exception: it is a
+  defect.
 - A read may move an entry's deadline by up to `expireTolerance` without storing it
   (`deadline.go`), so an entry may expire up to that much early or late.
 - `Entry` fields may mix two writes of the same key (`design-decisions.md`).

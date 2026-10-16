@@ -98,6 +98,18 @@ Audits read this file **after** recording their findings (Phase 1.5 of the audit
 
 ## Loading and refresh
 
+- **A refresh is discarded by what happened since its request, not by the key's state when it
+  completes.** Any write or invalidation of the key from the API after the request cancels it,
+  and so does a removal of its base. After `SetIfAbsent` and then `ComputeDelete` the key is
+  absent again, as when the refresh was requested, and the refresh is still discarded. So
+  `Refresh` is not linearizable as one write of the loaded value; it is as a request and a
+  conditional commit, which is how lincheck models it. A discarded refresh still reports the
+  value it loaded to its caller.
+- **`Invalidate` of an absent key cancels its pending loads and refreshes.** A load in flight
+  may have read the data source before the change that the invalidation reports, and writing
+  it afterwards would bring the old data back. Operations that write nothing cancel nothing:
+  `Compute` with `CancelOp`, `SetIfAbsent` of a present key, `SetExpiresAfter` and
+  `SetRefreshableAfter`.
 - **A refresh is registered under the key's bucket lock.** Writes cancel calls under that lock,
   so a refresh is either cancelled by a write or registered after it, and a read that saw a
   write never joins a refresh the write cancelled. A refresh that joins a registered call takes

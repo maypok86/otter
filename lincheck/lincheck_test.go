@@ -59,6 +59,8 @@ const (
 	opComputeIfPresent
 	// opComputeDelete invalidates the key if it is present.
 	opComputeDelete
+	// opRefresh is the request of a refresh: from the call of Refresh to its return. It registers
+	// the refresh; opRefreshDone, from the same call to the result, commits or discards it.
 	opRefresh
 	// opSetExpiresAfter and opSetRefreshableAfter set the time to value hours from now.
 	opSetExpiresAfter
@@ -72,6 +74,8 @@ const (
 	opCount
 	// opEvict is the eviction of value by the cache's size bound; the cache runs it on its own.
 	opEvict = opCount
+	// opRefreshDone ends the refresh that the same client requested.
+	opRefreshDone = opCount + 1
 )
 
 var opNames = [...]string{
@@ -84,7 +88,8 @@ var opNames = [...]string{
 	opComputeIfAbsent:     "ComputeIfAbsent",
 	opComputeIfPresent:    "ComputeIfPresent",
 	opComputeDelete:       "ComputeDelete",
-	opRefresh:             "Refresh",
+	opRefresh:             "RefreshRequest",
+	opRefreshDone:         "RefreshDone",
 	opSetExpiresAfter:     "SetExpiresAfter",
 	opSetRefreshableAfter: "SetRefreshableAfter",
 	opExpiresAt:           "ExpiresAt",
@@ -102,9 +107,10 @@ const (
 )
 
 type input struct {
-	op    opKind
-	key   int
-	value int // the value written, for writes; hours, for the setters
+	op     opKind
+	key    int
+	value  int // the value written, for writes; hours, for the setters
+	client int // for refreshes: pairs opRefreshDone with its opRefresh
 }
 
 type output struct {
@@ -120,20 +126,42 @@ const (
 	refreshableAfter = 200 // hours
 )
 
+// maxClients bounds client ids; each client has at most one refresh pending.
+const maxClients = 16
+
+// pending is a requested refresh of a key that has not ended yet.
+type pending struct {
+	active bool
+	// present is whether the key had a value when the refresh was requested: its base.
+	present bool
+	// stale is set by a write or an invalidation of the key after the request, which cancels it.
+	stale bool
+}
+
 // state is one key: its value, 0 if it is absent, and its expiration and refresh times in hours
-// from now, 0 if there are none.
+// from now, 0 if there are none, and the refreshes requested by each client.
 type state struct {
 	value         int
 	expiresIn     int
 	refreshableIn int
+	refreshes     [maxClients]pending
 }
 
 func isLoaded(v int) bool { return v < 0 }
 
 // newModel returns the model of a cache with or without expiration; refresh is always on.
 func newModel(expiry bool) porcupine.NondeterministicModel {
-	created := func(v int) state {
-		s := state{value: v, refreshableIn: refreshableAfter}
+	// cancelled marks every pending refresh stale: a write or an invalidation deletes the call.
+	cancelled := func(s state) state {
+		for i := range s.refreshes {
+			if s.refreshes[i].active {
+				s.refreshes[i].stale = true
+			}
+		}
+		return s
+	}
+	created := func(s state, v int) state {
+		s.value, s.expiresIn, s.refreshableIn = v, 0, refreshableAfter
 		if expiry {
 			s.expiresIn = expiresAfter
 		}
@@ -145,9 +173,13 @@ func newModel(expiry bool) porcupine.NondeterministicModel {
 	}
 	written := func(s state, v int) state {
 		if s.value == 0 {
-			return created(v)
+			return created(s, v)
 		}
 		return updated(s, v)
+	}
+	removed := func(s state) state {
+		s.value, s.expiresIn, s.refreshableIn = 0, 0, 0
+		return s
 	}
 
 	// step returns the states that op can lead to from s, if it can return out; none if it cannot.
@@ -162,7 +194,8 @@ func newModel(expiry bool) porcupine.NondeterministicModel {
 			}
 			switch o.result {
 			case loaded:
-				return when(isLoaded(o.value), created(o.value))
+				// a committed load deletes its call, which a refresh of the key may have joined
+				return when(isLoaded(o.value), cancelled(created(s, o.value)))
 			case notFound, failed:
 				return []any{s}
 			}
@@ -172,37 +205,61 @@ func newModel(expiry bool) porcupine.NondeterministicModel {
 			}
 			return when(!o.ok && o.value == 0, s)
 		case opSet:
-			return []any{written(s, i.value)}
+			return []any{cancelled(written(s, i.value))}
 		case opSetIfAbsent:
 			if present {
 				return when(!o.ok && o.value == s.value, s)
 			}
-			return when(o.ok && o.value == i.value, created(i.value))
+			return when(o.ok && o.value == i.value, cancelled(created(s, i.value)))
 		case opInvalidate:
+			// An invalidation cancels loads even if the key is absent: they may have read the data
+			// source before it.
 			if present {
-				return when(o.ok && o.value == s.value, state{})
+				return when(o.ok && o.value == s.value, cancelled(removed(s)))
 			}
-			return when(!o.ok && o.value == 0, s)
+			return when(!o.ok && o.value == 0, cancelled(s))
 		case opComputeIfAbsent:
 			if present {
 				return when(o.ok && o.value == s.value, s)
 			}
-			return when(o.ok && o.value == i.value, created(i.value))
+			return when(o.ok && o.value == i.value, cancelled(created(s, i.value)))
 		case opComputeIfPresent:
 			if present {
-				return when(o.ok && o.value == i.value, updated(s, i.value))
+				return when(o.ok && o.value == i.value, cancelled(updated(s, i.value)))
 			}
 			return when(!o.ok && o.value == 0, s)
 		case opComputeDelete:
-			return when(!o.ok && o.value == 0, state{})
+			// CancelOp on an absent key writes nothing and cancels nothing.
+			if present {
+				return when(!o.ok && o.value == 0, cancelled(removed(s)))
+			}
+			return when(!o.ok && o.value == 0, s)
 		case opRefresh:
-			// The refresh is discarded if the key was written or invalidated after it was requested,
-			// which depends on the history, not on the state: either outcome is allowed.
+			if s.refreshes[i.client].active {
+				return nil
+			}
+			s.refreshes[i.client] = pending{active: true, present: present}
+			return []any{s}
+		case opRefreshDone:
+			// The refresh commits only if no write or invalidation cancelled it and its base is
+			// still there: the value it was requested for, or the absence it was requested in.
+			p := s.refreshes[i.client]
+			if !p.active {
+				return nil
+			}
+			s.refreshes[i.client] = pending{}
+			commits := !p.stale && p.present == present
 			switch o.result {
 			case loaded:
-				return []any{s, written(s, o.value)}
+				if commits {
+					return []any{cancelled(written(s, o.value))}
+				}
+				return []any{s}
 			case notFound:
-				return []any{s, state{}}
+				if commits {
+					return []any{cancelled(removed(s))}
+				}
+				return []any{s}
 			case failed:
 				return []any{s}
 			}
@@ -227,7 +284,8 @@ func newModel(expiry bool) porcupine.NondeterministicModel {
 			}
 			return when(!o.ok, s)
 		case opEvict:
-			return when(s.value == i.value, state{})
+			// An eviction drops a refresh of the evicted value, which then finds its base gone.
+			return when(s.value == i.value, removed(s))
 		}
 		return nil
 	}
@@ -258,7 +316,9 @@ func newModel(expiry bool) porcupine.NondeterministicModel {
 				return fmt.Sprintf("Evict(%d, %d)", i.key, i.value)
 			case opSetIfAbsent, opComputeIfAbsent, opComputeIfPresent:
 				return fmt.Sprintf("%s(%d, %d) -> %d, %t", opNames[i.op], i.key, i.value, o.value, o.ok)
-			case opGet, opBulkGet, opRefresh:
+			case opRefresh:
+				return fmt.Sprintf("RefreshRequest(%d)", i.key)
+			case opGet, opBulkGet, opRefreshDone:
 				return fmt.Sprintf("%s(%d) -> %d, %s", opNames[i.op], i.key, o.value, [...]string{"loaded", "not found", "failed"}[o.result])
 			case opExpiresAt, opRefreshableAt:
 				return fmt.Sprintf("%s(%d) -> %dh, %t", opNames[i.op], i.key, o.value, o.ok)
@@ -480,7 +540,7 @@ func (r *recorder) run(client int, ops int, seed uint64) []porcupine.Operation {
 
 	history := make([]porcupine.Operation, 0, ops)
 	for range ops {
-		in := input{op: opKind(rnd.IntN(int(opCount))), key: rnd.IntN(r.keys)}
+		in := input{op: opKind(rnd.IntN(int(opCount))), key: rnd.IntN(r.keys), client: client}
 		switch in.op {
 		case opSet, opSetIfAbsent, opComputeIfAbsent, opComputeIfPresent:
 			in.value = int(r.written.Add(1))
@@ -534,8 +594,11 @@ func (r *recorder) run(client int, ops int, seed uint64) []porcupine.Operation {
 				return old, otter.InvalidateOp
 			})
 		case opRefresh:
-			rr := <-r.cache.Refresh(ctx, in.key, loader)
+			ch := r.cache.Refresh(ctx, in.key, loader)
+			history = append(history, porcupine.Operation{ClientId: client, Input: in, Output: output{}, Call: call, Return: r.clock.Add(1)})
+			rr := <-ch
 			out = output{value: rr.Value, result: loadResult(rr.Err)}
+			in.op = opRefreshDone
 		case opSetExpiresAfter:
 			r.cache.SetExpiresAfter(in.key, time.Duration(in.value)*time.Hour)
 		case opSetRefreshableAfter:

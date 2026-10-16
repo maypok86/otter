@@ -182,9 +182,10 @@ whose deadline counts as well: `SetExpiresAfter` or `ExpireAfterRead` can move i
 the call is registered. A write cancels the calls
 before a new node is stored (`hashmap.Compute` stores it after the callback), so a load
 registered in between is not cancelled, and only this rule keeps it from overwriting the write.
-Such a call can also find the old value on its re-check and adopt it, so `mutate` cancels the
-key's calls a second time once the write or invalidation from the API is visible: a `Get` that
-starts after it returned does not join a call that holds the old value.
+Such a call cannot adopt the old value: its re-check reads the value under the bucket lock
+(`readForAdoption`), after the write. A second cancellation once the change was visible used to
+cover the time when the re-check read without the lock; it also cancelled loads registered
+after the write, which a refresh requested after the write may have joined.
 `Invalidate`, `Set` and `Compute` cancel a
 pending call for the key; eviction and expiration drop refreshes of an existing
 node and calls that have already committed (`deleteOnRemoval`), but not a load in flight or a
@@ -228,3 +229,7 @@ writes only when the key has no call of its own, and `SetExpiresAfter`/`SetRefre
 change deadlines, not the value. A reload reads the base's value when it starts
 (`call.base.Value()`), which is the value its result replaces: a write before the registration
 left it, and one after it cancels the refresh.
+
+What a refresh writes is decided by the history of the key since its request, not by its state
+at the commit, so the lincheck model splits `Refresh` into a request and a commit and tracks
+whether a write or an invalidation came in between.
