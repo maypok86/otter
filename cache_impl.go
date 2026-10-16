@@ -722,14 +722,41 @@ func (c *cache[K, V]) doCompute(
 	return result, true
 }
 
-type refreshableKey[K comparable, V any] struct {
-	key K
-	old node.Node[K, V]
+// startRefresh registers a refresh of key and returns its call, or returns the call already
+// registered for key. shouldLoad reports that the caller registered the call and must run it.
+//
+// The refresh's base, the key's live node (nil if absent or expired), is read and the call
+// registered under the key's bucket lock. A write or an invalidation cancels the key's calls under
+// the same lock, before it publishes its change. So it either comes before the registration, and
+// the refresh starts from what it wrote, or cancels the refresh; and a refresh requested after the
+// change is visible never joins a call that the change cancelled.
+//
+// A refresh that a read starts (!isManual) is not registered if the key's node is fresh by then, having
+// been refreshed or replaced since the read, or the key is gone: there is nothing left to refresh,
+// and cl is nil. Without this, every read that saw the key stale before the first refresh
+// completed would reload it again.
+func (c *cache[K, V]) startRefresh(key K, isManual bool, nowNano int64) (cl *call[K, V], shouldLoad bool) {
+	// fast path: a read that saw a change does not find the calls the change cancelled
+	if cl := c.singleflight.joinable(key); cl != nil {
+		return cl, false
+	}
+	c.hashmap.Compute(key, func(current node.Node[K, V]) node.Node[K, V] {
+		var base node.Node[K, V]
+		if current != nil && !current.HasExpired(nowNano) {
+			base = current
+		}
+		if !isManual && (base == nil || base.IsFresh(nowNano)) {
+			return current
+		}
+		cl, shouldLoad = c.singleflight.startRefresh(key, base)
+		return current
+	})
+	return cl, shouldLoad
 }
 
 func (c *cache[K, V]) refreshKey(
 	ctx context.Context,
-	rk refreshableKey[K, V],
+	key K,
 	loader Loader[K, V],
 	isManual bool,
 ) <-chan RefreshResult[K, V] {
@@ -754,7 +781,10 @@ func (c *cache[K, V]) refreshKey(
 		defer recoverCallback(c.logger, "Panicked while starting a refresh")
 	}
 	nowNano := c.clock.NowNano()
-	cl, shouldLoad := c.singleflight.startRefresh(rk.key, rk.old)
+	cl, shouldLoad := c.startRefresh(key, isManual, nowNano)
+	if cl == nil {
+		return ch
+	}
 	if !shouldLoad {
 		// A load or refresh of the key is in flight, and its result is all there is to report.
 		// A task that waited for it would take an executor slot for the whole load: with an
@@ -769,13 +799,6 @@ func (c *cache[K, V]) refreshKey(
 		}
 		return ch
 	}
-	if !isManual {
-		if n := c.refreshedMeanwhile(rk.key, nowNano); n != nil {
-			c.singleflight.adopt(cl, n.Value(), c.expiresAtOf(n), n)
-			return ch
-		}
-	}
-
 	c.singleflight.submitRefresh([]*call[K, V]{cl}, func() {
 		// Deferred, so that a loader that calls runtime.Goexit is reported like one that panics.
 		defer func() {
@@ -790,8 +813,8 @@ func (c *cache[K, V]) refreshKey(
 
 		// the loader is called in a closure, see doCall
 		refresher := func(ctx context.Context, key K) (V, error) {
-			if rk.old != nil {
-				return loader.Reload(ctx, key, rk.old.Value())
+			if cl.base != nil {
+				return loader.Reload(ctx, key, cl.base.Value())
 			}
 			return loader.Load(ctx, key)
 		}
@@ -834,12 +857,11 @@ func (c *cache[K, V]) Get(ctx context.Context, key K, loader Loader[K, V]) (V, e
 	n, value := c.getNode(key, nowNano)
 	if n != nil {
 		// A node that is being removed is not fresh either, but there is nothing to refresh. It is
-		// checked after IsFresh: a node retired in between would pass the check before.
+		// checked after IsFresh: a node retired in between would pass the check before. A refresh
+		// is registered under the bucket lock, which the removal may still hold, for example
+		// while it runs OnAtomicDeletion.
 		if !n.IsFresh(nowNano) && n.IsAlive() {
-			c.refreshKey(ctx, refreshableKey[K, V]{
-				key: n.Key(),
-				old: n,
-			}, loader, false)
+			c.refreshKey(ctx, n.Key(), loader, false)
 		}
 		return value, nil
 	}
@@ -1001,25 +1023,9 @@ func (c *cache[K, V]) expiresAtOf(n node.Node[K, V]) int64 {
 	return n.ExpiresAt()
 }
 
-// refreshedMeanwhile returns the node of key if it is live and fresh, so that a refresh that a
-// read requested when it saw the key stale is no longer needed: the node has been refreshed or
-// replaced since. A refresh frees its call slot only after it has published its value, so a
-// refresh that has won the slot sees one that completed meanwhile. Without this check, every read
-// that saw the key stale before the first refresh completed would reload it again.
-//
-// The skipped refresh is finished with the value of the returned node, since a Get of the key
-// may join its call: that is the value the Get would read. A key that has been removed or has
-// expired is refreshed as before, as there is no value to give.
-func (c *cache[K, V]) refreshedMeanwhile(key K, nowNano int64) node.Node[K, V] {
-	if n := c.getNodeQuietly(key, nowNano); n != nil && n.IsFresh(nowNano) {
-		return n
-	}
-	return nil
-}
-
 func (c *cache[K, V]) bulkRefreshKeys(
 	ctx context.Context,
-	rks []refreshableKey[K, V],
+	keys []K,
 	bulkLoader BulkLoader[K, V],
 	isManual bool,
 ) <-chan []RefreshResult[K, V] {
@@ -1030,7 +1036,7 @@ func (c *cache[K, V]) bulkRefreshKeys(
 	if isManual {
 		ch = make(chan []RefreshResult[K, V], 1)
 	}
-	if len(rks) == 0 {
+	if len(keys) == 0 {
 		if isManual {
 			ch <- []RefreshResult[K, V]{}
 		}
@@ -1049,30 +1055,24 @@ func (c *cache[K, V]) bulkRefreshKeys(
 		foundCalls    []*call[K, V]
 		owned         []*call[K, V]
 	)
-	for i, rk := range rks {
-		cl, shouldLoad := c.singleflight.startRefresh(rk.key, rk.old)
-		if shouldLoad && !isManual {
-			if n := c.refreshedMeanwhile(rk.key, nowNano); n != nil {
-				c.singleflight.adopt(cl, n.Value(), c.expiresAtOf(n), n)
-				continue
-			}
-		}
+	for i, key := range keys {
+		cl, shouldLoad := c.startRefresh(key, isManual, nowNano)
 		if shouldLoad {
 			owned = append(owned, cl)
-			if rk.old != nil {
+			if cl.base != nil {
 				if toReloadCalls == nil {
-					toReloadCalls = make(map[K]*call[K, V], len(rks)-i)
+					toReloadCalls = make(map[K]*call[K, V], len(keys)-i)
 				}
-				toReloadCalls[rk.key] = cl
+				toReloadCalls[key] = cl
 			} else {
 				if toLoadCalls == nil {
-					toLoadCalls = make(map[K]*call[K, V], len(rks)-i)
+					toLoadCalls = make(map[K]*call[K, V], len(keys)-i)
 				}
-				toLoadCalls[rk.key] = cl
+				toLoadCalls[key] = cl
 			}
 		} else if isManual {
 			if foundCalls == nil {
-				foundCalls = make([]*call[K, V], 0, len(rks)-i)
+				foundCalls = make([]*call[K, V], 0, len(keys)-i)
 			}
 			foundCalls = append(foundCalls, cl)
 		}
@@ -1091,7 +1091,7 @@ func (c *cache[K, V]) bulkRefreshKeys(
 		// deferred first, so that they are sent after the load and the reload.
 		if isManual {
 			defer func() {
-				results := make([]RefreshResult[K, V], 0, len(rks))
+				results := make([]RefreshResult[K, V], 0, len(keys))
 				for _, cl := range owned {
 					results = append(results, cl.refreshResult())
 				}
@@ -1175,7 +1175,7 @@ func (c *cache[K, V]) BulkGet(ctx context.Context, keys []K, bulkLoader BulkLoad
 	result := make(map[K]V, len(keys))
 	var (
 		misses    map[K]*call[K, V]
-		toRefresh []refreshableKey[K, V]
+		toRefresh []K
 	)
 	for _, key := range keys {
 		if _, found := result[key]; found {
@@ -1190,13 +1190,10 @@ func (c *cache[K, V]) BulkGet(ctx context.Context, keys []K, bulkLoader BulkLoad
 			// a node that is being removed is not refreshed, see Get
 			if !n.IsFresh(nowNano) && n.IsAlive() {
 				if toRefresh == nil {
-					toRefresh = make([]refreshableKey[K, V], 0, len(keys)-len(result))
+					toRefresh = make([]K, 0, len(keys)-len(result))
 				}
 
-				toRefresh = append(toRefresh, refreshableKey[K, V]{
-					key: key,
-					old: n,
-				})
+				toRefresh = append(toRefresh, key)
 			}
 
 			result[key] = value
@@ -1397,13 +1394,7 @@ func (c *cache[K, V]) Refresh(ctx context.Context, key K, loader Loader[K, V]) <
 
 	c.singleflight.init()
 
-	nowNano := c.clock.NowNano()
-	n := c.getNodeQuietly(key, nowNano)
-
-	return c.refreshKey(ctx, refreshableKey[K, V]{
-		key: key,
-		old: n,
-	}, loader, true)
+	return c.refreshKey(ctx, key, loader, true)
 }
 
 // BulkRefresh loads a new value for each key, asynchronously. While the new value is loading the
@@ -1433,18 +1424,12 @@ func (c *cache[K, V]) BulkRefresh(ctx context.Context, keys []K, bulkLoader Bulk
 	c.singleflight.init()
 
 	uniq := make(map[K]struct{}, len(keys))
+	toRefresh := make([]K, 0, len(keys))
 	for _, k := range keys {
-		uniq[k] = struct{}{}
-	}
-
-	nowNano := c.clock.NowNano()
-	toRefresh := make([]refreshableKey[K, V], 0, len(uniq))
-	for key := range uniq {
-		n := c.getNodeQuietly(key, nowNano)
-		toRefresh = append(toRefresh, refreshableKey[K, V]{
-			key: key,
-			old: n,
-		})
+		if _, ok := uniq[k]; !ok {
+			uniq[k] = struct{}{}
+			toRefresh = append(toRefresh, k)
+		}
 	}
 
 	return c.bulkRefreshKeys(ctx, toRefresh, bulkLoader, true)

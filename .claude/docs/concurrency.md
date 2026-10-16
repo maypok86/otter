@@ -11,7 +11,7 @@ in another order.
 | Lock | Guards | Taken by |
 |---|---|---|
 | `cache.evictionMutex` | the eviction policy (queues, sizes, sketch, climber), the timer wheel, `policyWeight`, `queueType`, node `dead` transition | `maintenance` (`performCleanUp`, `scheduleDrainBuffers` via `TryLock`), `SetMaximum`, `Hottest`/`Coldest`, `WeightedSize`/`GetMaximum` |
-| `hashmap` bucket lock (`internal/hashmap/map.go`, inside `Compute`) | the bucket's slots; every write to a key; node value/weight/deadline/refresh time changes, except a read's `ExpireAfterRead` CAS; the `retired` transition | `set`, `doCompute`, `Invalidate`, `commitCall`, `deleteNodeFromMap`, `SetExpiresAfter`, `SetRefreshableAfter` |
+| `hashmap` bucket lock (`internal/hashmap/map.go`, inside `Compute`) | the bucket's slots; every write to a key; node value/weight/deadline/refresh time changes, except a read's `ExpireAfterRead` CAS; the `retired` transition | `set`, `doCompute`, `Invalidate`, `commitCall`, `deleteNodeFromMap`, `SetExpiresAfter`, `SetRefreshableAfter`, `cache.startRefresh` (registers a refresh) |
 | singleflight bucket lock | in-flight `call`s per key | `startLoad`, `startRefresh`, `deleteCall`, `delete`, `deleteOnRemoval` |
 
 `hashmap.Get` takes no lock: it reads bucket slots atomically. Readers therefore see a node
@@ -192,21 +192,24 @@ refresh of an absent key, which loads it just the same. A committed load stays
 registered until `finish` deletes it, and a `Get` that joined it after the removal would return
 the removed value; `committed` is set by `commitCall` under the key's bucket lock, which the
 removal holds too. A load that adopts a value it finds after winning its call slot reads it
-under that lock too (`readForAdoption`) and is marked committed there, for the same reason. A refresh registered after the write or removal that would have cancelled it
-cannot write once its base is removed or replaced, so the next call for the key replaces it
-instead of joining it (`group.superseded`); a read that finds a node being removed does not
-refresh it.
+under that lock too (`readForAdoption`) and is marked committed there, for the same reason. A refresh whose base is removed or replaced without cancelling it
+cannot write, so the next call for the key replaces it instead of joining it
+(`group.superseded`); a read that finds a node being removed does not refresh it.
 A fake call (a key the bulk loader returned without being asked) has no call for an invalidation
 to cancel: it fills only a key without a live value or a call, and only if no key has been
 invalidated since its bulk load started (`group.invalidations`).
 
-A refresh must lose to any write that follows its request, so three things hold together:
+A refresh must lose to any write that follows its request, and only to those, so three things
+hold together:
 - refresh calls are registered on the requesting goroutine, before the task goes to the
-  executor (`startRefresh` in `refreshKey`, `bulkRefreshKeys`; `group.submitRefresh` finishes
-  them if the executor panics);
-- `atomicSet` cancels pending calls only after an in-place update has published the new value
-  (`cancelCalls`), so a refresh requested during the write, e.g. from `OnAtomicDeletion`, is
-  cancelled too; a replacing node is stored only after the callback, which the next point covers;
+  executor, under the key's bucket lock, which also reads the call's base: the key's live node,
+  nil if absent (`cache.startRefresh` in `refreshKey`, `bulkRefreshKeys`; `group.submitRefresh`
+  finishes them if the executor panics). A refresh that a read started is not registered if the
+  node is fresh by then or the key is gone. A refresh that finds a call it would join takes no
+  lock;
+- writes and invalidations cancel pending calls under the same lock (`cancelCalls`). A refresh
+  requested by another goroutine during a write waits for the lock and starts from what the
+  write left. A replacing node is stored only after the callback, which the next point covers;
 - a call records the node it was started for (`call.base`, nil for a load), and its result is
   written only if that node is still the key's node and has not expired (`isRefreshBase` in
   `group.authoritative`), which covers a replacement or removal published after the write's
@@ -214,10 +217,8 @@ A refresh must lose to any write that follows its request, so three things hold 
 
 `isRefreshBase` compares node identity, so it does not see the base updated in place. While a
 refresh is registered, only a write from the API changes the base's value in place, and that
-write cancels the refresh: `cancelCalls` runs after the new value is published. Loads and
-refreshes of the key join the registered call, a fake call writes only when the key has no call
-of its own, and `SetExpiresAfter`/`SetRefreshableAfter` change deadlines, not the value. The
-exception is a write whose cancellation comes before the refresh is registered: the refresh is
-not cancelled and its result replaces the written value. That is why a reload reads the base's
-value when it starts (`base.Value()`, `rk.old.Value()`), not when it was requested: the loader
-gets the value its result replaces.
+write cancels the refresh. Loads and refreshes of the key join the registered call, a fake call
+writes only when the key has no call of its own, and `SetExpiresAfter`/`SetRefreshableAfter`
+change deadlines, not the value. A reload reads the base's value when it starts
+(`call.base.Value()`), which is the value its result replaces: a write before the registration
+left it, and one after it cancels the refresh.

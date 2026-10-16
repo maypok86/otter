@@ -1684,24 +1684,79 @@ func TestCache_WriteAfterRefreshRequestCancelsIt(t *testing.T) {
 	}
 }
 
-// A refresh requested while a write is in progress, here from OnAtomicDeletion, which runs before
-// the new value is published, is cancelled by that write: the write cancels pending calls only
-// after it has published the value.
-func TestCache_RefreshRequestedDuringWriteIsCancelled(t *testing.T) {
+// refreshRegistrationClock runs before, once, when refreshKey or bulkRefreshKeys reads the clock,
+// which they do right before they register a refresh: a test can change the key between what a
+// read or a Refresh saw and the registration.
+type refreshRegistrationClock struct {
+	nonTickingClock
+	before atomic.Pointer[func()]
+}
+
+func (c *refreshRegistrationClock) NowNano() int64 {
+	if readBeforeRefreshRegistration() {
+		if f := c.before.Swap(nil); f != nil {
+			(*f)()
+		}
+	}
+	return c.nonTickingClock.NowNano()
+}
+
+func readBeforeRefreshRegistration() bool {
+	pcs := make([]uintptr, 16)
+	frames := runtime.CallersFrames(pcs[:runtime.Callers(2, pcs)])
+	for {
+		f, more := frames.Next()
+		if strings.HasSuffix(f.Function, ".refreshKey") || strings.HasSuffix(f.Function, ".bulkRefreshKeys") {
+			return true
+		}
+		if !more {
+			return false
+		}
+	}
+}
+
+// reloadAdds loads 10 for every key and reloads a value as the value plus 100.
+type reloadAdds struct{}
+
+func (reloadAdds) Load(context.Context, int) (int, error) { return 10, nil }
+
+func (reloadAdds) Reload(_ context.Context, _, oldValue int) (int, error) { return oldValue + 100, nil }
+
+func (reloadAdds) BulkLoad(_ context.Context, keys []int) (map[int]int, error) {
+	res := make(map[int]int, len(keys))
+	for _, k := range keys {
+		res[k] = 10
+	}
+	return res, nil
+}
+
+func (reloadAdds) BulkReload(_ context.Context, keys, oldValues []int) (map[int]int, error) {
+	res := make(map[int]int, len(keys))
+	for i, k := range keys {
+		res[k] = oldValues[i] + 100
+	}
+	return res, nil
+}
+
+func TestCache_RefreshRequestedDuringWriteWaitsForIt(t *testing.T) {
 	t.Parallel()
 
+	// A read that saw the previous, stale value while a write is in progress requests a refresh
+	// of it. The refresh is registered under the bucket lock that the write holds, so it is
+	// registered after the write and finds the written value fresh: it is skipped, rather than
+	// reload the previous value over the write.
 	for _, bounded := range []bool{false, true} {
 		t.Run(fmt.Sprintf("bounded=%v", bounded), func(t *testing.T) {
 			t.Parallel()
 
-			clock := newNonTickingClock()
+			clock := &refreshRegistrationClock{}
 			executor := &queuedExecutor{}
 			var (
 				c         *Cache[int, int]
 				requested atomic.Bool
-				// what the Get in the listener returned; checked after the Set, since a failed
-				// assertion must not stop the goroutine that holds the bucket lock
-				seen int
+				// what the Get started by the listener returned; checked after the Set, since a
+				// failed assertion must not stop the goroutine that holds the bucket lock
+				done = make(chan int, 1)
 			)
 			opts := &Options[int, int]{
 				Clock:             clock,
@@ -1712,16 +1767,16 @@ func TestCache_RefreshRequestedDuringWriteIsCancelled(t *testing.T) {
 					if e.Cause != CauseReplacement || !requested.CompareAndSwap(false, true) {
 						return
 					}
-					// Another goroutine still reads the previous, stale value and requests a
-					// refresh of it.
-					done := make(chan int)
+					// The Get has read the previous value once it is about to register its
+					// refresh.
+					reading := make(chan struct{})
+					signal := func() { close(reading) }
+					clock.before.Store(&signal)
 					go func() {
-						v, _ := c.Get(context.Background(), 1, LoaderFunc[int, int](func(ctx context.Context, key int) (int, error) {
-							return 100, nil
-						}))
+						v, _ := c.Get(context.Background(), 1, reloadAdds{})
 						done <- v
 					}()
-					seen = <-done
+					<-reading
 				},
 			}
 			if bounded {
@@ -1733,12 +1788,61 @@ func TestCache_RefreshRequestedDuringWriteIsCancelled(t *testing.T) {
 
 			c.Set(1, 2)
 			require.True(t, requested.Load())
-			require.Equal(t, 1, seen, "the Get during the write did not read the previous value")
+			require.Equal(t, 1, <-done, "the Get during the write did not read the previous value")
+			require.Nil(t, c.cache.singleflight.getCall(1), "a refresh was registered after the write")
 			executor.run()
 
 			v, ok := c.GetIfPresent(1)
 			require.True(t, ok)
 			require.Equal(t, 2, v)
+		})
+	}
+}
+
+func TestCache_RefreshOfKeyInsertedBeforeItsRegistration(t *testing.T) {
+	t.Parallel()
+
+	// A Refresh of an absent key used to look the key up before it registered its call. A write
+	// that inserted the key in between had nothing to cancel, so the refresh was registered as a
+	// load of an absent key, whose result could no longer be written. A Refresh requested after
+	// the write joined it instead of reloading the written value, and the value was not
+	// refreshed.
+	for _, bulk := range []bool{false, true} {
+		t.Run(fmt.Sprintf("bulk=%v", bulk), func(t *testing.T) {
+			t.Parallel()
+
+			clock := &refreshRegistrationClock{}
+			executor := &queuedExecutor{}
+			c := Must(&Options[int, int]{
+				MaximumSize:       100,
+				RefreshCalculator: RefreshWriting[int, int](time.Hour),
+				Clock:             clock,
+				Executor:          executor.execute,
+			})
+			refresh := func() <-chan int {
+				res := make(chan int, 1)
+				if bulk {
+					ch := c.BulkRefresh(context.Background(), []int{1}, reloadAdds{})
+					go func() { res <- (<-ch)[0].Value }()
+				} else {
+					ch := c.Refresh(context.Background(), 1, reloadAdds{})
+					go func() { res <- (<-ch).Value }()
+				}
+				return res
+			}
+
+			insert := func() { c.SetIfAbsent(1, 1) }
+			clock.before.Store(&insert)
+			first := refresh()
+			require.Nil(t, clock.before.Load(), "the key was not inserted before the registration")
+			second := refresh()
+			executor.run()
+
+			require.Equal(t, 101, <-first)
+			require.Equal(t, 101, <-second, "the second refresh did not reload the inserted value")
+			v, ok := c.GetIfPresent(1)
+			require.True(t, ok)
+			require.Equal(t, 101, v)
 		})
 	}
 }
@@ -2396,13 +2500,11 @@ func TestCache_BulkGetRetryTakesValueWrittenDuringFailedLoad(t *testing.T) {
 func TestCache_ReadDoesNotRefreshAgain(t *testing.T) {
 	t.Parallel()
 
-	// A read sees a node stale and requests a refresh, but by the time the refresh wins its call
-	// slot, the node has been refreshed by another read, or replaced: the refresh is skipped. A
-	// removed key has no value to give, so it is refreshed as before.
+	// A read sees a node stale and requests a refresh, but by the time the refresh is registered,
+	// the node has been refreshed by another read, replaced or removed: the refresh is skipped.
 	tests := []struct {
-		name      string
-		change    func(c *Cache[int, int], loader Loader[int, int])
-		wantCalls uint64
+		name   string
+		change func(c *Cache[int, int], loader Loader[int, int])
 	}{
 		{
 			name: "refreshed",
@@ -2422,7 +2524,6 @@ func TestCache_ReadDoesNotRefreshAgain(t *testing.T) {
 			change: func(c *Cache[int, int], _ Loader[int, int]) {
 				c.Invalidate(1)
 			},
-			wantCalls: 1,
 		},
 	}
 	for _, tt := range tests {
@@ -2457,13 +2558,12 @@ func TestCache_ReadDoesNotRefreshAgain(t *testing.T) {
 
 				tt.change(c, tl)
 				before := tl.calls.Load() + tbl.calls.Load()
-				rk := refreshableKey[int, int]{key: 1, old: stale}
 				if bulk {
-					c.cache.bulkRefreshKeys(context.Background(), []refreshableKey[int, int]{rk}, tbl, false)
+					c.cache.bulkRefreshKeys(context.Background(), []int{1}, tbl, false)
 				} else {
-					c.cache.refreshKey(context.Background(), rk, tl, false)
+					c.cache.refreshKey(context.Background(), 1, tl, false)
 				}
-				require.Equal(t, before+tt.wantCalls, tl.calls.Load()+tbl.calls.Load(), "bulk=%v", bulk)
+				require.Equal(t, before, tl.calls.Load()+tbl.calls.Load(), "bulk=%v", bulk)
 				require.Nil(t, c.cache.singleflight.getCall(1), "bulk=%v", bulk)
 			}
 		})
@@ -2588,12 +2688,11 @@ func TestCache_ClockPanicDoesNotStrandRefresh(t *testing.T) {
 		require.NotNil(t, stale)
 
 		clock.panics.Store(true)
-		rk := refreshableKey[int, int]{key: 1, old: stale}
 		require.NotPanics(t, func() {
 			if bulk {
-				c.cache.bulkRefreshKeys(context.Background(), []refreshableKey[int, int]{rk}, tbl, false)
+				c.cache.bulkRefreshKeys(context.Background(), []int{1}, tbl, false)
 			} else {
-				c.cache.refreshKey(context.Background(), rk, tl, false)
+				c.cache.refreshKey(context.Background(), 1, tl, false)
 			}
 		}, "bulk=%v", bulk)
 		clock.panics.Store(false)

@@ -36,9 +36,6 @@ Judge every history against this model, per key:
 Do not report these again unless the mechanism or the consequence differs:
 
 - `InvalidateAll` while loads are in flight is documented as undefined.
-- A write whose cancellation runs before a refresh is registered is overwritten by the
-  refresh's result when the write updates the node in place (`concurrency.md`). This is
-  linearizable if the refresh is requested at its registration.
 - A read may move an entry's deadline by up to `expireTolerance` without storing it
   (`deadline.go`), so an entry may expire up to that much early or late.
 - `Entry` fields may mix two writes of the same key (`design-decisions.md`).

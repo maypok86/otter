@@ -149,7 +149,7 @@ func (c *Cache[K, V]) SetIfAbsent(key K, value V) (V, bool) {
 // This call locks a hash table bucket while the compute function
 // is executed. It means that modifications on other entries in
 // the bucket will be blocked until the remappingFunc executes, and so will
-// a growth of the hash table, during which writes of every key wait.
+// refreshes of them and a growth of the hash table, during which writes of every key wait.
 // Consider this when the function includes long-running operations.
 //
 // WARNING: The function may only read entries with [Cache.GetIfPresent],
@@ -175,7 +175,7 @@ func (c *Cache[K, V]) Compute(
 // This call locks a hash table bucket while the compute function
 // is executed. It means that modifications on other entries in
 // the bucket will be blocked until the valueFn executes, and so will
-// a growth of the hash table, during which writes of every key wait.
+// refreshes of them and a growth of the hash table, during which writes of every key wait.
 // Consider this when the function includes long-running operations.
 //
 // WARNING: The function may only read entries with [Cache.GetIfPresent],
@@ -211,7 +211,7 @@ func (c *Cache[K, V]) ComputeIfAbsent(
 // This call locks a hash table bucket while the compute function
 // is executed. It means that modifications on other entries in
 // the bucket will be blocked until the valueFn executes, and so will
-// a growth of the hash table, during which writes of every key wait.
+// refreshes of them and a growth of the hash table, during which writes of every key wait.
 // Consider this when the function includes long-running operations.
 //
 // WARNING: The function may only read entries with [Cache.GetIfPresent],
@@ -264,6 +264,7 @@ func (c *Cache[K, V]) SetRefreshableAfter(key K, refreshableAfter time.Duration)
 // WARNING: When performing a refresh (see [RefreshCalculator]),
 // the [Loader] will receive a context wrapped in [context.WithoutCancel].
 // If you need to control refresh cancellation, you can use closures or values stored in the context.
+// A Get that starts a refresh may wait for a lock of the cache, see [Options.RefreshCalculator].
 //
 // WARNING: [Loader] must not attempt to update any mappings of this cache directly.
 //
@@ -290,6 +291,7 @@ func (c *Cache[K, V]) Get(ctx context.Context, key K, loader Loader[K, V]) (V, e
 // WARNING: When performing a refresh (see [RefreshCalculator]),
 // the [BulkLoader] will receive a context wrapped in [context.WithoutCancel].
 // If you need to control refresh cancellation, you can use closures or values stored in the context.
+// A BulkGet that starts a refresh may wait for a lock of the cache, see [Options.RefreshCalculator].
 //
 // WARNING: [BulkLoader] must not attempt to update any mappings of this cache directly.
 //

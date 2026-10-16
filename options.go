@@ -142,7 +142,10 @@ type Options[K comparable, V any] struct {
 	//
 	// Automatic refreshes are performed when the first stale request for an entry occurs. The request
 	// triggering the refresh will make an asynchronous call to Loader.Reload to get a new value.
-	// Until refresh is completed, requests will continue to return the old value.
+	// Until refresh is completed, requests will continue to return the old value. Registering the
+	// refresh locks the entry's hash table bucket, so the triggering request may wait for a
+	// Compute function, OnAtomicDeletion, a weigher or a calculator of another key in the bucket,
+	// or for a growth of the hash table.
 	//
 	// NOTE: all errors returned during refresh will be logged (using Logger) and then swallowed.
 	//
