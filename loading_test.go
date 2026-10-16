@@ -3147,6 +3147,41 @@ func TestCache_GetDoesNotTakeLoadedValueExpiredBeforeIt(t *testing.T) {
 	}
 }
 
+// A clock may count from any point, so a deadline of 0 is a time like any other.
+func TestCache_GetDoesNotTakeLoadedValueExpiredAtZero(t *testing.T) {
+	t.Parallel()
+
+	clock := newNonTickingClock()
+	clock.now.Store(-1)
+	c := Must(&Options[int, int]{
+		ExpiryCalculator: ExpiryCreating[int, int](time.Nanosecond),
+		Clock:            clock,
+		// the tasks never run: maintenance would remove the expired entry, and with it the call
+		Executor: func(func()) {},
+	})
+	c.cache.singleflight.init()
+	cl, _ := c.cache.singleflight.startLoad(1)
+	cl.value = 1
+	m := c.cache.commitCall(cl)
+	clock.now.Store(1)
+
+	got := make(chan getResult, 1)
+	go func() {
+		v, err := c.Get(context.Background(), 1, newTestLoader[int, int](func(context.Context, int) (int, error) {
+			return 5, nil
+		}))
+		got <- getResult{v, err}
+	}()
+	waitForJoinedLoad(t)
+	c.cache.singleflight.deleteCall(cl)
+	cl.cancel()
+	c.cache.publish(m)
+
+	r := <-got
+	require.NoError(t, r.err)
+	require.Equal(t, 5, r.value)
+}
+
 func TestCache_GetDoesNotReturnLoadOfInvalidatedKey(t *testing.T) {
 	t.Parallel()
 

@@ -49,9 +49,9 @@ type call[K comparable, V any] struct {
 	refused bool
 	// expiresAt is when the value that the call hands to its waiters from the cache, the one it
 	// wrote or the live one it found, expires, and node is the node that held the value then;
-	// expiresAt is 0 if the call hands none or entries do not expire. A waiter whose Get started
-	// after the value expired does not take it (expiredBefore). Both are written before done is
-	// closed.
+	// node is nil if the call hands none, and expiresAt is 0 if entries do not expire. A waiter
+	// whose Get started after the value expired does not take it (expiredBefore). Both are written
+	// before done is closed.
 	expiresAt int64
 	node      node.Node[K, V]
 	// invalidations is group.invalidations when the bulk load that returned a fake call started.
@@ -124,12 +124,12 @@ func (c *call[K, V]) failedForOwner() bool {
 }
 
 // expiredBefore reports whether c, which has finished, hands its waiters a value from the cache
-// that had expired by nowNano. The value stays in the call until the call is deleted, and
-// SetExpiresAfter or ExpireAfterRead may move its deadline earlier meanwhile, so the node's
-// current deadline counts as well as the recorded one. The node may hold a later value by then,
-// whose deadline can only make a waiter miss and load the key again.
+// that had expired by nowNano; entries must expire. The value stays in the call until the call is
+// deleted, and SetExpiresAfter or ExpireAfterRead may move its deadline earlier meanwhile, so the
+// node's current deadline counts as well as the recorded one. The node may hold a later value by
+// then, whose deadline can only make a waiter miss and load the key again.
 func (c *call[K, V]) expiredBefore(nowNano int64) bool {
-	return c.expiresAt != 0 && (c.expiresAt <= nowNano || c.node.ExpiresAt() <= nowNano)
+	return c.node != nil && (c.expiresAt <= nowNano || c.node.ExpiresAt() <= nowNano)
 }
 
 // refreshResult is what a manual refresh reports for c once it has finished.
