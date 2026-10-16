@@ -1843,16 +1843,16 @@ func TestCache_LateSchedulerKeepsNextDrainRequired(t *testing.T) {
 
 // heldReadExpiry gives entries a minute, an hour after a read, and holds the read that is armed
 // in ExpireAfterRead.
-type heldReadExpiry struct {
+type heldReadExpiry[V any] struct {
 	armed            atomic.Bool
 	entered, proceed chan struct{}
 }
 
-func (*heldReadExpiry) ExpireAfterCreate(Entry[int, int]) time.Duration { return time.Minute }
+func (*heldReadExpiry[V]) ExpireAfterCreate(Entry[int, V]) time.Duration { return time.Minute }
 
-func (*heldReadExpiry) ExpireAfterUpdate(Entry[int, int], int) time.Duration { return time.Minute }
+func (*heldReadExpiry[V]) ExpireAfterUpdate(Entry[int, V], V) time.Duration { return time.Minute }
 
-func (h *heldReadExpiry) ExpireAfterRead(Entry[int, int]) time.Duration {
+func (h *heldReadExpiry[V]) ExpireAfterRead(Entry[int, V]) time.Duration {
 	if h.armed.CompareAndSwap(true, false) {
 		close(h.entered)
 		<-h.proceed
@@ -1867,7 +1867,7 @@ func TestCache_ReadDoesNotReviveEntryThatExpiredDuringIt(t *testing.T) {
 	t.Parallel()
 
 	clk := newNonTickingClock()
-	calc := &heldReadExpiry{entered: make(chan struct{}), proceed: make(chan struct{})}
+	calc := &heldReadExpiry[int]{entered: make(chan struct{}), proceed: make(chan struct{})}
 	c := Must(&Options[int, int]{
 		Clock:            clk,
 		ExpiryCalculator: calc,
@@ -1892,4 +1892,97 @@ func TestCache_ReadDoesNotReviveEntryThatExpiredDuringIt(t *testing.T) {
 
 	_, ok = c.GetIfPresent(1)
 	require.False(t, ok, "the read brought back the entry that expired while it ran")
+}
+
+// A read returns the value ExpireAfterRead was shown, so it comes before an update in place that
+// runs meanwhile, and the update's deadline stands. The update stores the same deadline when the
+// clock has not moved, and the held read, which compared only the deadline, gave the new value
+// the hour it computed for the old one (and returned the new value). Values in a word and boxed
+// values are replaced in place differently.
+func TestCache_ReadDoesNotMoveDeadlineOfValueWrittenDuringIt(t *testing.T) {
+	t.Parallel()
+
+	t.Run("word", func(t *testing.T) {
+		t.Parallel()
+		testReadDoesNotMoveDeadlineOfValueWrittenDuringIt(t, 1, 2)
+	})
+	t.Run("boxed", func(t *testing.T) {
+		t.Parallel()
+		testReadDoesNotMoveDeadlineOfValueWrittenDuringIt(t, "a", "b")
+	})
+}
+
+func testReadDoesNotMoveDeadlineOfValueWrittenDuringIt[V comparable](t *testing.T, v1, v2 V) {
+	t.Helper()
+
+	clk := newNonTickingClock()
+	calc := &heldReadExpiry[V]{entered: make(chan struct{}), proceed: make(chan struct{})}
+	c := Must(&Options[int, V]{
+		Clock:            clk,
+		ExpiryCalculator: calc,
+	})
+	// the second write leaves the node of any value updatable in place; both expire at 60s
+	c.Set(1, v2)
+	c.Set(1, v1)
+	n := c.cache.hashmap.Get(1)
+	require.True(t, n.CanSetValue())
+
+	calc.armed.Store(true)
+	done := make(chan struct{})
+	var got V
+	go func() {
+		defer close(done)
+		got, _ = c.GetIfPresent(1)
+	}()
+	<-calc.entered
+	c.Set(1, v2) // expires at 60s too
+	require.True(t, n.AsPointer() == c.cache.hashmap.Get(1).AsPointer(), "the node was replaced")
+	close(calc.proceed)
+	<-done
+	require.Equal(t, v1, got, "the read returned a value other than the one ExpireAfterRead was shown")
+
+	entry, ok := c.GetEntryQuietly(1)
+	require.True(t, ok)
+	require.Equal(t, v2, entry.Value)
+	require.Equal(t, time.Minute, entry.ExpiresAfter(), "the read of the old value moved the deadline of the new one")
+	validateCache(t, c)
+}
+
+// A read compares what the node stores to tell whether the value was replaced, so it extends the
+// deadline of any value, including a struct whose copies differ in their padding.
+func TestCache_ReadExtendsDeadlineOfPaddedValue(t *testing.T) {
+	t.Parallel()
+
+	type word struct {
+		A int8
+		B int32
+	}
+	type boxed struct {
+		A bool
+		B *int
+		C int8
+	}
+	testReadExtendsDeadline(t, word{A: 1, B: 2})
+	testReadExtendsDeadline(t, boxed{A: true, C: 3})
+}
+
+func testReadExtendsDeadline[V any](t *testing.T, v V) {
+	t.Helper()
+
+	clk := newNonTickingClock()
+	c := Must(&Options[int, V]{
+		Clock:            clk,
+		ExpiryCalculator: ExpiryAccessing[int, V](time.Minute),
+	})
+	// the second write leaves the node of any value updatable in place
+	c.Set(1, v)
+	c.Set(1, v)
+	require.True(t, c.cache.hashmap.Get(1).CanSetValue())
+
+	clk.Sleep(30 * time.Second)
+	_, ok := c.GetIfPresent(1)
+	require.True(t, ok)
+	entry, ok := c.GetEntryQuietly(1)
+	require.True(t, ok)
+	require.Equal(t, time.Minute, entry.ExpiresAfter(), "the read did not extend the deadline")
 }

@@ -190,7 +190,7 @@ func (c *cache[K, V]) afterWritePolicies(m mutation[K, V]) {
 		// later expiration time needs no task: the timer wheel reschedules a node that it finds
 		// has not expired yet.
 		if !quiet {
-			c.afterRead(n, m.nowNano, false, false)
+			c.afterRead(n, false)
 		}
 		if m.reconcile {
 			c.afterWriteTask(newTask(n, nil, reconcileReason))
@@ -264,6 +264,8 @@ func (c *cache[K, V]) atomicSet(
 		// The synchronous listener runs before the new value is published, as it does when the
 		// node is replaced: readers see the previous value until the write completes.
 		c.notifyAtomicDeletion(key, oldValue, written.cause)
+		// The value is stored before the deadline: a read that moves the deadline at the same
+		// time checks the value before its CAS (see calcExpiresAtAfterRead).
 		old.SetValue(value)
 		if c.isWeighted {
 			// only weighted nodes store a weight; the others always weigh 1

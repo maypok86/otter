@@ -188,3 +188,7 @@ func (n *BR[K, V]) SetValue(v V) {
 func (n *BR[K, V]) CanSetValue() bool {
 	return false
 }
+
+func (n *BR[K, V]) ValueAndIdentity() (V, unsafe.Pointer, uint64) {
+	return n.value, nil, 0
+}

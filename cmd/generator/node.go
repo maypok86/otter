@@ -287,6 +287,12 @@ func (g *generator) printValueFunctions() {
 		g.out()
 		g.p("}")
 		g.p("")
+		g.p("func (n *%s[K, V]) ValueAndIdentity() (V, unsafe.Pointer, uint64) {", g.structName)
+		g.in()
+		g.p("return n.value, nil, 0")
+		g.out()
+		g.p("}")
+		g.p("")
 		return
 	}
 
@@ -355,6 +361,34 @@ func (g *generator) printValueFunctions() {
 	g.p("func (n *%s[K, V]) CanSetValue() bool {", g.structName)
 	g.in()
 	g.p("return n.variant != %s", inlineVariant.constant)
+	g.out()
+	g.p("}")
+	g.p("")
+
+	g.p("func (n *%s[K, V]) ValueAndIdentity() (V, unsafe.Pointer, uint64) {", g.structName)
+	g.in()
+	byVariant(func(v variant) {
+		switch v {
+		case inlineVariant:
+			// never replaced in place
+			g.p("return %s.value, nil, 0", cast(v))
+		case boxedVariant:
+			// the box is loaded once, so the value is the one it identifies
+			g.p("p := %s.value.Load()", cast(v))
+			g.p("return *p, unsafe.Pointer(p), 0")
+		case pointerVariant:
+			g.p("p := atomic.LoadPointer(&%s.value)", cast(v))
+			g.p("return *(*V)(unsafe.Pointer(&p)), p, 0")
+		case wordVariant:
+			g.p("w := %s.value.Load()", cast(v))
+			g.p("return *(*V)(unsafe.Pointer(&w)), nil, w")
+		case emptyVariant:
+			g.p("var zero V")
+			g.p("return zero, nil, 0")
+		default:
+			panic(fmt.Sprintf("unknown variant %v", v))
+		}
+	})
 	g.out()
 	g.p("}")
 	g.p("")
