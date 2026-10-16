@@ -1561,10 +1561,6 @@ func (c *cache[K, V]) countEviction(cause DeletionCause, weight uint32) {
 	}
 }
 
-func (c *cache[K, V]) notifyDeletion(key K, value V, cause DeletionCause) {
-	c.notifyDeletionFrom(false, key, value, cause)
-}
-
 // notifyDeletionFrom calls the OnDeletion listener directly if the caller already runs as an
 // executor task, and submits it to the executor otherwise. Submitting another task from a task
 // deadlocks an executor that runs a bounded number of tasks and blocks the submitter: once all
@@ -1665,7 +1661,7 @@ func (c *cache[K, V]) removeNode(n node.Node[K, V], nowNanos int64, removal node
 		c.timerWheel.Unschedule(n)
 	}
 	if deleted != nil {
-		c.notifyDeletion(n.Key(), n.Value(), cause)
+		c.notifyDeletionFrom(false, n.Key(), n.Value(), cause)
 	}
 	return true
 }
