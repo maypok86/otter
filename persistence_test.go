@@ -210,6 +210,37 @@ func TestLoadCacheFrom_SkipsEntryAtItsDeadline(t *testing.T) {
 	})
 }
 
+// An entry keeps the deadlines it was saved with even if the clock moves while it is restored.
+func TestLoadCacheFrom_KeepsDeadlinesWhileTheClockMoves(t *testing.T) {
+	t.Parallel()
+
+	saved := Must(&Options[int, int]{
+		Clock:             newNonTickingClock(),
+		ExpiryCalculator:  ExpiryWriting[int, int](time.Minute),
+		RefreshCalculator: RefreshWriting[int, int](time.Minute),
+	})
+	saved.Set(1, 1)
+	want, ok := saved.GetEntryQuietly(1)
+	require.True(t, ok)
+	var buf bytes.Buffer
+	require.NoError(t, SaveCacheTo(saved, &buf))
+
+	clock := newNonTickingClock()
+	loaded := Must(&Options[int, int]{
+		Clock: clock,
+		ExpiryCalculator: ExpiryWritingFunc[int, int](func(Entry[int, int]) time.Duration {
+			clock.Sleep(time.Second)
+			return time.Hour
+		}),
+		RefreshCalculator: RefreshWriting[int, int](time.Hour),
+	})
+	require.NoError(t, LoadCacheFrom(loaded, &buf))
+	got, ok := loaded.GetEntryQuietly(1)
+	require.True(t, ok)
+	require.Equal(t, want.ExpiresAtNano, got.ExpiresAtNano)
+	require.Equal(t, want.RefreshableAtNano, got.RefreshableAtNano)
+}
+
 // A save that fails leaves the file it would have replaced as it was, and no temporary file
 // behind.
 func TestSaveCacheToFile_FailureKeepsPreviousFile(t *testing.T) {

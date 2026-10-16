@@ -22,7 +22,6 @@ import (
 	"math/rand/v2"
 	"os"
 	"path/filepath"
-	"time"
 )
 
 // LoadCacheFromFile loads cache data from the given filePath.
@@ -77,12 +76,10 @@ func LoadCacheFrom[K comparable, V any](c *Cache[K, V], r io.Reader) error {
 		}
 		c.Set(entry.Key, entry.Value)
 		if c.cache.withExpiration && entry.ExpiresAtNano != unreachableExpiresAt {
-			expiresAfter := max(1, time.Duration(entry.ExpiresAtNano-nowNano))
-			c.SetExpiresAfter(entry.Key, expiresAfter)
+			c.cache.setExpiresAt(entry.Key, func(int64) int64 { return entry.ExpiresAtNano })
 		}
 		if c.cache.withRefresh && entry.RefreshableAtNano != unreachableRefreshableAt {
-			refreshableAfter := max(1, time.Duration(entry.RefreshableAtNano-nowNano))
-			c.SetRefreshableAfter(entry.Key, refreshableAfter)
+			c.cache.setRefreshableAt(entry.Key, func(int64) int64 { return entry.RefreshableAtNano })
 		}
 		savedSize += uint64(entry.Weight)
 		size += uint64(c.cache.weigher(entry.Key, entry.Value))
