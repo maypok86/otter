@@ -1417,24 +1417,15 @@ func newDeferredCache(
 	expiry ExpiryCalculator[int, int],
 	refresh RefreshCalculator[int, int],
 ) (c *Cache[int, int], run func()) {
-	var pending []func()
-	run = func() {
-		for len(pending) > 0 {
-			fn := pending[0]
-			pending = pending[1:]
-			fn()
-		}
-	}
+	var q queuedExecutor
 	c = Must(&Options[int, int]{
 		MaximumSize:       10,
 		Clock:             clk,
 		ExpiryCalculator:  expiry,
 		RefreshCalculator: refresh,
-		Executor: func(fn func()) {
-			pending = append(pending, fn)
-		},
+		Executor:          q.execute,
 	})
-	return c, run
+	return c, q.run
 }
 
 // A write over an expired entry that is still in the table creates the entry: its refresh time is
@@ -1653,7 +1644,7 @@ func TestCache_SizeEvictionOfExpiredEntryReportsExpiration(t *testing.T) {
 	t.Parallel()
 
 	clk := newNonTickingClock()
-	var pending []func()
+	var q queuedExecutor
 	var deleted, atomicDeleted []DeletionEvent[int, int]
 	c := Must(&Options[int, int]{
 		MaximumSize:      10,
@@ -1665,17 +1656,9 @@ func TestCache_SizeEvictionOfExpiredEntryReportsExpiration(t *testing.T) {
 		OnAtomicDeletion: func(e DeletionEvent[int, int]) {
 			atomicDeleted = append(atomicDeleted, e)
 		},
-		Executor: func(fn func()) {
-			pending = append(pending, fn)
-		},
+		Executor: q.execute,
 	})
-	run := func() {
-		for len(pending) > 0 {
-			fn := pending[0]
-			pending = pending[1:]
-			fn()
-		}
-	}
+	run := q.run
 	for k := 0; k < 10; k++ {
 		c.Set(k, k)
 	}

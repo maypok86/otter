@@ -17,7 +17,6 @@ package otter
 import (
 	"context"
 	"iter"
-	"runtime"
 	"time"
 
 	"github.com/maypok86/otter/v2/stats"
@@ -90,10 +89,6 @@ func New[K comparable, V any](o *Options[K, V]) (*Cache[K, V], error) {
 	c := &Cache[K, V]{
 		cache: cacheImpl,
 	}
-	runtime.AddCleanup(c, func(cacheImpl *cache[K, V]) {
-		cacheImpl.StopAllGoroutines()
-	}, cacheImpl)
-
 	return c, nil
 }
 
@@ -511,8 +506,9 @@ func (c *Cache[K, V]) Coldest() iter.Seq[Entry[K, V]] {
 // StopAllGoroutines stops all goroutines launched by the cache.
 // It returns true if the call stops goroutines, false if goroutines have already been stopped.
 //
-// NOTE: In the vast majority of cases, you do not need to call this method, and it will be called automatically.
-// However, it can sometimes be useful, for example when using synctest.
+// NOTE: In the vast majority of cases, you do not need to call this method: once the cache is no
+// longer reachable, the goroutines stop at the next tick of the Clock. However, it can sometimes be
+// useful, for example with a Clock that does not tick, or when using synctest.
 // You can think of this method as analogous to the Stop method of [time.Timer].
 //
 // WARNING: StopAllGoroutines must not be called from a function that the cache runs, such as a

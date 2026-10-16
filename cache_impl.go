@@ -24,6 +24,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"weak"
 
 	"github.com/maypok86/otter/v2/internal/deque/queue"
 	"github.com/maypok86/otter/v2/internal/expiration"
@@ -92,8 +93,9 @@ type cache[K comparable, V any] struct {
 	executor           func(fn func())
 	singleflight       *group[K, V]
 	evictionMutex      sync.Mutex
-	doneStop           chan struct{}
 	stopOnce           sync.Once
+	stop               chan struct{}
+	done               chan struct{}
 	weigher            func(key K, value V) uint32
 	onDeletion         func(e DeletionEvent[K, V])
 	onAtomicDeletion   func(e DeletionEvent[K, V])
@@ -209,8 +211,12 @@ func newCache[K comparable, V any](o *Options[K, V]) *cache[K, V] {
 		c.clock.Init()
 	}
 	if c.withExpiration {
-		c.doneStop = make(chan struct{})
-		go c.periodicCleanUp()
+		// No cleanup of the Cache stops the goroutine: cleanups run outside testing/synctest
+		// bubbles, and closing a channel created in one from outside is a fatal error. The
+		// goroutine returns by itself once the cache is collected.
+		c.stop = make(chan struct{})
+		c.done = make(chan struct{})
+		go periodicCleanUp(weak.Make(c), c.stop, c.done)
 	}
 
 	if c.withEviction {
@@ -1608,23 +1614,44 @@ func (c *cache[K, V]) notifyAtomicDeletion(key K, value V, cause DeletionCause) 
 	})
 }
 
-func (c *cache[K, V]) periodicCleanUp() {
-	// The clock is user code, and this goroutine is the cache's own: if Tick panics, the panic is
-	// logged and the cache does without periodic clean-ups. The loop still waits for
-	// StopAllGoroutines.
-	tick := func() <-chan time.Time {
-		defer recoverCallback(c.logger, "Clock.Tick panicked")
-		return c.clock.Tick(time.Second)
-	}()
+// periodicCleanUp holds the cache only while it cleans it up, so that the cache can be collected
+// between the ticks; then the goroutine returns at the next tick. It gets the channels, not the
+// cache, because it must not keep the cache reachable: a callback that the cache holds may hold
+// the cache itself, and then it would never be collected. It returns when stop is closed, and
+// closes done then.
+func periodicCleanUp[K comparable, V any](wc weak.Pointer[cache[K, V]], stop, done chan struct{}) {
+	defer close(done)
+
+	c := wc.Value()
+	if c == nil {
+		return
+	}
+	tick := c.tick()
+	if tick == nil {
+		// Without ticks, nothing would tell the goroutine that the cache is gone.
+		return
+	}
 	for {
 		select {
-		case <-c.doneStop:
+		case <-stop:
 			return
 		case <-tick:
+			c := wc.Value()
+			if c == nil {
+				return
+			}
 			c.CleanUp()
 			c.clock.ProcessTick()
 		}
 	}
+}
+
+// tick returns the clock's ticks for the periodic clean-up. The clock is user code, and that
+// goroutine is the cache's own: if Tick panics, the panic is logged, nil is returned, and the cache
+// does without periodic clean-ups.
+func (c *cache[K, V]) tick() <-chan time.Time {
+	defer recoverCallback(c.logger, "Clock.Tick panicked")
+	return c.clock.Tick(time.Second)
 }
 
 // evictNode removes n, which the eviction policy chose to evict for size, and reports whether n
@@ -2126,13 +2153,15 @@ func (c *cache[K, V]) GetMaximum() uint64 {
 }
 
 func (c *cache[K, V]) StopAllGoroutines() bool {
-	var stopped bool
+	if c.stop == nil {
+		return false
+	}
+	stopped := false
 	c.stopOnce.Do(func() {
-		if c.withExpiration {
-			c.doneStop <- struct{}{}
-			stopped = true
-		}
+		close(c.stop)
+		stopped = true
 	})
+	<-c.done
 	return stopped
 }
 
