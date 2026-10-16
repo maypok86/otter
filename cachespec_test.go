@@ -471,8 +471,7 @@ type testCache interface {
 	// that a receive would wait on forever.
 	Refresh(key int, loader Loader[int, int]) <-chan RefreshResult[int, int]
 	RefreshContext(ctx context.Context, key int, loader Loader[int, int]) <-chan RefreshResult[int, int]
-	// BulkRefresh fails the test on a cache without refresh, as Refresh does.
-	BulkRefresh(keys []int, bulkLoader BulkLoader[int, int]) <-chan []RefreshResult[int, int]
+	// BulkRefreshContext fails the test on a cache without refresh, as Refresh does.
 	BulkRefreshContext(
 		ctx context.Context, keys []int, bulkLoader BulkLoader[int, int],
 	) <-chan []RefreshResult[int, int]
@@ -697,10 +696,6 @@ func (s *specCache[V]) RefreshContext(
 		ch <- RefreshResult[int, int]{Key: r.Key, Value: s.fromV(r.Value), Err: r.Err}
 	}()
 	return ch
-}
-
-func (s *specCache[V]) BulkRefresh(keys []int, bulkLoader BulkLoader[int, int]) <-chan []RefreshResult[int, int] {
-	return s.BulkRefreshContext(context.Background(), keys, bulkLoader)
 }
 
 func (s *specCache[V]) BulkRefreshContext(
