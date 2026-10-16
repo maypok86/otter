@@ -425,7 +425,11 @@ func (c *cache[K, V]) SetExpiresAfter(key K, expiresAfter time.Duration) {
 	if !c.withExpiration || expiresAfter <= 0 {
 		return
 	}
+	c.setExpiresAt(key, func(nowNano int64) int64 { return deadlineAfter(nowNano, expiresAfter) })
+}
 
+// setExpiresAt is SetExpiresAfter with the deadline that deadline returns for the current time.
+func (c *cache[K, V]) setExpiresAt(key K, deadline func(nowNano int64) int64) {
 	var (
 		n       node.Node[K, V]
 		nowNano int64
@@ -448,7 +452,7 @@ func (c *cache[K, V]) SetExpiresAfter(key K, expiresAfter time.Duration) {
 		}
 		n = cur
 		// The caller asked for this deadline, so it is set exactly.
-		if next, ok := moveDeadline(expiresAt, nowNano, expiresAfter, 0); ok {
+		if next := deadline(nowNano); next != expiresAt {
 			cur.SetExpiresAt(next)
 			earlier = next < expiresAt
 		}
@@ -477,15 +481,17 @@ func (c *cache[K, V]) SetRefreshableAfter(key K, refreshableAfter time.Duration)
 	if !c.withRefresh || refreshableAfter <= 0 {
 		return
 	}
+	c.setRefreshableAt(key, func(nowNano int64) int64 { return deadlineAfter(nowNano, refreshableAfter) })
+}
 
-	// Under the key's bucket lock, as for SetExpiresAfter.
+// setRefreshableAt is SetRefreshableAfter with the time that deadline returns for the current time.
+func (c *cache[K, V]) setRefreshableAt(key K, deadline func(nowNano int64) int64) {
+	// Under the key's bucket lock, as for setExpiresAt.
 	c.hashmap.Compute(key, func(n node.Node[K, V]) node.Node[K, V] {
 		if n == nil {
 			return nil
 		}
-		nowNano := c.clock.NowNano()
-		refreshableAt := n.RefreshableAt()
-		if next := nextDeadline(refreshableAt, nowNano, refreshableAfter); next != refreshableAt {
+		if next := deadline(c.clock.NowNano()); next != n.RefreshableAt() {
 			n.SetRefreshableAt(next)
 		}
 		return n
