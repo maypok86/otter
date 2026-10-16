@@ -308,8 +308,8 @@ func (c *Cache[K, V]) BulkGet(ctx context.Context, keys []K, bulkLoader BulkLoad
 // previous value (if any) will continue to be returned by any Get unless it is evicted.
 // If the new value is loaded successfully, it will replace the previous value in the cache;
 // If refreshing returned an error, the previous value will remain, and the error will be logged
-// using [Logger] and swallowed, except for [ErrNotFound], which removes the entry. If another goroutine is currently
-// loading the value for key, then this method does not perform an additional load.
+// using [Logger] and swallowed, except for [ErrNotFound], which removes the entry. If a load or refresh of the
+// key that started from its current state is in flight, this method joins it instead of loading again.
 // If the key is written, invalidated or expires after the refresh was requested, the loaded
 // value is discarded and the cache keeps the newer state.
 //
@@ -341,8 +341,8 @@ func (c *Cache[K, V]) Refresh(ctx context.Context, key K, loader Loader[K, V]) <
 // If the new value is loaded successfully, it will replace the previous value in the cache;
 // If refreshing returned an error, the previous values will remain, and the error will be logged
 // using [Logger] and swallowed, an [ErrNotFound] for the whole bulk included. A key that the
-// [BulkLoader] leaves out of its result is not found, and its entry is removed. If another goroutine is currently
-// loading the value for key, then this method does not perform an additional load.
+// [BulkLoader] leaves out of its result is not found, and its entry is removed. If a load or refresh of the
+// key that started from its current state is in flight, this method joins it instead of loading again.
 // If the key is written, invalidated or expires after the refresh was requested, the loaded
 // value is discarded and the cache keeps the newer state.
 //

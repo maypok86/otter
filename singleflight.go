@@ -198,35 +198,38 @@ func (g *group[K, V]) startLoad(key K) (c *call[K, V], shouldLoad bool) {
 }
 
 // startRefresh registers a refresh of key, whose node is base (nil if absent), or returns the call
-// already registered for it. It is called under the key's bucket lock in the cache's hash table
-// (see cache.startRefresh), on the requesting goroutine, before the refresh is handed to the
-// executor, so that a write that follows the request cancels it.
+// already registered for it if that call was started from the same base. It is called under the
+// key's bucket lock in the cache's hash table (see cache.startRefresh), on the requesting
+// goroutine, before the refresh is handed to the executor, so that a write that follows the
+// request cancels it. A call started from another base will not be written over the key's
+// current state (see isRefreshBase): a load, whose base is nil, never writes over a live value.
+// It is replaced rather than joined, and still completes for its own waiters.
 func (g *group[K, V]) startRefresh(key K, base node.Node[K, V]) (c *call[K, V], shouldLoad bool) {
 	return g.startCall(key, true, base)
 }
 
 func (g *group[K, V]) startCall(key K, isRefresh bool, base node.Node[K, V]) (c *call[K, V], shouldLoad bool) {
+	// A refresh's base is the key's live node, read under its bucket lock, so a call started from
+	// the same base is not superseded.
+	joins := func(c *call[K, V]) bool {
+		if isRefresh {
+			return c.base == base
+		}
+		return !g.superseded(c)
+	}
 	// fast path
-	if c := g.joinable(key); c != nil {
+	if c := g.getCall(key); c != nil && joins(c) {
 		return c, shouldLoad
 	}
 
 	return g.calls.Compute(key, func(prevCall *call[K, V]) *call[K, V] {
 		// double check
-		if prevCall != nil && !g.superseded(prevCall) {
+		if prevCall != nil && joins(prevCall) {
 			return prevCall
 		}
 		shouldLoad = true
 		return newCall[K, V](key, isRefresh, base)
 	}), shouldLoad
-}
-
-// joinable returns the call registered for key if a new call of key would join it, nil otherwise.
-func (g *group[K, V]) joinable(key K) *call[K, V] {
-	if c := g.getCall(key); c != nil && !g.superseded(c) {
-		return c
-	}
-	return nil
 }
 
 // superseded reports whether c is a refresh whose base has been removed or replaced, so that its

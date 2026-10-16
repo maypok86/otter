@@ -205,8 +205,11 @@ hold together:
   executor, under the key's bucket lock, which also reads the call's base: the key's live node,
   nil if absent (`cache.startRefresh` in `refreshKey`, `bulkRefreshKeys`; `group.submitRefresh`
   finishes them if the executor panics). A refresh that a read started is not registered if the
-  node is fresh by then or the key is gone. A refresh that finds a call it would join takes no
-  lock;
+  node is fresh by then or the key is gone. A refresh joins only a call started from the same
+  base, the node it would refresh: a call from another base, such as a load of a key that has a
+  live value since, cannot be written, so the refresh registers a call of its own, which
+  replaces that call; the replaced call still completes for its own waiters. A refresh that
+  finds a call from its own base joins it without taking the lock;
 - writes and invalidations cancel pending calls under the same lock, before the change is
   published (`cancelCalls`, before `OnAtomicDeletion` and `SetValue`). A refresh requested by
   another goroutine during a write waits for the lock and starts from what the write left, and

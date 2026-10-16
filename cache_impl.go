@@ -736,11 +736,19 @@ func (c *cache[K, V]) doCompute(
 // and cl is nil. Without this, every read that saw the key stale before the first refresh
 // completed would reload it again.
 func (c *cache[K, V]) startRefresh(key K, isManual bool, nowNano int64) (cl *call[K, V], shouldLoad bool) {
-	// fast path: a read that saw a change does not find the calls the change cancelled
-	if cl := c.singleflight.joinable(key); cl != nil {
-		return cl, false
+	// fast path: a read that saw a change does not find the calls the change cancelled. A call is
+	// joined only if it was started from the key's live node, or from an absent key that is
+	// still absent (see group.startRefresh); then it is not superseded either.
+	if cl := c.singleflight.getCall(key); cl != nil {
+		if n := c.getNodeQuietly(key, nowNano); cl.base == n && (n == nil || n.IsAlive()) {
+			return cl, false
+		}
 	}
 	c.hashmap.Compute(key, func(current node.Node[K, V]) node.Node[K, V] {
+		// The time is read again under the lock, as a mutation does: the entry may have expired
+		// while the refresh waited for it, and a load of the key registered since must not be
+		// replaced by a refresh of the expired value.
+		nowNano = max(nowNano, c.clock.NowNano())
 		var base node.Node[K, V]
 		if current != nil && !current.HasExpired(nowNano) {
 			base = current
@@ -1372,8 +1380,8 @@ func (c *cache[K, V]) wrapRefresh(fn func() error) (err error) {
 // previous value (if any) will continue to be returned by any Get unless it is evicted.
 // If the new value is loaded successfully, it will replace the previous value in the cache;
 // If refreshing returned an error, the previous value will remain, and the error will be logged
-// using Logger and swallowed, except for [ErrNotFound], which removes the entry. If another goroutine is currently
-// loading the value for key, then this method does not perform an additional load.
+// using Logger and swallowed, except for [ErrNotFound], which removes the entry. If a load or refresh of the
+// key that started from its current state is in flight, this method joins it instead of loading again.
 // If the key is written, invalidated or expires after the refresh was requested, the loaded
 // value is discarded and the cache keeps the newer state.
 //
@@ -1402,8 +1410,8 @@ func (c *cache[K, V]) Refresh(ctx context.Context, key K, loader Loader[K, V]) <
 // If the new value is loaded successfully, it will replace the previous value in the cache;
 // If refreshing returned an error, the previous values will remain, and the error will be logged
 // using Logger and swallowed, an [ErrNotFound] for the whole bulk included. A key that the
-// [BulkLoader] leaves out of its result is not found, and its entry is removed. If another goroutine is currently
-// loading the value for key, then this method does not perform an additional load.
+// [BulkLoader] leaves out of its result is not found, and its entry is removed. If a load or refresh of the
+// key that started from its current state is in flight, this method joins it instead of loading again.
 // If the key is written, invalidated or expires after the refresh was requested, the loaded
 // value is discarded and the cache keeps the newer state.
 //

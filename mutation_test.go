@@ -444,11 +444,10 @@ func TestCache_MutationDecidesWithTimeTakenUnderLock(t *testing.T) {
 			return !ok
 		}},
 		{name: "refresh", absent: func(c *Cache[int, int]) bool {
-			<-c.Refresh(ctx, 1, LoaderFunc[int, int](func(context.Context, int) (int, error) {
-				return 2, nil
-			}))
-			_, ok := c.GetIfPresent(1)
-			return !ok
+			// a refresh of an absent key loads it, one of a live key reloads it
+			<-c.Refresh(ctx, 1, reloadAdds{})
+			v, ok := c.GetIfPresent(1)
+			return ok && v == 10
 		}},
 	}
 	for _, tt := range tests {

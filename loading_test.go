@@ -1847,6 +1847,33 @@ func TestCache_RefreshOfKeyInsertedBeforeItsRegistration(t *testing.T) {
 	}
 }
 
+func TestCache_RefreshDoesNotJoinLoadOfLiveKey(t *testing.T) {
+	t.Parallel()
+
+	// A Get that missed the key registers its load just as a write stores a value: the load
+	// is not cancelled, and its value will be refused, since a load never writes over a live
+	// value. A refresh of the written value must not join it, or it would report a value that is
+	// never written and leave the written value as it is.
+	executor := &queuedExecutor{}
+	c := Must(&Options[int, int]{
+		MaximumSize:       100,
+		RefreshCalculator: RefreshWriting[int, int](time.Hour),
+		Executor:          executor.execute,
+	})
+	c.cache.singleflight.init()
+	c.Set(1, 1)
+	load, _ := c.cache.singleflight.startLoad(1)
+	defer c.cache.singleflight.adopt(load, 1, 0, nil)
+
+	ch := c.Refresh(context.Background(), 1, reloadAdds{})
+	require.NotSame(t, load, c.cache.singleflight.getCall(1), "the refresh joined the load")
+	executor.run()
+	require.Equal(t, 101, (<-ch).Value)
+	v, ok := c.GetIfPresent(1)
+	require.True(t, ok)
+	require.Equal(t, 101, v)
+}
+
 func TestCache_InPlaceWriteCancelsRefreshBeforePublishing(t *testing.T) {
 	t.Parallel()
 
