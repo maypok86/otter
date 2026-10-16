@@ -8,6 +8,8 @@ disable-model-invocation: true
 
 Assume there is at least one arithmetic or boundary bug.
 
+Adapted from Caffeine's `audit-arithmetic`.
+
 Audit for:
 
 - Off-by-one errors and wrong inequality direction (`<` vs `<=`)

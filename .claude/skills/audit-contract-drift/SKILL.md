@@ -10,6 +10,8 @@ Most audits read code. This one reads the documentation first and then traces ea
 every path that should keep it. It finds quiet contradictions between what the doc comments
 say and what the code does.
 
+Adapted from Caffeine's `audit-contract-drift`.
+
 ## Step 1: enumerate the promises
 
 Read every exported doc comment and build a list of behavioral promises (exact wording, the

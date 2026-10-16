@@ -159,5 +159,13 @@ finding; report it with a witness); interleavings near these areas deserve prior
    bucket locked.
 6. **Generated layouts**: node size regressions on 32-bit (`atomic.Int64` alignment), escape
    analysis moving every `SetValue` argument to the heap.
+7. **`runtime.Goexit` in user code**: the eviction lock stayed held when the executor called it
+   (03c332a); loads, bulk loads and refreshes whose loader or write called it left calls
+   unfinished (3bae3ad, e11146e, a52d48a, d3dd898). Still open: an `OnDeletion` or executor that
+   calls it before a write's task reaches the write buffer leaves the new node outside the
+   policy.
+8. **Notification order**: `OnDeletion` got the events of one key out of the order of the
+   writes, when a replacement was reported from its task and when maintenance on the writer
+   evicted the new value first (9eb9033, 5a1e874).
 
 Search issues with `gh issue list --repo maypok86/otter --search <term>`.

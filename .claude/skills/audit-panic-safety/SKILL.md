@@ -9,6 +9,8 @@ disable-model-invocation: true
 Audit the cache for panic-safety defects: for every point where a panic can start, determine
 whether the cache is left consistent and every waiter can still make progress.
 
+Adapted from Caffeine's `audit-exception-safety`.
+
 Assume at least one such bug exists. If you find none, explain for each callback below why no
 panic leaves inconsistent state.
 
