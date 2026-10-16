@@ -521,7 +521,9 @@ func TestCache_DeletionEventsFollowMutations(t *testing.T) {
 
 // The previous value is reported before the write reaches the policies, so a listener that
 // writes the key it is told about, on an executor that runs it on the caller, hands its own write
-// to the policies first. The policies replay tasks in any order, and the cache stays consistent.
+// to the policies first. Here the listener adds the key back and invalidates it again, so the task
+// that adds each node is handed off before the task that removes the node before it. The policies
+// replay tasks in any order, and the cache stays consistent.
 func TestCache_DeletionListenerWritesTheKey(t *testing.T) {
 	t.Parallel()
 
@@ -529,13 +531,16 @@ func TestCache_DeletionListenerWritesTheKey(t *testing.T) {
 	forEachSpec(t, cacheSpec{executor: []executorKind{callerRuns}}, func(t *testing.T, cc *cacheContext) {
 		writes := 0
 		cc.onDeletion = func(e DeletionEvent[int, int]) {
-			if e.Cause == CauseReplacement && writes < nested {
+			if e.Cause == CauseInvalidation && writes < nested {
 				writes++
 				cc.cache.Set(e.Key, 2+writes)
+				if writes < nested {
+					cc.cache.Invalidate(e.Key)
+				}
 			}
 		}
 		cc.cache.Set(1, 1)
-		cc.cache.Set(1, 2)
+		cc.cache.Invalidate(1)
 		require.Equal(t, nested, writes)
 		cc.requireValue(t, 1, 2+nested)
 	})
