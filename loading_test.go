@@ -1982,51 +1982,30 @@ func TestCache_InvalidateAllDiscardsEntriesReplacedDuringIt(t *testing.T) {
 	}
 }
 
-// newCacheWithExpiredEntry returns a cache whose key 1 has expired but is still in the table:
-// the executor never runs maintenance, which would remove it.
-func newCacheWithExpiredEntry(t *testing.T, bounded bool) *Cache[int, int] {
-	t.Helper()
-
-	clk := newNonTickingClock()
-	opts := &Options[int, int]{
-		Clock:            clk,
-		ExpiryCalculator: ExpiryWriting[int, int](time.Minute),
-		Executor:         func(fn func()) {},
-	}
-	if bounded {
-		opts.MaximumSize = 10
-	}
-	c := Must(opts)
-	c.Set(1, 1)
-	clk.Sleep(2 * time.Minute)
-	require.NotNil(t, c.cache.hashmap.Get(1), "the expired entry must still be in the table")
-	return c
-}
-
 // Compute that cancels over an expired entry removes the entry, but keeps a load of the key that
 // is in flight, which most likely started because the entry expired. Before, the load's value
 // was returned to its caller but not cached, and the next Get loaded the key again.
 func TestCache_ComputeCancelOverExpiredEntryKeepsLoad(t *testing.T) {
 	t.Parallel()
 
-	cancels := map[string]func(c *Cache[int, int]) (int, bool){
-		"Compute": func(c *Cache[int, int]) (int, bool) {
+	cancels := map[string]func(c testCache) (int, bool){
+		"Compute": func(c testCache) (int, bool) {
 			return c.Compute(1, func(oldValue int, found bool) (int, ComputeOp) {
 				return 0, CancelOp
 			})
 		},
-		"ComputeIfAbsent": func(c *Cache[int, int]) (int, bool) {
+		"ComputeIfAbsent": func(c testCache) (int, bool) {
 			return c.ComputeIfAbsent(1, func() (int, bool) {
 				return 0, true
 			})
 		},
 	}
 	for name, cancel := range cancels {
-		for _, bounded := range []bool{false, true} {
-			t.Run(fmt.Sprintf("%s/bounded=%v", name, bounded), func(t *testing.T) {
-				t.Parallel()
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 
-				c := newCacheWithExpiredEntry(t, bounded)
+			forEachSpec(t, prevExpired.spec(t, cacheSpec{}), func(t *testing.T, cc *cacheContext) {
+				prevExpired.populate(cc)
 				var loads atomic.Int64
 				started := make(chan struct{})
 				release := make(chan struct{})
@@ -2039,23 +2018,23 @@ func TestCache_ComputeCancelOverExpiredEntryKeepsLoad(t *testing.T) {
 				})
 				got := make(chan int, 1)
 				go func() {
-					v, _ := c.Get(context.Background(), 1, loader)
+					v, _ := cc.cache.Get(1, loader)
 					got <- v
 				}()
 				<-started
 
-				v, ok := cancel(c)
+				v, ok := cancel(cc.cache)
 				require.False(t, ok)
 				require.Zero(t, v)
 
 				close(release)
 				require.Equal(t, 2, <-got)
-				v, err := c.Get(context.Background(), 1, loader)
+				v, err := cc.cache.Get(1, loader)
 				require.NoError(t, err)
 				require.Equal(t, 2, v)
 				require.Equal(t, int64(1), loads.Load(), "the loaded value was not cached")
 			})
-		}
+		})
 	}
 }
 
