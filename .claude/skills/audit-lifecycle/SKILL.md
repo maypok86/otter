@@ -20,33 +20,34 @@ explain why neither can block the other.
 
 ## The lifecycle
 
-- `New` (`cache.go`) builds the internal `cache` (`newCache`, `cache_impl.go`), wraps it in
-  `Cache` and registers `runtime.AddCleanup` on the wrapper, which calls `StopAllGoroutines`.
-- With expiration, `newCache` starts `periodicCleanUp`, which runs `CleanUp` on every tick of
-  `Clock.Tick` until it receives from the unbuffered `doneStop`.
-- `StopAllGoroutines` sends on `doneStop` once (`stopOnce`) and is documented as forbidden
+- `New` (`cache.go`) builds the internal `cache` (`newCache`, `cache_impl.go`) and wraps it in
+  `Cache`.
+- With expiration, `newCache` starts `periodicCleanUp`, which holds the cache through a
+  `weak.Pointer` and runs `CleanUp` on every tick of `Clock.Tick` until `goroutineStop.stop` is
+  closed or the cache is gone; it closes `goroutineStop.done` when it returns. `New` then
+  registers `runtime.AddCleanup` on the wrapper with the `goroutineStop` as its `arg`, and the
+  cleanup closes `stop` without waiting.
+- `StopAllGoroutines` closes `stop` once and waits for `done`, and is documented as forbidden
   inside functions the cache runs.
 - Other goroutines: the default executor (`go fn()`), the goroutines that wait for a joined
   refresh (`refreshKey`, `sendAfterJoined`), and whatever a custom executor starts.
 
 ## Questions
 
-1. **Reachability.** `New` passes the internal `cache` as the `arg` of `runtime.AddCleanup`, and
-   the runtime keeps `arg` alive: if the `Cache` is reachable from it, the `Cache` is never
-   collected and the cleanup never runs. The internal `cache` holds the user functions from the
-   options (listeners, calculators, the weigher, the executor, the logger, the stats recorder,
-   the clock), so one that captures the `Cache` leaks the whole cache, with or without
-   expiration; with expiration, the periodic goroutine leaks too. Is that documented? Does
-   `arg` need to be the whole internal `cache`? Are there internal references from `cache`
-   back to `Cache`?
-2. **The cleanup blocks.** The registered cleanup blocks on `doneStop` until `periodicCleanUp`
-   receives, and that goroutine may be inside `CleanUp`: waiting for `evictionMutex` (held by a
-   `Hottest` loop or a long maintenance pass), running `OnDeletion` on a synchronous executor,
-   or in a slow clock. `runtime.AddCleanup` asks cleanups not to block: depending on the Go
-   version (`go.mod` allows 1.24), the wait delays other cleanups of the program, or all of
-   them. Bound the wait. `Clock.Tick` is called once, before the loop selects on `doneStop`:
-   can a `Tick` that does not return keep the goroutine from ever receiving, and the cleanup
-   and `StopAllGoroutines` blocked forever?
+1. **Reachability.** The runtime keeps the `arg` of `runtime.AddCleanup` alive, and a goroutine's
+   stack is a root: if the `Cache` is reachable from either, it is never collected and the
+   cleanup never runs. The internal `cache` holds the user functions from the options
+   (listeners, calculators, the weigher, the executor, the logger, the stats recorder, the
+   clock), and one of them may capture the `Cache`. Check that nothing the `arg` or the periodic
+   goroutine holds strongly between ticks reaches the internal `cache`, and that no other
+   goroutine the cache starts holds it longer than its task.
+2. **Blocking.** `runtime.AddCleanup` asks cleanups not to block: depending on the Go version
+   (`go.mod` allows 1.24), a blocked cleanup delays other cleanups of the program, or all of
+   them. Check that the cleanup cannot block. `StopAllGoroutines` waits for the goroutine, which
+   may be inside `CleanUp`: waiting for `evictionMutex` (held by a `Hottest` loop or a long
+   maintenance pass), running `OnDeletion` on a synchronous executor, or in a slow clock.
+   `Clock.Tick` is called once, before the loop, while the goroutine holds the cache: can a
+   `Tick` that does not return keep `StopAllGoroutines` blocked and the cache alive forever?
 3. **Stop from inside the cache.** `StopAllGoroutines` called from `OnDeletion` on a synchronous
    executor during a periodic `CleanUp` deadlocks: the sender is the receiver. It is documented
    as forbidden. Find the paths where user code runs on the periodic goroutine without the user
@@ -60,7 +61,7 @@ explain why neither can block the other.
    on the `Cache`, for example after the caller's last use of the wrapper inside a long
    `Get`, `Compute` or iteration? Once the goroutine is stopped, does anything still expect
    periodic clean-ups? Cleanups run outside `testing/synctest` bubbles, and a cache with
-   expiration created inside a bubble owns a bubbled `doneStop`: what happens when such a cache
+   expiration created inside a bubble owns a bubbled `goroutineStop`: what happens when such a cache
    is collected before `StopAllGoroutines`, which its godoc suggests for synctest?
 6. **Construction.** `newCache` starts the goroutine before `SetMaximum` runs and before
    `New` registers the cleanup. Can anything between them panic and leak the goroutine?

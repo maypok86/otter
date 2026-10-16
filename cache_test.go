@@ -364,6 +364,55 @@ func TestCache_GC(t *testing.T) {
 	}
 }
 
+// A callback that the cache keeps may hold the cache itself, as an OnDeletion that writes to it
+// does. Neither the cleanup registered for the cache nor its periodic clean-up goroutine may keep
+// it reachable through such a callback: the cache is still collected, and the goroutine returns.
+func TestCache_GCWithCallbackHoldingTheCache(t *testing.T) {
+	t.Parallel()
+
+	for _, expiry := range []bool{false, true} {
+		t.Run(fmt.Sprintf("expiry=%v", expiry), func(t *testing.T) {
+			t.Parallel()
+
+			var stop *goroutineStop
+			cleaned := func() *atomic.Bool {
+				var c *Cache[int, int]
+				opts := &Options[int, int]{
+					MaximumSize: 10,
+					OnDeletion: func(e DeletionEvent[int, int]) {
+						c.Set(e.Key+1, e.Value)
+					},
+				}
+				if expiry {
+					opts.ExpiryCalculator = ExpiryWriting[int, int](time.Hour)
+				}
+				c = Must(opts)
+				c.Set(1, 1)
+				stop = c.cache.stop
+
+				var cleaned atomic.Bool
+				runtime.AddCleanup(c.cache, func(c *atomic.Bool) {
+					c.Store(true)
+				}, &cleaned)
+				return &cleaned
+			}()
+
+			for i := 0; !cleaned.Load(); i++ {
+				require.Less(t, i, 10, "the cache was not collected")
+				runtime.GC()
+				time.Sleep(50 * time.Millisecond)
+			}
+			if expiry {
+				select {
+				case <-stop.done:
+				case <-time.After(5 * time.Second):
+					t.Fatal("the periodic clean-up goroutine did not return")
+				}
+			}
+		})
+	}
+}
+
 func TestCache_CleanUp(t *testing.T) {
 	t.Parallel()
 

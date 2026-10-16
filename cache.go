@@ -90,9 +90,11 @@ func New[K comparable, V any](o *Options[K, V]) (*Cache[K, V], error) {
 	c := &Cache[K, V]{
 		cache: cacheImpl,
 	}
-	runtime.AddCleanup(c, func(cacheImpl *cache[K, V]) {
-		cacheImpl.StopAllGoroutines()
-	}, cacheImpl)
+	if cacheImpl.stop != nil {
+		runtime.AddCleanup(c, func(stop *goroutineStop) {
+			stop.close()
+		}, cacheImpl.stop)
+	}
 
 	return c, nil
 }
