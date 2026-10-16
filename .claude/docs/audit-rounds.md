@@ -15,5 +15,6 @@ Read when starting or triaging a batch of `/audit-*` runs.
 - **Pre-existing bugs are separate work.** A finding that exists on `main` becomes its own
   branch from `main` and a `fix:` commit with the failing test.
 
-Expected value, highest first, for otter: `audit-panic-safety`, `audit-sibling-divergence`,
-`audit-policy`, `audit-reentrancy`, `audit-contract-drift`, `audit-arithmetic`.
+Expected value, highest first, for otter: `audit-panic-safety`, `audit-state-machine`,
+`audit-sibling-divergence`, `audit-linearizability`, `audit-liveness`, `audit-policy`,
+`audit-lifecycle`, `audit-reentrancy`, `audit-contract-drift`, `audit-arithmetic`.
