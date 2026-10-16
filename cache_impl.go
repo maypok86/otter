@@ -93,7 +93,9 @@ type cache[K comparable, V any] struct {
 	executor           func(fn func())
 	singleflight       *group[K, V]
 	evictionMutex      sync.Mutex
-	stop               *goroutineStop
+	stopOnce           sync.Once
+	stop               chan struct{}
+	done               chan struct{}
 	weigher            func(key K, value V) uint32
 	onDeletion         func(e DeletionEvent[K, V])
 	onAtomicDeletion   func(e DeletionEvent[K, V])
@@ -209,8 +211,12 @@ func newCache[K comparable, V any](o *Options[K, V]) *cache[K, V] {
 		c.clock.Init()
 	}
 	if c.withExpiration {
-		c.stop = &goroutineStop{stop: make(chan struct{}), done: make(chan struct{})}
-		go periodicCleanUp(weak.Make(c), c.stop)
+		// No cleanup of the Cache stops the goroutine: cleanups run outside testing/synctest
+		// bubbles, and closing a channel created in one from outside is a fatal error. The
+		// goroutine returns by itself once the cache is collected.
+		c.stop = make(chan struct{})
+		c.done = make(chan struct{})
+		go periodicCleanUp(weak.Make(c), c.stop, c.done)
 	}
 
 	if c.withEviction {
@@ -1608,39 +1614,26 @@ func (c *cache[K, V]) notifyAtomicDeletion(key K, value V, cause DeletionCause) 
 	})
 }
 
-// goroutineStop stops the periodic clean-up goroutine. It is kept apart from the cache, because
-// neither the cleanup that New registers nor the goroutine may keep the cache reachable: a
-// callback that the cache holds may hold the cache itself, and then it would never be collected.
-type goroutineStop struct {
-	once sync.Once
-	// stop is closed to stop the goroutine, and done when it has returned.
-	stop chan struct{}
-	done chan struct{}
-}
-
-// close stops the goroutine without waiting for it, and reports whether this call stopped it.
-func (s *goroutineStop) close() bool {
-	closed := false
-	s.once.Do(func() {
-		close(s.stop)
-		closed = true
-	})
-	return closed
-}
-
 // periodicCleanUp holds the cache only while it cleans it up, so that the cache can be collected
-// between the ticks; then the goroutine returns at the next tick, or when the cleanup stops it.
-func periodicCleanUp[K comparable, V any](wc weak.Pointer[cache[K, V]], stop *goroutineStop) {
-	defer close(stop.done)
+// between the ticks; then the goroutine returns at the next tick. It gets the channels, not the
+// cache, because it must not keep the cache reachable: a callback that the cache holds may hold
+// the cache itself, and then it would never be collected. It returns when stop is closed, and
+// closes done then.
+func periodicCleanUp[K comparable, V any](wc weak.Pointer[cache[K, V]], stop, done chan struct{}) {
+	defer close(done)
 
 	c := wc.Value()
 	if c == nil {
 		return
 	}
 	tick := c.tick()
+	if tick == nil {
+		// Without ticks, nothing would tell the goroutine that the cache is gone.
+		return
+	}
 	for {
 		select {
-		case <-stop.stop:
+		case <-stop:
 			return
 		case <-tick:
 			c := wc.Value()
@@ -1654,8 +1647,8 @@ func periodicCleanUp[K comparable, V any](wc weak.Pointer[cache[K, V]], stop *go
 }
 
 // tick returns the clock's ticks for the periodic clean-up. The clock is user code, and that
-// goroutine is the cache's own: if Tick panics, the panic is logged and the cache does without
-// periodic clean-ups. The goroutine still waits for StopAllGoroutines.
+// goroutine is the cache's own: if Tick panics, the panic is logged, nil is returned, and the cache
+// does without periodic clean-ups.
 func (c *cache[K, V]) tick() <-chan time.Time {
 	defer recoverCallback(c.logger, "Clock.Tick panicked")
 	return c.clock.Tick(time.Second)
@@ -2163,8 +2156,12 @@ func (c *cache[K, V]) StopAllGoroutines() bool {
 	if c.stop == nil {
 		return false
 	}
-	stopped := c.stop.close()
-	<-c.stop.done
+	stopped := false
+	c.stopOnce.Do(func() {
+		close(c.stop)
+		stopped = true
+	})
+	<-c.done
 	return stopped
 }
 

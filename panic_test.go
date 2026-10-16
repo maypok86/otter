@@ -517,6 +517,12 @@ func TestCache_PanicInClockTick(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return len(logger.get()) > 0
 	}, 10*time.Second, time.Millisecond)
+	// Without ticks, the goroutine returns at once: it could not tell when the cache is collected.
+	select {
+	case <-c.cache.done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the periodic clean-up goroutine did not return")
+	}
 	completes(t, "StopAllGoroutines", func() {
 		require.True(t, c.StopAllGoroutines())
 	})
