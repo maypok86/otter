@@ -46,7 +46,7 @@ func (g *generator) variantName(v variant) string {
 }
 
 func (g *generator) isBounded() bool {
-	return g.features[size] || g.features[weight]
+	return isBounded(g.features)
 }
 
 func (g *generator) withState() bool {
@@ -470,72 +470,6 @@ func (g *generator) printFunctions() {
 		g.out()
 		g.p("}")
 		g.p("n.next = (*%s[K, V])(v.AsPointer())", g.structName)
-	} else {
-		g.p("panic(\"not implemented\")")
-	}
-	g.out()
-	g.p("}")
-	g.p("")
-
-	g.p("func (n *%s[K, V]) PrevExp() Node[K, V] {", g.structName)
-	g.in()
-	if g.features[expiration] {
-		g.p("if n.prevExp == nil {")
-		g.in()
-		g.p("return nil")
-		g.out()
-		g.p("}")
-		g.p("return n.prevExp")
-	} else {
-		g.p("panic(\"not implemented\")")
-	}
-	g.out()
-	g.p("}")
-	g.p("")
-
-	g.p("func (n *%s[K, V]) SetPrevExp(v Node[K, V]) {", g.structName)
-	g.in()
-	if g.features[expiration] {
-		g.p("if v == nil {")
-		g.in()
-		g.p("n.prevExp = nil")
-		g.p("return")
-		g.out()
-		g.p("}")
-		g.p("n.prevExp = (*%s[K, V])(v.AsPointer())", g.structName)
-	} else {
-		g.p("panic(\"not implemented\")")
-	}
-	g.out()
-	g.p("}")
-	g.p("")
-
-	g.p("func (n *%s[K, V]) NextExp() Node[K, V] {", g.structName)
-	g.in()
-	if g.features[expiration] {
-		g.p("if n.nextExp == nil {")
-		g.in()
-		g.p("return nil")
-		g.out()
-		g.p("}")
-		g.p("return n.nextExp")
-	} else {
-		g.p("panic(\"not implemented\")")
-	}
-	g.out()
-	g.p("}")
-	g.p("")
-
-	g.p("func (n *%s[K, V]) SetNextExp(v Node[K, V]) {", g.structName)
-	g.in()
-	if g.features[expiration] {
-		g.p("if v == nil {")
-		g.in()
-		g.p("n.nextExp = nil")
-		g.p("return")
-		g.out()
-		g.p("}")
-		g.p("n.nextExp = (*%s[K, V])(v.AsPointer())", g.structName)
 	} else {
 		g.p("panic(\"not implemented\")")
 	}

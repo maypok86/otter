@@ -16,68 +16,89 @@ package deque
 
 import (
 	"iter"
+	"unsafe"
 
 	"github.com/maypok86/otter/v2/internal/generated/node"
 )
 
+// Linked is an intrusive doubly-linked list of nodes. It follows the nodes' eviction policy links
+// through raw pointers at the offset the node manager reports, so linking and unlinking do not call the
+// nodes' methods; a node.Node is made only for the nodes it hands out.
 type Linked[K comparable, V any] struct {
-	head  node.Node[K, V]
-	tail  node.Node[K, V]
-	len   int
-	isExp bool
+	head        unsafe.Pointer
+	tail        unsafe.Pointer
+	len         int
+	offset      uintptr
+	nodeManager *node.Manager[K, V]
 }
 
-func NewLinked[K comparable, V any](isExp bool) *Linked[K, V] {
+func NewLinked[K comparable, V any](nodeManager *node.Manager[K, V]) *Linked[K, V] {
 	return &Linked[K, V]{
-		isExp: isExp,
+		offset:      nodeManager.LinksOffset(),
+		nodeManager: nodeManager,
 	}
 }
 
+func (d *Linked[K, V]) links(p unsafe.Pointer) *node.Links {
+	return (*node.Links)(unsafe.Add(p, d.offset))
+}
+
 func (d *Linked[K, V]) PushBack(n node.Node[K, V]) {
+	d.pushBack(n.AsPointer())
+}
+
+func (d *Linked[K, V]) pushBack(p unsafe.Pointer) {
 	if d.IsEmpty() {
-		d.head = n
-		d.tail = n
+		d.head = p
+		d.tail = p
 	} else {
-		d.setPrev(n, d.tail)
-		d.setNext(d.tail, n)
-		d.tail = n
+		d.links(p).Prev = d.tail
+		d.links(d.tail).Next = p
+		d.tail = p
 	}
 
 	d.len++
 }
 
 func (d *Linked[K, V]) UpdateNode(n, old node.Node[K, V]) {
-	oldNext := d.getNext(old)
-	if oldNext == nil {
-		if d.tail == old {
-			d.tail = n
+	p := n.AsPointer()
+	o := old.AsPointer()
+	nl := d.links(p)
+	ol := d.links(o)
+
+	if ol.Next == nil {
+		if d.tail == o {
+			d.tail = p
 		}
 	} else {
-		d.setPrev(oldNext, n)
-		d.setNext(n, oldNext)
-		d.setNext(old, nil)
+		d.links(ol.Next).Prev = p
+		nl.Next = ol.Next
+		ol.Next = nil
 	}
 
-	oldPrev := d.getPrev(old)
-	if oldPrev == nil {
-		if d.head == old {
-			d.head = n
+	if ol.Prev == nil {
+		if d.head == o {
+			d.head = p
 		}
 	} else {
-		d.setPrev(n, oldPrev)
-		d.setNext(oldPrev, n)
-		d.setPrev(old, nil)
+		d.links(ol.Prev).Next = p
+		nl.Prev = ol.Prev
+		ol.Prev = nil
 	}
 }
 
 func (d *Linked[K, V]) PushFront(n node.Node[K, V]) {
+	d.pushFront(n.AsPointer())
+}
+
+func (d *Linked[K, V]) pushFront(p unsafe.Pointer) {
 	if d.IsEmpty() {
-		d.head = n
-		d.tail = n
+		d.head = p
+		d.tail = p
 	} else {
-		d.setNext(n, d.head)
-		d.setPrev(d.head, n)
-		d.head = n
+		d.links(p).Next = d.head
+		d.links(d.head).Prev = p
+		d.head = p
 	}
 
 	d.len++
@@ -89,64 +110,61 @@ func (d *Linked[K, V]) PopFront() node.Node[K, V] {
 	}
 
 	result := d.head
-	d.Delete(result)
-	return result
+	d.delete(result)
+	return d.nodeManager.FromPointer(result)
 }
-
-/*
-func (d *Linked[K, V]) PopBack() node.Node[K, V] {
-	if d.IsEmpty() {
-		return nil
-	}
-
-	result := d.tail
-	d.Delete(result)
-	return result
-}
-*/
 
 func (d *Linked[K, V]) NotContains(n node.Node[K, V]) bool {
 	return !d.Contains(n)
 }
 
 func (d *Linked[K, V]) Contains(n node.Node[K, V]) bool {
-	return d.getPrev(n) != nil || d.getNext(n) != nil || d.head == n
+	p := n.AsPointer()
+	l := d.links(p)
+	return l.Prev != nil || l.Next != nil || d.head == p
 }
 
 func (d *Linked[K, V]) MoveToBack(n node.Node[K, V]) {
-	if n != d.tail {
-		d.Delete(n)
-		d.PushBack(n)
+	p := n.AsPointer()
+	if p != d.tail {
+		d.delete(p)
+		d.pushBack(p)
 	}
 }
 
 func (d *Linked[K, V]) MoveToFront(n node.Node[K, V]) {
-	if n != d.head {
-		d.Delete(n)
-		d.PushFront(n)
+	p := n.AsPointer()
+	if p != d.head {
+		d.delete(p)
+		d.pushFront(p)
 	}
 }
 
 func (d *Linked[K, V]) Delete(n node.Node[K, V]) {
-	next := d.getNext(n)
-	prev := d.getPrev(n)
+	d.delete(n.AsPointer())
+}
+
+func (d *Linked[K, V]) delete(p unsafe.Pointer) {
+	l := d.links(p)
+	next := l.Next
+	prev := l.Prev
 
 	if prev == nil {
-		if next == nil && d.head != n {
+		if next == nil && d.head != p {
 			return
 		}
 
 		d.head = next
 	} else {
-		d.setNext(prev, next)
-		d.setPrev(n, nil)
+		d.links(prev).Next = next
+		l.Prev = nil
 	}
 
 	if next == nil {
 		d.tail = prev
 	} else {
-		d.setPrev(next, prev)
-		d.setNext(n, nil)
+		d.links(next).Prev = prev
+		l.Next = nil
 	}
 
 	d.len--
@@ -154,7 +172,7 @@ func (d *Linked[K, V]) Delete(n node.Node[K, V]) {
 
 func (d *Linked[K, V]) Clear() {
 	for !d.IsEmpty() {
-		d.PopFront()
+		d.delete(d.head)
 	}
 }
 
@@ -167,21 +185,21 @@ func (d *Linked[K, V]) IsEmpty() bool {
 }
 
 func (d *Linked[K, V]) Head() node.Node[K, V] {
-	return d.head
+	return d.nodeManager.FromPointer(d.head)
 }
 
 func (d *Linked[K, V]) Tail() node.Node[K, V] {
-	return d.tail
+	return d.nodeManager.FromPointer(d.tail)
 }
 
 func (d *Linked[K, V]) All() iter.Seq[node.Node[K, V]] {
 	return func(yield func(node.Node[K, V]) bool) {
 		cursor := d.head
 		for cursor != nil {
-			if !yield(cursor) {
+			if !yield(d.nodeManager.FromPointer(cursor)) {
 				return
 			}
-			cursor = d.getNext(cursor)
+			cursor = d.links(cursor).Next
 		}
 	}
 }
@@ -190,42 +208,10 @@ func (d *Linked[K, V]) Backward() iter.Seq[node.Node[K, V]] {
 	return func(yield func(node.Node[K, V]) bool) {
 		cursor := d.tail
 		for cursor != nil {
-			if !yield(cursor) {
+			if !yield(d.nodeManager.FromPointer(cursor)) {
 				return
 			}
-			cursor = d.getPrev(cursor)
+			cursor = d.links(cursor).Prev
 		}
-	}
-}
-
-func (d *Linked[K, V]) setPrev(to, n node.Node[K, V]) {
-	if d.isExp {
-		to.SetPrevExp(n)
-	} else {
-		to.SetPrev(n)
-	}
-}
-
-func (d *Linked[K, V]) setNext(to, n node.Node[K, V]) {
-	if d.isExp {
-		to.SetNextExp(n)
-	} else {
-		to.SetNext(n)
-	}
-}
-
-func (d *Linked[K, V]) getNext(n node.Node[K, V]) node.Node[K, V] {
-	if d.isExp {
-		return n.NextExp()
-	} else {
-		return n.Next()
-	}
-}
-
-func (d *Linked[K, V]) getPrev(n node.Node[K, V]) node.Node[K, V] {
-	if d.isExp {
-		return n.PrevExp()
-	} else {
-		return n.Prev()
 	}
 }

@@ -77,14 +77,6 @@ type Node[K comparable, V any] interface {
 	Next() Node[K, V]
 	// SetNext sets the next node in the eviction policy.
 	SetNext(v Node[K, V])
-	// PrevExp returns the previous node in the expiration policy.
-	PrevExp() Node[K, V]
-	// SetPrevExp sets the previous node in the expiration policy.
-	SetPrevExp(v Node[K, V])
-	// NextExp returns the next node in the expiration policy.
-	NextExp() Node[K, V]
-	// SetNextExp sets the next node in the expiration policy.
-	SetNextExp(v Node[K, V])
 	// HasExpired returns true if node has expired.
 	HasExpired(now int64) bool
 	// ExpiresAt returns the expiration time.
@@ -150,6 +142,19 @@ type Manager[K comparable, V any] struct {
 	valueStorage     string
 	createdVariant   uint8
 	updatableVariant uint8
+	linksOffset      uintptr
+	expLinksOffset   uintptr
+	hasLinks         bool
+	hasExpLinks      bool
+}
+
+// Links is the pair of pointers that links a node into a list: prev and next of the eviction
+// policy, or prevExp and nextExp of the timer wheel. They are adjacent in every node type, so a
+// list can follow them through a raw pointer to the node at the offset the manager reports,
+// without calling the node's methods.
+type Links struct {
+	Prev unsafe.Pointer
+	Next unsafe.Pointer
 }
 
 func NewManager[K comparable, V any](c Config) *Manager[K, V] {
@@ -198,6 +203,25 @@ func (m *Manager[K, V]) ValueStorage() string {
 
 func (m *Manager[K, V]) FromPointer(ptr unsafe.Pointer) Node[K, V] {
 	return m.fromPointer(ptr)
+}
+
+// LinksOffset returns the offset of the eviction policy's Links in a node. It panics for nodes
+// of an unbounded cache, which have no such links: a list writing at a made-up offset would
+// overwrite the node's other fields.
+func (m *Manager[K, V]) LinksOffset() uintptr {
+	if !m.hasLinks {
+		panic("node: the nodes have no eviction policy links")
+	}
+	return m.linksOffset
+}
+
+// ExpLinksOffset returns the offset of the timer wheel's Links in a node. It panics for nodes
+// without expiration, which have no such links.
+func (m *Manager[K, V]) ExpLinksOffset() uintptr {
+	if !m.hasExpLinks {
+		panic("node: the nodes have no expiration links")
+	}
+	return m.expLinksOffset
 }
 
 // variantsOfStorage returns the layouts of the nodes of a value storage: the one a new entry is
@@ -288,6 +312,19 @@ func hasPointers(t reflect.Type) bool {
 		typeName := typeNameOf(nodeType)
 		w.p("m.create = New%s[K, V]", typeName)
 		w.p("m.fromPointer = CastPointerTo%s[K, V]", typeName)
+		features := getFeatures(nodeType)
+		bounded := isBounded(features)
+		if bounded || features[expiration] {
+			w.p("var n %s[K, V]", typeName)
+		}
+		if bounded {
+			w.p("m.linksOffset = unsafe.Offsetof(n.prev)")
+			w.p("m.hasLinks = true")
+		}
+		if features[expiration] {
+			w.p("m.expLinksOffset = unsafe.Offsetof(n.prevExp)")
+			w.p("m.hasExpLinks = true")
+		}
 		w.out()
 	}
 	w.p("default:")

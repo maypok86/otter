@@ -110,36 +110,6 @@ func (n *BE[K, V]) SetNext(v Node[K, V]) {
 	panic("not implemented")
 }
 
-func (n *BE[K, V]) PrevExp() Node[K, V] {
-	if n.prevExp == nil {
-		return nil
-	}
-	return n.prevExp
-}
-
-func (n *BE[K, V]) SetPrevExp(v Node[K, V]) {
-	if v == nil {
-		n.prevExp = nil
-		return
-	}
-	n.prevExp = (*BE[K, V])(v.AsPointer())
-}
-
-func (n *BE[K, V]) NextExp() Node[K, V] {
-	if n.nextExp == nil {
-		return nil
-	}
-	return n.nextExp
-}
-
-func (n *BE[K, V]) SetNextExp(v Node[K, V]) {
-	if v == nil {
-		n.nextExp = nil
-		return
-	}
-	n.nextExp = (*BE[K, V])(v.AsPointer())
-}
-
 func (n *BE[K, V]) HasExpired(now int64) bool {
 	return n.ExpiresAt() <= now
 }

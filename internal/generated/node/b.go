@@ -57,22 +57,6 @@ func (n *B[K, V]) SetNext(v Node[K, V]) {
 	panic("not implemented")
 }
 
-func (n *B[K, V]) PrevExp() Node[K, V] {
-	panic("not implemented")
-}
-
-func (n *B[K, V]) SetPrevExp(v Node[K, V]) {
-	panic("not implemented")
-}
-
-func (n *B[K, V]) NextExp() Node[K, V] {
-	panic("not implemented")
-}
-
-func (n *B[K, V]) SetNextExp(v Node[K, V]) {
-	panic("not implemented")
-}
-
 func (n *B[K, V]) HasExpired(now int64) bool {
 	return false
 }

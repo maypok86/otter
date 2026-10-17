@@ -114,36 +114,6 @@ func (n *BER[K, V]) SetNext(v Node[K, V]) {
 	panic("not implemented")
 }
 
-func (n *BER[K, V]) PrevExp() Node[K, V] {
-	if n.prevExp == nil {
-		return nil
-	}
-	return n.prevExp
-}
-
-func (n *BER[K, V]) SetPrevExp(v Node[K, V]) {
-	if v == nil {
-		n.prevExp = nil
-		return
-	}
-	n.prevExp = (*BER[K, V])(v.AsPointer())
-}
-
-func (n *BER[K, V]) NextExp() Node[K, V] {
-	if n.nextExp == nil {
-		return nil
-	}
-	return n.nextExp
-}
-
-func (n *BER[K, V]) SetNextExp(v Node[K, V]) {
-	if v == nil {
-		n.nextExp = nil
-		return
-	}
-	n.nextExp = (*BER[K, V])(v.AsPointer())
-}
-
 func (n *BER[K, V]) HasExpired(now int64) bool {
 	return n.ExpiresAt() <= now
 }
