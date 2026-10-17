@@ -110,3 +110,10 @@ func TestCustomSource(t *testing.T) {
 	c.Sleep(20 * time.Millisecond)
 	c.ProcessTick()
 }
+
+func TestCoarseClock_NonPositiveResolution(t *testing.T) {
+	t.Parallel()
+
+	require.Panics(t, func() { NewCoarseClock(0) })
+	require.Panics(t, func() { NewCoarseClock(-time.Second) })
+}

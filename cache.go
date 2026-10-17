@@ -512,6 +512,7 @@ func (c *Cache[K, V]) Coldest() iter.Seq[Entry[K, V]] {
 // longer reachable, the goroutines stop at the next tick of the Clock. However, it can sometimes be
 // useful, for example with a Clock that does not tick, or when using synctest.
 // You can think of this method as analogous to the Stop method of [time.Timer].
+// It does not stop the goroutine of a [CoarseClock], which belongs to the clock.
 //
 // WARNING: StopAllGoroutines must not be called from a function that the cache runs, such as a
 // deletion listener: it waits for the periodic clean-up goroutine, which may be the one running it.

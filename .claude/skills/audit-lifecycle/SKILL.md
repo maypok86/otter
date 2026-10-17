@@ -31,6 +31,10 @@ neither can block the other.
   inside functions the cache runs.
 - Other goroutines: the default executor (`go fn()`), the goroutines that wait for a joined
   refresh (`refreshKey`, `sendAfterJoined`), and whatever a custom executor starts.
+- `NewCoarseClock` (`clock.go`) starts a goroutine that belongs to the clock, not to a cache:
+  it holds the clock through a `weak.Pointer`, stores the time on every tick of its ticker, and
+  returns when the clock is gone or `Stop` closes `stop`. `StopAllGoroutines` does not stop it.
+  After `Stop`, `NowNano` reads the precise time.
 
 ## Questions
 

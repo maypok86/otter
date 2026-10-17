@@ -195,7 +195,8 @@ type Options[K comparable, V any] struct {
 	// expired or refreshed. By default, time.Now().UnixNano() is used.
 	//
 	// The primary intent of this option is to facilitate testing of caches which have been configured
-	// with ExpiryCalculator or RefreshCalculator.
+	// with ExpiryCalculator or RefreshCalculator. Another is to make reads cheaper at the cost of
+	// precision, with a clock created by NewCoarseClock.
 	//
 	// NOTE: this clock is not used when recording statistics.
 	Clock Clock

@@ -41,6 +41,15 @@ Entries are expired after the variable duration has passed. Expiration is perfor
 
 When reads reset the expiration time (for example, with `ExpiryAccessing`), a read that would move it by at most a second leaves it unchanged, as long as both the remaining and the new duration are longer than a second. This keeps frequent reads of a hot entry from writing to it every time. In exchange, an entry may expire up to a second earlier than its latest read asked for, or up to a second later if that read shortened its lifetime by less than a second.
 
+With expiration, reading the clock is a large part of every read. If entries may expire a little earlier or later, a clock that reads the time only once per resolution makes reads cheaper:
+
+```go
+cache := otter.Must(&otter.Options[string, string]{
+	ExpiryCalculator: otter.ExpiryWriting[string, string](time.Hour),
+	Clock:            otter.NewCoarseClock(time.Millisecond),
+})
+```
+
 ## Pinning Entries
 
 A pinned entry is one that cannot be deleted by an eviction policy. This is useful when the entry is a stateful resource, like a lock, that can only be discarded after the client has finished using it. In those cases the behavior of evicting an entry and recomputing it would cause a resource leak.
