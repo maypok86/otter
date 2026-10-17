@@ -7,6 +7,7 @@ replace github.com/maypok86/otter/v2 => ../
 require (
 	github.com/BurntSushi/toml v1.5.0
 	github.com/Yiling-J/theine-go v0.6.2
+	github.com/anishathalye/porcupine v1.3.1
 	github.com/dgraph-io/ristretto/v2 v2.4.2
 	github.com/dgryski/go-clockpro v0.0.0-20140817124034-edc6d3eeb96e
 	github.com/elastic/go-freelru v0.16.0
