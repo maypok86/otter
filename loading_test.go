@@ -30,6 +30,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/maypok86/otter/v2/internal/generated/node"
+	"github.com/maypok86/otter/v2/internal/xruntime"
 	"github.com/maypok86/otter/v2/stats"
 )
 
@@ -114,13 +115,13 @@ func TestCache_GetPanic(t *testing.T) {
 		wrappedErrorType bool
 	}{
 		{
-			name:             "panicError wraps non-error type",
-			panicValue:       &panicError{value: "string value"},
+			name:             "PanicError wraps non-error type",
+			panicValue:       &xruntime.PanicError{Value: "string value"},
 			wrappedErrorType: false,
 		},
 		{
-			name:             "panicError wraps error type",
-			panicValue:       &panicError{value: new(errValue)},
+			name:             "PanicError wraps error type",
+			panicValue:       &xruntime.PanicError{Value: new(errValue)},
 			wrappedErrorType: true,
 		},
 	}
@@ -185,13 +186,13 @@ func TestCache_BulkGetPanic(t *testing.T) {
 		wrappedErrorType bool
 	}{
 		{
-			name:             "panicError wraps non-error type",
-			panicValue:       &panicError{value: "string value"},
+			name:             "PanicError wraps non-error type",
+			panicValue:       &xruntime.PanicError{Value: "string value"},
 			wrappedErrorType: false,
 		},
 		{
-			name:             "panicError wraps error type",
-			panicValue:       &panicError{value: new(errValue)},
+			name:             "PanicError wraps error type",
+			panicValue:       &xruntime.PanicError{Value: new(errValue)},
 			wrappedErrorType: true,
 		},
 	}
@@ -2482,7 +2483,7 @@ func TestCache_GetWaiterSharesFailureOfTheKey(t *testing.T) {
 			fail:        func() error { panic("boom") },
 			check: func(t *testing.T, err error) {
 				t.Helper()
-				var pe *panicError
+				var pe *xruntime.PanicError
 				require.ErrorAs(t, err, &pe)
 			},
 		},

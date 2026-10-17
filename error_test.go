@@ -18,6 +18,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/maypok86/otter/v2/internal/xruntime"
 )
 
 func TestPanicError(t *testing.T) {
@@ -27,7 +29,7 @@ func TestPanicError(t *testing.T) {
 	func() {
 		defer func() {
 			if r := recover(); r != nil {
-				err = newPanicError(r)
+				err = xruntime.NewPanicError(r)
 			}
 		}()
 

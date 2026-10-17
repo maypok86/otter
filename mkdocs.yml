@@ -140,6 +140,7 @@ nav:
           - Loading: user-guide/v2/features/loading.md
           - Refresh: user-guide/v2/features/refresh.md
           - Bulk operations: user-guide/v2/features/bulk.md
+          - Coalescing: user-guide/v2/features/coalescing.md
           - Compute: user-guide/v2/features/compute.md
           - Statistics: user-guide/v2/features/statistics.md
           - Persistence: user-guide/v2/features/persistence.md

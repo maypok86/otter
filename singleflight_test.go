@@ -23,6 +23,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/maypok86/otter/v2/internal/generated/node"
+	"github.com/maypok86/otter/v2/internal/xruntime"
 )
 
 // testGroup is a group whose commit and publish are recorded and can be replaced.
@@ -94,7 +95,7 @@ func TestGroup_FinishWhenCommitPanics(t *testing.T) {
 	})
 	require.Nil(t, g.getCall(1))
 	cl.wait()
-	var pe *panicError
+	var pe *xruntime.PanicError
 	require.ErrorAs(t, cl.err, &pe)
 	require.Empty(t, g.published)
 }
@@ -129,7 +130,7 @@ func TestGroup_LoaderFailures(t *testing.T) {
 		g := newTestGroup()
 		cl, _ := g.startLoad(1)
 		err := g.doCall(context.Background(), cl, func(context.Context, int) (int, error) { panic("loader") })
-		var pe *panicError
+		var pe *xruntime.PanicError
 		require.ErrorAs(t, err, &pe)
 		require.ErrorAs(t, cl.err, &pe)
 		require.Len(t, g.committed, 1)
@@ -254,7 +255,7 @@ func TestGroup_SubmitRefreshWhenExecutorPanics(t *testing.T) {
 		})
 		require.Nil(t, g.getCall(1))
 		cl.wait()
-		var pe *panicError
+		var pe *xruntime.PanicError
 		require.ErrorAs(t, cl.err, &pe)
 		if task != nil {
 			task()

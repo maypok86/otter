@@ -17,6 +17,7 @@ package otter
 import (
 	"errors"
 
+	"github.com/maypok86/otter/v2/internal/xlog"
 	"github.com/maypok86/otter/v2/stats"
 )
 
@@ -245,7 +246,7 @@ func (o *Options[K, V]) getWeigher() func(key K, value V) uint32 {
 
 func (o *Options[K, V]) getLogger() Logger {
 	if o.Logger == nil {
-		return newDefaultLogger()
+		return xlog.Default()
 	}
 	return o.Logger
 }

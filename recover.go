@@ -18,6 +18,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/maypok86/otter/v2/internal/xruntime"
 	"github.com/maypok86/otter/v2/stats"
 )
 
@@ -29,7 +30,7 @@ import (
 // It must be deferred directly.
 func recoverCallback(logger Logger, msg string) {
 	if r := recover(); r != nil {
-		logger.Error(context.Background(), msg, newPanicError(r))
+		logger.Error(context.Background(), msg, xruntime.NewPanicError(r))
 	}
 }
 

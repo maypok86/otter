@@ -27,6 +27,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/maypok86/otter/v2/internal/xruntime"
 	"github.com/maypok86/otter/v2/stats"
 )
 
@@ -648,7 +649,7 @@ func TestCache_PanicWhileWritingLoadedValueWakesWaiters(t *testing.T) {
 	case err := <-waiter:
 		// the waiter either joined the failed load or started a load of its own
 		if err != nil {
-			var pe *panicError
+			var pe *xruntime.PanicError
 			require.ErrorAs(t, err, &pe)
 		}
 	case <-time.After(5 * time.Second):
@@ -704,7 +705,7 @@ func TestCache_LoadStatsRecordedWhenWritePanics(t *testing.T) {
 				res := <-c.Refresh(context.Background(), 1, LoaderFunc[int, int](func(ctx context.Context, key int) (int, error) {
 					return 1, nil
 				}))
-				var pe *panicError
+				var pe *xruntime.PanicError
 				require.ErrorAs(t, res.Err, &pe)
 			},
 		},
@@ -790,9 +791,9 @@ func TestCache_PanicInRefreshIsReturnedAsError(t *testing.T) {
 	completes(t, "Refresh with a panicking loader", func() {
 		res = <-c.Refresh(context.Background(), 1, loader)
 	})
-	var pe *panicError
+	var pe *xruntime.PanicError
 	require.ErrorAs(t, res.Err, &pe)
-	require.Equal(t, "reload boom", pe.value)
+	require.Equal(t, "reload boom", pe.Value)
 
 	v, ok := c.GetIfPresent(1)
 	require.True(t, ok)
@@ -1141,7 +1142,7 @@ func TestCache_NilLoaderOrContextDoesNotStrandKey(t *testing.T) {
 	requirePanicErrors := func(t *testing.T, e env, results ...RefreshResult[int, int]) {
 		t.Helper()
 		for _, r := range results {
-			var pe *panicError
+			var pe *xruntime.PanicError
 			require.ErrorAs(t, r.Err, &pe, "key %d", r.Key)
 		}
 		require.Zero(t, e.escaped.Load(), "a panic escaped the refresh task")
