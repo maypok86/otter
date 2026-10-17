@@ -197,23 +197,34 @@ func (g *group[K, V]) startLoad(key K) (c *call[K, V], shouldLoad bool) {
 	return g.startCall(key, false, nil)
 }
 
-// startRefresh registers a refresh of key, whose node was base (nil if absent) when it was
-// requested, or returns the call already registered for it. A refresh is registered on the
-// requesting goroutine, before it is handed to the executor, so that a write that follows the
-// request cancels it.
+// startRefresh registers a refresh of key, whose node is base (nil if absent), or returns the call
+// already registered for it if that call was started from the same base. It is called under the
+// key's bucket lock in the cache's hash table (see cache.startRefresh), on the requesting
+// goroutine, before the refresh is handed to the executor, so that a write that follows the
+// request cancels it. A call started from another base will not be written over the key's
+// current state (see isRefreshBase): a load, whose base is nil, never writes over a live value.
+// It is replaced rather than joined, and still completes for its own waiters.
 func (g *group[K, V]) startRefresh(key K, base node.Node[K, V]) (c *call[K, V], shouldLoad bool) {
 	return g.startCall(key, true, base)
 }
 
 func (g *group[K, V]) startCall(key K, isRefresh bool, base node.Node[K, V]) (c *call[K, V], shouldLoad bool) {
+	// A refresh's base is the key's live node, read under its bucket lock, so a call started from
+	// the same base is not superseded.
+	joins := func(c *call[K, V]) bool {
+		if isRefresh {
+			return c.base == base
+		}
+		return !g.superseded(c)
+	}
 	// fast path
-	if c := g.getCall(key); c != nil && !g.superseded(c) {
+	if c := g.getCall(key); c != nil && joins(c) {
 		return c, shouldLoad
 	}
 
 	return g.calls.Compute(key, func(prevCall *call[K, V]) *call[K, V] {
 		// double check
-		if prevCall != nil && !g.superseded(prevCall) {
+		if prevCall != nil && joins(prevCall) {
 			return prevCall
 		}
 		shouldLoad = true
@@ -222,12 +233,12 @@ func (g *group[K, V]) startCall(key K, isRefresh bool, base node.Node[K, V]) (c 
 }
 
 // superseded reports whether c is a refresh whose base has been removed or replaced, so that its
-// result will not be written (see isRefreshBase). Such a refresh was registered after the write
-// or removal that would have cancelled it. The next call for its key replaces it rather than join
-// it: a Get after an invalidation would get the reload of the invalidated value, and a stale node
-// that replaced the base would not be refreshed until this refresh has finished. The refresh still
-// completes for the callers that joined it before. A removed or replaced node never comes back, so
-// a refresh that is superseded stays so.
+// result will not be written (see isRefreshBase). Writes and removals cancel a refresh of their
+// node under its bucket lock, so a refresh is superseded only by its own commit, which replaces
+// or removes the base before finish deletes the call. The next call for its key replaces it
+// rather than join it: a Get would wait for a value it then refuses. The refresh still completes
+// for the callers that joined it before. A removed or replaced node never comes back, so a
+// refresh that is superseded stays so.
 func (g *group[K, V]) superseded(c *call[K, V]) bool {
 	return c.isRefresh && c.base != nil && (!c.base.IsAlive() || g.nodeOf(c.key) != c.base)
 }

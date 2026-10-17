@@ -100,7 +100,10 @@ write can remove it while it is still loading. A call leaves the registry in two
 - by key: `group.delete` and `group.invalidate` remove whatever call is registered, without
   comparing, on every write and invalidation that cancels a load (`mutation.go`, `cache_impl.go`);
   `deleteOnRemoval` removes it on an eviction or expiration of the key; `startCall` replaces a
-  refresh that is `superseded`.
+  refresh that is `superseded`, and a refresh that registers replaces any call started from
+  another base (`call.base`): a load still in flight when the key has a live value, or a
+  refresh of a node that has expired since. The replaced call is not cancelled: it completes
+  for the callers that joined it, and its commit is refused or keeps the live value.
 
 Flags that qualify the result: `refused`, `isNotFound`, `ownerCtxDone`, `isFake`,
 `node`/`expiresAt`. `group.submitRefresh` adds a small machine of its own: `submitted`,

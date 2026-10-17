@@ -96,6 +96,29 @@ Audits read this file **after** recording their findings (Phase 1.5 of the audit
 - **Both deletion listeners receive the cause decided under the lock** (`mutation.cause`,
   `deleteNodeFromMap`'s returned cause).
 
+## Loading and refresh
+
+- **A refresh is discarded by what happened since its request, not by the key's state when it
+  completes.** Any write or invalidation of the key from the API after the request cancels it,
+  and so does a removal of its base. After `SetIfAbsent` and then `ComputeDelete` the key is
+  absent again, as when the refresh was requested, and the refresh is still discarded. So
+  `Refresh` is not linearizable as one write of the loaded value; it is as a request and a
+  conditional commit, which is how lincheck models it. A discarded refresh still reports the
+  value it loaded to its caller.
+- **`Invalidate` of an absent key cancels its pending loads and refreshes.** A load in flight
+  may have read the data source before the change that the invalidation reports, and writing
+  it afterwards would bring the old data back. Operations that write nothing cancel nothing:
+  `Compute` with `CancelOp`, `SetIfAbsent` of a present key, `SetExpiresAfter` and
+  `SetRefreshableAfter`.
+- **A refresh is registered under the key's bucket lock.** Writes cancel calls under that lock,
+  so a refresh is either cancelled by a write or registered after it, and a read that saw a
+  write never joins a refresh the write cancelled. A refresh that joins a registered call takes
+  no lock, but one that registers does. It waits for whatever holds the lock: a `Compute`
+  function, a weigher, a calculator or `OnAtomicDeletion` of a key in the bucket, or a growth of
+  the table. With an instant loader every stale read registers, and such reads cost about
+  19% more on 8 cores; with a 1 ms loader they are no slower. A refresh that a read started
+  is skipped if its key is gone by the registration.
+
 ## Callbacks and locks
 
 - **A callback that runs under one of the cache's locks must not call back into the cache,
@@ -182,6 +205,9 @@ Audits read this file **after** recording their findings (Phase 1.5 of the audit
 
 ## Rejected approaches
 
+- **A write version in every node, recorded by each refresh, to tell an in-place update from an
+  unchanged base**: memory in every node for a race that registering refreshes under the bucket
+  lock closes without it.
 - **Seqlock for multi-word values**: torn reads on arm64 (acquire load does not order earlier
   plain loads), a data race under the race detector.
 - **`sync.Pool` for nodes or value boxes**: lock-free readers, buffers and iterators may still
