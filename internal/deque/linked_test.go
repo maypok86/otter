@@ -73,6 +73,9 @@ func TestLinked(t *testing.T) {
 
 	d := NewLinked[string, string](false)
 	checkLinkedPtrs(t, d, []node.Node[string, string]{})
+	if n := d.PopFront(); n != nil {
+		t.Errorf("d.PopFront() = %p on an empty Linked, want nil", n)
+	}
 
 	// Single element Linked
 	e := newNode("a")

@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"iter"
 	"math/rand/v2"
 	"slices"
 	"sync/atomic"
@@ -307,6 +308,53 @@ func TestCache_Hottest(t *testing.T) {
 		require.Subset(t, keys, hottest)
 		require.ElementsMatch(t, slices.Collect(c.Keys()), keys)
 	})
+}
+
+// Without a size bound, Hottest and Coldest iterate over the entries as All does, and stop when
+// the loop body does.
+func TestCache_EvictionOrderWithoutBound(t *testing.T) {
+	t.Parallel()
+
+	c := Must(&Options[int, int]{})
+	for i := range 10 {
+		c.Set(i, i)
+	}
+	for _, seq := range []iter.Seq[Entry[int, int]]{c.Hottest(), c.Coldest()} {
+		n := 0
+		for range seq {
+			n++
+			break
+		}
+		require.Equal(t, 1, n)
+	}
+}
+
+// Hottest and Coldest hold the eviction lock, so maintenance cannot remove an entry that expires
+// while they iterate. They skip it themselves: the loop body sees only live entries.
+func TestCache_EvictionOrderSkipsEntriesExpiredDuringIt(t *testing.T) {
+	t.Parallel()
+
+	for _, hottest := range []bool{true, false} {
+		clock := newNonTickingClock()
+		c := Must(&Options[int, int]{
+			MaximumSize:      10,
+			ExpiryCalculator: ExpiryWriting[int, int](time.Minute),
+			Clock:            clock,
+		})
+		for i := range 5 {
+			c.Set(i, i)
+		}
+		seq := c.Coldest()
+		if hottest {
+			seq = c.Hottest()
+		}
+		seen := 0
+		for range seq {
+			seen++
+			clock.Sleep(time.Minute)
+		}
+		require.Equal(t, 1, seen, "hottest=%v", hottest)
+	}
 }
 
 // Hottest and Coldest merge the window and probation queues by frequency: Coldest takes the less

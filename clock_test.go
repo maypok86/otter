@@ -117,3 +117,16 @@ func TestCoarseClock_NonPositiveResolution(t *testing.T) {
 	require.Panics(t, func() { NewCoarseClock(0) })
 	require.Panics(t, func() { NewCoarseClock(-time.Second) })
 }
+
+func TestCoarseSource(t *testing.T) {
+	t.Parallel()
+
+	cc := NewCoarseClock(time.Millisecond)
+	t.Cleanup(cc.Stop)
+	c := newTimeSource(cc)
+	c.Init()
+	start := c.NowNano()
+	c.Sleep(5 * time.Millisecond)
+	c.ProcessTick()
+	require.GreaterOrEqual(t, c.NowNano(), start)
+}

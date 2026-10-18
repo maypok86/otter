@@ -1262,6 +1262,18 @@ func TestCache_PanicInLoggerIsContained(t *testing.T) {
 	})
 }
 
+// The cache logs only errors, but safeLogger is a whole Logger, and its Warn drops a panic of the
+// user's logger as well.
+func TestSafeLogger_DropsPanics(t *testing.T) {
+	t.Parallel()
+
+	l := &safeLogger{logger: panickingLogger{}}
+	require.NotPanics(t, func() {
+		l.Warn(context.Background(), "warn", errors.New("boom"))
+		l.Error(context.Background(), "error", errors.New("boom"))
+	})
+}
+
 // A nil loader or context is the caller's bug, but it must not leave the key's call registered:
 // every later load or refresh of the key would wait for it forever. On the caller's goroutine
 // the panic reaches the caller. On the executor it fails the refresh, whose result carries it,

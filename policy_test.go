@@ -331,3 +331,99 @@ func TestPolicy_ClimberWaitsForHalfFull(t *testing.T) {
 		ci.evictionMutex.Unlock()
 	}
 }
+
+// An update that makes an entry heavier than the maximum evicts it, whichever queue it is in.
+func TestPolicy_UpdateAboveTheMaximum(t *testing.T) {
+	t.Parallel()
+
+	nm := node.NewManager[int, int](node.Config{WithWeight: true})
+	for _, queue := range []string{"window", "probation", "protected"} {
+		p := newTestPolicy(100, removeAll)
+		n1 := nm.Create(1, 1, 0, 0, 3)
+		p.add(n1)
+		if queue != "window" {
+			p.window.Delete(n1)
+			p.windowWeightedSize -= uint64(n1.PolicyWeight())
+			if queue == "probation" {
+				n1.MakeMainProbation()
+				p.probation.PushBack(n1)
+			} else {
+				n1.MakeMainProtected()
+				p.protected.PushBack(n1)
+				p.mainProtectedWeightedSize += uint64(n1.PolicyWeight())
+			}
+		}
+
+		n2 := nm.Create(1, 2, 0, 0, 1000)
+		n1.Retire()
+		p.update(n2, n1, false)
+
+		requireAccounted(t, p)
+		require.True(t, n1.IsDead(), queue)
+		require.True(t, n2.IsDead(), queue)
+	}
+}
+
+// Entries of zero weight are never victims: they free nothing. A probation queue that holds only
+// such entries, which decreaseWindow can move there or a writer can reweigh in place, leaves the
+// candidates without a victim, and the candidates are evicted instead.
+func TestPolicy_EvictsCandidatesWithoutVictims(t *testing.T) {
+	t.Parallel()
+
+	nm := node.NewManager[int, int](node.Config{WithWeight: true})
+	p := newTestPolicy(10, removeAll)
+	zero := nm.Create(0, 0, 0, 0, 0)
+	p.add(zero)
+	p.window.Delete(zero)
+	zero.MakeMainProbation()
+	p.probation.PushBack(zero)
+	nodes := []node.Node[int, int]{
+		nm.Create(1, 1, 0, 0, 5),
+		nm.Create(2, 2, 0, 0, 5),
+		nm.Create(3, 3, 0, 0, 5),
+	}
+	for _, n := range nodes {
+		p.add(n)
+	}
+	candidate := p.window.Head()
+
+	p.evictFromMain(nil)
+
+	require.True(t, candidate.IsDead())
+	rest := []node.Node[int, int]{zero}
+	for _, n := range nodes {
+		if n != candidate {
+			rest = append(rest, n)
+		}
+	}
+	requireAccounted(t, p, rest...)
+}
+
+// The climber grows the window by no more than the protected region's maximum, and once that
+// region has nothing left to give, a further increase changes nothing.
+func TestPolicy_IncreaseWindowUpToTheProtectedMaximum(t *testing.T) {
+	t.Parallel()
+
+	nm := node.NewManager[int, int](node.Config{WithSize: true})
+	p := newPolicy[int, int](false, 0, removeAll)
+	p.setMaximumSize(100)
+	for k := range 80 {
+		p.add(nm.Create(k, k, 0, 0, 1))
+	}
+	p.evictNodes()
+	require.Equal(t, uint64(1), p.windowMaximum)
+	require.Equal(t, uint64(79), p.mainProtectedMaximum)
+
+	p.adjustment = 1000
+	p.increaseWindow()
+	require.Equal(t, uint64(80), p.windowMaximum)
+	require.Zero(t, p.mainProtectedMaximum)
+	require.Equal(t, 80, p.window.Len())
+	require.Equal(t, uint64(80), p.windowWeightedSize)
+
+	p.adjustment = 10
+	p.increaseWindow()
+	require.Equal(t, uint64(80), p.windowMaximum)
+	require.Zero(t, p.mainProtectedMaximum)
+	require.Equal(t, 80, p.window.Len())
+}

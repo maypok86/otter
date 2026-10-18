@@ -93,3 +93,25 @@ func TestHashUint64_NoDifferentialBias(t *testing.T) {
 		}
 	}
 }
+
+// toUint64 widens a key of any integer size with zeros: the bytes next to a small key do not
+// leak into its hash.
+func TestToUint64(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		got, want uint64
+	}{
+		{toUint64(int8(-1)), 0xff},
+		{toUint64(uint8(0xab)), 0xab},
+		{toUint64(int16(-1)), 0xffff},
+		{toUint64(uint16(0xabcd)), 0xabcd},
+		{toUint64(int32(-1)), 0xffff_ffff},
+		{toUint64(int64(-1)), 0xffff_ffff_ffff_ffff},
+	}
+	for i, tt := range tests {
+		if tt.got != tt.want {
+			t.Errorf("case %d: toUint64 = %#x, want %#x", i, tt.got, tt.want)
+		}
+	}
+}
