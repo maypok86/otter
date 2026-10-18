@@ -76,6 +76,11 @@ type previous[K comparable, V any] struct {
 	weight uint32
 	// live reports that node holds a value that has not expired.
 	live bool
+	// nodeExpiresAt is node's deadline, read under the lock with live. A read's ExpireAfterRead
+	// CAS can move the deadline while the mutation runs user code, to before nowNano too; a write
+	// then gives its calculators this one (see writeEntry), so that an update of the entry found
+	// live does not keep a deadline that had passed.
+	nodeExpiresAt int64
 }
 
 // mutation is a key mutation as decided and applied under the bucket lock.
@@ -91,6 +96,18 @@ type mutation[K comparable, V any] struct {
 	// writeResult is what the write or removal decided about the previous value and, for a
 	// write, the new one.
 	writeResult
+}
+
+// removalCause is the cause that a previous value leaves the cache with: cause if mutate found it
+// live, CauseExpiration otherwise. It follows that decision rather than the node's deadline,
+// which a read's ExpireAfterRead CAS can move while the mutation runs user code: decide (a
+// Compute function) and, for a write, the weigher and the calculators. Read again, it could
+// report a value that the caller was given as present as expired.
+func removalCause(live bool, cause DeletionCause) DeletionCause {
+	if live {
+		return cause
+	}
+	return CauseExpiration
 }
 
 // mutate changes what key holds as decide says, under the key's bucket lock. decide is given
@@ -112,6 +129,9 @@ func (c *cache[K, V]) mutate(
 			m.value = current.Value()
 			m.weight = current.Weight()
 			m.live = !current.HasExpired(nowNano)
+			if c.withExpiration {
+				m.nodeExpiresAt = current.ExpiresAt()
+			}
 		}
 
 		var value V
@@ -119,17 +139,17 @@ func (c *cache[K, V]) mutate(
 		switch m.op {
 		case opWrite:
 			var n node.Node[K, V]
-			n, m.writeResult = c.atomicSet(key, value, current, from, nowNano)
+			n, m.writeResult = c.atomicSet(key, value, m.previous, from)
 			return n
 		case opInvalidate:
 			if from == fromCaller {
 				c.singleflight.invalidate(key)
 			}
-			m.cause = c.retireRemoved(current, nowNano)
+			m.cause = c.retireRemoved(current, removalCause(m.live, CauseInvalidation))
 			return nil
 		case opRemoveExpired:
 			c.singleflight.deleteOnRemoval(key)
-			m.cause = c.retireRemoved(current, nowNano)
+			m.cause = c.retireRemoved(current, CauseExpiration)
 			return nil
 		default:
 			return current
@@ -224,22 +244,24 @@ func (c *cache[K, V]) afterWritePolicies(m mutation[K, V]) {
 // concurrent reader cannot observe a torn or cleared value: the first update of such a live entry
 // replaces the node with a boxed one, whose value lives behind an atomic pointer, so that later
 // updates of this (likely hot) key can be applied in place.
+//
+// prev is what mutate decided about the old entry: the kind of the write, and so the calculator
+// it calls, the kind of a new node and the cause follow it, so that they agree with what the
+// caller was given (see removalCause). A deadline that a read has moved since is the read's,
+// unless it is before nowNano (see writeEntry). The choice to write in place reads old's deadline
+// again: in place, a reader could pair the new value with a deadline a read moved before nowNano.
 func (c *cache[K, V]) atomicSet(
 	key K,
 	value V,
-	old node.Node[K, V],
+	prev previous[K, V],
 	from origin,
-	nowNano int64,
 ) (node.Node[K, V], writeResult) {
+	old, live, nowNano, oldValue := prev.node, prev.live, prev.nowNano, prev.value
 	// The user's weigher and calculators run before anything is changed: if one of them panics,
 	// the write is not applied and the panic reaches the caller.
-	var oldValue V
-	if old != nil {
-		oldValue = old.Value()
-	}
 	weight := c.weigher(key, value)
-	kind := newWriteKind(old != nil && !old.HasExpired(nowNano), from == fromRefresh)
-	base := old
+	kind := newWriteKind(live, from == fromRefresh)
+	base := &prev
 	if kind == createWrite {
 		base = nil
 	}
@@ -257,7 +279,7 @@ func (c *cache[K, V]) atomicSet(
 	c.cancelCalls(key, from)
 
 	// in place only over a live entry whose deadline does not move earlier, see above
-	if c.isLiveNode(old, nowNano) && old.CanSetValue() &&
+	if live && c.withMaintenance && !old.HasExpired(nowNano) && old.CanSetValue() &&
 		(!c.withExpiration || entry.ExpiresAtNano >= old.ExpiresAt()) {
 		written := writeResult{
 			// the old entry is live: an expired one is replaced
@@ -285,10 +307,10 @@ func (c *cache[K, V]) atomicSet(
 		return old, written
 	}
 
-	n := c.newNode(key, value, weight, entry.ExpiresAtNano, entry.RefreshableAtNano, c.isLiveNode(old, nowNano))
+	n := c.newNode(key, value, weight, entry.ExpiresAtNano, entry.RefreshableAtNano, live && c.withMaintenance)
 	written := writeResult{expiresAt: entry.ExpiresAtNano}
 	if old != nil {
-		written.cause = getCause(old, nowNano, CauseReplacement)
+		written.cause = removalCause(live, CauseReplacement)
 		c.retire(old, oldValue, written.cause)
 	}
 	return n, written
@@ -323,18 +345,12 @@ type writeResult struct {
 	expiresAt int64
 }
 
-// isLiveNode reports whether n is in the hash table and has not expired.
-func (c *cache[K, V]) isLiveNode(n node.Node[K, V], nowNano int64) bool {
-	return n != nil && c.withMaintenance && n.IsAlive() && !n.HasExpired(nowNano)
-}
-
 // retireRemoved retires old, which the caller removes from the hash table, without touching the
-// key's pending calls, and returns the cause reported to the synchronous listener.
-func (c *cache[K, V]) retireRemoved(old node.Node[K, V], nowNano int64) DeletionCause {
+// key's pending calls, and returns cause, which it reports to the synchronous listener.
+func (c *cache[K, V]) retireRemoved(old node.Node[K, V], cause DeletionCause) DeletionCause {
 	if old == nil {
 		return 0
 	}
-	cause := getCause(old, nowNano, CauseInvalidation)
 	c.retire(old, old.Value(), cause)
 	return cause
 }

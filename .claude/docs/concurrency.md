@@ -76,14 +76,15 @@ Every change decided from a key's current value (`set`, `doCompute`, `Invalidate
    (absent, live or expired) and asks the caller's `decide` for an op: keep, write, invalidate or remove an
    expired entry. Its `origin` (caller, load or refresh) decides which pending calls are
    cancelled and whether a write is a reload.
-2. Under the lock, `atomicSet` decides between an **in-place update** (old node alive and
-   `CanSetValue`: value, weight, deadline and refresh time change on the same node, and
-   `OnAtomicDeletion` runs first) and a **replacement** (a new node, the old one retired). A
-   write over an expired node that is still in the table and one that moves the deadline
-   earlier are replacements (`atomicSet`): until the write stores the new deadline, a
-   reader that loads the old one with the new value would decide by the old deadline. The
-   decision, the deletion cause and whether reconciliation is needed are returned in the
-   `mutation`.
+2. Under the lock, `atomicSet` takes the kind of the write and the cause from the liveness that
+   `mutate` decided (design-decisions.md, "A mutation decides whether the entry is live once"),
+   and decides between an **in-place update** (old node alive and `CanSetValue`: value,
+   weight, deadline and refresh time change on the same node, and `OnAtomicDeletion` runs
+   first) and a **replacement** (a new node, the old one retired). A write over an expired
+   node that is still in the table and one that moves the deadline earlier are replacements
+   (`atomicSet`): until the write stores the new deadline, a reader that loads the old one
+   with the new value would decide by the old deadline. The decision, the deletion cause and
+   whether reconciliation is needed are returned in the `mutation`.
 3. After the lock is released, `publish` (`afterWrite` for a write, `afterDelete` for a
    removal):
    - in place: an access through the read buffer, plus a `reconcileReason` task if the weight

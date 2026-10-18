@@ -237,9 +237,9 @@ func (c *cache[K, V]) newNode(key K, value V, weight uint32, expiresAt, refresha
 }
 
 // writeEntry describes a write before it is applied: the new value and weight with the
-// timestamps of the node it replaces, which are kept unless the calculators change them. old is
-// nil for a creation, which sees no timestamps.
-func (c *cache[K, V]) writeEntry(key K, value V, weight uint32, old node.Node[K, V], nanos int64) Entry[K, V] {
+// timestamps of the entry it replaces, which are kept unless the calculators change them. old is
+// what the mutation found, nil for a creation, which sees no timestamps.
+func (c *cache[K, V]) writeEntry(key K, value V, weight uint32, old *previous[K, V], nanos int64) Entry[K, V] {
 	nowNano := noTime
 	if c.withTime {
 		nowNano = nanos
@@ -247,12 +247,17 @@ func (c *cache[K, V]) writeEntry(key K, value V, weight uint32, old node.Node[K,
 
 	expiresAt := unreachableExpiresAt
 	if c.withExpiration && old != nil {
-		expiresAt = old.ExpiresAt()
+		// A read that moved the deadline while the mutation ran user code comes before the
+		// write, unless it moved it to before nowNano, when the mutation found the entry live.
+		expiresAt = old.node.ExpiresAt()
+		if expiresAt <= old.nowNano {
+			expiresAt = old.nodeExpiresAt
+		}
 	}
 
 	refreshableAt := unreachableRefreshableAt
 	if c.withRefresh && old != nil {
-		refreshableAt = old.RefreshableAt()
+		refreshableAt = old.node.RefreshableAt()
 	}
 
 	return Entry[K, V]{
@@ -1568,7 +1573,7 @@ func (c *cache[K, V]) deleteNodeFromMap(
 			return current
 		}
 		deleted = current
-		deletedCause = getCause(deleted, nowNano, removal.cause())
+		deletedCause = removalCause(!deleted.HasExpired(nowNano), removal.cause())
 		c.retire(deleted, deleted.Value(), deletedCause)
 		return nil
 	})
@@ -2404,11 +2409,4 @@ func (c *cache[K, V]) makeDead(n node.Node[K, V]) {
 	} else if !n.IsDead() {
 		n.Die()
 	}
-}
-
-func getCause[K comparable, V any](n node.Node[K, V], nowNano int64, cause DeletionCause) DeletionCause {
-	if n.HasExpired(nowNano) {
-		return CauseExpiration
-	}
-	return cause
 }

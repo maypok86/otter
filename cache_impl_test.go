@@ -1039,15 +1039,6 @@ func TestCache_CornerCases(t *testing.T) {
 
 		require.Equal(t, int64(0), c.cache.statsClock.NowNano())
 	})
-	t.Run("expiredNode", func(t *testing.T) {
-		t.Parallel()
-
-		nm := node.NewManager[int, int](node.Config{
-			WithExpiration: true,
-		})
-		n := nm.Create(1, 2, 5, 0, 1)
-		require.Equal(t, CauseExpiration, getCause(n, 6, CauseReplacement))
-	})
 	t.Run("getExpired", func(t *testing.T) {
 		t.Parallel()
 
