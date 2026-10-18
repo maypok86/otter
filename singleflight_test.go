@@ -64,7 +64,7 @@ func TestGroup_FinishOrder(t *testing.T) {
 	t.Parallel()
 
 	g := newTestGroup()
-	cl, shouldLoad := g.startLoad(1)
+	cl, shouldLoad := g.startLoad(1, 0)
 	require.True(t, shouldLoad)
 	g.onCommit = func(c *call[int, int]) {
 		require.Same(t, c, g.getCall(1), "committed after the call was deleted")
@@ -86,7 +86,7 @@ func TestGroup_FinishWhenCommitPanics(t *testing.T) {
 	t.Parallel()
 
 	g := newTestGroup()
-	cl, _ := g.startLoad(1)
+	cl, _ := g.startLoad(1, 0)
 	g.onCommit = func(*call[int, int]) { panic("weigher") }
 
 	require.Panics(t, func() {
@@ -104,7 +104,7 @@ func TestGroup_FinishWhenCommitExits(t *testing.T) {
 	t.Parallel()
 
 	g := newTestGroup()
-	cl, _ := g.startLoad(1)
+	cl, _ := g.startLoad(1, 0)
 	g.onCommit = func(*call[int, int]) { runtime.Goexit() }
 
 	done := make(chan struct{})
@@ -127,7 +127,7 @@ func TestGroup_LoaderFailures(t *testing.T) {
 		t.Parallel()
 
 		g := newTestGroup()
-		cl, _ := g.startLoad(1)
+		cl, _ := g.startLoad(1, 0)
 		err := g.doCall(context.Background(), cl, func(context.Context, int) (int, error) { panic("loader") })
 		var pe *panicError
 		require.ErrorAs(t, err, &pe)
@@ -139,7 +139,7 @@ func TestGroup_LoaderFailures(t *testing.T) {
 		t.Parallel()
 
 		g := newTestGroup()
-		cl, _ := g.startLoad(1)
+		cl, _ := g.startLoad(1, 0)
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
@@ -165,8 +165,8 @@ func TestGroup_BulkResults(t *testing.T) {
 		t.Parallel()
 
 		g := newTestGroup()
-		c1, _ := g.startLoad(1)
-		c2, _ := g.startLoad(2)
+		c1, _ := g.startLoad(1, 0)
+		c2, _ := g.startLoad(2, 0)
 		calls := map[int]*call[int, int]{1: c1, 2: c2}
 		err := g.doBulkCall(context.Background(), calls, func(context.Context, []int) (map[int]int, error) {
 			return map[int]int{1: 10, 3: 30}, nil
@@ -184,7 +184,7 @@ func TestGroup_BulkResults(t *testing.T) {
 		t.Parallel()
 
 		g := newTestGroup()
-		c1, _ := g.startLoad(1)
+		c1, _ := g.startLoad(1, 0)
 		err := g.doBulkCall(context.Background(), map[int]*call[int, int]{1: c1}, func(context.Context, []int) (map[int]int, error) {
 			return nil, ErrNotFound
 		})
@@ -205,9 +205,9 @@ func TestGroup_GoexitWhileFinishingBulkKeepsResults(t *testing.T) {
 	g.onCommit = func(*call[int, int]) {
 		exited.Do(runtime.Goexit)
 	}
-	c1, _ := g.startLoad(1)
-	c2, _ := g.startLoad(2)
-	c3, _ := g.startLoad(3)
+	c1, _ := g.startLoad(1, 0)
+	c2, _ := g.startLoad(2, 0)
+	c3, _ := g.startLoad(3, 0)
 	calls := map[int]*call[int, int]{1: c1, 2: c2, 3: c3}
 	done := make(chan struct{})
 	go func() {
@@ -268,8 +268,8 @@ func TestGroup_Adopt(t *testing.T) {
 	t.Parallel()
 
 	g := newTestGroup()
-	cl, _ := g.startLoad(1)
-	joined, shouldLoad := g.startLoad(1)
+	cl, _ := g.startLoad(1, 0)
+	joined, shouldLoad := g.startLoad(1, 0)
 	require.False(t, shouldLoad)
 	require.Same(t, cl, joined)
 
@@ -315,11 +315,11 @@ func TestGroup_Authoritative(t *testing.T) {
 		want  bool
 	}{
 		{"load over an absent key", func(g *testGroup) (*call[int, int], node.Node[int, int]) {
-			cl, _ := g.startLoad(1)
+			cl, _ := g.startLoad(1, 0)
 			return cl, nil
 		}, true},
 		{"load cancelled by a write", func(g *testGroup) (*call[int, int], node.Node[int, int]) {
-			cl, _ := g.startLoad(1)
+			cl, _ := g.startLoad(1, 0)
 			g.delete(1)
 			return cl, other
 		}, false},
@@ -354,7 +354,7 @@ func TestGroup_Authoritative(t *testing.T) {
 			return &call[int, int]{key: 1, isFake: true}, live
 		}, false},
 		{"fake call while the key has its own load", func(g *testGroup) (*call[int, int], node.Node[int, int]) {
-			g.startLoad(1)
+			g.startLoad(1, 0)
 			return &call[int, int]{key: 1, isFake: true}, nil
 		}, false},
 	}

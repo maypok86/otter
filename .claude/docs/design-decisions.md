@@ -129,6 +129,14 @@ Audits read this file **after** recording their findings (Phase 1.5 of the audit
 
 ## Loading and refresh
 
+- **A `Get` whose load an invalidation cancelled loads the key again, until its context ends.**
+  Returning the loaded value would contradict the `Invalidate`, which reported the key absent,
+  and writing it would bring back data read before the change. An error after a fixed number of
+  retries would fail `Get`s under ordinary churn: a load survives invalidations at rate λ with
+  probability e^(-λL) for load latency L. The retry loop checks the context itself, since a
+  loader may ignore it. A key invalidated more often than it loads keeps such a `Get` waiting.
+  A load that fails returns its error even after an invalidation: no value is involved, and
+  retrying would hide the failure.
 - **A refresh is discarded by what happened since its request, not by the key's state when it
   completes.** Any write or invalidation of the key from the API after the request cancels it,
   and so does a removal of its base. After `SetIfAbsent` and then `ComputeDelete` the key is

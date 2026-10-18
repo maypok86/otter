@@ -120,6 +120,9 @@ func warmUp[K comparable, V any](c *Cache[K, V], keys []warmKey[K]) {
 		return
 	}
 	nowNano := ci.clock.NowNano()
+	// Deferred before the unlock, so that it runs after it: writers that ran during the warm-up
+	// could not take the lock, and left a drain required.
+	defer ci.rescheduleCleanUpIfIncomplete()
 	ci.evictionMutex.Lock()
 	defer ci.evictionMutex.Unlock()
 	ci.maintenance(nil)

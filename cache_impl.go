@@ -880,6 +880,11 @@ func (c *cache[K, V]) Get(ctx context.Context, key K, loader Loader[K, V]) (V, e
 		if !retry {
 			return value, err
 		}
+		// A key invalidated faster than it loads refuses every load. The loader may ignore ctx,
+		// so ctx is checked here too: it bounds the wait whatever the loader does.
+		if err := ctx.Err(); err != nil {
+			return zeroValue[V](), err
+		}
 		nowNano = c.clock.NowNano()
 	}
 }
@@ -893,7 +898,7 @@ func (c *cache[K, V]) loadOrJoin(
 	loader Loader[K, V],
 	nowNano int64,
 ) (value V, retry bool, err error) {
-	cl, shouldLoad := c.singleflight.startLoad(key)
+	cl, shouldLoad := c.singleflight.startLoad(key, nowNano)
 	if shouldLoad {
 		// Re-check the map before loading. The getNode above runs before this
 		// call slot is claimed, so it can miss a value that a concurrently
@@ -963,16 +968,23 @@ func (c *cache[K, V]) commitCall(cl *call[K, V]) mutation[K, V] {
 			return opKeep, cl.value
 		}
 		authoritative := c.singleflight.authoritative(cl, prev, prev.nowNano)
-		// A failed load reports its error: no value of the key is involved.
 		cl.refused = !authoritative && (cl.isRefresh || cl.err == nil)
 		if authoritative && cl.isNotFound {
 			return opInvalidate, cl.value
 		}
 		if cl.err != nil {
-			// A failed refresh of an absent key leaves an expired node that it matched as it is.
-			if authoritative && cl.isRefresh && prev.live && c.withRefresh {
-				entry := c.nodeToEntry(prev.node, prev.nowNano)
-				prev.node.SetRefreshableAt(refreshableAtAfterWrite(c.refreshCalculator, reloadFailure, entry, entry.Value, cl.err, prev.nowNano))
+			// A failed load reports its error: no value of the key is involved. A failed refresh
+			// of an absent key leaves an expired node that it matched as it is.
+			if authoritative && cl.isRefresh && prev.live {
+				// A failed refresh of a live value keeps it, and a Get that joined the refresh
+				// after missing the key returns that value, as a hit would: the reload's error
+				// is not a result of the Get's own load. Set first: the refresh calculator below
+				// may panic, and the waiters would then get that panic.
+				cl.refused = true
+				if c.withRefresh {
+					entry := c.nodeToEntry(prev.node, prev.nowNano)
+					prev.node.SetRefreshableAt(refreshableAtAfterWrite(c.refreshCalculator, reloadFailure, entry, entry.Value, cl.err, prev.nowNano))
+				}
 			}
 			return opKeep, cl.value
 		}
@@ -1012,8 +1024,9 @@ func (c *cache[K, V]) readForAdoption(cl *call[K, V], nowNano int64) (value V, e
 }
 
 // valueAfterRefusal returns the value that a Get or BulkGet takes from a call whose value the
-// cache refused (call.refused): a write or an invalidation cancelled it, or the node a refresh
-// was requested for was replaced or expired, so the value is not one the key had. The key's live
+// cache refused (call.refused): a write or an invalidation cancelled it, the node a refresh
+// was requested for was replaced or expired, so the value is not one the key had, or a refresh
+// of a live value failed, which keeps the value. The key's live
 // value is returned, as a hit would return it; ok is false if there is none, and the key is
 // loaded again. A load that an invalidation cancelled may have read its data source before the
 // change that the invalidation follows.
@@ -1063,7 +1076,22 @@ func (c *cache[K, V]) bulkRefreshKeys(
 		toReloadCalls map[K]*call[K, V]
 		foundCalls    []*call[K, V]
 		owned         []*call[K, V]
+		registered    bool
 	)
+	// startRefresh reads the clock again under each key's bucket lock. If it panics or calls
+	// runtime.Goexit for a key, the calls registered for the earlier keys are finished here, as
+	// submitRefresh does: left registered, they would block every later load of their keys.
+	// Deferred after recoverCallback, so that it runs first and the panic is still logged.
+	defer func() {
+		if registered {
+			return
+		}
+		r := recover()
+		c.singleflight.abandon(owned, r)
+		if r != nil {
+			panic(r)
+		}
+	}()
 	for i, key := range keys {
 		cl, shouldLoad := c.startRefresh(key, isManual, nowNano)
 		if shouldLoad {
@@ -1086,6 +1114,7 @@ func (c *cache[K, V]) bulkRefreshKeys(
 			foundCalls = append(foundCalls, cl)
 		}
 	}
+	registered = true
 	if len(owned) == 0 {
 		// Every key is loading or refreshing already: nothing to submit, see refreshKey.
 		if isManual {
@@ -1224,6 +1253,12 @@ func (c *cache[K, V]) BulkGet(ctx context.Context, keys []K, bulkLoader BulkLoad
 		if err != nil {
 			return result, err
 		}
+		// as in Get
+		if len(misses) > 0 {
+			if err := ctx.Err(); err != nil {
+				return result, err
+			}
+		}
 	}
 
 	var err error
@@ -1250,7 +1285,7 @@ func (c *cache[K, V]) bulkLoadOrJoin(
 	var toLoadCalls map[K]*call[K, V]
 	i := 0
 	for key := range misses {
-		cl, shouldLoad := c.singleflight.startLoad(key)
+		cl, shouldLoad := c.singleflight.startLoad(key, nowNano)
 		if shouldLoad {
 			// Winning the call slot means that a value written before is visible, see Get.
 			if c.getNodeQuietly(key, nowNano) != nil {
@@ -1303,7 +1338,11 @@ func (c *cache[K, V]) bulkLoadOrJoin(
 			retry[key] = nil
 			continue
 		}
-		if _, own := toLoadCalls[key]; !own && c.withExpiration && cl.expiredBefore(nowNano) {
+		// doBulkCall adds a fake call to toLoadCalls for each key the loader returned unasked, so
+		// a key this call joined may be there as well: it is its own only if the call it waited
+		// for is the one it registered.
+		own := toLoadCalls[key] == cl
+		if !own && c.withExpiration && cl.expiredBefore(nowNano) {
 			// a value that expired before this load, see loadOrJoin
 			if retry == nil {
 				retry = make(map[K]*call[K, V], len(misses)-i+1)
@@ -1315,7 +1354,7 @@ func (c *cache[K, V]) bulkLoadOrJoin(
 			result[key] = cl.Value()
 			continue
 		}
-		if _, ok := toLoadCalls[key]; ok || cl.isNotFound {
+		if own || cl.isNotFound {
 			continue
 		}
 		if cl.failedForOwner() && ctx.Err() == nil {
@@ -1832,6 +1871,8 @@ func (c *cache[K, V]) Values() iter.Seq[V] {
 // that is being loaded (or reloaded) and is otherwise not present.
 func (c *cache[K, V]) InvalidateAll() {
 	nodes := c.invalidateAllLocked()
+	// Writers that ran while the lock was held could not take it, and left a drain required.
+	c.rescheduleCleanUpIfIncomplete()
 
 	for _, n := range nodes {
 		c.Invalidate(n.Key())
@@ -2316,6 +2357,9 @@ func (c *cache[K, V]) evictionOrder(hottest bool) iter.Seq[Entry[K, V]] {
 			seq = c.evictionPolicy.hottest()
 		}
 
+		// Deferred before the unlock, so that it runs after it: writers that ran during the
+		// iteration could not take the lock, and left a drain required.
+		defer c.rescheduleCleanUpIfIncomplete()
 		c.evictionMutex.Lock()
 		defer c.evictionMutex.Unlock()
 		c.maintenance(nil)

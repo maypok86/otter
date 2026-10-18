@@ -44,8 +44,10 @@ type call[K comparable, V any] struct {
 	// read under the key's bucket lock in the cache's hash table.
 	committed bool
 	// refused reports that the cache has not written the value a refresh or a load returned:
-	// the call was cancelled, or a refresh's node was replaced or expired. It is written
-	// under the key's bucket lock, before done is closed.
+	// the call was cancelled, or a refresh's node was replaced or expired; or that a refresh of
+	// a live value failed or was abandoned (group.abandon), so the key keeps that value. It is
+	// written before done is closed: under the key's bucket lock by commitCall, and by abandon,
+	// which no commit can follow.
 	refused bool
 	// expiresAt is when the value that the call hands to its waiters from the cache, the one it
 	// wrote or the live one it found, expires, and node is the node that held the value then;
@@ -191,10 +193,10 @@ func (g *group[K, V]) getCall(key K) *call[K, V] {
 	return g.calls.Get(key)
 }
 
-// startLoad registers a load of key, or returns the call already registered for it. shouldLoad
-// reports that the caller registered the call and must run it.
-func (g *group[K, V]) startLoad(key K) (c *call[K, V], shouldLoad bool) {
-	return g.startCall(key, false, nil)
+// startLoad registers a load of key, which a Get missed at nowNano, or returns the call already
+// registered for it. shouldLoad reports that the caller registered the call and must run it.
+func (g *group[K, V]) startLoad(key K, nowNano int64) (c *call[K, V], shouldLoad bool) {
+	return g.startCall(key, false, nil, nowNano)
 }
 
 // startRefresh registers a refresh of key, whose node is base (nil if absent), or returns the call
@@ -205,17 +207,17 @@ func (g *group[K, V]) startLoad(key K) (c *call[K, V], shouldLoad bool) {
 // current state (see isRefreshBase): a load, whose base is nil, never writes over a live value.
 // It is replaced rather than joined, and still completes for its own waiters.
 func (g *group[K, V]) startRefresh(key K, base node.Node[K, V]) (c *call[K, V], shouldLoad bool) {
-	return g.startCall(key, true, base)
+	return g.startCall(key, true, base, 0)
 }
 
-func (g *group[K, V]) startCall(key K, isRefresh bool, base node.Node[K, V]) (c *call[K, V], shouldLoad bool) {
+func (g *group[K, V]) startCall(key K, isRefresh bool, base node.Node[K, V], nowNano int64) (c *call[K, V], shouldLoad bool) {
 	// A refresh's base is the key's live node, read under its bucket lock, so a call started from
 	// the same base is not superseded.
 	joins := func(c *call[K, V]) bool {
 		if isRefresh {
 			return c.base == base
 		}
-		return !g.superseded(c)
+		return !g.superseded(c, nowNano)
 	}
 	// fast path
 	if c := g.getCall(key); c != nil && joins(c) {
@@ -232,15 +234,18 @@ func (g *group[K, V]) startCall(key K, isRefresh bool, base node.Node[K, V]) (c 
 	}), shouldLoad
 }
 
-// superseded reports whether c is a refresh whose base has been removed or replaced, so that its
-// result will not be written (see isRefreshBase). Writes and removals cancel a refresh of their
+// superseded reports whether c is a refresh whose base has been removed, replaced or had expired
+// by nowNano, so that its result will not be written (see isRefreshBase). An expired base stays
+// expired while c is registered: SetExpiresAfter skips an expired entry, and a write over it
+// cancels c. Writes and removals cancel a refresh of their
 // node under its bucket lock, so a refresh is superseded only by its own commit, which replaces
 // or removes the base before finish deletes the call. The next call for its key replaces it
 // rather than join it: a Get would wait for a value it then refuses. The refresh still completes
 // for the callers that joined it before. A removed or replaced node never comes back, so a
 // refresh that is superseded stays so.
-func (g *group[K, V]) superseded(c *call[K, V]) bool {
-	return c.isRefresh && c.base != nil && (!c.base.IsAlive() || g.nodeOf(c.key) != c.base)
+func (g *group[K, V]) superseded(c *call[K, V], nowNano int64) bool {
+	return c.isRefresh && c.base != nil &&
+		(!c.base.IsAlive() || c.base.HasExpired(nowNano) || g.nodeOf(c.key) != c.base)
 }
 
 // adopt finishes c, which the caller registered, with a value that is already in the cache,
@@ -458,9 +463,10 @@ func isRefreshBase[K comparable, V any](base, current node.Node[K, V], nowNano i
 }
 
 // submitRefresh submits a refresh task that finishes the calls in owned, which the caller
-// registered. If the executor panics, the calls are finished here with the panic as their error:
-// left registered, they would block every later load of their keys. The task is then abandoned,
-// so that an executor that scheduled it before panicking does not finish the calls again.
+// registered. If the executor panics or calls runtime.Goexit, the calls are finished here with
+// the panic or errRefreshExited as their error: left registered, they would block every later
+// load of their keys. The task is then abandoned, so that an executor that scheduled it before
+// failing does not finish the calls again.
 func (g *group[K, V]) submitRefresh(owned []*call[K, V], task func()) {
 	const (
 		submitted = iota
@@ -468,20 +474,19 @@ func (g *group[K, V]) submitRefresh(owned []*call[K, V], task func()) {
 		abandoned
 	)
 	var state atomic.Int32
+	returned := false
 	defer func() {
-		r := recover()
-		if r == nil {
+		if returned {
 			return
 		}
+		// recover returns nil during runtime.Goexit, which goes on after this function.
+		r := recover()
 		if state.CompareAndSwap(submitted, abandoned) {
-			err := newPanicError(r)
-			for _, cl := range owned {
-				cl.err = err
-				g.deleteCall(cl)
-				cl.cancel()
-			}
+			g.abandon(owned, r)
 		}
-		panic(r)
+		if r != nil {
+			panic(r)
+		}
 	}()
 	g.executor(func() {
 		if !state.CompareAndSwap(submitted, started) {
@@ -489,6 +494,25 @@ func (g *group[K, V]) submitRefresh(owned []*call[K, V], task func()) {
 		}
 		task()
 	})
+	returned = true
+}
+
+// abandon finishes the calls in owned, which the caller registered and will not run, with the
+// panic r as their error, or errRefreshExited if r is nil (runtime.Goexit). A refresh of a live
+// value is refused, as a failed one is (see commitCall): a Get that joined it after missing the
+// key takes the value the key keeps. No task runs these calls, so commitCall never does either,
+// and waiters read refused only after done is closed.
+func (g *group[K, V]) abandon(owned []*call[K, V], r any) {
+	var err error = errRefreshExited
+	if r != nil {
+		err = newPanicError(r)
+	}
+	for _, cl := range owned {
+		cl.err = err
+		cl.refused = cl.base != nil
+		g.deleteCall(cl)
+		cl.cancel()
+	}
 }
 
 func (g *group[K, V]) deleteCall(c *call[K, V]) (deleted bool) {

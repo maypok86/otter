@@ -16,6 +16,7 @@ package otter
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"runtime"
 	"slices"
@@ -1788,6 +1789,117 @@ func TestCache_ScheduleDrainBuffersDoesNotAllocate(t *testing.T) {
 	})
 	require.Zero(t, allocs)
 	require.Equal(t, idle, c.cache.drainStatus.Load())
+}
+
+// Writers that run while Hottest, Coldest, InvalidateAll or a warm-up holds evictionMutex cannot
+// take it and leave a drain required. The holder schedules it after the unlock, so an idle
+// cache goes back to its maximum.
+func TestCache_LockHoldersScheduleRequiredDrain(t *testing.T) {
+	t.Parallel()
+
+	const maximum = 100
+	newFullCache := func(opts *Options[int, int]) *Cache[int, int] {
+		opts.MaximumSize = maximum
+		c := Must(opts)
+		for i := 0; i < maximum; i++ {
+			c.Set(i, i)
+		}
+		// Waits out the drains that the writes started: a late one would drain the writes made
+		// during the hold.
+		c.CleanUp()
+		time.Sleep(50 * time.Millisecond)
+		c.CleanUp()
+		return c
+	}
+	writeMore := func(c *Cache[int, int]) {
+		for i := maximum; i < maximum+50; i++ {
+			c.Set(i, i)
+		}
+	}
+	backToMaximum := func(t *testing.T, c *Cache[int, int]) {
+		t.Helper()
+		require.Eventually(t, func() bool {
+			return c.EstimatedSize() <= maximum && c.cache.drainStatus.Load() == idle
+		}, time.Second, 5*time.Millisecond, "the idle cache stays above its maximum: size=%d", c.EstimatedSize())
+	}
+
+	for _, hottest := range []bool{true, false} {
+		t.Run(fmt.Sprintf("hottest=%v", hottest), func(t *testing.T) {
+			t.Parallel()
+
+			c := newFullCache(&Options[int, int]{})
+			seq := c.Coldest()
+			if hottest {
+				seq = c.Hottest()
+			}
+			for range seq {
+				writeMore(c)
+				break
+			}
+			backToMaximum(t, c)
+		})
+	}
+
+	t.Run("InvalidateAll", func(t *testing.T) {
+		t.Parallel()
+
+		var (
+			c       *Cache[int, int]
+			fired   atomic.Bool
+			blocked atomic.Bool
+		)
+		c = newFullCache(&Options[int, int]{
+			// keeps the writes out of the bucket locked for the notification
+			InitialCapacity: 1 << 16,
+			// runs while InvalidateAll holds evictionMutex
+			OnAtomicDeletion: func(e DeletionEvent[int, int]) {
+				if e.Cause != CauseInvalidation || !fired.CompareAndSwap(false, true) {
+					return
+				}
+				done := make(chan struct{})
+				go func() {
+					defer close(done)
+					for i := 1000; i < 1000+2*maximum; i++ {
+						c.Set(i, i)
+					}
+				}()
+				select {
+				case <-done:
+				case <-time.After(300 * time.Millisecond):
+					blocked.Store(true)
+				}
+			},
+		})
+		c.InvalidateAll()
+		if blocked.Load() {
+			t.Skip("a write shared the bucket of an invalidated key")
+		}
+		backToMaximum(t, c)
+	})
+
+	t.Run("warm-up", func(t *testing.T) {
+		t.Parallel()
+
+		c := newFullCache(&Options[int, int]{})
+		warmed := make(chan struct{})
+		go func() {
+			defer close(warmed)
+			// many reads keep the lock held for a while
+			warmUp(c, []warmKey[int]{{key: 0, reads: 3_000_000}})
+		}()
+		// the cache is idle, so only the warm-up holds the lock
+		for c.cache.evictionMutex.TryLock() {
+			c.cache.evictionMutex.Unlock()
+			runtime.Gosched()
+		}
+		writeMore(c)
+		if c.cache.evictionMutex.TryLock() {
+			c.cache.evictionMutex.Unlock()
+			t.Skip("the warm-up ended before the writes")
+		}
+		<-warmed
+		backToMaximum(t, c)
+	})
 }
 
 // A scheduler that resumes late must not release the lock of the next schedule: if the next

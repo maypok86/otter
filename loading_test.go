@@ -1863,7 +1863,7 @@ func TestCache_RefreshDoesNotJoinLoadOfLiveKey(t *testing.T) {
 	})
 	c.cache.singleflight.init()
 	c.Set(1, 1)
-	load, _ := c.cache.singleflight.startLoad(1)
+	load, _ := c.cache.singleflight.startLoad(1, 0)
 	defer c.cache.singleflight.adopt(load, 1, 0, nil)
 
 	ch := c.Refresh(context.Background(), 1, reloadAdds{})
@@ -2457,6 +2457,129 @@ func TestCache_BulkGetReloadsWhenOwnerContextFails(t *testing.T) {
 	require.Equal(t, uint64(2), tbl.loads.Load())
 }
 
+func TestCache_BulkGetKeepsResultOfJoinedLoadOfKeyItsLoaderReturns(t *testing.T) {
+	t.Parallel()
+
+	// A BulkGet of [1, 2] loads 1 and joins a Get's load of 2, and its bulk loader returns 2 as
+	// well, unasked. The unasked key does not make the joined load the BulkGet's own: the
+	// BulkGet still retries it, reports its error or refuses its expired value.
+	errLoad := errors.New("load failed")
+	type bulkResult struct {
+		values map[int]int
+		err    error
+	}
+	bulkGet := func(c *Cache[int, int]) (<-chan bulkResult, <-chan struct{}) {
+		called := make(chan struct{})
+		var once sync.Once
+		tbl := newTestBulkLoader[int, int](func(context.Context, []int) (map[int]int, error) {
+			once.Do(func() { close(called) })
+			return map[int]int{1: 10, 2: 20}, nil
+		})
+		waiter := make(chan bulkResult, 1)
+		go func() {
+			values, err := c.BulkGet(context.Background(), []int{1, 2}, tbl)
+			waiter <- bulkResult{values, err}
+		}()
+		return waiter, called
+	}
+
+	t.Run("joined load fails for its owner's context", func(t *testing.T) {
+		t.Parallel()
+
+		c := Must(&Options[int, int]{MaximumSize: 100})
+		ownerCtx, cancelOwner := context.WithCancel(context.Background())
+		defer cancelOwner()
+		started, release := make(chan struct{}), make(chan struct{})
+		owner := make(chan error, 1)
+		go func() {
+			_, err := c.Get(ownerCtx, 2, LoaderFunc[int, int](func(ctx context.Context, _ int) (int, error) {
+				close(started)
+				<-release
+				return 0, ctx.Err()
+			}))
+			owner <- err
+		}()
+		<-started
+
+		// The BulkGet joins the load of 2 before it calls its bulk loader.
+		waiter, called := bulkGet(c)
+		<-called
+		cancelOwner()
+		close(release)
+
+		require.ErrorIs(t, <-owner, context.Canceled)
+		r := <-waiter
+		require.NoError(t, r.err)
+		require.Equal(t, map[int]int{1: 10, 2: 20}, r.values)
+	})
+
+	t.Run("joined load fails", func(t *testing.T) {
+		t.Parallel()
+
+		c := Must(&Options[int, int]{MaximumSize: 100})
+		started, release := make(chan struct{}), make(chan struct{})
+		owner := make(chan error, 1)
+		go func() {
+			_, err := c.Get(context.Background(), 2, LoaderFunc[int, int](func(context.Context, int) (int, error) {
+				close(started)
+				<-release
+				return 0, errLoad
+			}))
+			owner <- err
+		}()
+		<-started
+
+		waiter, called := bulkGet(c)
+		<-called
+		close(release)
+
+		require.ErrorIs(t, <-owner, errLoad)
+		r := <-waiter
+		require.ErrorIs(t, r.err, errLoad)
+		require.Equal(t, map[int]int{1: 10}, r.values)
+	})
+
+	t.Run("joined value expired before the BulkGet", func(t *testing.T) {
+		t.Parallel()
+
+		// The Get's commit reads the clock and then blocks in the weigher until the BulkGet has
+		// joined the load; the value expires in the meantime.
+		entered, gate := make(chan struct{}), make(chan struct{})
+		var once sync.Once
+		c := Must(&Options[int, int]{
+			MaximumWeight: 100,
+			Weigher: func(key, value int) uint32 {
+				if key == 2 && value == 1 {
+					once.Do(func() {
+						close(entered)
+						<-gate
+					})
+				}
+				return 1
+			},
+			ExpiryCalculator: ExpiryWriting[int, int](10 * time.Millisecond),
+		})
+		owner := make(chan int, 1)
+		go func() {
+			v, _ := c.Get(context.Background(), 2, LoaderFunc[int, int](func(context.Context, int) (int, error) {
+				return 1, nil
+			}))
+			owner <- v
+		}()
+		<-entered
+		time.Sleep(30 * time.Millisecond)
+
+		waiter, called := bulkGet(c)
+		<-called
+		close(gate)
+
+		require.Equal(t, 1, <-owner)
+		r := <-waiter
+		require.NoError(t, r.err)
+		require.Equal(t, map[int]int{1: 10, 2: 20}, r.values)
+	})
+}
+
 func TestCache_GetWaiterSharesFailureOfTheKey(t *testing.T) {
 	// Only a failure after the owner's context is done is retried. A failure while it is live,
 	// and a panic of the loader, belong to the key and are shared with the joined Get. The
@@ -2679,7 +2802,7 @@ func TestCache_RemovalDropsCommittedLoad(t *testing.T) {
 			c.cache.singleflight.init()
 
 			// The load writes its value; its call is deleted and its waiters woken only after.
-			cl, shouldLoad := c.cache.singleflight.startLoad(1)
+			cl, shouldLoad := c.cache.singleflight.startLoad(1, 0)
 			require.True(t, shouldLoad)
 			cl.value = 10
 			c.cache.commitCall(cl)
@@ -2708,7 +2831,7 @@ func TestCache_RemovalKeepsLoadInFlight(t *testing.T) {
 	c := Must(&Options[int, int]{MaximumSize: 100})
 	c.Set(1, 1)
 	c.cache.singleflight.init()
-	cl, shouldLoad := c.cache.singleflight.startLoad(1)
+	cl, shouldLoad := c.cache.singleflight.startLoad(1, 0)
 	require.True(t, shouldLoad)
 
 	c.cache.evictNode(c.cache.hashmap.Get(1))
@@ -2772,6 +2895,98 @@ func TestCache_ClockPanicDoesNotStrandRefresh(t *testing.T) {
 	}
 }
 
+// exitingClock panics or calls runtime.Goexit when it is read while fail, if set, returns true.
+type exitingClock struct {
+	*nonTickingClock
+	goexit bool
+	fail   atomic.Pointer[func() bool]
+}
+
+func (c *exitingClock) NowNano() int64 {
+	if f := c.fail.Load(); f != nil && (*f)() {
+		if c.goexit {
+			runtime.Goexit()
+		}
+		panic("clock")
+	}
+	return c.nonTickingClock.NowNano()
+}
+
+func TestCache_ClockFailureDoesNotStrandEarlierKeysOfBulkRefresh(t *testing.T) {
+	t.Parallel()
+
+	// A bulk refresh registers its keys one by one and reads the clock under each key's bucket
+	// lock. If the clock panics or calls runtime.Goexit while a later key is registered, the
+	// calls registered for the earlier keys are finished too: left registered, every later
+	// refresh of those keys would join them, and none would ever run.
+	for _, goexit := range []bool{false, true} {
+		for _, manual := range []bool{false, true} {
+			t.Run(fmt.Sprintf("goexit=%v/manual=%v", goexit, manual), func(t *testing.T) {
+				t.Parallel()
+
+				clock := &exitingClock{nonTickingClock: newNonTickingClock(), goexit: goexit}
+				c := Must(&Options[int, int]{
+					MaximumSize:       100,
+					RefreshCalculator: RefreshWriting[int, int](time.Minute),
+					Clock:             clock,
+					Logger:            &recordingLogger{},
+					Executor:          func(fn func()) { fn() },
+				})
+				c.cache.singleflight.init()
+				tbl := newTestBulkLoader[int, int](func(_ context.Context, keys []int) (map[int]int, error) {
+					res := make(map[int]int, len(keys))
+					for _, k := range keys {
+						res[k] = k * 10
+					}
+					return res, nil
+				})
+
+				c.Set(1, 1)
+				c.Set(2, 2)
+				clock.Sleep(2 * time.Minute)
+
+				// fails once key 1 is registered, while key 2 is
+				whileSecondKey := func() bool {
+					return c.cache.singleflight.getCall(1) != nil && c.cache.singleflight.getCall(2) == nil
+				}
+				clock.fail.Store(&whileSecondKey)
+				refresh := func() {
+					if manual {
+						c.BulkRefresh(context.Background(), []int{1, 2}, tbl)
+					} else {
+						_, _ = c.BulkGet(context.Background(), []int{1, 2}, tbl)
+					}
+				}
+				switch {
+				case goexit:
+					done := make(chan struct{})
+					go func() {
+						defer close(done)
+						refresh()
+					}()
+					<-done
+				case manual:
+					require.Panics(t, refresh)
+				default:
+					require.NotPanics(t, refresh)
+				}
+				clock.fail.Store(nil)
+
+				require.Nil(t, c.cache.singleflight.getCall(1))
+				require.Nil(t, c.cache.singleflight.getCall(2))
+				completes(t, "a refresh after the clock failed", func() {
+					res := <-c.BulkRefresh(context.Background(), []int{1, 2}, tbl)
+					require.Len(t, res, 2)
+					for _, r := range res {
+						require.NoError(t, r.Err)
+						require.Equal(t, r.Key*10, r.Value)
+					}
+				})
+			})
+		}
+	}
+}
+
 func TestCache_LoadKeepsValueWrittenBeforeItsRegistration(t *testing.T) {
 	t.Parallel()
 
@@ -2797,7 +3012,7 @@ func TestCache_LoadKeepsValueWrittenBeforeItsRegistration(t *testing.T) {
 				// The load is registered after the write: as if the Get had missed the key before
 				// the write stored its value.
 				c.Set(1, 2)
-				cl, shouldLoad := c.cache.singleflight.startLoad(1)
+				cl, shouldLoad := c.cache.singleflight.startLoad(1, 0)
 				require.True(t, shouldLoad)
 
 				if bulk {
@@ -3102,21 +3317,6 @@ func TestCache_GetJoinedRefreshNotWritten(t *testing.T) {
 			},
 			want: 3,
 		},
-		{
-			name: "refresh whose node expires",
-			start: func(c *Cache[int, int], clock *nonTickingClock) {
-				c.Set(1, 1)
-				clock.Sleep(30 * time.Second)
-				v, err := c.Get(ctx, 1, splitLoader{reload: func(context.Context, int, int) (int, error) {
-					return 2, nil
-				}})
-				require.NoError(t, err)
-				require.Equal(t, 1, v)
-				clock.Sleep(time.Minute)
-			},
-			change: func(*Cache[int, int], *nonTickingClock) {},
-			want:   5,
-		},
 	}
 	for _, tt := range tests {
 		for _, bulk := range []bool{false, true} {
@@ -3160,6 +3360,360 @@ func TestCache_GetJoinedRefreshNotWritten(t *testing.T) {
 	}
 }
 
+func TestCache_GetDoesNotJoinRefreshOfExpiredEntry(t *testing.T) {
+	t.Parallel()
+
+	// A Get that misses a key because its entry has expired does not join the refresh of that
+	// entry: the cache refuses the refresh's result, and the Get would wait for the reload only to
+	// load the key afterwards.
+	for _, bulk := range []bool{false, true} {
+		t.Run(fmt.Sprintf("bulk=%v", bulk), func(t *testing.T) {
+			t.Parallel()
+
+			forEachSpec(t, cacheSpec{expiry: withExpiry, refresh: withRefresh}, func(t *testing.T, cc *cacheContext) {
+				cc.cache.Set(1, 1)
+				cc.run()
+				// The read finds the entry stale, and its refresh waits in the queue.
+				cc.advance(specRefresh + 10*time.Second)
+				v, err := cc.cache.Get(1, splitLoader{reload: func(context.Context, int, int) (int, error) { return 2, nil }})
+				require.NoError(t, err)
+				require.Equal(t, 1, v)
+				cc.advance(2 * specExpiry)
+
+				got := make(chan getResult, 1)
+				go func() {
+					if bulk {
+						res, err := cc.cache.BulkGet([]int{1}, newTestBulkLoader[int, int](func(context.Context, []int) (map[int]int, error) {
+							return map[int]int{1: 5}, nil
+						}))
+						got <- getResult{res[1], err}
+						return
+					}
+					v, err := cc.cache.Get(1, splitLoader{load: func(context.Context, int) (int, error) { return 5, nil }})
+					got <- getResult{v, err}
+				}()
+				select {
+				case r := <-got:
+					require.NoError(t, r.err)
+					require.Equal(t, 5, r.value)
+				case <-time.After(5 * time.Second):
+					cc.run()
+					<-got
+					t.Fatal("the Get waited for the refresh of the expired entry")
+				}
+				cc.run()
+				cc.requireValue(t, 1, 5)
+			})
+		})
+	}
+}
+
+func TestCache_GetThatJoinedRefreshOfExpiringEntryLoads(t *testing.T) {
+	t.Parallel()
+
+	// A Get that read the clock before the entry expired joins its refresh. The entry expires
+	// before the refresh completes, so its result is refused, and the Get loads the key itself.
+	ctx := context.Background()
+	var q queuedExecutor
+	clock := newNonTickingClock()
+	c := Must(&Options[int, int]{
+		ExpiryCalculator:  ExpiryWriting[int, int](time.Minute),
+		RefreshCalculator: RefreshWriting[int, int](10 * time.Second),
+		Clock:             clock,
+		Executor:          q.execute,
+	})
+	c.Set(1, 1)
+	clock.Sleep(30 * time.Second)
+	v, err := c.Get(ctx, 1, splitLoader{reload: func(context.Context, int, int) (int, error) {
+		return 2, nil
+	}})
+	require.NoError(t, err)
+	require.Equal(t, 1, v)
+	missedAt := clock.NowNano()
+
+	got := make(chan getResult, 1)
+	go func() {
+		// Get's loop with a clock reading taken before the expiry
+		nowNano := missedAt
+		for {
+			v, retry, err := c.cache.loadOrJoin(ctx, 1, splitLoader{load: func(context.Context, int) (int, error) {
+				return 5, nil
+			}}, nowNano)
+			if !retry {
+				got <- getResult{v, err}
+				return
+			}
+			nowNano = c.cache.clock.NowNano()
+		}
+	}()
+	waitForJoinedLoad(t)
+	clock.Sleep(time.Minute)
+	q.run()
+
+	r := <-got
+	require.NoError(t, r.err)
+	require.Equal(t, 5, r.value)
+	v, ok := c.GetIfPresent(1)
+	require.True(t, ok)
+	require.Equal(t, 5, v)
+}
+
+func TestCache_GetJoinedFailedRefreshOfLiveValue(t *testing.T) {
+	t.Parallel()
+
+	// A Get that misses a key may join a refresh of a value written right after the miss. If the
+	// reload fails, or the refresh is abandoned because the executor fails, the cache keeps the
+	// value, and the Get returns it, as a load that finds a value written during it does: the
+	// refresh's error is not a result of the Get's own load.
+	ctx := context.Background()
+	tests := []struct {
+		name   string
+		reload func(context.Context, int, int) (int, error)
+		// executor, if set, fails the executor once the Get has joined the refresh, which then
+		// never runs
+		executor func()
+	}{
+		{
+			name: "error",
+			reload: func(context.Context, int, int) (int, error) {
+				return 0, errors.New("reload failed")
+			},
+		},
+		{
+			name: "panic",
+			reload: func(context.Context, int, int) (int, error) {
+				panic("reload panicked")
+			},
+		},
+		{name: "executor panic", executor: func() { panic("executor failed") }},
+		{name: "executor Goexit", executor: runtime.Goexit},
+	}
+	for _, tt := range tests {
+		for _, bulk := range []bool{false, true} {
+			// The refresh waits in the queue, or in the failing executor, until the Get has
+			// joined it.
+			var q queuedExecutor
+			var armed atomic.Bool
+			entered, joined := make(chan struct{}), make(chan struct{})
+			c := Must(&Options[int, int]{
+				RefreshCalculator: RefreshWriting[int, int](time.Hour),
+				Executor: func(fn func()) {
+					if armed.CompareAndSwap(true, false) {
+						close(entered)
+						<-joined
+						tt.executor()
+					}
+					q.execute(fn)
+				},
+				Logger: &recordingLogger{},
+			})
+			c.cache.singleflight.init()
+			// The Get misses the key, then another goroutine writes it and requests a refresh
+			// before the Get registers its load.
+			nowNano := c.cache.clock.NowNano()
+			n, _ := c.cache.getNode(1, nowNano)
+			require.Nil(t, n)
+			c.Set(1, 1)
+			if tt.executor == nil {
+				c.Refresh(ctx, 1, splitLoader{reload: tt.reload})
+			} else {
+				armed.Store(true)
+				go func() {
+					// a manual Refresh panics with its executor
+					defer func() { _ = recover() }()
+					c.Refresh(ctx, 1, splitLoader{reload: func(context.Context, int, int) (int, error) {
+						return 2, nil
+					}})
+				}()
+				<-entered
+			}
+
+			got := make(chan getResult, 1)
+			go func() {
+				if bulk {
+					res := make(map[int]int, 1)
+					retry, errs, err := c.cache.bulkLoadOrJoin(ctx, map[int]*call[int, int]{1: nil},
+						newTestBulkLoader[int, int](func(context.Context, []int) (map[int]int, error) {
+							return map[int]int{1: 5}, nil
+						}), res, nil)
+					if len(retry) > 0 {
+						err = errors.Join(err, errors.New("retry"))
+					}
+					got <- getResult{res[1], errors.Join(append(errs, err)...)}
+					return
+				}
+				v, retry, err := c.cache.loadOrJoin(ctx, 1, splitLoader{load: func(context.Context, int) (int, error) {
+					return 5, nil
+				}}, nowNano)
+				if retry {
+					err = errors.Join(err, errors.New("retry"))
+				}
+				got <- getResult{v, err}
+			}()
+			waitForJoinedLoad(t)
+			close(joined)
+			q.run()
+
+			r := <-got
+			require.NoError(t, r.err, "%s, bulk=%v", tt.name, bulk)
+			require.Equal(t, 1, r.value, "%s, bulk=%v", tt.name, bulk)
+			v, ok := c.GetIfPresent(1)
+			require.True(t, ok, "%s, bulk=%v", tt.name, bulk)
+			require.Equal(t, 1, v, "%s, bulk=%v", tt.name, bulk)
+		}
+	}
+}
+
+// A Get that joins a refresh whose base is not a live value gets the refresh's result, as one
+// that joins a load does: a failed load of an absent key returns its error, and a reload that
+// finds the key gone removes it and reports it not found.
+func TestCache_GetJoinedRefreshWithoutLiveValue(t *testing.T) {
+	ctx := context.Background()
+	loadErr := errors.New("load failed")
+	tests := []struct {
+		name string
+		// live writes the key before the refresh is requested
+		live   bool
+		loader splitLoader
+		check  func(t *testing.T, r getResult, bulk bool)
+	}{
+		{
+			name:   "failed load of an absent key",
+			loader: splitLoader{load: func(context.Context, int) (int, error) { return 0, loadErr }},
+			check: func(t *testing.T, r getResult, _ bool) {
+				require.ErrorIs(t, r.err, loadErr)
+			},
+		},
+		{
+			name: "reload that finds the key gone",
+			live: true,
+			loader: splitLoader{reload: func(context.Context, int, int) (int, error) {
+				return 0, ErrNotFound
+			}},
+			check: func(t *testing.T, r getResult, bulk bool) {
+				if bulk {
+					// BulkGet leaves a key that is not found out of its result
+					require.NoError(t, r.err)
+					return
+				}
+				require.ErrorIs(t, r.err, ErrNotFound)
+			},
+		},
+	}
+	for _, tt := range tests {
+		for _, bulk := range []bool{false, true} {
+			// not parallel, nor is the test: waitForJoinedLoad tells goroutines apart by the
+			// top-level test
+			t.Run(fmt.Sprintf("%s/bulk=%v", tt.name, bulk), func(t *testing.T) {
+				// The refresh waits in the queue until the Get has joined it.
+				var q queuedExecutor
+				c := Must(&Options[int, int]{
+					RefreshCalculator: RefreshWriting[int, int](time.Hour),
+					Executor:          q.execute,
+					Logger:            &recordingLogger{},
+				})
+				c.cache.singleflight.init()
+				nowNano := c.cache.clock.NowNano()
+				n, _ := c.cache.getNode(1, nowNano)
+				require.Nil(t, n)
+				if tt.live {
+					c.Set(1, 1)
+				}
+				c.Refresh(ctx, 1, tt.loader)
+
+				got := make(chan getResult, 1)
+				go func() {
+					if bulk {
+						res := make(map[int]int, 1)
+						retry, errs, err := c.cache.bulkLoadOrJoin(ctx, map[int]*call[int, int]{1: nil},
+							newTestBulkLoader[int, int](func(context.Context, []int) (map[int]int, error) {
+								return map[int]int{1: 5}, nil
+							}), res, nil)
+						if len(retry) > 0 {
+							err = errors.Join(err, errors.New("retry"))
+						}
+						got <- getResult{res[1], errors.Join(append(errs, err)...)}
+						return
+					}
+					v, retry, err := c.cache.loadOrJoin(ctx, 1, splitLoader{load: func(context.Context, int) (int, error) {
+						return 5, nil
+					}}, nowNano)
+					if retry {
+						err = errors.Join(err, errors.New("retry"))
+					}
+					got <- getResult{v, err}
+				}()
+				waitForJoinedLoad(t)
+				q.run()
+
+				tt.check(t, <-got, bulk)
+				_, ok := c.GetIfPresent(1)
+				require.False(t, ok)
+			})
+		}
+	}
+}
+
+func TestCache_GetStopsReloadingInvalidatedKeyWhenContextEnds(t *testing.T) {
+	t.Parallel()
+
+	// Each Invalidate cancels the load of its key, and the Get loads it again. The loader ignores
+	// ctx, so only the Get's own check ends the reloads once ctx is cancelled.
+	const maxLoads = 100
+	tests := []struct {
+		name string
+		get  func(ctx context.Context, c *Cache[int, int], load LoaderFunc[int, int]) error
+	}{
+		{name: "Get", get: func(ctx context.Context, c *Cache[int, int], load LoaderFunc[int, int]) error {
+			_, err := c.Get(ctx, 1, load)
+			return err
+		}},
+		{name: "BulkGet", get: func(ctx context.Context, c *Cache[int, int], load LoaderFunc[int, int]) error {
+			_, err := c.BulkGet(ctx, []int{1}, BulkLoaderFunc[int, int](func(ctx context.Context, keys []int) (map[int]int, error) {
+				v, err := load(ctx, keys[0])
+				return map[int]int{keys[0]: v}, err
+			}))
+			return err
+		}},
+	}
+	for _, tt := range tests {
+		c := Must(&Options[int, int]{})
+		ctx, cancel := context.WithCancel(context.Background())
+		started, release := make(chan struct{}), make(chan struct{})
+		var loads atomic.Int64
+		load := LoaderFunc[int, int](func(context.Context, int) (int, error) {
+			// Invalidated during each load until maxLoads, so that a Get that keeps reloading
+			// still returns.
+			if loads.Add(1) < maxLoads {
+				started <- struct{}{}
+				<-release
+			}
+			return 1, nil
+		})
+		done := make(chan struct{})
+		go func() {
+			for n := 1; n < maxLoads; n++ {
+				select {
+				case <-started:
+				case <-done:
+					return
+				}
+				c.Invalidate(1)
+				if n == 3 {
+					cancel()
+				}
+				release <- struct{}{}
+			}
+		}()
+		err := tt.get(ctx, c, load)
+		close(done)
+		if !errors.Is(err, context.Canceled) || loads.Load() != 3 {
+			t.Fatalf("%s: err = %v after %d loads, want context.Canceled after 3", tt.name, err, loads.Load())
+		}
+		cancel()
+	}
+}
+
 // shortReadExpiry gives entries a minute and moves their deadline to 10 seconds on a read.
 type shortReadExpiry struct{}
 
@@ -3188,7 +3742,7 @@ func TestCache_GetDoesNotTakeLoadedValueExpiredBeforeIt(t *testing.T) {
 		{
 			name: "written",
 			start: func(c *Cache[int, int]) func() {
-				cl, _ := c.cache.singleflight.startLoad(1)
+				cl, _ := c.cache.singleflight.startLoad(1, 0)
 				cl.value = 1
 				m := c.cache.commitCall(cl)
 				return func() {
@@ -3202,7 +3756,7 @@ func TestCache_GetDoesNotTakeLoadedValueExpiredBeforeIt(t *testing.T) {
 			name: "written during the load",
 			start: func(c *Cache[int, int]) func() {
 				c.Set(1, 3)
-				cl, _ := c.cache.singleflight.startLoad(1)
+				cl, _ := c.cache.singleflight.startLoad(1, 0)
 				cl.value = 1
 				m := c.cache.commitCall(cl)
 				return func() {
@@ -3216,7 +3770,7 @@ func TestCache_GetDoesNotTakeLoadedValueExpiredBeforeIt(t *testing.T) {
 			name: "adopted",
 			start: func(c *Cache[int, int]) func() {
 				c.Set(1, 3)
-				cl, _ := c.cache.singleflight.startLoad(1)
+				cl, _ := c.cache.singleflight.startLoad(1, 0)
 				value, expiresAt, n := c.cache.readForAdoption(cl, c.cache.clock.NowNano())
 				return func() {
 					c.cache.singleflight.adopt(cl, value, expiresAt, n)
@@ -3293,7 +3847,7 @@ func TestCache_GetDoesNotTakeLoadedValueExpiredAtZero(t *testing.T) {
 		Executor: func(func()) {},
 	})
 	c.cache.singleflight.init()
-	cl, _ := c.cache.singleflight.startLoad(1)
+	cl, _ := c.cache.singleflight.startLoad(1, 0)
 	cl.value = 1
 	m := c.cache.commitCall(cl)
 	clock.now.Store(1)
@@ -3418,7 +3972,7 @@ func TestCache_LoadRegisteredWhileInvalidationIsAppliedDoesNotAdoptOldValue(t *t
 					// A Get registers its load, looks the key up and re-checks it: the node is
 					// still there. The listener runs under the bucket lock, so nothing here may
 					// fail the test.
-					adopting, _ = c.cache.singleflight.startLoad(1)
+					adopting, _ = c.cache.singleflight.startLoad(1, 0)
 					sawOld = c.cache.getNodeQuietly(1, c.cache.clock.NowNano()) != nil
 					go func() {
 						_, _, n := c.cache.readForAdoption(adopting, c.cache.clock.NowNano())
@@ -3466,7 +4020,7 @@ func TestCache_EvictionDropsLoadThatAdoptedItsValue(t *testing.T) {
 		c.cache.singleflight.init()
 		c.Set(1, 1)
 		n := c.cache.getNodeQuietly(1, c.cache.clock.NowNano())
-		cl, _ := c.cache.singleflight.startLoad(1)
+		cl, _ := c.cache.singleflight.startLoad(1, 0)
 		value, expiresAt, live := c.cache.readForAdoption(cl, c.cache.clock.NowNano())
 		require.NotNil(t, live)
 		require.Equal(t, 1, value)
@@ -3485,7 +4039,7 @@ func TestCache_EvictionDropsLoadThatAdoptedItsValue(t *testing.T) {
 		c.cache.singleflight.init()
 		c.Set(1, 1)
 		n := c.cache.getNodeQuietly(1, c.cache.clock.NowNano())
-		cl, _ := c.cache.singleflight.startLoad(1)
+		cl, _ := c.cache.singleflight.startLoad(1, 0)
 		c.cache.evictNode(n) // after the lock-free check found the value
 		_, _, live := c.cache.readForAdoption(cl, c.cache.clock.NowNano())
 		require.Nil(t, live)

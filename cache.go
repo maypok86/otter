@@ -259,6 +259,10 @@ func (c *Cache[K, V]) SetRefreshableAfter(key K, refreshableAfter time.Duration)
 // simply waits for that goroutine to finish and returns its loaded value. Note that
 // multiple goroutines can concurrently load values for distinct keys.
 //
+// A write or an invalidation of key during the load discards the loaded value: Get then returns
+// the value key has or loads key again, until ctx is done, so the loader may be called more than
+// once.
+//
 // No observable state associated with this cache is modified until loading completes.
 //
 // WARNING: When performing a refresh (see [RefreshCalculator]),
@@ -283,6 +287,10 @@ func (c *Cache[K, V]) Get(ctx context.Context, key K, loader Loader[K, V]) (V, e
 // If another call to Get (BulkGet) is currently loading the value for key,
 // simply waits for that goroutine to finish and returns its loaded value. Note that
 // multiple goroutines can concurrently load values for distinct keys.
+//
+// A write or an invalidation of a key during the load discards its loaded value: BulkGet then
+// takes the value the key has or loads the key again, until ctx is done, so the bulk loader may be
+// called more than once.
 //
 // No observable state associated with this cache is modified until loading completes.
 //
