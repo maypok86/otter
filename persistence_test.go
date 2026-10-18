@@ -16,6 +16,8 @@ package otter
 
 import (
 	"bytes"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -351,4 +353,90 @@ func TestLoadCacheFrom_WarmUpReachesTheSketch(t *testing.T) {
 		coldest += ci.evictionPolicy.sketch.frequency(order[len(order)-1-i])
 	}
 	require.Greater(t, hottest, coldest)
+}
+
+// A snapshot that cannot be decoded fails the load, whether it ends before the maximum or in the
+// middle of an entry.
+func TestLoadCacheFrom_BrokenSnapshot(t *testing.T) {
+	t.Parallel()
+
+	saved := Must(&Options[int, int]{MaximumSize: 10})
+	saved.Set(1, 1)
+	var buf bytes.Buffer
+	require.NoError(t, SaveCacheTo(saved, &buf))
+	data := buf.Bytes()
+
+	c := Must(&Options[int, int]{MaximumSize: 10})
+	err := LoadCacheFrom(c, bytes.NewReader(nil))
+	require.ErrorIs(t, err, io.EOF)
+	require.ErrorContains(t, err, "otter: decode maximum")
+
+	err = LoadCacheFrom(c, bytes.NewReader(data[:len(data)-1]))
+	require.ErrorIs(t, err, io.ErrUnexpectedEOF)
+	require.ErrorContains(t, err, "otter: decode entry")
+}
+
+type failingWriter struct {
+	err error
+}
+
+func (w failingWriter) Write([]byte) (int, error) {
+	return 0, w.err
+}
+
+func TestSaveCacheTo_WriterError(t *testing.T) {
+	t.Parallel()
+
+	c := Must(&Options[int, int]{MaximumSize: 10})
+	c.Set(1, 1)
+	errWrite := errors.New("write failed")
+	err := SaveCacheTo(c, failingWriter{err: errWrite})
+	require.ErrorIs(t, err, errWrite)
+	require.ErrorContains(t, err, "otter: encode maximum")
+}
+
+// A save that cannot reach the directory, create the temporary file or replace the file fails
+// with the step that failed, and leaves no temporary file behind.
+func TestSaveCacheToFile_Errors(t *testing.T) {
+	t.Parallel()
+
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix permissions")
+	}
+	c := Must(&Options[int, int]{MaximumSize: 10})
+	c.Set(1, 1)
+
+	t.Run("directory under a file", func(t *testing.T) {
+		t.Parallel()
+
+		file := filepath.Join(t.TempDir(), "file")
+		require.NoError(t, os.WriteFile(file, nil, 0o600))
+		err := SaveCacheToFile(c, filepath.Join(file, "dir", "cache.gob"))
+		require.ErrorContains(t, err, "otter: stat")
+	})
+	t.Run("file is a directory", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		target := filepath.Join(dir, "cache.gob")
+		require.NoError(t, os.MkdirAll(filepath.Join(target, "child"), 0o755))
+		err := SaveCacheToFile(c, target)
+		require.ErrorContains(t, err, "otter: rename")
+		files, err := os.ReadDir(dir)
+		require.NoError(t, err)
+		require.Len(t, files, 1)
+	})
+	t.Run("read-only directory", func(t *testing.T) {
+		t.Parallel()
+
+		if os.Geteuid() == 0 {
+			t.Skip("root ignores permissions")
+		}
+		dir := filepath.Join(t.TempDir(), "ro")
+		require.NoError(t, os.Mkdir(dir, 0o500))
+		err := SaveCacheToFile(c, filepath.Join(dir, "sub", "cache.gob"))
+		require.ErrorContains(t, err, "otter: create dir")
+		err = SaveCacheToFile(c, filepath.Join(dir, "cache.gob"))
+		require.ErrorContains(t, err, "otter: create file")
+	})
 }

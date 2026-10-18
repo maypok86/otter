@@ -1589,3 +1589,11 @@ func TestCache_GetEntryQuietlyDuringReplacement(t *testing.T) {
 	require.True(t, found)
 	require.Equal(t, "a", got)
 }
+
+// A cache without expiration launches no goroutines, so StopAllGoroutines has nothing to stop.
+func TestCache_StopAllGoroutinesWithoutExpiration(t *testing.T) {
+	t.Parallel()
+
+	c := Must(&Options[int, int]{MaximumSize: 10})
+	require.False(t, c.StopAllGoroutines())
+}
