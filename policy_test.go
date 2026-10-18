@@ -45,29 +45,28 @@ func newTestPolicy(nm *node.Manager[int, int], maximum uint64, evict func(n node
 func removeAll(node.Node) bool { return true }
 
 // requireAccounted checks that exactly the given nodes are linked into the policy and that
-// the weighted sizes are the sums of their weights.
+// the weighted sizes are the sums of their weights. Nodes are compared by identity, so that the
+// check does not depend on how the policy reads keys.
 func requireAccounted(t *testing.T, p *policy[int], want ...node.Node) {
 	t.Helper()
 
-	linked := make([]int, 0, p.window.Len()+p.probation.Len()+p.protected.Len())
+	linked := make([]node.Node, 0, p.window.Len()+p.probation.Len()+p.protected.Len())
 	var weighted, window, protected uint64
 	for n := range p.window.All() {
-		linked = append(linked, p.keyOf(n))
+		linked = append(linked, n)
 		window += uint64(n.PolicyWeight())
 	}
 	for n := range p.probation.All() {
-		linked = append(linked, p.keyOf(n))
+		linked = append(linked, n)
 	}
 	for n := range p.protected.All() {
-		linked = append(linked, p.keyOf(n))
+		linked = append(linked, n)
 		protected += uint64(n.PolicyWeight())
 	}
-	wantKeys := make([]int, 0, len(want))
 	for _, n := range want {
-		wantKeys = append(wantKeys, p.keyOf(n))
 		weighted += uint64(n.Weight())
 	}
-	require.ElementsMatch(t, wantKeys, linked, "linked nodes")
+	require.ElementsMatch(t, want, linked, "linked nodes")
 	require.Equal(t, weighted, p.weightedSize, "weightedSize")
 	require.Equal(t, window, p.windowWeightedSize, "windowWeightedSize")
 	require.Equal(t, protected, p.mainProtectedWeightedSize, "mainProtectedWeightedSize")
@@ -427,4 +426,43 @@ func TestPolicy_IncreaseWindowUpToTheProtectedMaximum(t *testing.T) {
 	require.Equal(t, uint64(80), p.windowMaximum)
 	require.Zero(t, p.mainProtectedMaximum)
 	require.Equal(t, 80, p.window.Len())
+}
+
+// The policy reads a node's key at the manager's key offset; values differ from keys, so that
+// reading the value instead would fail.
+func TestPolicy_ReadsKeys(t *testing.T) {
+	t.Parallel()
+
+	requirePolicyReadsKeys(t, 42)                       // word storage
+	requirePolicyReadsKeys(t, new(int))                 // pointer storage
+	requirePolicyReadsKeys(t, "value")                  // inline, boxed when updatable
+	requirePolicyReadsKeys(t, [3]string{"a", "b", "c"}) // inline, boxed when updatable
+	requirePolicyReadsKeys(t, struct{}{})               // no value field
+}
+
+func requirePolicyReadsKeys[V any](t *testing.T, value V) {
+	t.Helper()
+
+	for _, weighted := range []bool{false, true} {
+		for _, expiration := range []bool{false, true} {
+			for _, refresh := range []bool{false, true} {
+				c := node.Config{
+					WithSize:       !weighted,
+					WithWeight:     weighted,
+					WithExpiration: expiration,
+					WithRefresh:    refresh,
+				}
+				nm := node.NewManager[string, V](c)
+				p := newPolicy[string](weighted, 0, nm.KeyOffset(), removeAll)
+				for _, n := range []node.Node{
+					nm.Create("key", value, 0, 0, 1),
+					nm.CreateUpdatable("key", value, 0, 0, 1),
+				} {
+					require.Equal(t, "key", p.keyOf(n), "%+v", c)
+					require.Equal(t, "key", nm.Key(n), "%+v", c)
+					require.Equal(t, value, nm.Value(n), "%+v", c)
+				}
+			}
+		}
+	}
 }
