@@ -27,6 +27,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/maypok86/otter/v2/internal/lossy"
 	"github.com/maypok86/otter/v2/stats"
 )
 
@@ -1289,3 +1290,81 @@ func TestCache_NilLoaderOrContextDoesNotStrandKey(t *testing.T) {
 		})
 	}
 }
+
+// runExiting runs fn on a goroutine of its own, which fn may exit with runtime.Goexit.
+func runExiting(fn func()) {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		fn()
+	}()
+	<-done
+}
+
+// exitingExecutor runs tasks on the caller, and calls runtime.Goexit instead while exit is set.
+func exitingExecutor(exit *atomic.Bool) func(fn func()) {
+	return func(fn func()) {
+		if exit.Load() {
+			runtime.Goexit()
+		}
+		fn()
+	}
+}
+
+// An executor that calls runtime.Goexit when it is handed the drain that an in-place write or
+// SetExpiresAfter submits does not lose the reconcile task of a changed weight or an earlier
+// deadline.
+func TestCache_GoexitInExecutorKeepsTheReconcileTask(t *testing.T) {
+	t.Parallel()
+
+	t.Run("weight", func(t *testing.T) {
+		t.Parallel()
+
+		var exit atomic.Bool
+		c := Must(&Options[int, int]{
+			MaximumWeight: 10,
+			Weigher:       func(_, v int) uint32 { return uint32(v) },
+			Executor:      exitingExecutor(&exit),
+		})
+		c.Set(1, 1)
+		c.CleanUp()
+
+		exit.Store(true)
+		// The executor exits after the write's task is pushed, and the drain stays required.
+		runExiting(func() { c.Set(2, 1) })
+		// In place, from 1 to 9: the access finds the drain required and submits it.
+		runExiting(func() { c.Set(1, 9) })
+		exit.Store(false)
+		validateCache(t, c)
+	})
+	t.Run("SetExpiresAfter", func(t *testing.T) {
+		t.Parallel()
+
+		var exit atomic.Bool
+		clk := newNonTickingClock()
+		c := Must(&Options[int, int]{
+			MaximumSize:      10,
+			ExpiryCalculator: ExpiryWriting[int, int](time.Hour),
+			Clock:            clk,
+			Executor:         exitingExecutor(&exit),
+		})
+		c.Set(1, 1)
+		c.Set(2, 2)
+		c.CleanUp()
+
+		exit.Store(true)
+		runExiting(func() {
+			// Reads of another key fill this goroutine's stripe of the read buffer, so the
+			// access of SetExpiresAfter is dropped and it submits a drain.
+			for c.cache.readBuffer.Add(c.cache.hashmap.Get(2)) != lossy.Full {
+			}
+			c.SetExpiresAfter(1, time.Minute)
+		})
+		exit.Store(false)
+
+		clk.Sleep(2 * time.Minute)
+		c.CleanUp()
+		require.Equal(t, 1, c.EstimatedSize(), "the entry is not removed at its new deadline")
+	})
+}
+

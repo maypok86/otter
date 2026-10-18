@@ -484,13 +484,15 @@ func (c *cache[K, V]) setExpiresAt(key K, deadline func(nowNano int64) int64) {
 	if n == nil {
 		return
 	}
-	c.afterRead(n, false)
 	if earlier {
 		// The read buffer may drop the access, and the node would then wait in the timer wheel's
 		// bucket for its former deadline, so an earlier deadline goes through the write buffer. A
 		// later one needs nothing: the wheel re-checks the node when its former bucket expires.
+		// The task goes first, as for a write: afterRead may submit a drain to an executor that
+		// calls runtime.Goexit.
 		c.afterWriteTask(newTask(n, nil, reconcileReason))
 	}
+	c.afterRead(n, false)
 }
 
 // SetRefreshableAfter specifies that each entry should be eligible for reloading once a fixed duration has elapsed.
