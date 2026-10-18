@@ -1482,6 +1482,139 @@ func TestCache_GoexitInExecutorKeepsTheTaskOfAFullBuffer(t *testing.T) {
 	require.LessOrEqual(t, c.EstimatedSize(), 10)
 }
 
+// writeUntilBlocked writes keys from 0 with value v until a write blocks, which is how the
+// goroutine is found in a stack dump. The writes are bounded, so that a writer that is not
+// stopped by a Goexit fails the test instead of hanging it.
+func writeUntilBlocked(c *Cache[int, int], last *atomic.Int64, v int) {
+	for i := range 4 * int(maxWriteBufferSize) {
+		last.Store(int64(i))
+		c.Set(i, v)
+	}
+}
+
+// writeUntilBlockedOnHeavy fills the write buffer with weightless writes but for one slot, buffers
+// a write heavier than the maximum in it, and blocks on another such write.
+func writeUntilBlockedOnHeavy(c *Cache[int, int], last *atomic.Int64) {
+	for i := 0; i < 4*int(maxWriteBufferSize) && c.cache.writeBuffer.Size() < uint64(maxWriteBufferSize)-1; i++ {
+		c.Set(i, 0)
+	}
+	c.Set(-2, 11)
+	last.Store(-3)
+	c.Set(-3, 11)
+}
+
+// blockWriter holds the eviction lock through an iteration while write runs on another goroutine,
+// until the writer finds the write buffer full and blocks on the lock in performCleanUp. It
+// returns the last key written once the writer has ended.
+func blockWriter(t *testing.T, c *Cache[int, int], write func(last *atomic.Int64)) int {
+	t.Helper()
+
+	var last atomic.Int64
+	done := make(chan struct{})
+	// The iteration holds the eviction lock, so the writes fill the buffer.
+	for range c.Hottest() {
+		go func() {
+			defer close(done)
+			write(&last)
+		}()
+		// Waits for the writer that found the buffer full to block on the lock. A stack dump stops
+		// the world, so the buffer is watched first, and the dumps are spaced out.
+		for c.cache.writeBuffer.Size() < uint64(maxWriteBufferSize) {
+			runtime.Gosched()
+		}
+		deadline := time.Now().Add(10 * time.Second)
+		buf := make([]byte, 1<<20)
+		for blocked := false; !blocked; {
+			time.Sleep(5 * time.Millisecond)
+			require.True(t, time.Now().Before(deadline), "the writer did not block on the lock")
+			size := runtime.Stack(buf, true)
+			if size == len(buf) {
+				// truncated: the parallel tests have many goroutines
+				buf = make([]byte, 2*len(buf))
+				continue
+			}
+			for _, g := range strings.Split(string(buf[:size]), "\n\n") {
+				if strings.Contains(g, "writeUntilBlocked") && strings.Contains(g, "performCleanUp") {
+					blocked = true
+				}
+			}
+		}
+		break
+	}
+	<-done
+	return int(last.Load())
+}
+
+// A writer that finds the write buffer full runs maintenance with its own task. An OnDeletion that
+// calls runtime.Goexit on a caller-runs executor, while the pass replays an entry heavier than the
+// maximum that was buffered first, does not lose that task.
+func TestCache_GoexitInWritersMaintenanceKeepsItsTask(t *testing.T) {
+	t.Parallel()
+
+	var exit atomic.Bool
+	c := Must(&Options[int, int]{
+		MaximumWeight: 10,
+		Weigher:       func(_, v int) uint32 { return uint32(v) },
+		OnDeletion: func(DeletionEvent[int, int]) {
+			if exit.CompareAndSwap(true, false) {
+				runtime.Goexit()
+			}
+		},
+		Executor: syncExecutor,
+	})
+	c.Set(-1, 1)
+	c.CleanUp()
+
+	exit.Store(true)
+	last := blockWriter(t, c, func(last *atomic.Int64) {
+		c.Set(-2, 11)
+		writeUntilBlocked(c, last, 0)
+	})
+	require.False(t, exit.Load(), "OnDeletion was not called")
+	_, ok := c.GetIfPresent(last)
+	require.True(t, ok, "the last write is not in the cache")
+	validateCache(t, c)
+}
+
+// An OnDeletion that exits again, when maintenance's defer runs the writer's task, still leaves
+// a drain required: otherwise reads and writes would stop scheduling drains, and the entries they
+// write would stay outside the policy.
+func TestCache_GoexitInWritersTaskOfInterruptedPassKeepsDraining(t *testing.T) {
+	t.Parallel()
+
+	var exits atomic.Int64
+	c := Must(&Options[int, int]{
+		MaximumWeight: 10,
+		Weigher:       func(_, v int) uint32 { return uint32(v) },
+		OnDeletion: func(DeletionEvent[int, int]) {
+			if exits.Add(-1) >= 0 {
+				runtime.Goexit()
+			}
+		},
+		Executor: syncExecutor,
+	})
+	c.Set(-1, 1)
+	c.CleanUp()
+
+	// The pass exits on the last buffered task, and its defer on the writer's own, which leaves
+	// the buffer empty.
+	exits.Store(2)
+	blockWriter(t, c, func(last *atomic.Int64) { writeUntilBlockedOnHeavy(c, last) })
+	require.LessOrEqual(t, exits.Load(), int64(0), "OnDeletion did not exit twice")
+
+	present := 0
+	for i := range 20 {
+		c.Set(-10-i, 1)
+	}
+	for i := range 20 {
+		if _, ok := c.GetEntryQuietly(-10 - i); ok {
+			present++
+		}
+	}
+	require.LessOrEqual(t, present, 10, "no drain ran after the interrupted pass")
+	validateCache(t, c)
+}
+
 // goexitClock calls runtime.Goexit on a reading while exits is set.
 type goexitClock struct {
 	*nonTickingClock

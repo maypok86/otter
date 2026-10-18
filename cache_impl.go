@@ -2013,11 +2013,20 @@ func (c *cache[K, V]) rescheduleCleanUpIfIncomplete() {
 
 func (c *cache[K, V]) maintenance(t *task[K, V]) {
 	completed := false
+	// The writer's task t is not in the write buffer, so the pass runs it even if replaying the
+	// buffer stops it: a task that reports an eviction may run an OnDeletion, or hand it to an
+	// executor, that panics or calls runtime.Goexit. The order of the tasks does not matter to
+	// the policies. A task that was started is not run again.
+	ranTask := t == nil
 	defer func() {
 		if !completed {
-			// interrupted by a panic or runtime.Goexit, also of the clock: the buffers may still
-			// hold work
+			// Interrupted by a panic or runtime.Goexit, also of the clock: the buffers may still
+			// hold work. The status is stored first, since the writer's task may run user code
+			// that exits again.
 			c.drainStatus.Store(required)
+			if !ranTask {
+				c.runTask(t)
+			}
 		}
 	}()
 	c.drainStatus.Store(processingToIdle)
@@ -2025,6 +2034,7 @@ func (c *cache[K, V]) maintenance(t *task[K, V]) {
 
 	c.drainReadBuffer()
 	c.drainWriteBuffer()
+	ranTask = true
 	c.runTask(t)
 	c.expireNodes()
 	c.evictNodes()

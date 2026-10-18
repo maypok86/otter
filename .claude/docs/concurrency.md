@@ -125,6 +125,8 @@ callback that holds the lock of the same bucket.
 
 `maintenance` (under `evictionMutex`): drain the read buffer (`onAccess`), drain the write
 buffer (`runTask`), run the caller's task, expire (`expireNodes`), evict (`evictNodes`), climb.
+The caller's task is in neither buffer, so a pass that a panic or `runtime.Goexit` interrupts
+before it (a replayed eviction reports to `OnDeletion`) still runs it in its `defer`.
 `drainStatus` (`idle`, `required`, `processingToIdle`, `processingToRequired`) decides whether
 another drain must be scheduled.
 
