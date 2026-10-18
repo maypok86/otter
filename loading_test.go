@@ -3247,12 +3247,16 @@ func TestCache_GetJoinedFailedRefreshOfLiveValue(t *testing.T) {
 	t.Parallel()
 
 	// A Get that misses a key may join a refresh of a value written right after the miss. If the
-	// reload fails, the cache keeps the value, and the Get returns it, as a load that finds a value
-	// written during it does: the reload's error is not a result of the Get's own load.
+	// reload fails, or the refresh is abandoned because the executor fails, the cache keeps the
+	// value, and the Get returns it, as a load that finds a value written during it does: the
+	// refresh's error is not a result of the Get's own load.
 	ctx := context.Background()
 	tests := []struct {
 		name   string
 		reload func(context.Context, int, int) (int, error)
+		// executor, if set, fails the executor once the Get has joined the refresh, which then
+		// never runs
+		executor func()
 	}{
 		{
 			name: "error",
@@ -3266,15 +3270,27 @@ func TestCache_GetJoinedFailedRefreshOfLiveValue(t *testing.T) {
 				panic("reload panicked")
 			},
 		},
+		{name: "executor panic", executor: func() { panic("executor failed") }},
+		{name: "executor Goexit", executor: runtime.Goexit},
 	}
 	for _, tt := range tests {
 		for _, bulk := range []bool{false, true} {
-			// The refresh waits in the queue until the Get has joined it.
+			// The refresh waits in the queue, or in the failing executor, until the Get has
+			// joined it.
 			var q queuedExecutor
+			var armed atomic.Bool
+			entered, joined := make(chan struct{}), make(chan struct{})
 			c := Must(&Options[int, int]{
 				RefreshCalculator: RefreshWriting[int, int](time.Hour),
-				Executor:          q.execute,
-				Logger:            &recordingLogger{},
+				Executor: func(fn func()) {
+					if armed.CompareAndSwap(true, false) {
+						close(entered)
+						<-joined
+						tt.executor()
+					}
+					q.execute(fn)
+				},
+				Logger: &recordingLogger{},
 			})
 			c.cache.singleflight.init()
 			// The Get misses the key, then another goroutine writes it and requests a refresh
@@ -3283,7 +3299,19 @@ func TestCache_GetJoinedFailedRefreshOfLiveValue(t *testing.T) {
 			n, _ := c.cache.getNode(1, nowNano)
 			require.Nil(t, n)
 			c.Set(1, 1)
-			c.Refresh(ctx, 1, splitLoader{reload: tt.reload})
+			if tt.executor == nil {
+				c.Refresh(ctx, 1, splitLoader{reload: tt.reload})
+			} else {
+				armed.Store(true)
+				go func() {
+					// a manual Refresh panics with its executor
+					defer func() { _ = recover() }()
+					c.Refresh(ctx, 1, splitLoader{reload: func(context.Context, int, int) (int, error) {
+						return 2, nil
+					}})
+				}()
+				<-entered
+			}
 
 			got := make(chan getResult, 1)
 			go func() {
@@ -3308,6 +3336,7 @@ func TestCache_GetJoinedFailedRefreshOfLiveValue(t *testing.T) {
 				got <- getResult{v, err}
 			}()
 			waitForJoinedLoad(t)
+			close(joined)
 			q.run()
 
 			r := <-got

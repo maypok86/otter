@@ -176,6 +176,9 @@ between registering a call and the defer in `doCall`/`doBulkCall` that finishes 
 would stay registered and every later load of its key would wait for it: a refresh is detached
 from cancellation inside them (`WithoutCancel` panics on a nil context), and loaders are passed in
 closures, not as method values (the method value of a nil loader panics where it is taken).
+Refreshes are the exception, since they are registered before the task is handed over: if the
+executor panics or calls `runtime.Goexit`, the registered calls are finished with
+`group.abandon`.
 `doCall`/`doBulkCall` run the loader with its panics and `runtime.Goexit` caught and end in
 `group.finish`, which commits the result through the cache's `commitCall` (a key mutation from a load or refresh), then deletes
 the call, wakes its waiters and publishes. `commitCall` writes only if `group.authoritative`
@@ -183,8 +186,8 @@ says the call is still the current one for the key. A load writes only over a ke
 live value: a live value was written during the load, and the load returns it to its owner and
 waiters, whatever it loaded, so the `Get` is a hit at the commit. A `Get` that owns or joined a
 call whose value the cache refuses (`call.refused`: a cancelled load, a refresh that was
-cancelled or whose node is gone, or a failed refresh of a live value, which keeps it) does not
-take that value either: it returns the key's live
+cancelled or whose node is gone, or a failed or abandoned refresh of a live value, which keeps
+it) does not take that value either: it returns the key's live
 value, or loads the key again. A load cancelled by an invalidation may have read the data
 source before the change, and `Invalidate` has reported the key absent. Nor does a `Get` that joined a load after its value was
 committed and had expired before the `Get` started (`call.expiresAt`): the call stays registered
@@ -216,8 +219,8 @@ A refresh must lose to any write that follows its request, and only to those, so
 hold together:
 - refresh calls are registered on the requesting goroutine, before the task goes to the
   executor, under the key's bucket lock, which also reads the call's base: the key's live node,
-  nil if absent (`cache.startRefresh` in `refreshKey`, `bulkRefreshKeys`; `group.submitRefresh`
-  finishes them if the executor panics). A refresh that a read started is not registered if the
+  nil if absent (`cache.startRefresh` in `refreshKey`, `bulkRefreshKeys`; see `group.abandon`
+  above for an executor that fails before the hand-over). A refresh that a read started is not registered if the
   node is fresh by then or the key is gone. A refresh joins only a call started from the same
   base, the node it would refresh: a call from another base, such as a load of a key that has a
   live value since, cannot be written, so the refresh registers a call of its own, which

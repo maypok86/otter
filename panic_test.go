@@ -639,6 +639,88 @@ func TestCache_PanicInExecutorFinishesRegisteredRefresh(t *testing.T) {
 	}
 }
 
+// An executor that calls runtime.Goexit while it is handed a refresh leaves the registered calls
+// finished, as one that panics does: left registered, they would block every later load and
+// refresh of the key.
+func TestCache_GoexitInExecutorFinishesRegisteredRefresh(t *testing.T) {
+	t.Parallel()
+
+	for _, bulk := range []bool{false, true} {
+		for _, scheduled := range []bool{false, true} {
+			t.Run(fmt.Sprintf("bulk=%v/scheduled=%v", bulk, scheduled), func(t *testing.T) {
+				t.Parallel()
+
+				var (
+					failing atomic.Bool
+					loads   atomic.Int64
+				)
+				gate := make(chan struct{})
+				ran := make(chan struct{})
+				c := Must(&Options[int, int]{
+					RefreshCalculator: RefreshWriting[int, int](time.Hour),
+					Executor: func(fn func()) {
+						if !failing.Load() {
+							go fn()
+							return
+						}
+						if scheduled {
+							go func() {
+								defer close(ran)
+								<-gate
+								fn()
+							}()
+						}
+						runtime.Goexit()
+					},
+				})
+
+				failing.Store(true)
+				exited := make(chan struct{})
+				// Goexit ends the goroutine that requests the refresh.
+				go func() {
+					defer close(exited)
+					if bulk {
+						_ = c.BulkRefresh(context.Background(), []int{1}, BulkLoaderFunc[int, int](func(ctx context.Context, keys []int) (map[int]int, error) {
+							loads.Add(1)
+							return map[int]int{1: 1}, nil
+						}))
+					} else {
+						_ = c.Refresh(context.Background(), 1, LoaderFunc[int, int](func(ctx context.Context, key int) (int, error) {
+							loads.Add(1)
+							return 1, nil
+						}))
+					}
+					t.Error("the refresh returned although the executor exited")
+				}()
+				<-exited
+				failing.Store(false)
+				if scheduled {
+					close(gate)
+					completes(t, "the task the executor scheduled before exiting", func() {
+						<-ran
+					})
+				}
+				require.Zero(t, loads.Load(), "the abandoned refresh ran")
+
+				completes(t, "Get after a refresh the executor did not run", func() {
+					v, err := c.Get(context.Background(), 1, LoaderFunc[int, int](func(ctx context.Context, key int) (int, error) {
+						return 2, nil
+					}))
+					require.NoError(t, err)
+					require.Equal(t, 2, v)
+				})
+				completes(t, "Refresh after a refresh the executor did not run", func() {
+					r := <-c.Refresh(context.Background(), 1, LoaderFunc[int, int](func(ctx context.Context, key int) (int, error) {
+						return 3, nil
+					}))
+					require.NoError(t, r.Err)
+					require.Equal(t, 3, r.Value)
+				})
+			})
+		}
+	}
+}
+
 // A panic while writing a loaded value (here the weigher) wakes up the waiters, which receive
 // the panic as the load's error, and a later load of the key works.
 func TestCache_PanicWhileWritingLoadedValueWakesWaiters(t *testing.T) {
