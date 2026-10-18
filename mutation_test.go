@@ -17,11 +17,15 @@ package otter
 import (
 	"context"
 	"errors"
+	"runtime"
 	"slices"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/maypok86/otter/v2/stats"
 )
 
 // prevState is what the key holds before a mutation.
@@ -492,6 +496,342 @@ func TestCache_MutationDecidesWithTimeTakenUnderLock(t *testing.T) {
 			require.True(t, <-absent, "the mutation found the entry that expired while it waited for the lock")
 		})
 	}
+}
+
+// heldWriteExpiry gives entries an hour, counts the calls of ExpireAfterCreate and
+// ExpireAfterUpdate, and holds the read that is armed in ExpireAfterRead before it moves the
+// deadline to a nanosecond after the read.
+type heldWriteExpiry struct {
+	created, updated atomic.Int64
+	armed            atomic.Bool
+	entered, proceed chan struct{}
+}
+
+func (e *heldWriteExpiry) ExpireAfterCreate(Entry[int, int]) time.Duration {
+	e.created.Add(1)
+	return time.Hour
+}
+
+func (e *heldWriteExpiry) ExpireAfterUpdate(Entry[int, int], int) time.Duration {
+	e.updated.Add(1)
+	return time.Hour
+}
+
+func (e *heldWriteExpiry) ExpireAfterRead(Entry[int, int]) time.Duration {
+	if e.armed.CompareAndSwap(true, false) {
+		close(e.entered)
+		<-e.proceed
+		return time.Nanosecond
+	}
+	return time.Hour
+}
+
+// A mutation keeps what it decided about the key's entry while it runs user code: the Compute
+// function, the weigher and the calculators. A read that started before the mutation's time can
+// move the deadline in between, to before that time. Set and Compute then gave the caller the
+// previous value as present, while both listeners got it with CauseExpiration, the stats counted
+// an eviction, and a write called ExpireAfterCreate instead of ExpireAfterUpdate.
+func TestCache_MutationKeepsWhatItDecidedAboutTheEntry(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		// mutate runs the mutation of key 1, which calls hold from its user code, and reports
+		// whether it was given the previous value
+		mutate func(c *Cache[int, int], hold func()) bool
+		cause  DeletionCause
+	}{
+		// the weigher calls hold
+		{name: "Set", cause: CauseReplacement, mutate: func(c *Cache[int, int], _ func()) bool {
+			_, ok := c.Set(1, 3)
+			return !ok
+		}},
+		{name: "Compute", cause: CauseReplacement, mutate: func(c *Cache[int, int], hold func()) bool {
+			var found bool
+			c.Compute(1, func(_ int, ok bool) (int, ComputeOp) {
+				found = ok
+				hold()
+				return 3, WriteOp
+			})
+			return found
+		}},
+		{name: "Compute that invalidates", cause: CauseInvalidation, mutate: func(c *Cache[int, int], hold func()) bool {
+			var found bool
+			c.Compute(1, func(_ int, ok bool) (int, ComputeOp) {
+				found = ok
+				hold()
+				return 0, InvalidateOp
+			})
+			return found
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			clk := newNonTickingClock()
+			clk.Sleep(time.Second)
+			calc := &heldWriteExpiry{entered: make(chan struct{}), proceed: make(chan struct{})}
+			var armed atomic.Bool
+			entered, proceed := make(chan struct{}), make(chan struct{})
+			hold := func() {
+				if armed.CompareAndSwap(true, false) {
+					close(entered)
+					<-proceed
+				}
+			}
+			var atomicCauses, causes []DeletionCause
+			counter := stats.NewCounter()
+			c := Must(&Options[int, int]{
+				MaximumWeight: 100,
+				Weigher: func(int, int) uint32 {
+					hold()
+					return 1
+				},
+				ExpiryCalculator: calc,
+				Clock:            clk,
+				StatsRecorder:    counter,
+				// OnDeletion runs before the mutation returns
+				Executor:         syncExecutor,
+				OnAtomicDeletion: func(e DeletionEvent[int, int]) { atomicCauses = append(atomicCauses, e.Cause) },
+				OnDeletion:       func(e DeletionEvent[int, int]) { causes = append(causes, e.Cause) },
+			})
+			c.Set(1, 1)
+			created, updated := calc.created.Load(), calc.updated.Load()
+
+			// The read takes its time, then waits in ExpireAfterRead.
+			readAt := clk.NowNano()
+			calc.armed.Store(true)
+			read := make(chan struct{})
+			go func() {
+				defer close(read)
+				c.GetIfPresent(1)
+			}()
+			<-calc.entered
+
+			// The mutation decides at a later time, while the entry is live, and waits in its
+			// user code; the read then moves the deadline to before the mutation's time.
+			clk.Sleep(10 * time.Nanosecond)
+			armed.Store(true)
+			given := make(chan bool, 1)
+			go func() {
+				given <- tt.mutate(c, hold)
+			}()
+			<-entered
+			close(calc.proceed)
+			for c.cache.hashmap.Get(1).ExpiresAt() != readAt+1 {
+				runtime.Gosched()
+			}
+			close(proceed)
+			<-read
+
+			require.True(t, <-given, "the mutation was not given the live entry")
+			require.Equal(t, []DeletionCause{tt.cause}, atomicCauses, "OnAtomicDeletion")
+			require.Equal(t, []DeletionCause{tt.cause}, causes, "OnDeletion")
+			require.Zero(t, counter.Snapshot().Evictions, "an eviction was counted")
+			if tt.cause == CauseReplacement {
+				require.Equal(t, created, calc.created.Load(), "ExpireAfterCreate was called")
+				require.Equal(t, updated+1, calc.updated.Load(), "ExpireAfterUpdate was not called")
+			}
+			validateCache(t, c)
+		})
+	}
+}
+
+// keptDeadlineExpiry gives a new entry an hour and keeps the deadline on an update.
+type keptDeadlineExpiry[V any] struct{}
+
+func (keptDeadlineExpiry[V]) ExpireAfterCreate(Entry[int, V]) time.Duration { return time.Hour }
+
+func (keptDeadlineExpiry[V]) ExpireAfterUpdate(e Entry[int, V], _ V) time.Duration {
+	return e.ExpiresAfter()
+}
+
+func (keptDeadlineExpiry[V]) ExpireAfterRead(e Entry[int, V]) time.Duration { return e.ExpiresAfter() }
+
+// movedDeadlineCache is a cache whose weigher, once armed, moves the deadline of key 1 by move
+// from the clock's time, as a read's ExpireAfterRead CAS can while a write runs its weigher.
+func movedDeadlineCache[V any](
+	t *testing.T,
+	clk *nonTickingClock,
+	expiry ExpiryCalculator[int, V],
+	causes *[]DeletionCause,
+) (c *Cache[int, V], arm func(move time.Duration)) {
+	t.Helper()
+
+	var armed atomic.Bool
+	var moveBy time.Duration
+	c = Must(&Options[int, V]{
+		MaximumWeight: 100,
+		Weigher: func(int, V) uint32 {
+			if armed.CompareAndSwap(true, false) {
+				c.cache.hashmap.Get(1).SetExpiresAt(clk.NowNano() + int64(moveBy))
+			}
+			return 1
+		},
+		ExpiryCalculator: expiry,
+		Clock:            clk,
+		// maintenance on its own goroutine could remove an expired key 1 before the write
+		Executor:         syncExecutor,
+		OnAtomicDeletion: func(e DeletionEvent[int, V]) { *causes = append(*causes, e.Cause) },
+	})
+	return c, func(move time.Duration) {
+		moveBy = move
+		armed.Store(true)
+	}
+}
+
+// A write decides from the entry it found under the lock, also when a read moves the entry's
+// deadline while the write runs its weigher.
+func TestCache_WriteKeepsWhatItFoundWhenAReadMovesTheDeadline(t *testing.T) {
+	t.Parallel()
+
+	// An update sees the deadline it found, not the one the read moved to before the write's
+	// time: ExpireAfterUpdate that keeps the deadline stored a value that had already expired.
+	t.Run("live entry, deadline moved before the write", func(t *testing.T) {
+		t.Parallel()
+
+		clk := newNonTickingClock()
+		clk.Sleep(time.Second)
+		var causes []DeletionCause
+		c, arm := movedDeadlineCache[int](t, clk, keptDeadlineExpiry[int]{}, &causes)
+		c.Set(1, 1)
+		causes = nil
+
+		arm(-time.Nanosecond)
+		_, absent := c.Set(1, 2)
+		require.False(t, absent, "the write did not find the live entry")
+		require.Equal(t, []DeletionCause{CauseReplacement}, causes)
+		v, ok := c.GetIfPresent(1)
+		require.True(t, ok, "the written value had expired")
+		require.Equal(t, 2, v)
+	})
+	// A value that does not fit a word is inline until the first update of a live entry, which
+	// writes it boxed, so that later updates are in place.
+	t.Run("live entry, value that does not fit a word", func(t *testing.T) {
+		t.Parallel()
+
+		clk := newNonTickingClock()
+		clk.Sleep(time.Second)
+		var causes []DeletionCause
+		c, arm := movedDeadlineCache[[3]int64](t, clk, keptDeadlineExpiry[[3]int64]{}, &causes)
+		c.Set(1, [3]int64{1})
+		require.False(t, c.cache.hashmap.Get(1).CanSetValue())
+
+		arm(-time.Nanosecond)
+		c.Set(1, [3]int64{2})
+		require.True(t, c.cache.hashmap.Get(1).CanSetValue(), "the update of a live entry was not boxed")
+	})
+	// A write over an expired entry creates the key, and a read that moved the deadline past the
+	// write's time does not make it an update in place.
+	t.Run("expired entry, deadline moved after the write", func(t *testing.T) {
+		t.Parallel()
+
+		clk := newNonTickingClock()
+		clk.Sleep(time.Second)
+		var causes []DeletionCause
+		c, arm := movedDeadlineCache[int](t, clk, ExpiryWriting[int, int](time.Minute), &causes)
+		c.Set(1, 1)
+		causes = nil
+		clk.Sleep(2 * time.Minute)
+		old := c.cache.hashmap.Get(1)
+
+		// before the deadline the write gives, so that it could be kept in place
+		arm(30 * time.Second)
+		_, absent := c.Set(1, 2)
+		require.True(t, absent, "the write found the expired entry live")
+		require.Equal(t, []DeletionCause{CauseExpiration}, causes)
+		require.False(t, old == c.cache.hashmap.Get(1), "the expired node was updated in place")
+	})
+}
+
+// readMovedExpiry gives a new entry a minute, keeps the deadline on an update, and gives a read
+// entry read from the read's time.
+type readMovedExpiry struct{ read time.Duration }
+
+func (readMovedExpiry) ExpireAfterCreate(Entry[int, int]) time.Duration { return time.Minute }
+
+func (readMovedExpiry) ExpireAfterUpdate(e Entry[int, int], _ int) time.Duration {
+	return e.ExpiresAfter()
+}
+
+func (e readMovedExpiry) ExpireAfterRead(Entry[int, int]) time.Duration { return e.read }
+
+// A read that moves the deadline while a write runs its user code, here the Compute function,
+// comes before the write, which keeps the deadline the read set. The write kept the one it had
+// found, which brought back the deadline the read had replaced.
+func TestCache_UpdateKeepsTheDeadlineAReadSetDuringTheWrite(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		read  time.Duration
+		after time.Duration
+		alive bool
+	}{
+		{name: "read extends the deadline", read: time.Hour, after: 2 * time.Minute, alive: true},
+		{name: "read shortens the deadline", read: time.Second, after: 2 * time.Second, alive: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			clk := newNonTickingClock()
+			clk.Sleep(time.Second)
+			c := Must(&Options[int, int]{
+				ExpiryCalculator: readMovedExpiry{read: tt.read},
+				Clock:            clk,
+				Executor:         syncExecutor,
+			})
+			c.Set(1, 1)
+			c.Compute(1, func(int, bool) (int, ComputeOp) {
+				// the Compute function may read the key
+				c.GetIfPresent(1)
+				return 2, WriteOp
+			})
+
+			clk.Sleep(tt.after)
+			_, ok := c.GetIfPresent(1)
+			require.Equal(t, tt.alive, ok)
+			validateCache(t, c)
+		})
+	}
+}
+
+// Compute that cancels over an expired entry removes it as expired, also when a read moves its
+// deadline past the mutation's time while the Compute function runs: the mutation found the
+// entry expired and gave the function no value. The cause was read again from the deadline, so
+// the entry was reported invalidated and the eviction was not counted.
+func TestCache_ComputeRemovesTheExpiredEntryItFound(t *testing.T) {
+	t.Parallel()
+
+	clk := newNonTickingClock()
+	clk.Sleep(time.Second)
+	var causes []DeletionCause
+	counter := stats.NewCounter()
+	c := Must(&Options[int, int]{
+		ExpiryCalculator: ExpiryWriting[int, int](time.Minute),
+		Clock:            clk,
+		StatsRecorder:    counter,
+		Executor:         syncExecutor,
+		OnAtomicDeletion: func(e DeletionEvent[int, int]) { causes = append(causes, e.Cause) },
+	})
+	c.Set(1, 1)
+	clk.Sleep(2 * time.Minute)
+
+	var found bool
+	c.Compute(1, func(_ int, ok bool) (int, ComputeOp) {
+		found = ok
+		// as a read's ExpireAfterRead CAS can
+		c.cache.hashmap.Get(1).SetExpiresAt(clk.NowNano() + int64(30*time.Second))
+		return 0, CancelOp
+	})
+	require.False(t, found, "the Compute function was given the expired value")
+	require.Equal(t, []DeletionCause{CauseExpiration}, causes)
+	require.EqualValues(t, 1, counter.Snapshot().Evictions)
+	_, ok := c.GetIfPresent(1)
+	require.False(t, ok)
+	validateCache(t, c)
 }
 
 // The OnDeletion listener runs on the executor, so its events of one key arrive in the order of

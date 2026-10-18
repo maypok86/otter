@@ -23,10 +23,15 @@ Audits read this file **after** recording their findings (Phase 1.5 of the audit
 - **A mutation decides whether the entry is live once, with the time it reads under the bucket
   lock.** The callbacks it then runs under the lock (the `Compute` function, the weigher, the
   calculators, `OnAtomicDeletion`) do not change that decision: an entry that expires while they
-  run is still treated as live, although a reader may find the key absent in the meantime.
-  Deciding again afterwards would mean calling the `Compute` function a second time. A read is
-  checked the same way: its `ExpireAfterRead` CAS is refused if the entry expired while the
-  calculator ran, but not if it expires in the few instructions between that check and the CAS.
+  run is still treated as live, although a reader may find the key absent in the meantime. So
+  is one whose deadline a read's `ExpireAfterRead` CAS moves to before the mutation's time: the
+  kind of a write, the calculator it calls and the cause follow the decision (`previous`,
+  `removalCause`), the calculator sees the deadline the mutation read (`writeEntry`), and only
+  the choice to write in place reads the deadline again. A deadline that a read moves to a time
+  after the mutation's is the read's: the read comes before the write, which keeps it. Deciding
+  again afterwards would mean calling the `Compute` function a second time. A read is checked
+  the same way: its `ExpireAfterRead` CAS is refused if the entry expired while the calculator
+  ran, but not if it expires in the few instructions between that check and the CAS.
   A read that checks liveness with the time it read before looking the key up is linearizable:
   the node it finds was live at that time or when it was written. A value written in place is
   paired with the node's old deadline until the write stores the new one, so the write is in
