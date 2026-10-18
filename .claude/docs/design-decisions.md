@@ -156,8 +156,8 @@ Audits read this file **after** recording their findings (Phase 1.5 of the audit
   `SetRefreshableAfter`.
 - **A refresh is registered under the key's bucket lock.** Writes cancel calls under that lock,
   so a refresh is either cancelled by a write or registered after it, and a read that saw a
-  write never joins a refresh the write cancelled. A refresh that joins a registered call takes
-  no lock, but one that registers does. It waits for whatever holds the lock: a `Compute`
+  write never joins a refresh the write cancelled. A refresh that joins a registered refresh
+  takes no lock, but one that joins a load or registers does. It waits for whatever holds the lock: a `Compute`
   function, a weigher, a calculator or `OnAtomicDeletion` of a key in the bucket, or a growth of
   the table. With an instant loader every stale read registers, and such reads cost about
   19% more on 8 cores; with a 1 ms loader they are no slower. A refresh that a read started
@@ -194,6 +194,9 @@ Audits read this file **after** recording their findings (Phase 1.5 of the audit
   `runtime.Goexit` in that code ends the goroutine, which cannot be stopped; the periodic
   clean-up then goes on in a new goroutine with the same ticks (`periodicCleanUp`). A Goexit in
   `Clock.Tick` itself leaves the cache without periodic clean-ups, as a panic of `Tick` does.
+  The exception for a manual refresh is the refresh it runs after a joined load failed for its
+  owner's context (`loadAgain`): the executor is called on a goroutine of the cache, so its
+  panic is logged and becomes the refresh's error, and its `runtime.Goexit` `errRefreshExited`.
 - **The executor must not block the submitter; a deadlock with one that does is the documented
   contract.** Maintenance submits `OnDeletion` while it holds `evictionMutex`, the drain is
   submitted under it (the token hands the lock to a caller-runs drain), and a drain that runs on

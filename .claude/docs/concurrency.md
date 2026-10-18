@@ -12,7 +12,7 @@ in another order.
 |---|---|---|
 | `cache.evictionMutex` | the eviction policy (queues, sizes, sketch, climber), the timer wheel, `policyWeight`, `queueType`, node `dead` transition | `maintenance` (`performCleanUp`, `scheduleDrainBuffers` via `TryLock`), `SetMaximum`, `Hottest`/`Coldest`, `WeightedSize`/`GetMaximum` |
 | `hashmap` bucket lock (`internal/hashmap/map.go`, inside `Compute`) | the bucket's slots; every write to a key; node value/weight/deadline/refresh time changes, except a read's `ExpireAfterRead` CAS; the `retired` transition | `set`, `doCompute`, `Invalidate`, `commitCall`, `deleteNodeFromMap`, `SetExpiresAfter`, `SetRefreshableAfter`, `cache.startRefresh` (registers a refresh) |
-| singleflight bucket lock | in-flight `call`s per key | `startLoad`, `startRefresh`, `deleteCall`, `delete`, `deleteOnRemoval` |
+| singleflight bucket lock | in-flight `call`s per key | `startLoad`, `startRefresh`, `deleteCall`, `delete`, `deleteOnRemoval`, `succeed` (from `commitCall`, under the `hashmap` bucket lock) |
 
 `hashmap.Get` takes no lock: it reads bucket slots atomically. Readers therefore see a node
 that a writer may be changing or replacing at that moment.
@@ -171,12 +171,20 @@ reweigh task brings the accounted weight to zero.
 `group` (`singleflight.go`) owns the lifecycle of a `call`: `Get`/`BulkGet` register one with
 `startLoad`, refreshes with `startRefresh`; waiters block on it until it finishes or their own
 context is done (`waitContext`). A load that fails after its owner's context is done
-(`failedForOwner`) is not shared: a waiter with a live context loads the key again. Refreshes
-run with `context.WithoutCancel`, so their failures are always shared. Nothing that can panic runs
-between registering a call and the defer in `doCall`/`doBulkCall` that finishes it, or the call
-would stay registered and every later load of its key would wait for it: a refresh is detached
-from cancellation inside them (`WithoutCancel` panics on a nil context), and loaders are passed in
-closures, not as method values (the method value of a nil loader panics where it is taken).
+(`failedForOwner`) is not shared: a waiter with a live context loads the key again. If a manual
+refresh joined it, which happens only under the key's bucket lock (`call.again`), `commitCall`
+registers a refresh in the load's place under that lock (`loadAgain.successor`): a write or an
+invalidation after the request cancels it, as it would have cancelled the load, and the waiters
+that load again join it. `finish` submits it at once, with the first joined refresh's loader, on
+a goroutine of its own, where a panic or `runtime.Goexit` of the executor becomes its error; the
+refreshes that joined the load report its result (`joinedResult`). As any joined refresh, they
+report once `finish` wakes the waiters, before it publishes the write; an owned refresh reports
+after. Refreshes run with `context.WithoutCancel`, so their failures are always shared. Nothing
+that can panic runs between registering a call and the defer in `doCall`/`doBulkCall` that
+finishes it, or the call would stay registered and every later load of its key would wait for
+it: a refresh is detached from cancellation inside them (`WithoutCancel` panics on a nil
+context), and loaders are passed in closures, not as method values (the method value of a nil
+loader panics where it is taken).
 Refreshes are the exception, since they are registered before the task is handed over: if the
 executor, or the clock read under a later key's bucket lock in `bulkRefreshKeys`, panics or
 calls `runtime.Goexit`, the registered calls are finished with `group.abandon`.
@@ -226,8 +234,8 @@ hold together:
   base, the node it would refresh, that has not committed (`call.committed`): a call from
   another base, such as a load of a key that has a live value since, cannot be written, so the
   refresh registers a call of its own, which replaces that call; the replaced call still
-  completes for its own waiters. A refresh that finds a call from its own base joins it without
-  taking the lock;
+  completes for its own waiters. A refresh that finds a refresh from its own base joins it
+  without taking the lock; one that joins a load takes it (`call.again`);
 - writes and invalidations cancel pending calls under the same lock, before the change is
   published (`cancelCalls`, before `OnAtomicDeletion` and `SetValue`). A refresh requested by
   another goroutine during a write waits for the lock and starts from what the write left, and

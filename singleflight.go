@@ -51,6 +51,10 @@ type call[K comparable, V any] struct {
 	// written before done is closed: under the key's bucket lock by commitCall, and by abandon,
 	// which no commit can follow.
 	refused bool
+	// again is set when a manual refresh joins this load, under the key's bucket lock, where
+	// commitCall reads it: a refresh joins a load only under that lock (see cache.startRefresh),
+	// so either commitCall sees it or the load has committed and the refresh does not join it.
+	again *loadAgain[K, V]
 	// expiresAt is when the value that the call hands to its waiters from the cache, the one it
 	// wrote or the live one it found, expires, and node is the node that held the value then;
 	// node is nil if the call hands none, and expiresAt is 0 if entries do not expire. A waiter
@@ -60,6 +64,16 @@ type call[K comparable, V any] struct {
 	node      node.Node[K, V]
 	// invalidations is group.invalidations when the bulk load that returned a fake call started.
 	invalidations uint64
+}
+
+// loadAgain is how a load that a manual refresh joined is loaded again if it fails for its
+// owner's context (failedForOwner), which says nothing about the key: commitCall registers
+// successor, a refresh, in the load's place, and finish has it run with submit, the first
+// refresh's to join, on a goroutine of its own. The refreshes that joined the load report the
+// successor's result (cache.joinedResult). successor is written before the load's done is closed.
+type loadAgain[K comparable, V any] struct {
+	submit    func(s *call[K, V])
+	successor *call[K, V]
 }
 
 func newCall[K comparable, V any](key K, isRefresh bool, base node.Node[K, V]) *call[K, V] {
@@ -435,6 +449,10 @@ func (g *group[K, V]) finish(c *call[K, V]) {
 	finished = true
 	c.cancel()
 	g.publish(m)
+	if a := c.again; a != nil && a.successor != nil {
+		// not on this goroutine: the load's owner gave up, and the executor is user code
+		go a.submit(a.successor)
+	}
 }
 
 // authoritative reports whether the result of c may be written over prev, the key's entry when
@@ -516,6 +534,21 @@ func (g *group[K, V]) abandon(owned []*call[K, V], r any) {
 		g.deleteCall(cl)
 		cl.cancel()
 	}
+}
+
+// succeed registers a refresh of c's key, which has no live value, in place of c, a load that
+// is still registered, and returns it. It is called by commitCall under the key's bucket lock in
+// the cache's hash table, which a write or an invalidation of the key holds to cancel its calls:
+// the refresh starts from the state the load found, and every change after it cancels the
+// refresh, as it would have cancelled the load. finish then leaves the refresh registered, since
+// it deletes only c, and has it submitted (see loadAgain).
+func (g *group[K, V]) succeed(c *call[K, V]) *call[K, V] {
+	s := newCall[K, V](c.key, true, nil)
+	g.calls.Compute(c.key, func(*call[K, V]) *call[K, V] {
+		// c is the registered call: commitCall has checked it (authoritative)
+		return s
+	})
+	return s
 }
 
 func (g *group[K, V]) deleteCall(c *call[K, V]) (deleted bool) {

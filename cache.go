@@ -318,6 +318,9 @@ func (c *Cache[K, V]) BulkGet(ctx context.Context, keys []K, bulkLoader BulkLoad
 // If refreshing returned an error, the previous value will remain, and the error will be logged
 // using [Logger] and swallowed, except for [ErrNotFound], which removes the entry. If a load or refresh of the
 // key that started from its current state is in flight, this method joins it instead of loading again.
+// A joined load by Get or BulkGet whose loader returns an error other than [ErrNotFound] after its
+// caller's context has ended is loaded again, unless the key was written or invalidated since the
+// refresh was requested.
 // If the key is written, invalidated or expires after the refresh was requested, the loaded
 // value is discarded and the cache keeps the newer state.
 //
@@ -351,6 +354,9 @@ func (c *Cache[K, V]) Refresh(ctx context.Context, key K, loader Loader[K, V]) <
 // using [Logger] and swallowed, an [ErrNotFound] for the whole bulk included. A key that the
 // [BulkLoader] leaves out of its result is not found, and its entry is removed. If a load or refresh of the
 // key that started from its current state is in flight, this method joins it instead of loading again.
+// A joined load by Get or BulkGet whose loader returns an error other than [ErrNotFound] after its
+// caller's context has ended is loaded again, unless the key was written or invalidated since the
+// refresh was requested.
 // If the key is written, invalidated or expires after the refresh was requested, the loaded
 // value is discarded and the cache keeps the newer state.
 //
