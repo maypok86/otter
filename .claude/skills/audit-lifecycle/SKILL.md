@@ -25,8 +25,10 @@ neither can block the other.
 - With expiration, `newCache` starts `periodicCleanUp`, which holds the cache through a
   `weak.Pointer` and runs `CleanUp` on every tick of `Clock.Tick` until the cache's `stop`
   channel is closed or, at a tick, the cache is gone; it closes `done` when it returns, at once
-  if `Tick` gives no ticks. No cleanup is registered: cleanups run outside `testing/synctest`
-  bubbles, where touching a bubbled channel is a fatal error.
+  if `Tick` gives no ticks. A `runtime.Goexit` in user code that a clean-up runs ends the
+  goroutine, and its defer starts a new one with the same ticks, so `done` is still closed once;
+  a Goexit in `Tick` itself ends the periodic clean-ups. No cleanup is registered: cleanups run
+  outside `testing/synctest` bubbles, where touching a bubbled channel is a fatal error.
 - `StopAllGoroutines` closes `stop` once and waits for `done`, and is documented as forbidden
   inside functions the cache runs.
 - Other goroutines: the default executor (`go fn()`), the goroutines that wait for a joined

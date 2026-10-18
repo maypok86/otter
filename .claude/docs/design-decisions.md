@@ -118,9 +118,9 @@ Audits read this file **after** recording their findings (Phase 1.5 of the audit
   updates in place as for replacements, and before the old node is retired (`retire`). A
   listener that calls `runtime.Goexit` leaves the node alive, in the table and scheduled; the
   key's loads and refreshes, which the write cancelled before the listener, stay cancelled. A
-  removal by maintenance is retried on the next pass, calling the listener again; a Goexit on
-  the periodic clean-up goroutine ends the periodic clean-ups, so that pass waits for the next
-  read, write or `CleanUp`. Retired first, an expired node would also leave the timer wheel,
+  removal by maintenance is retried on the next pass, calling the listener again, also when
+  the listener ended the periodic clean-up's goroutine: a new one takes over its ticks
+  (`periodicCleanUp`). Retired first, an expired node would also leave the timer wheel,
   which does not reschedule a retired node: in a cache without a maximum size only a write of
   its key removed it. A stale `Get` while the listener runs waits for the bucket lock to
   register its refresh, as it does for a listener of another key in the bucket.
@@ -177,7 +177,10 @@ Audits read this file **after** recording their findings (Phase 1.5 of the audit
   counts as the cache's own work even when the caller asks for it (`CleanUp`, `SetMaximum`,
   `Hottest`): a pass also applies the writes of other callers, which a panic would lose. So a
   panicking `Record*` is logged while a panicking `Snapshot` is not, and a panicking executor is
-  logged for a stale `Get` but not for `Refresh`: neither pair is an inconsistency.
+  logged for a stale `Get` but not for `Refresh`: neither pair is an inconsistency. A
+  `runtime.Goexit` in that code ends the goroutine, which cannot be stopped; the periodic
+  clean-up then goes on in a new goroutine with the same ticks (`periodicCleanUp`). A Goexit in
+  `Clock.Tick` itself leaves the cache without periodic clean-ups, as a panic of `Tick` does.
 - **The executor must not block the submitter; a deadlock with one that does is the documented
   contract.** Maintenance submits `OnDeletion` while it holds `evictionMutex`, the drain is
   submitted under it (the token hands the lock to a caller-runs drain), and a drain that runs on

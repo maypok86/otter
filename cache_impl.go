@@ -216,7 +216,7 @@ func newCache[K comparable, V any](o *Options[K, V]) *cache[K, V] {
 		// goroutine returns by itself once the cache is collected.
 		c.stop = make(chan struct{})
 		c.done = make(chan struct{})
-		go periodicCleanUp(weak.Make(c), c.stop, c.done)
+		go periodicCleanUp(weak.Make(c), nil, c.stop, c.done)
 	}
 
 	if c.withEviction {
@@ -1633,25 +1633,46 @@ func (c *cache[K, V]) notifyAtomicDeletion(key K, value V, cause DeletionCause) 
 // cache, because it must not keep the cache reachable: a callback that the cache holds may hold
 // the cache itself, and then it would never be collected. It returns when stop is closed, and
 // closes done then.
-func periodicCleanUp[K comparable, V any](wc weak.Pointer[cache[K, V]], stop, done chan struct{}) {
-	defer close(done)
+//
+// A clean-up runs user code (the listeners, the clock, the recorder and the executor), which may
+// call runtime.Goexit. That ends the goroutine, and the loop goes on in a new one with the same
+// ticks: the cache keeps its periodic clean-ups, and done is closed once. The ticks are nil only
+// in the first goroutine, and a Goexit in Clock.Tick ends the periodic clean-ups, as a panic of
+// Tick does: a new goroutine would call Tick again, and exit again.
+func periodicCleanUp[K comparable, V any](
+	wc weak.Pointer[cache[K, V]],
+	tick <-chan time.Time,
+	stop, done chan struct{},
+) {
+	returned := false
+	defer func() {
+		if !returned && tick != nil {
+			go periodicCleanUp(wc, tick, stop, done)
+			return
+		}
+		close(done)
+	}()
 
-	c := wc.Value()
-	if c == nil {
-		return
-	}
-	tick := c.tick()
 	if tick == nil {
-		// Without ticks, nothing would tell the goroutine that the cache is gone.
-		return
+		c := wc.Value()
+		if c == nil {
+			return
+		}
+		tick = c.tick()
+		if tick == nil {
+			// Without ticks, nothing would tell the goroutine that the cache is gone.
+			return
+		}
 	}
 	for {
 		select {
 		case <-stop:
+			returned = true
 			return
 		case <-tick:
 			c := wc.Value()
 			if c == nil {
+				returned = true
 				return
 			}
 			c.CleanUp()
@@ -1662,7 +1683,7 @@ func periodicCleanUp[K comparable, V any](wc weak.Pointer[cache[K, V]], stop, do
 
 // tick returns the clock's ticks for the periodic clean-up. The clock is user code, and that
 // goroutine is the cache's own: if Tick panics, the panic is logged, nil is returned, and the cache
-// does without periodic clean-ups.
+// does without periodic clean-ups. So does it if Tick calls runtime.Goexit (see periodicCleanUp).
 func (c *cache[K, V]) tick() <-chan time.Time {
 	defer recoverCallback(c.logger, "Clock.Tick panicked")
 	return c.clock.Tick(time.Second)
