@@ -864,9 +864,9 @@ func (c *cache[K, V]) Get(ctx context.Context, key K, loader Loader[K, V]) (V, e
 	n, value := c.getNode(key, nowNano)
 	if n != nil {
 		// A node that is being removed is not fresh either, but there is nothing to refresh. It is
-		// checked after IsFresh: a node retired in between would pass the check before. A refresh
-		// is registered under the bucket lock, which the removal may still hold, for example
-		// while it runs OnAtomicDeletion.
+		// checked after IsFresh: a node retired in between would pass the check before. A node is
+		// retired after OnAtomicDeletion, so a refresh requested while the listener runs waits for
+		// the bucket lock, and then finds the key's new node.
 		if !n.IsFresh(nowNano) && n.IsAlive() {
 			c.refreshKey(ctx, n.Key(), loader, false)
 		}
@@ -1527,8 +1527,7 @@ func (c *cache[K, V]) deleteNodeFromMap(
 		}
 		deleted = current
 		deletedCause = getCause(deleted, nowNano, removal.cause())
-		c.makeRetired(deleted)
-		c.notifyAtomicDeletion(deleted.Key(), deleted.Value(), deletedCause)
+		c.retire(deleted, deleted.Value(), deletedCause)
 		return nil
 	})
 	if deleted != nil {
@@ -1615,8 +1614,10 @@ func (c *cache[K, V]) notifyAtomicDeletion(key K, value V, cause DeletionCause) 
 	}
 
 	// The listener runs under the hash table's bucket lock, before the change is visible: an update
-	// in place calls it before the new value is set, and a replacement or removal before the table
-	// is changed. A panic is logged so that the change completes.
+	// in place calls it before the new value is set, and a replacement or removal before the node
+	// is retired (see retire) and the table is changed. A panic is logged so that the change
+	// completes. A runtime.Goexit cannot be stopped: the node stays alive and in the table, and the
+	// key's calls that the change cancelled before the listener stay cancelled.
 	defer recoverCallback(c.logger, "OnAtomicDeletion panicked")
 	c.onAtomicDeletion(DeletionEvent[K, V]{
 		Key:   key,
@@ -2273,6 +2274,17 @@ func (c *cache[K, V]) evictionOrder(hottest bool) iter.Seq[Entry[K, V]] {
 			}
 		}
 	}
+}
+
+// retire reports the removal or replacement of n, which held value, to OnAtomicDeletion and
+// retires n, under the bucket lock that the caller holds. The listener runs first: if it calls
+// runtime.Goexit, n stays alive and in the table, and the timer wheel and the policy still hold
+// it, so that a removal by maintenance is retried on its next pass. Retired first, an expired n
+// would also leave the timer wheel, which does not reschedule a retired node, and in a cache
+// without a maximum size only a write of its key would remove it.
+func (c *cache[K, V]) retire(n node.Node[K, V], value V, cause DeletionCause) {
+	c.notifyAtomicDeletion(n.Key(), value, cause)
+	c.makeRetired(n)
 }
 
 func (c *cache[K, V]) makeRetired(n node.Node[K, V]) {

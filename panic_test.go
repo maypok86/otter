@@ -971,35 +971,41 @@ func TestCache_GoexitWhileWritingBulkLoadedValues(t *testing.T) {
 
 // An OnAtomicDeletion that calls runtime.Goexit stops the write or removal, as a Compute function
 // that exits does: the key keeps its previous value, which every read reports, and the next write
-// of the key works. In a bounded cache the node it would have replaced or removed is retired but
-// stays mapped, until that write replaces it.
+// of the key works. The node it would have updated, replaced or removed stays alive and mapped.
 func TestCache_GoexitInOnAtomicDeletion(t *testing.T) {
 	t.Parallel()
 
 	for _, maximumSize := range []int{0, 10} {
 		for _, tt := range []struct {
-			name  string
-			write func(c *Cache[int, int])
+			name string
+			// boxed makes the value boxed first, so that the write updates the node in place;
+			// an inline string is replaced
+			boxed bool
+			write func(c *Cache[int, string])
 		}{
-			{"replacement", func(c *Cache[int, int]) { c.Set(1, 2) }},
-			{"invalidation", func(c *Cache[int, int]) { c.Invalidate(1) }},
-			{"compute", func(c *Cache[int, int]) {
-				c.Compute(1, func(int, bool) (int, ComputeOp) { return 0, InvalidateOp })
+			{"update", true, func(c *Cache[int, string]) { c.Set(1, "2") }},
+			{"replacement", false, func(c *Cache[int, string]) { c.Set(1, "2") }},
+			{"invalidation", false, func(c *Cache[int, string]) { c.Invalidate(1) }},
+			{"compute", false, func(c *Cache[int, string]) {
+				c.Compute(1, func(string, bool) (string, ComputeOp) { return "", InvalidateOp })
 			}},
 		} {
 			t.Run(fmt.Sprintf("%s/MaximumSize=%d", tt.name, maximumSize), func(t *testing.T) {
 				t.Parallel()
 
 				var exit atomic.Bool
-				c := Must(&Options[int, int]{
+				c := Must(&Options[int, string]{
 					MaximumSize: maximumSize,
-					OnAtomicDeletion: func(DeletionEvent[int, int]) {
+					OnAtomicDeletion: func(DeletionEvent[int, string]) {
 						if exit.CompareAndSwap(true, false) {
 							runtime.Goexit()
 						}
 					},
 				})
-				c.Set(1, 1)
+				if tt.boxed {
+					c.Set(1, "0")
+				}
+				c.Set(1, "1")
 				exit.Store(true)
 				done := make(chan struct{})
 				go func() {
@@ -1011,19 +1017,73 @@ func TestCache_GoexitInOnAtomicDeletion(t *testing.T) {
 
 				v, ok := c.GetIfPresent(1)
 				require.True(t, ok)
-				require.Equal(t, 1, v)
+				require.Equal(t, "1", v)
 				e, ok := c.GetEntryQuietly(1)
 				require.True(t, ok)
-				require.Equal(t, 1, e.Value)
+				require.Equal(t, "1", e.Value)
+
+				require.True(t, c.cache.hashmap.Get(1).IsAlive(), "the node was retired")
+				validateCache(t, c)
 
 				completes(t, "a write after the exited listener", func() {
-					c.Set(1, 3)
+					c.Set(1, "3")
 				})
 				v, ok = c.GetIfPresent(1)
 				require.True(t, ok)
-				require.Equal(t, 3, v)
+				require.Equal(t, "3", v)
+				validateCache(t, c)
 			})
 		}
+	}
+}
+
+// A listener that exits while maintenance removes an expired node leaves it scheduled, so the
+// next clean-up removes it. Retired first, it would leave the timer wheel and stay in the table.
+func TestCache_GoexitInOnAtomicDeletionRetriesExpiration(t *testing.T) {
+	t.Parallel()
+
+	for _, maximumSize := range []int{0, 10} {
+		t.Run(fmt.Sprintf("MaximumSize=%d", maximumSize), func(t *testing.T) {
+			t.Parallel()
+
+			var exit atomic.Bool
+			var calls atomic.Int64
+			clock := newNonTickingClock()
+			c := Must(&Options[int, int]{
+				MaximumSize:      maximumSize,
+				ExpiryCalculator: ExpiryWriting[int, int](time.Minute),
+				Clock:            clock,
+				// no maintenance on other goroutines, which could take the exit
+				Executor: func(fn func()) { fn() },
+				OnAtomicDeletion: func(e DeletionEvent[int, int]) {
+					require.Equal(t, CauseExpiration, e.Cause)
+					calls.Add(1)
+					if exit.CompareAndSwap(true, false) {
+						runtime.Goexit()
+					}
+				},
+			})
+			c.Set(1, 1)
+			c.CleanUp()
+			clock.Sleep(2 * time.Minute)
+
+			exit.Store(true)
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				c.CleanUp()
+			}()
+			<-done
+			require.False(t, exit.Load(), "the listener was not called")
+			require.NotNil(t, c.cache.hashmap.Get(1))
+			validateCache(t, c)
+
+			clock.Sleep(time.Second)
+			c.CleanUp()
+			require.Nil(t, c.cache.hashmap.Get(1), "the expired node was not removed")
+			require.Equal(t, int64(2), calls.Load())
+			validateCache(t, c)
+		})
 	}
 }
 
