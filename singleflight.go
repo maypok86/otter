@@ -40,9 +40,11 @@ type call[K comparable, V any] struct {
 	// ownerCtxDone reports that the context the loader ran with had ended by the time it
 	// returned.
 	ownerCtxDone bool
-	// committed reports that the cache has decided what the call writes. It is written and
-	// read under the key's bucket lock in the cache's hash table.
-	committed bool
+	// committed reports that the cache has decided what the call writes. It is written under
+	// the key's bucket lock in the cache's hash table, before the value is published, and read
+	// under it, except by a refresh that joins without the lock (cache.startRefresh): a refresh
+	// requested after the value is visible does not join the call that wrote it.
+	committed atomic.Bool
 	// refused reports that the cache has not written the value a refresh or a load returned:
 	// the call was cancelled, or a refresh's node was replaced or expired; or that a refresh of
 	// a live value failed or was abandoned (group.abandon), so the key keeps that value. It is
@@ -212,10 +214,11 @@ func (g *group[K, V]) startRefresh(key K, base node.Node[K, V]) (c *call[K, V], 
 
 func (g *group[K, V]) startCall(key K, isRefresh bool, base node.Node[K, V], nowNano int64) (c *call[K, V], shouldLoad bool) {
 	// A refresh's base is the key's live node, read under its bucket lock, so a call started from
-	// the same base is not superseded.
+	// the same base is not superseded. A committed call has already written its result, in place
+	// over that base, so a refresh that joined it would report that result without reloading it.
 	joins := func(c *call[K, V]) bool {
 		if isRefresh {
-			return c.base == base
+			return c.base == base && !c.committed.Load()
 		}
 		return !g.superseded(c, nowNano)
 	}
@@ -585,5 +588,5 @@ func (g *group[K, V]) deleteOnRemoval(key K) {
 }
 
 func droppedOnRemoval[K comparable, V any](c *call[K, V]) bool {
-	return (c.isRefresh && c.base != nil) || c.committed
+	return (c.isRefresh && c.base != nil) || c.committed.Load()
 }

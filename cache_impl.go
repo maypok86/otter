@@ -739,8 +739,9 @@ func (c *cache[K, V]) doCompute(
 func (c *cache[K, V]) startRefresh(key K, isManual bool, nowNano int64) (cl *call[K, V], shouldLoad bool) {
 	// fast path: a read that saw a change does not find the calls the change cancelled. A call is
 	// joined only if it was started from the key's live node, or from an absent key that is
-	// still absent (see group.startRefresh); then it is not superseded either.
-	if cl := c.singleflight.getCall(key); cl != nil {
+	// still absent, and has not committed (see group.startRefresh); then it is not superseded
+	// either.
+	if cl := c.singleflight.getCall(key); cl != nil && !cl.committed.Load() {
 		if n := c.getNodeQuietly(key, nowNano); cl.base == n && (n == nil || n.IsAlive()) {
 			return cl, false
 		}
@@ -956,7 +957,7 @@ func (c *cache[K, V]) commitCall(cl *call[K, V]) mutation[K, V] {
 	m := c.mutate(cl.key, from, func(prev previous[K, V]) (mutationOp, V) {
 		// From here on, an eviction or expiration of the key drops the call (see
 		// group.deleteOnRemoval): it can no longer bring the removed value back.
-		cl.committed = true
+		cl.committed.Store(true)
 		if !cl.isRefresh && prev.live {
 			// A load starts on a miss, so a write has given the key a value during the load. The
 			// write may not have cancelled the load: a write that inserts or replaces a node
@@ -1016,7 +1017,7 @@ func (c *cache[K, V]) readForAdoption(cl *call[K, V], nowNano int64) (value V, e
 	c.hashmap.Compute(cl.key, func(n node.Node[K, V]) node.Node[K, V] {
 		if n != nil && !n.HasExpired(nowNano) {
 			value, expiresAt, live = n.Value(), c.expiresAtOf(n), n
-			cl.committed = true
+			cl.committed.Store(true)
 		}
 		return n
 	})

@@ -1875,6 +1875,102 @@ func TestCache_RefreshDoesNotJoinLoadOfLiveKey(t *testing.T) {
 	require.Equal(t, 101, v)
 }
 
+// A call stays registered after its commit until finish deletes it. A Refresh requested in
+// between, once the committed result is visible, does not join the call: it reports that result
+// without reloading it, while the data source may have changed since. The refresh of a live
+// value commits in place, over the base a new refresh would start from, and a failed load of an
+// absent key leaves the key absent, the base of a new one too.
+func TestCache_RefreshDoesNotJoinCommittedCall(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	loadErr := errors.New("load failed")
+	tests := []struct {
+		name string
+		// live writes the key before the first refresh
+		live bool
+		// loader returns the result of the first refresh, then a later one
+		loader func(calls *atomic.Int64) splitLoader
+		first  func(t *testing.T, r RefreshResult[int, int])
+		// want is the value of the second refresh
+		want int
+	}{
+		{
+			name: "refresh of a live value",
+			live: true,
+			loader: func(calls *atomic.Int64) splitLoader {
+				return splitLoader{reload: func(_ context.Context, _, old int) (int, error) {
+					calls.Add(1)
+					return old + 1, nil
+				}}
+			},
+			first: func(t *testing.T, r RefreshResult[int, int]) {
+				require.NoError(t, r.Err)
+				require.Equal(t, 2, r.Value)
+			},
+			want: 3,
+		},
+		{
+			name: "failed load of an absent key",
+			loader: func(calls *atomic.Int64) splitLoader {
+				return splitLoader{load: func(context.Context, int) (int, error) {
+					if calls.Add(1) == 1 {
+						return 0, loadErr
+					}
+					return 7, nil
+				}}
+			},
+			first: func(t *testing.T, r RefreshResult[int, int]) {
+				require.ErrorIs(t, r.Err, loadErr)
+			},
+			want: 7,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			c := Must(&Options[int, int]{
+				// bounded, so that the refreshed value is written in place over its base
+				MaximumSize:       100,
+				RefreshCalculator: RefreshWriting[int, int](time.Hour),
+				Logger:            &recordingLogger{},
+			})
+			if tt.live {
+				c.Set(1, 1)
+			}
+			// The first commit waits after it has written its result, before its call is deleted.
+			committed, release := make(chan struct{}), make(chan struct{})
+			var once sync.Once
+			commit := c.cache.singleflight.commit
+			c.cache.singleflight.commit = func(cl *call[int, int]) mutation[int, int] {
+				m := commit(cl)
+				once.Do(func() {
+					close(committed)
+					<-release
+				})
+				return m
+			}
+			var calls atomic.Int64
+			loader := tt.loader(&calls)
+
+			first := c.Refresh(ctx, 1, loader)
+			<-committed
+			second := c.Refresh(ctx, 1, loader)
+			close(release)
+
+			tt.first(t, <-first)
+			r := <-second
+			require.NoError(t, r.Err)
+			require.Equal(t, tt.want, r.Value, "the second refresh reported the first one's result")
+			require.Equal(t, int64(2), calls.Load())
+			v, ok := c.GetIfPresent(1)
+			require.True(t, ok)
+			require.Equal(t, tt.want, v)
+		})
+	}
+}
+
 func TestCache_InPlaceWriteCancelsRefreshBeforePublishing(t *testing.T) {
 	t.Parallel()
 
