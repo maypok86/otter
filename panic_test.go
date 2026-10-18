@@ -1482,3 +1482,43 @@ func TestCache_GoexitInExecutorKeepsTheTaskOfAFullBuffer(t *testing.T) {
 	require.LessOrEqual(t, c.EstimatedSize(), 10)
 }
 
+// goexitClock calls runtime.Goexit on a reading while exits is set.
+type goexitClock struct {
+	*nonTickingClock
+	exits atomic.Bool
+}
+
+func (c *goexitClock) NowNano() int64 {
+	if c.exits.Load() {
+		runtime.Goexit()
+	}
+	return c.nonTickingClock.NowNano()
+}
+
+// A clock that calls runtime.Goexit while maintenance reads it interrupts the pass like a panic
+// further on: the drain is left required, so the next write schedules it.
+func TestCache_GoexitInClockDuringMaintenance(t *testing.T) {
+	t.Parallel()
+
+	clock := &goexitClock{nonTickingClock: newNonTickingClock()}
+	c := Must(&Options[int, int]{
+		MaximumSize:      10,
+		ExpiryCalculator: ExpiryWriting[int, int](time.Hour),
+		Clock:            clock,
+		// runs every drain on the writer, so no pass runs concurrently with the checks below
+		Executor: syncExecutor,
+	})
+	for i := range 20 {
+		c.Set(i, i)
+	}
+	c.CleanUp()
+
+	clock.exits.Store(true)
+	runExiting(c.CleanUp)
+	clock.exits.Store(false)
+
+	for i := 20; i < 30; i++ {
+		c.Set(i, i)
+	}
+	require.Equal(t, 10, c.EstimatedSize(), "no drain ran after the interrupted pass")
+}

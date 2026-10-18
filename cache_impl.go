@@ -2012,15 +2012,16 @@ func (c *cache[K, V]) rescheduleCleanUpIfIncomplete() {
 }
 
 func (c *cache[K, V]) maintenance(t *task[K, V]) {
-	c.drainStatus.Store(processingToIdle)
-	c.readMaintenanceTime()
 	completed := false
 	defer func() {
 		if !completed {
-			// interrupted by a panic: the buffers may still hold work
+			// interrupted by a panic or runtime.Goexit, also of the clock: the buffers may still
+			// hold work
 			c.drainStatus.Store(required)
 		}
 	}()
+	c.drainStatus.Store(processingToIdle)
+	c.readMaintenanceTime()
 
 	c.drainReadBuffer()
 	c.drainWriteBuffer()
