@@ -44,8 +44,9 @@ type call[K comparable, V any] struct {
 	// read under the key's bucket lock in the cache's hash table.
 	committed bool
 	// refused reports that the cache has not written the value a refresh or a load returned:
-	// the call was cancelled, or a refresh's node was replaced or expired. It is written
-	// under the key's bucket lock, before done is closed.
+	// the call was cancelled, or a refresh's node was replaced or expired; or that a refresh of
+	// a live value failed, so the key keeps that value. It is written under the key's bucket
+	// lock, before done is closed.
 	refused bool
 	// expiresAt is when the value that the call hands to its waiters from the cache, the one it
 	// wrote or the live one it found, expires, and node is the node that held the value then;

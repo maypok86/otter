@@ -182,8 +182,9 @@ the call, wakes its waiters and publishes. `commitCall` writes only if `group.au
 says the call is still the current one for the key. A load writes only over a key without a
 live value: a live value was written during the load, and the load returns it to its owner and
 waiters, whatever it loaded, so the `Get` is a hit at the commit. A `Get` that owns or joined a
-call whose value the cache refuses (`call.refused`: a cancelled load, or a refresh that was
-cancelled or whose node is gone) does not take that value either: it returns the key's live
+call whose value the cache refuses (`call.refused`: a cancelled load, a refresh that was
+cancelled or whose node is gone, or a failed refresh of a live value, which keeps it) does not
+take that value either: it returns the key's live
 value, or loads the key again. A load cancelled by an invalidation may have read the data
 source before the change, and `Invalidate` has reported the key absent. Nor does a `Get` that joined a load after its value was
 committed and had expired before the `Get` started (`call.expiresAt`): the call stays registered

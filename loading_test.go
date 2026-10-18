@@ -3243,6 +3243,173 @@ func TestCache_GetThatJoinedRefreshOfExpiringEntryLoads(t *testing.T) {
 	require.Equal(t, 5, v)
 }
 
+func TestCache_GetJoinedFailedRefreshOfLiveValue(t *testing.T) {
+	t.Parallel()
+
+	// A Get that misses a key may join a refresh of a value written right after the miss. If the
+	// reload fails, the cache keeps the value, and the Get returns it, as a load that finds a value
+	// written during it does: the reload's error is not a result of the Get's own load.
+	ctx := context.Background()
+	tests := []struct {
+		name   string
+		reload func(context.Context, int, int) (int, error)
+	}{
+		{
+			name: "error",
+			reload: func(context.Context, int, int) (int, error) {
+				return 0, errors.New("reload failed")
+			},
+		},
+		{
+			name: "panic",
+			reload: func(context.Context, int, int) (int, error) {
+				panic("reload panicked")
+			},
+		},
+	}
+	for _, tt := range tests {
+		for _, bulk := range []bool{false, true} {
+			// The refresh waits in the queue until the Get has joined it.
+			var q queuedExecutor
+			c := Must(&Options[int, int]{
+				RefreshCalculator: RefreshWriting[int, int](time.Hour),
+				Executor:          q.execute,
+				Logger:            &recordingLogger{},
+			})
+			c.cache.singleflight.init()
+			// The Get misses the key, then another goroutine writes it and requests a refresh
+			// before the Get registers its load.
+			nowNano := c.cache.clock.NowNano()
+			n, _ := c.cache.getNode(1, nowNano)
+			require.Nil(t, n)
+			c.Set(1, 1)
+			c.Refresh(ctx, 1, splitLoader{reload: tt.reload})
+
+			got := make(chan getResult, 1)
+			go func() {
+				if bulk {
+					res := make(map[int]int, 1)
+					retry, errs, err := c.cache.bulkLoadOrJoin(ctx, map[int]*call[int, int]{1: nil},
+						newTestBulkLoader[int, int](func(context.Context, []int) (map[int]int, error) {
+							return map[int]int{1: 5}, nil
+						}), res, nil)
+					if len(retry) > 0 {
+						err = errors.Join(err, errors.New("retry"))
+					}
+					got <- getResult{res[1], errors.Join(append(errs, err)...)}
+					return
+				}
+				v, retry, err := c.cache.loadOrJoin(ctx, 1, splitLoader{load: func(context.Context, int) (int, error) {
+					return 5, nil
+				}}, nowNano)
+				if retry {
+					err = errors.Join(err, errors.New("retry"))
+				}
+				got <- getResult{v, err}
+			}()
+			waitForJoinedLoad(t)
+			q.run()
+
+			r := <-got
+			require.NoError(t, r.err, "%s, bulk=%v", tt.name, bulk)
+			require.Equal(t, 1, r.value, "%s, bulk=%v", tt.name, bulk)
+			v, ok := c.GetIfPresent(1)
+			require.True(t, ok, "%s, bulk=%v", tt.name, bulk)
+			require.Equal(t, 1, v, "%s, bulk=%v", tt.name, bulk)
+		}
+	}
+}
+
+// A Get that joins a refresh whose base is not a live value gets the refresh's result, as one
+// that joins a load does: a failed load of an absent key returns its error, and a reload that
+// finds the key gone removes it and reports it not found.
+func TestCache_GetJoinedRefreshWithoutLiveValue(t *testing.T) {
+	ctx := context.Background()
+	loadErr := errors.New("load failed")
+	tests := []struct {
+		name string
+		// live writes the key before the refresh is requested
+		live   bool
+		loader splitLoader
+		check  func(t *testing.T, r getResult, bulk bool)
+	}{
+		{
+			name:   "failed load of an absent key",
+			loader: splitLoader{load: func(context.Context, int) (int, error) { return 0, loadErr }},
+			check: func(t *testing.T, r getResult, _ bool) {
+				require.ErrorIs(t, r.err, loadErr)
+			},
+		},
+		{
+			name: "reload that finds the key gone",
+			live: true,
+			loader: splitLoader{reload: func(context.Context, int, int) (int, error) {
+				return 0, ErrNotFound
+			}},
+			check: func(t *testing.T, r getResult, bulk bool) {
+				if bulk {
+					// BulkGet leaves a key that is not found out of its result
+					require.NoError(t, r.err)
+					return
+				}
+				require.ErrorIs(t, r.err, ErrNotFound)
+			},
+		},
+	}
+	for _, tt := range tests {
+		for _, bulk := range []bool{false, true} {
+			// not parallel, nor is the test: waitForJoinedLoad tells goroutines apart by the
+			// top-level test
+			t.Run(fmt.Sprintf("%s/bulk=%v", tt.name, bulk), func(t *testing.T) {
+				// The refresh waits in the queue until the Get has joined it.
+				var q queuedExecutor
+				c := Must(&Options[int, int]{
+					RefreshCalculator: RefreshWriting[int, int](time.Hour),
+					Executor:          q.execute,
+					Logger:            &recordingLogger{},
+				})
+				c.cache.singleflight.init()
+				nowNano := c.cache.clock.NowNano()
+				n, _ := c.cache.getNode(1, nowNano)
+				require.Nil(t, n)
+				if tt.live {
+					c.Set(1, 1)
+				}
+				c.Refresh(ctx, 1, tt.loader)
+
+				got := make(chan getResult, 1)
+				go func() {
+					if bulk {
+						res := make(map[int]int, 1)
+						retry, errs, err := c.cache.bulkLoadOrJoin(ctx, map[int]*call[int, int]{1: nil},
+							newTestBulkLoader[int, int](func(context.Context, []int) (map[int]int, error) {
+								return map[int]int{1: 5}, nil
+							}), res, nil)
+						if len(retry) > 0 {
+							err = errors.Join(err, errors.New("retry"))
+						}
+						got <- getResult{res[1], errors.Join(append(errs, err)...)}
+						return
+					}
+					v, retry, err := c.cache.loadOrJoin(ctx, 1, splitLoader{load: func(context.Context, int) (int, error) {
+						return 5, nil
+					}}, nowNano)
+					if retry {
+						err = errors.Join(err, errors.New("retry"))
+					}
+					got <- getResult{v, err}
+				}()
+				waitForJoinedLoad(t)
+				q.run()
+
+				tt.check(t, <-got, bulk)
+				_, ok := c.GetIfPresent(1)
+				require.False(t, ok)
+			})
+		}
+	}
+}
+
 func TestCache_GetStopsReloadingInvalidatedKeyWhenContextEnds(t *testing.T) {
 	t.Parallel()
 

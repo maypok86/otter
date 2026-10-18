@@ -968,16 +968,23 @@ func (c *cache[K, V]) commitCall(cl *call[K, V]) mutation[K, V] {
 			return opKeep, cl.value
 		}
 		authoritative := c.singleflight.authoritative(cl, prev, prev.nowNano)
-		// A failed load reports its error: no value of the key is involved.
 		cl.refused = !authoritative && (cl.isRefresh || cl.err == nil)
 		if authoritative && cl.isNotFound {
 			return opInvalidate, cl.value
 		}
 		if cl.err != nil {
-			// A failed refresh of an absent key leaves an expired node that it matched as it is.
-			if authoritative && cl.isRefresh && prev.live && c.withRefresh {
-				entry := c.nodeToEntry(prev.node, prev.nowNano)
-				prev.node.SetRefreshableAt(refreshableAtAfterWrite(c.refreshCalculator, reloadFailure, entry, entry.Value, cl.err, prev.nowNano))
+			// A failed load reports its error: no value of the key is involved. A failed refresh
+			// of an absent key leaves an expired node that it matched as it is.
+			if authoritative && cl.isRefresh && prev.live {
+				// A failed refresh of a live value keeps it, and a Get that joined the refresh
+				// after missing the key returns that value, as a hit would: the reload's error
+				// is not a result of the Get's own load. Set first: the refresh calculator below
+				// may panic, and the waiters would then get that panic.
+				cl.refused = true
+				if c.withRefresh {
+					entry := c.nodeToEntry(prev.node, prev.nowNano)
+					prev.node.SetRefreshableAt(refreshableAtAfterWrite(c.refreshCalculator, reloadFailure, entry, entry.Value, cl.err, prev.nowNano))
+				}
 			}
 			return opKeep, cl.value
 		}
@@ -1017,8 +1024,9 @@ func (c *cache[K, V]) readForAdoption(cl *call[K, V], nowNano int64) (value V, e
 }
 
 // valueAfterRefusal returns the value that a Get or BulkGet takes from a call whose value the
-// cache refused (call.refused): a write or an invalidation cancelled it, or the node a refresh
-// was requested for was replaced or expired, so the value is not one the key had. The key's live
+// cache refused (call.refused): a write or an invalidation cancelled it, the node a refresh
+// was requested for was replaced or expired, so the value is not one the key had, or a refresh
+// of a live value failed, which keeps the value. The key's live
 // value is returned, as a hit would return it; ok is false if there is none, and the key is
 // loaded again. A load that an invalidation cancelled may have read its data source before the
 // change that the invalidation follows.
