@@ -222,10 +222,11 @@ hold together:
   nil if absent (`cache.startRefresh` in `refreshKey`, `bulkRefreshKeys`; see `group.abandon`
   above for an executor or clock that fails before the hand-over). A refresh that a read started is not registered if the
   node is fresh by then or the key is gone. A refresh joins only a call started from the same
-  base, the node it would refresh: a call from another base, such as a load of a key that has a
-  live value since, cannot be written, so the refresh registers a call of its own, which
-  replaces that call; the replaced call still completes for its own waiters. A refresh that
-  finds a call from its own base joins it without taking the lock;
+  base, the node it would refresh, that has not committed (`call.committed`): a call from
+  another base, such as a load of a key that has a live value since, cannot be written, so the
+  refresh registers a call of its own, which replaces that call; the replaced call still
+  completes for its own waiters. A refresh that finds a call from its own base joins it without
+  taking the lock;
 - writes and invalidations cancel pending calls under the same lock, before the change is
   published (`cancelCalls`, before `OnAtomicDeletion` and `SetValue`). A refresh requested by
   another goroutine during a write waits for the lock and starts from what the write left, and
@@ -239,7 +240,11 @@ hold together:
 
 `isRefreshBase` compares node identity, so it does not see the base updated in place. While a
 refresh is registered, only a write from the API changes the base's value in place, and that
-write cancels the refresh. Loads and refreshes of the key join the registered call, a fake call
+write cancels the refresh, or the refresh's own commit. A committed call stays registered until
+`finish` deletes it, and a refresh requested after its value is visible does not join it: it
+would report that value without reloading it. `committed` is atomic for that check, which the
+fast path of `cache.startRefresh` makes without the lock; it is stored under the lock before the
+value is published. Loads and refreshes of the key join the registered call, a fake call
 writes only when the key has no call of its own, and `SetExpiresAfter`/`SetRefreshableAfter`
 change deadlines, not the value. A reload reads the base's value when it starts
 (`call.base.Value()`), which is the value its result replaces: a write before the registration
