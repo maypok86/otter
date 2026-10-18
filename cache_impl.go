@@ -1871,6 +1871,8 @@ func (c *cache[K, V]) Values() iter.Seq[V] {
 // that is being loaded (or reloaded) and is otherwise not present.
 func (c *cache[K, V]) InvalidateAll() {
 	nodes := c.invalidateAllLocked()
+	// Writers that ran while the lock was held could not take it, and left a drain required.
+	c.rescheduleCleanUpIfIncomplete()
 
 	for _, n := range nodes {
 		c.Invalidate(n.Key())
@@ -2355,6 +2357,9 @@ func (c *cache[K, V]) evictionOrder(hottest bool) iter.Seq[Entry[K, V]] {
 			seq = c.evictionPolicy.hottest()
 		}
 
+		// Deferred before the unlock, so that it runs after it: writers that ran during the
+		// iteration could not take the lock, and left a drain required.
+		defer c.rescheduleCleanUpIfIncomplete()
 		c.evictionMutex.Lock()
 		defer c.evictionMutex.Unlock()
 		c.maintenance(nil)
