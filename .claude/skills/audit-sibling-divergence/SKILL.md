@@ -41,8 +41,9 @@ Check that each pair still exists and add new ones (a new API, a new node varian
 Compare return values, hit/miss stats, listener events, deadlines and refresh times.
 
 **Group C: write paths that should be indistinguishable**
-- C1: update in place vs replacement of an inline node vs resurrection of an expired node
-  (`atomicSet`): events, causes, weight accounting, deadlines, refresh scheduling
+- C1: update in place vs replacement of an inline node vs replacement of an expired node or of
+  one whose deadline moves earlier (`atomicSet`): events, causes, weight accounting,
+  deadlines, refresh scheduling
 - C2: `set` vs `doCompute` vs `commitCall` (load or refresh completion), each calling
   `atomicSet`: what each passes in, what each does after the lock
 - C3: `afterWrite` vs `afterDelete` vs `removeNode` (maintenance): which events reach

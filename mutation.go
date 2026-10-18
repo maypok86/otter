@@ -179,9 +179,9 @@ func (c *cache[K, V]) afterWritePolicies(m mutation[K, V]) {
 	switch {
 	case m.inPlace:
 		// Updated in place: the policies observe an access through the lossy read buffer, and a
-		// changed weight or an earlier expiration time through a task, which must not be lost. A
-		// later expiration time needs no task: the timer wheel reschedules a node that it finds
-		// has not expired yet.
+		// changed weight through a task, which must not be lost. The expiration time can only
+		// move later (see atomicSet), which needs no task: the timer wheel reschedules a node that
+		// it finds has not expired yet.
 		if !quiet {
 			c.afterRead(n, false)
 		}
@@ -200,23 +200,29 @@ func (c *cache[K, V]) afterWritePolicies(m mutation[K, V]) {
 // atomicSet applies a write of value to the key whose current node is old (nil if absent).
 // The user's weigher, expiry and refresh calculators are called once per write.
 //
-// A write over a node that can set its value and is still in the table is applied in place,
-// keeping the node:
-// plain updates, loads and refreshes, and writes over an expired entry that has not been
-// removed yet (it is reused for the new value, and the old one is reported as expired).
-// Swapping in a new node forces an update task through the bounded write buffer so that the
-// policies can relink the node. Under an update-heavy workload that buffer overflows and every
-// writer falls back to performCleanUp, serializing all writes on evictionMutex. When the node
-// identity is kept, the policies only need to observe an access, which goes through the lossy
-// read buffer, unless the weight changed or the expiration time moved earlier: the eviction
-// policy accounts the weight separately (policyWeight) and the timer wheel only reschedules a
-// deadline that moved later, so those changes go through a reconciliation task.
+// A write over a live node that can set its value is applied in place, keeping the node: plain
+// updates, loads and refreshes. Swapping in a new node forces an update task through the bounded
+// write buffer so that the policies can relink the node. Under an update-heavy workload that
+// buffer overflows and every writer falls back to performCleanUp, serializing all writes on
+// evictionMutex. When the node identity is kept, the policies only need to observe an access,
+// which goes through the lossy read buffer, unless the weight changed: the eviction policy
+// accounts the weight separately (policyWeight), so that change goes through a reconciliation
+// task.
+//
+// A write that moves the expiration time earlier, or over an entry that has expired and not been
+// removed yet, swaps in a new node. Until an in-place write stores the new deadline, the node
+// holds the new value under the old one, and a lock-free reader, which loads the deadline before
+// the value, may pair them. That is harmless only while the old deadline is live and not earlier
+// than the new one: over an expired entry, a reader that finds the old deadline passed reports
+// the key absent after one with an earlier clock returned the new value, and with an earlier
+// deadline, a reader that starts after it still returns the value.
 //
 // A value that fits in one atomic word (a pointer-shaped value, or one without pointers of up to
-// 8 bytes) is always set in place. A larger value is kept inline, and an inline value is never
-// written after publication, so that a concurrent reader cannot observe a torn or cleared value:
-// the first update of such a live entry replaces the node with a boxed one, whose value lives
-// behind an atomic pointer, so that later updates of this (likely hot) key are applied in place.
+// 8 bytes) can always be set in place (CanSetValue); the cases above still swap in a new node. A
+// larger value is kept inline, and an inline value is never written after publication, so that a
+// concurrent reader cannot observe a torn or cleared value: the first update of such a live entry
+// replaces the node with a boxed one, whose value lives behind an atomic pointer, so that later
+// updates of this (likely hot) key can be applied in place.
 func (c *cache[K, V]) atomicSet(
 	key K,
 	value V,
@@ -249,13 +255,14 @@ func (c *cache[K, V]) atomicSet(
 	// When the node is updated in place, superseded cannot tell such a call from a live one.
 	c.cancelCalls(key, from)
 
-	if old != nil && c.withMaintenance && old.IsAlive() && old.CanSetValue() {
+	// in place only over a live entry whose deadline does not move earlier, see above
+	if c.isLiveNode(old, nowNano) && old.CanSetValue() &&
+		(!c.withExpiration || entry.ExpiresAtNano >= old.ExpiresAt()) {
 		written := writeResult{
-			// before the node is changed: an expired entry is reused, and its old value expired
-			cause:   getCause(old, nowNano, CauseReplacement),
-			inPlace: true,
-			reconcile: weight != old.Weight() ||
-				(c.withExpiration && entry.ExpiresAtNano < old.ExpiresAt()),
+			// the old entry is live: an expired one is replaced
+			cause:     CauseReplacement,
+			inPlace:   true,
+			reconcile: weight != old.Weight(),
 			expiresAt: entry.ExpiresAtNano,
 		}
 		// The synchronous listener runs before the new value is published, as it does when the
@@ -308,8 +315,8 @@ type writeResult struct {
 	cause DeletionCause
 	// inPlace reports that the existing node was updated instead of being replaced.
 	inPlace bool
-	// reconcile reports a changed weight or an earlier expiration time of an in-place update,
-	// which the policies cannot pick up from an access.
+	// reconcile reports a changed weight of an in-place update, which the policies cannot pick up
+	// from an access.
 	reconcile bool
 	// expiresAt is the expiration time a write gave the new value. Once the lock is released,
 	// another write can update the node again, so it is not read back from the node.

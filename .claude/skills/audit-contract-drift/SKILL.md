@@ -33,7 +33,7 @@ configurations that activate it, the operations it covers):
 
 For each promise, follow every path that should honor it: single-key and bulk calls,
 `Compute*`, loads and refreshes (manual and automatic), expiration found by the wheel or by a
-read, eviction, in-place updates and replacements, resurrection of expired entries, iterators
+read, eviction, in-place updates and replacements, writes over expired entries, iterators
 and snapshots, persistence round-trips, caches with and without maintenance.
 
 A path that does something other than what the comment promises is a drift finding. So is a

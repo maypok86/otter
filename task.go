@@ -26,8 +26,8 @@ const (
 	addReason
 	deleteReason
 	updateReason
-	// reconcileReason reports a weight changed or an expiration time moved earlier by an
-	// in-place update.
+	// reconcileReason reports a weight changed by an in-place update, or an expiration time
+	// moved earlier by SetExpiresAfter.
 	reconcileReason
 )
 

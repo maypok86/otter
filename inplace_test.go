@@ -179,7 +179,7 @@ func TestCache_ExpireNodeRechecksExpiration(t *testing.T) {
 		ci := c.cache
 		ci.evictionMutex.Lock()
 		if extended {
-			// a writer extends n in place after the wheel found it expired, before expireNode
+			// the deadline of n moves later after the wheel found it expired, before expireNode
 			// takes the hash table's lock
 			n.SetExpiresAt(now + int64(time.Minute))
 		}
@@ -499,9 +499,9 @@ func TestCache_InPlaceWeightChange(t *testing.T) {
 	validateCache(t, c)
 }
 
-// An update that moves the expiration time earlier is applied in place, and the entry still
-// expires on time: the timer wheel alone only reschedules a deadline that moved later.
-func TestCache_InPlaceUpdateShrinksExpiration(t *testing.T) {
+// An update that moves the expiration time earlier replaces the node, and the entry expires on
+// time: in place, a reader could pair the new value with the old, later deadline.
+func TestCache_UpdateThatShrinksExpirationReplacesNode(t *testing.T) {
 	t.Parallel()
 
 	clk := newNonTickingClock()
@@ -519,7 +519,7 @@ func TestCache_InPlaceUpdateShrinksExpiration(t *testing.T) {
 	n := c.cache.hashmap.Get(1)
 
 	c.Set(1, 10) // the entry now expires in 10s instead of 100s
-	require.True(t, n.AsPointer() == c.cache.hashmap.Get(1).AsPointer(), "the node was replaced")
+	require.False(t, n.AsPointer() == c.cache.hashmap.Get(1).AsPointer(), "an earlier deadline was set in place")
 	validateCache(t, c)
 
 	clk.Sleep(20 * time.Second)
@@ -529,10 +529,10 @@ func TestCache_InPlaceUpdateShrinksExpiration(t *testing.T) {
 	validateCache(t, c)
 }
 
-// A write over an expired entry that is still in the table reuses its node, and reports the
+// A write over an expired entry that is still in the table replaces its node, and reports the
 // old value as expired rather than replaced. The nodes are taken after an update, which leaves the
-// node of any value updatable in place.
-func TestCache_InPlaceUpdateResurrectsExpiredEntry(t *testing.T) {
+// node of any value updatable in place, so that only the expiration decides.
+func TestCache_WriteOverExpiredEntryReplacesNode(t *testing.T) {
 	t.Parallel()
 
 	spec := cacheSpec{expiry: withExpiry}
@@ -567,7 +567,7 @@ func TestCache_InPlaceUpdateResurrectsExpiredEntry(t *testing.T) {
 		require.Equal(t, 40, v)
 
 		for key := 1; key <= 4; key++ {
-			require.True(t, nodes[key] == cc.cache.nodeID(key), "key %d: the node was replaced", key)
+			require.False(t, nodes[key] == cc.cache.nodeID(key), "key %d: the expired node was reused", key)
 			cc.requireValue(t, key, key*10)
 			events = append(events, DeletionEvent[int, int]{Key: key, Value: 2, Cause: CauseExpiration})
 		}
@@ -595,9 +595,9 @@ func TestCache_InPlaceRefresh(t *testing.T) {
 	})
 }
 
-// The access that an in-place update reports goes through the lossy read buffer and may be
-// dropped. The reconciliation task alone must move a node whose deadline moved earlier to the
-// right bucket of the timer wheel.
+// The access that SetExpiresAfter reports goes through the lossy read buffer and may be dropped.
+// The reconciliation task alone must move a node whose deadline moved earlier to the right
+// bucket of the timer wheel.
 func TestCache_ReconcileReschedulesEarlierExpiration(t *testing.T) {
 	t.Parallel()
 
@@ -616,7 +616,7 @@ func TestCache_ReconcileReschedulesEarlierExpiration(t *testing.T) {
 
 	ci.evictionMutex.Lock()
 	ci.maintenance(nil)
-	// an in-place update moved the deadline from 100s to 10s, and its access was dropped
+	// SetExpiresAfter moved the deadline from 100s to 10s, and its access was dropped
 	n.SetExpiresAt(clk.NowNano() + int64(10*time.Second))
 	ci.runTask(newTask(n, nil, reconcileReason))
 	ci.evictionMutex.Unlock()
@@ -660,9 +660,129 @@ func TestCache_ReconcileAfterDeadlinePassed(t *testing.T) {
 	validateCache(t, c)
 }
 
-// One in-place update, or one write over an expired entry, can change both the weight and the
-// deadline; a single reconciliation must fix both.
-func TestCache_InPlaceWeightAndExpirationChange(t *testing.T) {
+// An update one nanosecond before the deadline is applied in place, with a later deadline or,
+// under ExpiryCreating, the same one; a write after the deadline replaces the node.
+func TestCache_UpdateOfLiveEntryNearDeadlineIsInPlace(t *testing.T) {
+	t.Parallel()
+
+	forEachSpec(t, cacheSpec{expiry: withExpiry}, func(t *testing.T, cc *cacheContext) {
+		cc.cache.Set(1, 1)
+		// an update, after which a maintained node of any value can be updated in place
+		cc.cache.Set(1, 2)
+		before := cc.cache.nodeID(1)
+		cc.run()
+
+		cc.advance(specExpiry - time.Nanosecond)
+		cc.cache.Set(1, 3)
+		require.True(t, before == cc.cache.nodeID(1), "the node was replaced near the deadline")
+		cc.requireValue(t, 1, 3)
+		cc.run()
+
+		live := cc.cache.nodeID(1)
+		cc.advance(2 * specExpiry)
+		cc.cache.Set(1, 4)
+		require.False(t, live == cc.cache.nodeID(1), "the expired node was reused")
+		cc.requireValue(t, 1, 4)
+		cc.run()
+	})
+}
+
+// tickingClock returns a new tick on every reading, so that the readings of all goroutines are
+// totally ordered.
+type tickingClock struct {
+	now atomic.Int64
+}
+
+func (c *tickingClock) NowNano() int64 {
+	return c.now.Add(1)
+}
+
+func (c *tickingClock) Tick(time.Duration) <-chan time.Time {
+	return nil
+}
+
+// shortUpdateExpiry keeps a created entry for an hour and an updated one for a tick, and records
+// the clock reading of each update, indexed by its value.
+type shortUpdateExpiry struct {
+	writtenAt [1 << 16]atomic.Int64
+	value     [1 << 16]atomic.Int64
+}
+
+func (e *shortUpdateExpiry) ExpireAfterCreate(Entry[int, int]) time.Duration {
+	return time.Hour
+}
+
+func (e *shortUpdateExpiry) ExpireAfterUpdate(entry Entry[int, int], _ int) time.Duration {
+	i := entry.Value & (len(e.value) - 1)
+	e.writtenAt[i].Store(entry.SnapshotAtNano)
+	e.value[i].Store(int64(entry.Value))
+	return time.Nanosecond
+}
+
+func (e *shortUpdateExpiry) ExpireAfterRead(Entry[int, int]) time.Duration {
+	return 0
+}
+
+// A read that starts after an update's deadline does not return the update's value. In place,
+// the node would hold the new value under the old, later deadline until the write stores the
+// new one, and the readers of a hot key land in between often. The other half, a write over an
+// expired entry, is pinned by the node identity checks of TestCache_WriteOverExpiredEntryReplacesNode.
+func TestCache_ShortenedDeadlineIsNotReadPastIt(t *testing.T) {
+	t.Parallel()
+
+	clk := &tickingClock{}
+	clk.now.Store(1 << 40)
+	expiry := &shortUpdateExpiry{}
+	c := Must(&Options[int, int]{
+		ExpiryCalculator: expiry,
+		Clock:            clk,
+	})
+
+	var (
+		stop       atomic.Bool
+		violations atomic.Int64
+		wg         sync.WaitGroup
+	)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; !stop.Load(); i++ {
+			c.Set(1, 2*i)   // a write over the expired update, live for an hour
+			c.Set(1, 2*i+1) // an update, live for one tick
+		}
+	}()
+	for range 3 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for !stop.Load() {
+				before := clk.now.Load()
+				v, ok := c.GetIfPresent(1)
+				if !ok || v%2 == 0 {
+					continue
+				}
+				i := v & (len(expiry.value) - 1)
+				writtenAt := expiry.writtenAt[i].Load()
+				if expiry.value[i].Load() != int64(v) {
+					// overwritten by a later update
+					continue
+				}
+				// the read's clock is after before, and the update expired at writtenAt+1
+				if before > writtenAt {
+					violations.Add(1)
+				}
+			}
+		}()
+	}
+	time.Sleep(time.Second)
+	stop.Store(true)
+	wg.Wait()
+	require.Zero(t, violations.Load(), "reads returned an update's value after its deadline")
+}
+
+// An update that changes both the weight and the deadline, and a write over an expired entry
+// with another weight, replace the node; the policies account the new weight and deadline.
+func TestCache_WeightAndExpirationChange(t *testing.T) {
 	t.Parallel()
 
 	clk := newNonTickingClock()
@@ -686,7 +806,7 @@ func TestCache_InPlaceWeightAndExpirationChange(t *testing.T) {
 
 	c.Set(1, 10) // lighter, and expires in 10s instead of 100s
 	c.CleanUp()
-	require.True(t, n.AsPointer() == c.cache.hashmap.Get(1).AsPointer(), "the node was replaced")
+	require.False(t, n.AsPointer() == c.cache.hashmap.Get(1).AsPointer(), "an earlier deadline was set in place")
 	require.Equal(t, uint64(110), c.WeightedSize())
 	validateCache(t, c)
 
@@ -703,7 +823,7 @@ func TestCache_InPlaceWeightAndExpirationChange(t *testing.T) {
 	clk.Sleep(51 * time.Second)
 	c.Set(3, 30)
 	c.CleanUp()
-	require.True(t, n.AsPointer() == c.cache.hashmap.Get(3).AsPointer(), "the node was replaced")
+	require.False(t, n.AsPointer() == c.cache.hashmap.Get(3).AsPointer(), "the expired node was reused")
 	require.Contains(t, deleted.get(), DeletionEvent[int, int]{Key: 3, Value: 50, Cause: CauseExpiration})
 	require.Equal(t, uint64(130), c.WeightedSize())
 	validateCache(t, c)

@@ -343,9 +343,13 @@ func TestCache_KeyMutations(t *testing.T) {
 					cc.run()
 					require.Equal(t, want.result, got, "result")
 					cc.requireValue(t, 1, want.value)
-					if state != prevAbsent && want.value == 2 && want.replacedBy == 0 {
+					if state == prevLive && want.value == 2 && want.replacedBy == 0 {
 						// the previous node was written over in place, if the configuration allows
 						require.Equal(t, cc.updatesInPlace(), cc.cache.nodeID(1) == before, "updated in place")
+					}
+					if state == prevExpired && want.value == 2 && want.replacedBy == 0 {
+						// an expired node is replaced (see atomicSet)
+						require.False(t, cc.cache.nodeID(1) == before, "an expired node was reused")
 					}
 
 					var events []DeletionEvent[int, int]

@@ -62,7 +62,7 @@ State, all under `evictionMutex`: `maximum`, `weightedSize`, `windowMaximum`,
    sample stay consistent? Does the sketch get resized, and does `sampleSize` follow?
 7. **Signals.** Hits are counted when the read buffer is drained (`access`), misses when an
    insert is replayed (`add`). Which writes count as what: in-place updates (an access),
-   replacements, resurrections of expired nodes, load and refresh completions? Is any event
+   replacements, writes over expired nodes, load and refresh completions? Is any event
    counted twice or never, in a way that biases the climber systematically?
 8. **Admission.** `admit` compares sketch frequencies and admits a warm candidate at random
    (`admitHashdosThreshold`). Check the comparison direction, ties, and what happens to the
