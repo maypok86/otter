@@ -38,9 +38,14 @@ set under the bucket lock) and `policyWeight` (what the policy accounted, under
 
 ## Node layout (`cmd/generator`)
 
-One node type per feature set (`B`, `BS`, `BSE`, ...). It is the header and the only type that
-implements `Node`. Nodes with state (size, weight or expiration) are allocated as one of the
-layouts whose first field is that header; an immutable `variant` byte records which:
+One header type per feature set (`B`, `BS`, `BSE`, ...): links, deadlines, weight, state, queue
+type. Headers do not depend on `K` and `V`, and `node.Node` is a non-generic interface that only
+they implement, so the header methods, the deques, the timer wheel and the write-buffer tasks
+are compiled once per program rather than per cache type (`policy` depends only on `K`, the
+hash table on `K` and the node type). A node is allocated as one of the generic layouts of its
+feature set, `{header; key K; value}`, so the header pointer is the node pointer. Nodes with
+state (size, weight or expiration) have one layout per variant, recorded in an immutable
+`variant` byte of the header:
 
 | Variant | Value | `CanSetValue` |
 |---|---|---|
@@ -50,11 +55,16 @@ layouts whose first field is that header; an immutable `variant` byte records wh
 | `U64` | pointer-free value of ≤ 8 bytes in `atomic.Uint64` | true |
 | `Empty` | nothing (zero-size `V`) | true |
 
-`Value`/`SetValue` convert the header pointer back to the layout it was taken from.
-`SetValue` on a published node is legal only when `CanSetValue` is true. `ValueAndIdentity`
-returns the value with what identifies the stored copy (the box or the pointer, or the word), so
-that a reader can tell whether it was replaced in place. Nodes without state
-(`B`, `BR`) keep the value inline in the node type itself and are never updated in place.
+Nodes without state (`B`, `BR`) have the `Inline` layout alone and are never updated in place.
+
+The key and the value are reached through `node.Manager[K, V]` (`Key`, `Value`, `SetValue`,
+`ValueAndIdentity`) at offsets that `NewManager` takes from the layouts once; the variant is read
+from the header at `Kind.variantOffset`. The hash table and the policy read keys directly at
+`Manager.KeyOffset()`. `SetValue` on a published node is legal only when `CanSetValue` is true.
+`ValueAndIdentity` returns the value with what identifies the stored copy (the box or the
+pointer, or the word), so that a reader can tell whether it was replaced in place. Timer wheel
+sentinels are bare headers (`Kind.NewSentinel`) without a key or a value: a walk of a bucket
+must stop at its sentinel and never read its key.
 
 ## Read path
 
@@ -256,7 +266,7 @@ fast path of `cache.startRefresh` makes without the lock; it is stored under the
 value is published. Loads and refreshes of the key join the registered call, a fake call
 writes only when the key has no call of its own, and `SetExpiresAfter`/`SetRefreshableAfter`
 change deadlines, not the value. A reload reads the base's value when it starts
-(`call.base.Value()`), which is the value its result replaces: a write before the registration
+(`nodeManager.Value(call.base)`), which is the value its result replaces: a write before the registration
 left it, and one after it cancels the refresh.
 
 What a refresh writes is decided by the history of the key since its request, not by its state
