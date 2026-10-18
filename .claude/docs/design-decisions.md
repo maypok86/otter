@@ -253,6 +253,11 @@ Audits read this file **after** recording their findings (Phase 1.5 of the audit
   types. Reads are not: `Manager.Value` takes the node pointer from the interface's data word
   (`node.PointerOf`) and returns the inline value of a stateless node before the variant switch.
   The cost is visible only in micro-benchmarks, beside the node allocation itself.
+- **The default logger keeps about 1 MB of `log/slog` and `encoding/json` in every binary**, even
+  with a custom `Options.Logger`: `getLogger` refers to `newDefaultLogger` statically, and
+  `recoverCallback` on the deletion path calls `Logger.Error`. Programs that already log through
+  slog pay nothing extra. A default logger on `log` would cost ~17 KB but would stop following
+  `slog.SetDefault`, which was judged more important.
 - **The read buffer pads small objects with whole cache lines**: `Striped`, the table header
   `striped`, the table of stripes (`newBuffers`) and the space before a ring's `head`. Every
   read loads them, and without the padding each one shares a cache line with whatever the
