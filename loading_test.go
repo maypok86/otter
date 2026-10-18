@@ -3160,6 +3160,66 @@ func TestCache_GetJoinedRefreshNotWritten(t *testing.T) {
 	}
 }
 
+func TestCache_GetStopsReloadingInvalidatedKeyWhenContextEnds(t *testing.T) {
+	t.Parallel()
+
+	// Each Invalidate cancels the load of its key, and the Get loads it again. The loader ignores
+	// ctx, so only the Get's own check ends the reloads once ctx is cancelled.
+	const maxLoads = 100
+	tests := []struct {
+		name string
+		get  func(ctx context.Context, c *Cache[int, int], load LoaderFunc[int, int]) error
+	}{
+		{name: "Get", get: func(ctx context.Context, c *Cache[int, int], load LoaderFunc[int, int]) error {
+			_, err := c.Get(ctx, 1, load)
+			return err
+		}},
+		{name: "BulkGet", get: func(ctx context.Context, c *Cache[int, int], load LoaderFunc[int, int]) error {
+			_, err := c.BulkGet(ctx, []int{1}, BulkLoaderFunc[int, int](func(ctx context.Context, keys []int) (map[int]int, error) {
+				v, err := load(ctx, keys[0])
+				return map[int]int{keys[0]: v}, err
+			}))
+			return err
+		}},
+	}
+	for _, tt := range tests {
+		c := Must(&Options[int, int]{})
+		ctx, cancel := context.WithCancel(context.Background())
+		started, release := make(chan struct{}), make(chan struct{})
+		var loads atomic.Int64
+		load := LoaderFunc[int, int](func(context.Context, int) (int, error) {
+			// Invalidated during each load until maxLoads, so that a Get that keeps reloading
+			// still returns.
+			if loads.Add(1) < maxLoads {
+				started <- struct{}{}
+				<-release
+			}
+			return 1, nil
+		})
+		done := make(chan struct{})
+		go func() {
+			for n := 1; n < maxLoads; n++ {
+				select {
+				case <-started:
+				case <-done:
+					return
+				}
+				c.Invalidate(1)
+				if n == 3 {
+					cancel()
+				}
+				release <- struct{}{}
+			}
+		}()
+		err := tt.get(ctx, c, load)
+		close(done)
+		if !errors.Is(err, context.Canceled) || loads.Load() != 3 {
+			t.Fatalf("%s: err = %v after %d loads, want context.Canceled after 3", tt.name, err, loads.Load())
+		}
+		cancel()
+	}
+}
+
 // shortReadExpiry gives entries a minute and moves their deadline to 10 seconds on a read.
 type shortReadExpiry struct{}
 

@@ -880,6 +880,11 @@ func (c *cache[K, V]) Get(ctx context.Context, key K, loader Loader[K, V]) (V, e
 		if !retry {
 			return value, err
 		}
+		// A key invalidated faster than it loads refuses every load. The loader may ignore ctx,
+		// so ctx is checked here too: it bounds the wait whatever the loader does.
+		if err := ctx.Err(); err != nil {
+			return zeroValue[V](), err
+		}
 		nowNano = c.clock.NowNano()
 	}
 }
@@ -1223,6 +1228,12 @@ func (c *cache[K, V]) BulkGet(ctx context.Context, keys []K, bulkLoader BulkLoad
 		misses, errsFromCalls, err = c.bulkLoadOrJoin(ctx, misses, bulkLoader, result, errsFromCalls)
 		if err != nil {
 			return result, err
+		}
+		// as in Get
+		if len(misses) > 0 {
+			if err := ctx.Err(); err != nil {
+				return result, err
+			}
 		}
 	}
 
