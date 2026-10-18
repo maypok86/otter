@@ -1462,3 +1462,23 @@ func TestCache_GoexitInExecutorKeepsTheReconcileTask(t *testing.T) {
 	})
 }
 
+// An executor that calls runtime.Goexit when a writer that found the write buffer full submits
+// a drain does not lose the writer's task: the entry stays evictable.
+func TestCache_GoexitInExecutorKeepsTheTaskOfAFullBuffer(t *testing.T) {
+	t.Parallel()
+
+	var exit atomic.Bool
+	c := Must(&Options[int, int]{
+		MaximumSize: 10,
+		Executor:    exitingExecutor(&exit),
+	})
+	exit.Store(true)
+	// Each drain submission exits after its write's task is pushed, until the buffer is full.
+	for i := range int(maxWriteBufferSize) + 5 {
+		runExiting(func() { c.Set(i, i) })
+	}
+	exit.Store(false)
+	validateCache(t, c)
+	require.LessOrEqual(t, c.EstimatedSize(), 10)
+}
+

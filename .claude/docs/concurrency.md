@@ -107,7 +107,8 @@ Every change decided from a key's current value (`set`, `doCompute`, `Invalidate
      goes before the access (`afterRead` may submit a drain), and `removeNode` unlinks a node
      whose `OnDeletion` exits the goroutine, since the walk that would unlink it does not resume.
 4. Tasks go to the bounded MPSC write buffer. When it is full, the writer runs
-   `performCleanUp` itself under `evictionMutex`.
+   `performCleanUp` itself under `evictionMutex`, in a `defer`, so that the task is not lost if
+   the drain it scheduled exits the goroutine.
 
 User callbacks under the bucket lock: the weigher, `ExpiryCalculator.ExpireAfterCreate/Update`
 (and `ExpireAfterRead` when `SetIfAbsent` finds a live entry, unless reads keep the deadline),

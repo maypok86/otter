@@ -1884,19 +1884,26 @@ func (c *cache[K, V]) skipReadBuffer() bool {
 }
 
 func (c *cache[K, V]) afterWriteTask(t *task[K, V]) {
+	// In scenarios where the writing goroutines cannot make progress then they attempt to provide
+	// assistance by performing the eviction work directly. This can resolve cases where the
+	// maintenance task is scheduled but not running. Deferred, so that t is not lost when the
+	// executor, or maintenance run by a synchronous one, calls runtime.Goexit while the buffer is
+	// full.
+	pushed := false
+	defer func() {
+		if !pushed {
+			c.performCleanUp(t)
+		}
+	}()
 	for i := 0; i < writeBufferRetries; i++ {
 		if c.writeBuffer.TryPush(t) {
+			pushed = true
 			c.scheduleAfterWrite()
 			return
 		}
 		c.scheduleDrainBuffers()
 		runtime.Gosched()
 	}
-
-	// In scenarios where the writing goroutines cannot make progress then they attempt to provide
-	// assistance by performing the eviction work directly. This can resolve cases where the
-	// maintenance task is scheduled but not running.
-	c.performCleanUp(t)
 }
 
 func (c *cache[K, V]) scheduleAfterWrite() {
