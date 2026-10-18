@@ -2772,6 +2772,98 @@ func TestCache_ClockPanicDoesNotStrandRefresh(t *testing.T) {
 	}
 }
 
+// exitingClock panics or calls runtime.Goexit when it is read while fail, if set, returns true.
+type exitingClock struct {
+	*nonTickingClock
+	goexit bool
+	fail   atomic.Pointer[func() bool]
+}
+
+func (c *exitingClock) NowNano() int64 {
+	if f := c.fail.Load(); f != nil && (*f)() {
+		if c.goexit {
+			runtime.Goexit()
+		}
+		panic("clock")
+	}
+	return c.nonTickingClock.NowNano()
+}
+
+func TestCache_ClockFailureDoesNotStrandEarlierKeysOfBulkRefresh(t *testing.T) {
+	t.Parallel()
+
+	// A bulk refresh registers its keys one by one and reads the clock under each key's bucket
+	// lock. If the clock panics or calls runtime.Goexit while a later key is registered, the
+	// calls registered for the earlier keys are finished too: left registered, every later
+	// refresh of those keys would join them, and none would ever run.
+	for _, goexit := range []bool{false, true} {
+		for _, manual := range []bool{false, true} {
+			t.Run(fmt.Sprintf("goexit=%v/manual=%v", goexit, manual), func(t *testing.T) {
+				t.Parallel()
+
+				clock := &exitingClock{nonTickingClock: newNonTickingClock(), goexit: goexit}
+				c := Must(&Options[int, int]{
+					MaximumSize:       100,
+					RefreshCalculator: RefreshWriting[int, int](time.Minute),
+					Clock:             clock,
+					Logger:            &recordingLogger{},
+					Executor:          func(fn func()) { fn() },
+				})
+				c.cache.singleflight.init()
+				tbl := newTestBulkLoader[int, int](func(_ context.Context, keys []int) (map[int]int, error) {
+					res := make(map[int]int, len(keys))
+					for _, k := range keys {
+						res[k] = k * 10
+					}
+					return res, nil
+				})
+
+				c.Set(1, 1)
+				c.Set(2, 2)
+				clock.Sleep(2 * time.Minute)
+
+				// fails once key 1 is registered, while key 2 is
+				whileSecondKey := func() bool {
+					return c.cache.singleflight.getCall(1) != nil && c.cache.singleflight.getCall(2) == nil
+				}
+				clock.fail.Store(&whileSecondKey)
+				refresh := func() {
+					if manual {
+						c.BulkRefresh(context.Background(), []int{1, 2}, tbl)
+					} else {
+						_, _ = c.BulkGet(context.Background(), []int{1, 2}, tbl)
+					}
+				}
+				switch {
+				case goexit:
+					done := make(chan struct{})
+					go func() {
+						defer close(done)
+						refresh()
+					}()
+					<-done
+				case manual:
+					require.Panics(t, refresh)
+				default:
+					require.NotPanics(t, refresh)
+				}
+				clock.fail.Store(nil)
+
+				require.Nil(t, c.cache.singleflight.getCall(1))
+				require.Nil(t, c.cache.singleflight.getCall(2))
+				completes(t, "a refresh after the clock failed", func() {
+					res := <-c.BulkRefresh(context.Background(), []int{1, 2}, tbl)
+					require.Len(t, res, 2)
+					for _, r := range res {
+						require.NoError(t, r.Err)
+						require.Equal(t, r.Key*10, r.Value)
+					}
+				})
+			})
+		}
+	}
+}
+
 func TestCache_LoadKeepsValueWrittenBeforeItsRegistration(t *testing.T) {
 	t.Parallel()
 

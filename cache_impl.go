@@ -1076,7 +1076,22 @@ func (c *cache[K, V]) bulkRefreshKeys(
 		toReloadCalls map[K]*call[K, V]
 		foundCalls    []*call[K, V]
 		owned         []*call[K, V]
+		registered    bool
 	)
+	// startRefresh reads the clock again under each key's bucket lock. If it panics or calls
+	// runtime.Goexit for a key, the calls registered for the earlier keys are finished here, as
+	// submitRefresh does: left registered, they would block every later load of their keys.
+	// Deferred after recoverCallback, so that it runs first and the panic is still logged.
+	defer func() {
+		if registered {
+			return
+		}
+		r := recover()
+		c.singleflight.abandon(owned, r)
+		if r != nil {
+			panic(r)
+		}
+	}()
 	for i, key := range keys {
 		cl, shouldLoad := c.startRefresh(key, isManual, nowNano)
 		if shouldLoad {
@@ -1099,6 +1114,7 @@ func (c *cache[K, V]) bulkRefreshKeys(
 			foundCalls = append(foundCalls, cl)
 		}
 	}
+	registered = true
 	if len(owned) == 0 {
 		// Every key is loading or refreshing already: nothing to submit, see refreshKey.
 		if isManual {
