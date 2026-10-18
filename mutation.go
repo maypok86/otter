@@ -285,11 +285,10 @@ func (c *cache[K, V]) atomicSet(
 	}
 
 	n := c.newNode(key, value, weight, entry.ExpiresAtNano, entry.RefreshableAtNano, c.isLiveNode(old, nowNano))
-	c.makeRetired(old)
 	written := writeResult{expiresAt: entry.ExpiresAtNano}
 	if old != nil {
 		written.cause = getCause(old, nowNano, CauseReplacement)
-		c.notifyAtomicDeletion(old.Key(), oldValue, written.cause)
+		c.retire(old, oldValue, written.cause)
 	}
 	return n, written
 }
@@ -335,7 +334,6 @@ func (c *cache[K, V]) retireRemoved(old node.Node[K, V], nowNano int64) Deletion
 		return 0
 	}
 	cause := getCause(old, nowNano, CauseInvalidation)
-	c.makeRetired(old)
-	c.notifyAtomicDeletion(old.Key(), old.Value(), cause)
+	c.retire(old, old.Value(), cause)
 	return cause
 }

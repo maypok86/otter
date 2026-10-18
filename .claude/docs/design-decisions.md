@@ -115,7 +115,15 @@ Audits read this file **after** recording their findings (Phase 1.5 of the audit
 - **An eviction racing with an in-place update evicts the key with the new value.** The victim
   is a key, not a version, as in Caffeine.
 - **`OnAtomicDeletion` runs under the bucket lock before the new value is published**, for
-  updates in place as for replacements.
+  updates in place as for replacements, and before the old node is retired (`retire`). A
+  listener that calls `runtime.Goexit` leaves the node alive, in the table and scheduled; the
+  key's loads and refreshes, which the write cancelled before the listener, stay cancelled. A
+  removal by maintenance is retried on the next pass, calling the listener again; a Goexit on
+  the periodic clean-up goroutine ends the periodic clean-ups, so that pass waits for the next
+  read, write or `CleanUp`. Retired first, an expired node would also leave the timer wheel,
+  which does not reschedule a retired node: in a cache without a maximum size only a write of
+  its key removed it. A stale `Get` while the listener runs waits for the bucket lock to
+  register its refresh, as it does for a listener of another key in the bucket.
 - **Both deletion listeners receive the cause decided under the lock** (`mutation.cause`,
   `deleteNodeFromMap`'s returned cause).
 

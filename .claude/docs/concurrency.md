@@ -24,8 +24,10 @@ that a writer may be changing or replacing at that moment.
 - `retired`: removed from the hash table (`makeRetired`, under the bucket lock).
 - `dead`: removed from the policy and the wheel (`makeDead`, under `evictionMutex`).
 
-A node is retired inside the hash table callback, before the table stores its replacement or
-clears its slot, so a retired node can still be the key's node for a moment. Readers that look a
+A node is retired inside the hash table callback, after `OnAtomicDeletion` and before the table
+stores its replacement or clears its slot, so a retired node can still be the key's node for a
+moment. A listener that calls `runtime.Goexit` leaves the node alive and in the table, still held
+by the timer wheel and the policy, which remove it again. Readers that look a
 key up treat it as present (`getNode`, `getNodeQuietly`); iterations, which find a node before
 they report it, report the key's current node instead (`cache.current`).
 
