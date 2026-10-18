@@ -1338,7 +1338,11 @@ func (c *cache[K, V]) bulkLoadOrJoin(
 			retry[key] = nil
 			continue
 		}
-		if _, own := toLoadCalls[key]; !own && c.withExpiration && cl.expiredBefore(nowNano) {
+		// doBulkCall adds a fake call to toLoadCalls for each key the loader returned unasked, so
+		// a key this call joined may be there as well: it is its own only if the call it waited
+		// for is the one it registered.
+		own := toLoadCalls[key] == cl
+		if !own && c.withExpiration && cl.expiredBefore(nowNano) {
 			// a value that expired before this load, see loadOrJoin
 			if retry == nil {
 				retry = make(map[K]*call[K, V], len(misses)-i+1)
@@ -1350,7 +1354,7 @@ func (c *cache[K, V]) bulkLoadOrJoin(
 			result[key] = cl.Value()
 			continue
 		}
-		if _, ok := toLoadCalls[key]; ok || cl.isNotFound {
+		if own || cl.isNotFound {
 			continue
 		}
 		if cl.failedForOwner() && ctx.Err() == nil {

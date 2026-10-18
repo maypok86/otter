@@ -2457,6 +2457,129 @@ func TestCache_BulkGetReloadsWhenOwnerContextFails(t *testing.T) {
 	require.Equal(t, uint64(2), tbl.loads.Load())
 }
 
+func TestCache_BulkGetKeepsResultOfJoinedLoadOfKeyItsLoaderReturns(t *testing.T) {
+	t.Parallel()
+
+	// A BulkGet of [1, 2] loads 1 and joins a Get's load of 2, and its bulk loader returns 2 as
+	// well, unasked. The unasked key does not make the joined load the BulkGet's own: the
+	// BulkGet still retries it, reports its error or refuses its expired value.
+	errLoad := errors.New("load failed")
+	type bulkResult struct {
+		values map[int]int
+		err    error
+	}
+	bulkGet := func(c *Cache[int, int]) (<-chan bulkResult, <-chan struct{}) {
+		called := make(chan struct{})
+		var once sync.Once
+		tbl := newTestBulkLoader[int, int](func(context.Context, []int) (map[int]int, error) {
+			once.Do(func() { close(called) })
+			return map[int]int{1: 10, 2: 20}, nil
+		})
+		waiter := make(chan bulkResult, 1)
+		go func() {
+			values, err := c.BulkGet(context.Background(), []int{1, 2}, tbl)
+			waiter <- bulkResult{values, err}
+		}()
+		return waiter, called
+	}
+
+	t.Run("joined load fails for its owner's context", func(t *testing.T) {
+		t.Parallel()
+
+		c := Must(&Options[int, int]{MaximumSize: 100})
+		ownerCtx, cancelOwner := context.WithCancel(context.Background())
+		defer cancelOwner()
+		started, release := make(chan struct{}), make(chan struct{})
+		owner := make(chan error, 1)
+		go func() {
+			_, err := c.Get(ownerCtx, 2, LoaderFunc[int, int](func(ctx context.Context, _ int) (int, error) {
+				close(started)
+				<-release
+				return 0, ctx.Err()
+			}))
+			owner <- err
+		}()
+		<-started
+
+		// The BulkGet joins the load of 2 before it calls its bulk loader.
+		waiter, called := bulkGet(c)
+		<-called
+		cancelOwner()
+		close(release)
+
+		require.ErrorIs(t, <-owner, context.Canceled)
+		r := <-waiter
+		require.NoError(t, r.err)
+		require.Equal(t, map[int]int{1: 10, 2: 20}, r.values)
+	})
+
+	t.Run("joined load fails", func(t *testing.T) {
+		t.Parallel()
+
+		c := Must(&Options[int, int]{MaximumSize: 100})
+		started, release := make(chan struct{}), make(chan struct{})
+		owner := make(chan error, 1)
+		go func() {
+			_, err := c.Get(context.Background(), 2, LoaderFunc[int, int](func(context.Context, int) (int, error) {
+				close(started)
+				<-release
+				return 0, errLoad
+			}))
+			owner <- err
+		}()
+		<-started
+
+		waiter, called := bulkGet(c)
+		<-called
+		close(release)
+
+		require.ErrorIs(t, <-owner, errLoad)
+		r := <-waiter
+		require.ErrorIs(t, r.err, errLoad)
+		require.Equal(t, map[int]int{1: 10}, r.values)
+	})
+
+	t.Run("joined value expired before the BulkGet", func(t *testing.T) {
+		t.Parallel()
+
+		// The Get's commit reads the clock and then blocks in the weigher until the BulkGet has
+		// joined the load; the value expires in the meantime.
+		entered, gate := make(chan struct{}), make(chan struct{})
+		var once sync.Once
+		c := Must(&Options[int, int]{
+			MaximumWeight: 100,
+			Weigher: func(key, value int) uint32 {
+				if key == 2 && value == 1 {
+					once.Do(func() {
+						close(entered)
+						<-gate
+					})
+				}
+				return 1
+			},
+			ExpiryCalculator: ExpiryWriting[int, int](10 * time.Millisecond),
+		})
+		owner := make(chan int, 1)
+		go func() {
+			v, _ := c.Get(context.Background(), 2, LoaderFunc[int, int](func(context.Context, int) (int, error) {
+				return 1, nil
+			}))
+			owner <- v
+		}()
+		<-entered
+		time.Sleep(30 * time.Millisecond)
+
+		waiter, called := bulkGet(c)
+		<-called
+		close(gate)
+
+		require.Equal(t, 1, <-owner)
+		r := <-waiter
+		require.NoError(t, r.err)
+		require.Equal(t, map[int]int{1: 10, 2: 20}, r.values)
+	})
+}
+
 func TestCache_GetWaiterSharesFailureOfTheKey(t *testing.T) {
 	// Only a failure after the owner's context is done is retried. A failure while it is live,
 	// and a panic of the loader, belong to the key and are shared with the joined Get. The
