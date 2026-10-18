@@ -28,7 +28,10 @@ Audits read this file **after** recording their findings (Phase 1.5 of the audit
   checked the same way: its `ExpireAfterRead` CAS is refused if the entry expired while the
   calculator ran, but not if it expires in the few instructions between that check and the CAS.
   A read that checks liveness with the time it read before looking the key up is linearizable:
-  the node it finds was live at that time or when it was written.
+  the node it finds was live at that time or when it was written. A value written in place is
+  paired with the node's old deadline until the write stores the new one, so the write is in
+  place only while that deadline is live and not earlier than the new one; what that leaves is
+  under "In-place updates".
 - **The read buffer is lossy.** A dropped access is a lost policy signal, not a bug. Anything
   that must reach the policy (insert, replacement, weight change, earlier deadline) goes
   through the lossless write buffer. One exception: a read whose `ExpireAfterRead` moves the
@@ -83,12 +86,32 @@ Audits read this file **after** recording their findings (Phase 1.5 of the audit
 ## In-place updates
 
 - **A live entry is updated in place**, so there is one node per key for most of its life.
-  Values that do not fit a word are inline until the first update, then boxed: exactly one
-  node replacement per key.
-- **A write over an expired entry that is still in the table reuses its node** and reports
-  the old value with `CauseExpiration`. A trace experiment (7 traces, 3 expiry policies)
-  showed the same hit rate as replacing the node, and better than re-admitting it through the
-  window.
+  Values that do not fit a word are inline until the first update of a live entry, then boxed,
+  so later updates that keep or extend the deadline stay in place; the writes that replace the
+  node are in the next bullet.
+- **A write over an expired entry that is still in the table, and one that moves the deadline
+  earlier, replace the node** (`atomicSet`). The old value is still reported with
+  `CauseExpiration` when it had expired. In place, the node holds the new value under the old
+  deadline until the write stores the new one, and lock-free readers load the deadline before
+  the value. Over an expired entry, a reader whose clock is before the old deadline returns the
+  new value, and a later reader still finds the old deadline passed: present, absent, present.
+  With a deadline moved earlier, a reader that starts after the new deadline returns the value.
+  Both reproduce without instrumentation on a hot key. The cost is a node and an update task
+  per such write, at most once per lifetime for a write over an expired entry: on a write-only
+  benchmark where every write lands on an expired entry, 92 → 209 ns with one writer and 39 →
+  314 ns with 12 (the write buffer overflows), 2 allocations; none measurable with a 1 ms
+  lifetime. A boxed value written over an expired entry is inline again until its next update.
+  Reusing the expired node had the same hit rate in a trace experiment (7 traces, 3 expiry
+  policies), and better than re-admitting it through the window.
+- **An update that keeps or extends a live deadline is still applied in place, although the old
+  deadline can pass before the write stores the new one.** Then a reader with an earlier clock
+  may return the new value while a later one finds the key absent, until the deadline is stored.
+  The old deadline has to pass between the write's decision and that store: during the weigher,
+  the calculators or `OnAtomicDeletion`, or after a read whose `ExpireAfterRead` moved it
+  earlier meanwhile. Replacing every update of an entry close to its deadline was rejected: with
+  a margin of 1 s, every update of an entry that lives about a second or less became a
+  replacement, 15 times slower with 12 writers, and a read could still move the deadline into
+  the margin after the check. A version in every node or the lock on reads would close it.
 - **An eviction racing with an in-place update evicts the key with the new value.** The victim
   is a key, not a version, as in Caffeine.
 - **`OnAtomicDeletion` runs under the bucket lock before the new value is published**, for
@@ -179,14 +202,14 @@ Audits read this file **after** recording their findings (Phase 1.5 of the audit
   unchanged. A sample of ten times such a maximum is too noisy for the climber to find a better
   window than the initial one.
 - **A load or `Compute` that finds its entry expired but not yet removed counts as a hit in the
-  climber's sample.** The caller sees a miss, and the stats record one, but the write lands on
-  the existing node, so the policy sees an access; had maintenance removed the entry first, the
-  same operation would have been an insertion and a miss. The climber compares the hit rate of
-  a sample with the previous one, and a steady share of such hits cancels in that difference.
-  Counting them as misses would need a write-buffer task for every reload of an expired entry,
-  since the read buffer cannot say that an access was a miss, which undoes part of what writing
-  in place saves. The simulator cannot measure it either way: its traces do not expire. Worth
-  revisiting with a climber that uses a sample's hit rate on its own rather than its change.
+  climber's sample.** The caller sees a miss, and the stats record one, but the write replaces
+  a node that the policy holds, and `policy.update` counts that as an access, as for any
+  replacement; had maintenance removed the entry first, the same operation would have been an
+  insertion and a miss. The climber compares the hit rate of a sample with the previous one,
+  and a steady share of such hits cancels in that difference. Counting them as misses would
+  take a flag on the update task. The simulator cannot measure it either way: its traces do not
+  expire. Worth revisiting with a climber that uses a sample's hit rate on its own rather than
+  its change.
 
 ## Memory and layout
 
@@ -208,6 +231,12 @@ Audits read this file **after** recording their findings (Phase 1.5 of the audit
 - **A write version in every node, recorded by each refresh, to tell an in-place update from an
   unchanged base**: memory in every node for a race that registering refreshes under the bucket
   lock closes without it.
+- **Storing the deadline before the value in an in-place write**: a reader in between pairs the
+  old value with the new deadline and returns it after the old one has passed, and the read
+  that moves the deadline relies on the value being stored first (`calcExpiresAtAfterRead`).
+- **An always-expired deadline stored before the value, re-checked by readers after it**: a load
+  more on every read, and a reader that finds a write in progress has to wait for it, also for
+  a writer that is descheduled.
 - **Seqlock for multi-word values**: torn reads on arm64 (acquire load does not order earlier
   plain loads), a data race under the race detector.
 - **`sync.Pool` for nodes or value boxes**: lock-free readers, buffers and iterators may still

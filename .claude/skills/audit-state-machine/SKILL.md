@@ -74,8 +74,9 @@ it overwrites matters.
 alive → retired → dead, one way only. Generated `IsAlive`/`IsRetired`/`IsDead`, `Retire`, `Die`
 (`cmd/generator/node.go`); `makeRetired` and `makeDead` (`cache_impl.go`); `policy.makeDead`,
 `policy.updateNode` (`policy.go`); the wheel's `IsAlive` check (`internal/expiration/wheel.go`).
-In-place updates reuse a node (`CanSetValue`, `atomicSet`), including an expired node that is
-still in the table.
+In-place updates reuse a live node (`CanSetValue`, `atomicSet`) when its deadline does not move
+earlier; a write over an expired node that is still in the table, or one that moves the deadline
+earlier, replaces it.
 
 1. Can any path move a node backwards (dead → alive, retired → alive), or give a retired or
    dead node a new value in place?

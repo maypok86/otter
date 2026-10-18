@@ -487,9 +487,8 @@ func (c *cache[K, V]) setExpiresAt(key K, deadline func(nowNano int64) int64) {
 	c.afterRead(n, false)
 	if earlier {
 		// The read buffer may drop the access, and the node would then wait in the timer wheel's
-		// bucket for its former deadline, so an earlier deadline goes through the write buffer,
-		// as for an in-place write. A later one needs nothing: the wheel re-checks the node when
-		// its former bucket expires.
+		// bucket for its former deadline, so an earlier deadline goes through the write buffer. A
+		// later one needs nothing: the wheel re-checks the node when its former bucket expires.
 		c.afterWriteTask(newTask(n, nil, reconcileReason))
 	}
 }
@@ -1499,7 +1498,8 @@ func (c *cache[K, V]) deleteNodeFromMap(
 		if isCurrent {
 			switch {
 			case removal == removeExpired && !current.HasExpired(nowNano):
-				// updated in place, extending its lifetime, after it was found expired
+				// after the wheel found it expired, a write, read or SetExpiresAfter that
+				// saw it live moved its deadline later
 				kept = true
 				return current
 			case removal == removeForSize && c.isWeighted && current.Weight() == 0 &&
