@@ -37,8 +37,8 @@ func TestRing_Add(t *testing.T) {
 		WithExpiration: true,
 	})
 	n := nm.Create(1, 2, 100, 0, 1)
-	r := &ring[int, int]{
-		nodeManager: nm,
+	r := &ring{
+		kind: nm.Kind,
 	}
 
 	var wg sync.WaitGroup
@@ -77,8 +77,8 @@ func TestRing_DrainTo(t *testing.T) {
 		WithExpiration: true,
 	})
 	n := nm.Create(1, 2, 100, 0, 1)
-	r := &ring[int, int]{
-		nodeManager: nm,
+	r := &ring{
+		kind: nm.Kind,
 	}
 
 	for i := 0; i < bufferSize; i++ {
@@ -89,7 +89,7 @@ func TestRing_DrainTo(t *testing.T) {
 	}
 
 	reads := uint64(0)
-	r.drainTo(func(n node.Node[int, int]) {
+	r.drainTo(func(n node.Node) {
 		reads++
 	})
 	if tail := r.tail.Load(); reads != tail {
@@ -111,8 +111,8 @@ func TestRing_AddAndDrain(t *testing.T) {
 		WithExpiration: true,
 	})
 	n := nm.Create(1, 2, 100, 0, 1)
-	r := &ring[int, int]{
-		nodeManager: nm,
+	r := &ring{
+		kind: nm.Kind,
 	}
 
 	var (
@@ -132,7 +132,7 @@ func TestRing_AddAndDrain(t *testing.T) {
 					return
 				}
 				if res == Full && mu.TryLock() {
-					r.drainTo(func(n node.Node[int, int]) {
+					r.drainTo(func(n node.Node) {
 						reads.Add(1)
 					})
 					mu.Unlock()
@@ -144,7 +144,7 @@ func TestRing_AddAndDrain(t *testing.T) {
 
 	wg.Wait()
 
-	r.drainTo(func(n node.Node[int, int]) {
+	r.drainTo(func(n node.Node) {
 		reads.Add(1)
 	})
 
@@ -165,8 +165,8 @@ func TestRing_Overflow(t *testing.T) {
 		WithExpiration: true,
 	})
 	n := nm.Create(1, 2, 100, 0, 1)
-	r := &ring[int, int]{
-		nodeManager: nm,
+	r := &ring{
+		kind: nm.Kind,
 	}
 	r.head.Store(math.MaxUint64)
 	r.tail.Store(math.MaxUint64)
@@ -176,8 +176,8 @@ func TestRing_Overflow(t *testing.T) {
 		t.Fatalf("the status must be Success, but got: %v", res)
 	}
 
-	var d []node.Node[int, int]
-	r.drainTo(func(n node.Node[int, int]) {
+	var d []node.Node
+	r.drainTo(func(n node.Node) {
 		d = append(d, n)
 	})
 
@@ -200,8 +200,8 @@ func TestRing_LenIsNeverNegative(t *testing.T) {
 
 	nm := node.NewManager[int, int](node.Config{})
 	n := nm.Create(1, 2, 0, 0, 1)
-	r := &ring[int, int]{
-		nodeManager: nm,
+	r := &ring{
+		kind: nm.Kind,
 	}
 
 	// The producer keeps adding and draining, so the head often moves past a tail that the
@@ -210,7 +210,7 @@ func TestRing_LenIsNeverNegative(t *testing.T) {
 	go func() {
 		for !done.Load() {
 			r.add(n)
-			r.drainTo(func(node.Node[int, int]) {})
+			r.drainTo(func(node.Node) {})
 		}
 	}()
 	defer done.Store(true)
@@ -227,8 +227,8 @@ func TestRing_AddReportsFullWhenItFillsTheBuffer(t *testing.T) {
 
 	nm := node.NewManager[int, int](node.Config{})
 	n := nm.Create(1, 2, 0, 0, 1)
-	r := &ring[int, int]{
-		nodeManager: nm,
+	r := &ring{
+		kind: nm.Kind,
 	}
 
 	for i := 0; i < bufferSize-1; i++ {

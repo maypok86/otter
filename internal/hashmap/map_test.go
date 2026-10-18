@@ -36,16 +36,24 @@ import (
 	"github.com/maypok86/otter/v2/internal/xruntime"
 )
 
-func newTestNode[K comparable, V any](nm mapNodeManager[K, V, node.Node[K, V]], key K, value V) node.Node[K, V] {
-	m, ok := nm.(*node.Manager[K, V])
-	if !ok {
-		panic("not valid node manager")
-	}
-	return m.Create(key, value, 0, 0, 1)
+func newTestNode[K comparable, V any](nm *node.Manager[K, V], key K, value V) node.Node {
+	return nm.Create(key, value, 0, 0, 1)
 }
 
-func testNodeManager[K comparable, V any]() mapNodeManager[K, V, node.Node[K, V]] {
+func testNodeManager[K comparable, V any]() *node.Manager[K, V] {
 	return node.NewManager[K, V](node.Config{})
+}
+
+func managerOf[K comparable, V any](m *Map[K, node.Node]) *node.Manager[K, V] {
+	return m.nodeManager.(*node.Manager[K, V])
+}
+
+func newTestMap[K comparable, V any](nm *node.Manager[K, V]) *Map[K, node.Node] {
+	return New[K, node.Node](nm)
+}
+
+func newTestMapWithSize[K comparable, V any](nm *node.Manager[K, V], size int) *Map[K, node.Node] {
+	return NewWithSize[K, node.Node](nm, size)
 }
 
 type point struct {
@@ -86,20 +94,20 @@ func TestMap_MissingNode(t *testing.T) {
 	t.Parallel()
 
 	nm := testNodeManager[string, string]()
-	m := New(nm)
+	m := newTestMap(nm)
 	n := m.Get("foo")
 	if n != nil {
 		t.Fatalf("node was not expected: %v", n)
 	}
-	var oldNode node.Node[string, string]
-	m.Compute("foo", func(n node.Node[string, string]) node.Node[string, string] {
+	var oldNode node.Node
+	m.Compute("foo", func(n node.Node) node.Node {
 		oldNode = n
 		return nil
 	})
 	if oldNode != nil {
 		t.Fatalf("node was not expected %v", oldNode)
 	}
-	m.Compute("foo", func(n node.Node[string, string]) node.Node[string, string] {
+	m.Compute("foo", func(n node.Node) node.Node {
 		oldNode = n
 		return nil
 	})
@@ -109,16 +117,16 @@ func TestMapOf_EmptyStringKey(t *testing.T) {
 	t.Parallel()
 
 	nm := testNodeManager[string, string]()
-	m := New(nm)
-	m.Compute("", func(n node.Node[string, string]) node.Node[string, string] {
+	m := newTestMap(nm)
+	m.Compute("", func(n node.Node) node.Node {
 		return newTestNode(nm, "", "foobar")
 	})
 	n := m.Get("")
 	if n == nil {
 		t.Fatal("node was expected")
 	}
-	if n.Value() != "foobar" {
-		t.Fatalf("value does not match: %v", n.Value())
+	if nm.Value(n) != "foobar" {
+		t.Fatalf("value does not match: %v", nm.Value(n))
 	}
 }
 
@@ -126,16 +134,16 @@ func TestMapSet_NilValue(t *testing.T) {
 	t.Parallel()
 
 	nm := testNodeManager[string, *struct{}]()
-	m := New(nm)
-	m.Compute("foo", func(n node.Node[string, *struct{}]) node.Node[string, *struct{}] {
+	m := newTestMap(nm)
+	m.Compute("foo", func(n node.Node) node.Node {
 		return newTestNode(nm, "foo", nil)
 	})
 	n := m.Get("foo")
 	if n == nil {
 		t.Fatal("nil node was expected")
 	}
-	if n.Value() != nil {
-		t.Fatalf("value was not nil: %v", n.Value())
+	if nm.Value(n) != nil {
+		t.Fatalf("value was not nil: %v", nm.Value(n))
 	}
 }
 
@@ -144,16 +152,16 @@ func TestMapSet_NonNilValue(t *testing.T) {
 
 	type foo struct{}
 	nm := testNodeManager[string, *foo]()
-	m := New[string, *foo](nm)
+	m := newTestMap(nm)
 	newv := &foo{}
 	newv2 := &foo{}
-	got := m.Compute("foo", func(n node.Node[string, *foo]) node.Node[string, *foo] {
+	got := m.Compute("foo", func(n node.Node) node.Node {
 		return newTestNode(nm, "foo", newv2)
 	})
 	if got == nil {
 		t.Fatal("node was expected")
 	}
-	if got.Value() != newv {
+	if nm.Value(got) != newv {
 		t.Fatalf("value does not match: %v", newv)
 	}
 }
@@ -163,21 +171,21 @@ func TestMapRange(t *testing.T) {
 
 	const numNodes = 1000
 	nm := testNodeManager[string, int]()
-	m := New(nm)
+	m := newTestMap(nm)
 	for i := 0; i < numNodes; i++ {
 		key := strconv.Itoa(i)
-		m.Compute(key, func(n node.Node[string, int]) node.Node[string, int] {
+		m.Compute(key, func(n node.Node) node.Node {
 			return newTestNode(nm, key, i)
 		})
 	}
 	iters := 0
 	met := make(map[string]int)
-	m.Range(func(n node.Node[string, int]) bool {
-		if n.Key() != strconv.Itoa(n.Value()) {
-			t.Fatalf("got unexpected key/value for iteration %d: %v/%v", iters, n.Key(), n.Value())
+	m.Range(func(n node.Node) bool {
+		if nm.Key(n) != strconv.Itoa(nm.Value(n)) {
+			t.Fatalf("got unexpected key/value for iteration %d: %v/%v", iters, nm.Key(n), nm.Value(n))
 			return false
 		}
-		met[n.Key()] += 1
+		met[nm.Key(n)] += 1
 		iters++
 		return true
 	})
@@ -195,15 +203,15 @@ func TestMapRange_FalseReturned(t *testing.T) {
 	t.Parallel()
 
 	nm := testNodeManager[string, int]()
-	m := New(nm)
+	m := newTestMap(nm)
 	for i := 0; i < 100; i++ {
 		key := strconv.Itoa(i)
-		m.Compute(key, func(n node.Node[string, int]) node.Node[string, int] {
+		m.Compute(key, func(n node.Node) node.Node {
 			return newTestNode(nm, key, i)
 		})
 	}
 	iters := 0
-	m.Range(func(n node.Node[string, int]) bool {
+	m.Range(func(n node.Node) bool {
 		iters++
 		return iters != 13
 	})
@@ -217,15 +225,15 @@ func TestMapRange_NestedDelete(t *testing.T) {
 
 	const numNodes = 256
 	nm := testNodeManager[string, int]()
-	m := New(nm)
+	m := newTestMap(nm)
 	for i := 0; i < numNodes; i++ {
 		key := strconv.Itoa(i)
-		m.Compute(key, func(n node.Node[string, int]) node.Node[string, int] {
+		m.Compute(key, func(n node.Node) node.Node {
 			return newTestNode(nm, key, i)
 		})
 	}
-	m.Range(func(n1 node.Node[string, int]) bool {
-		m.Compute(n1.Key(), func(n node.Node[string, int]) node.Node[string, int] {
+	m.Range(func(n1 node.Node) bool {
+		m.Compute(nm.Key(n1), func(n node.Node) node.Node {
 			return nil
 		})
 		return true
@@ -242,10 +250,10 @@ func TestMapStringSet(t *testing.T) {
 
 	const numNodes = 128
 	nm := testNodeManager[string, int]()
-	m := New(nm)
+	m := newTestMap(nm)
 	for i := 0; i < numNodes; i++ {
 		key := strconv.Itoa(i)
-		m.Compute(key, func(n node.Node[string, int]) node.Node[string, int] {
+		m.Compute(key, func(n node.Node) node.Node {
 			return newTestNode(nm, key, i)
 		})
 	}
@@ -254,7 +262,7 @@ func TestMapStringSet(t *testing.T) {
 		if n == nil {
 			t.Fatalf("node not found for %d", i)
 		}
-		if n.Value() != i {
+		if nm.Value(n) != i {
 			t.Fatalf("values do not match for %d: %v", i, n)
 		}
 	}
@@ -265,9 +273,9 @@ func TestMapIntSet(t *testing.T) {
 
 	const numNodes = 128
 	nm := testNodeManager[int, int]()
-	m := New(nm)
+	m := newTestMap(nm)
 	for i := 0; i < numNodes; i++ {
-		m.Compute(i, func(n node.Node[int, int]) node.Node[int, int] {
+		m.Compute(i, func(n node.Node) node.Node {
 			return newTestNode(nm, i, i)
 		})
 	}
@@ -276,7 +284,7 @@ func TestMapIntSet(t *testing.T) {
 		if n == nil {
 			t.Fatalf("node not found for %d", i)
 		}
-		if n.Value() != i {
+		if nm.Value(n) != i {
 			t.Fatalf("values do not match for %d: %v", i, n)
 		}
 	}
@@ -287,10 +295,10 @@ func TestMapSet_StructKeys_IntValues(t *testing.T) {
 
 	const numNodes = 128
 	nm := testNodeManager[point, int]()
-	m := New(nm)
+	m := newTestMap(nm)
 	for i := 0; i < numNodes; i++ {
 		key := point{int32(i), -int32(i)}
-		m.Compute(key, func(n node.Node[point, int]) node.Node[point, int] {
+		m.Compute(key, func(n node.Node) node.Node {
 			return newTestNode(nm, key, i)
 		})
 	}
@@ -299,7 +307,7 @@ func TestMapSet_StructKeys_IntValues(t *testing.T) {
 		if n == nil {
 			t.Fatalf("node not found for %d", i)
 		}
-		if n.Value() != i {
+		if nm.Value(n) != i {
 			t.Fatalf("values do not match for %d: %v", i, n)
 		}
 	}
@@ -310,11 +318,11 @@ func TestMapSet_StructKeys_StructValues(t *testing.T) {
 
 	const numNodes = 128
 	nm := testNodeManager[point, point]()
-	m := New(nm)
+	m := newTestMap(nm)
 	for i := 0; i < numNodes; i++ {
 		key := point{int32(i), -int32(i)}
 		value := point{-int32(i), int32(i)}
-		m.Compute(key, func(n node.Node[point, point]) node.Node[point, point] {
+		m.Compute(key, func(n node.Node) node.Node {
 			return newTestNode(nm, key, value)
 		})
 	}
@@ -323,7 +331,7 @@ func TestMapSet_StructKeys_StructValues(t *testing.T) {
 		if n == nil {
 			t.Fatalf("node not found for %d", i)
 		}
-		v := n.Value()
+		v := nm.Value(n)
 		if v.x != -int32(i) {
 			t.Fatalf("x value does not match for %d: %v", i, v)
 		}
@@ -337,18 +345,18 @@ func TestMapCompute_FunctionCalledOnce(t *testing.T) {
 	t.Parallel()
 
 	nm := testNodeManager[int, int]()
-	m := New(nm)
+	m := newTestMap(nm)
 	for i := 0; i < 100; {
 		key := i
-		m.Compute(i, func(n node.Node[int, int]) node.Node[int, int] {
+		m.Compute(i, func(n node.Node) node.Node {
 			var v int
 			v, i = i, i+1
 			return newTestNode(nm, key, v)
 		})
 	}
-	m.Range(func(n node.Node[int, int]) bool {
-		if n.Key() != n.Value() {
-			t.Fatalf("%dth key is not equal to value %d", n.Key(), n.Value())
+	m.Range(func(n node.Node) bool {
+		if nm.Key(n) != nm.Value(n) {
+			t.Fatalf("%dth key is not equal to value %d", nm.Key(n), nm.Value(n))
 		}
 		return true
 	})
@@ -358,9 +366,9 @@ func TestMapCompute(t *testing.T) {
 	t.Parallel()
 
 	nm := testNodeManager[string, int]()
-	m := New(nm)
+	m := newTestMap(nm)
 	// Store a new value.
-	n := m.Compute("foobar", func(n node.Node[string, int]) node.Node[string, int] {
+	n := m.Compute("foobar", func(n node.Node) node.Node {
 		if n != nil {
 			t.Fatalf("n should be nil when computing a new node: %v", n)
 		}
@@ -369,26 +377,26 @@ func TestMapCompute(t *testing.T) {
 	if n == nil {
 		t.Fatal("n should be non nil when computing a new value")
 	}
-	if n.Value() != 42 {
-		t.Fatalf("n.Value() should be 42 when computing a new value: %d", n.Value())
+	if nm.Value(n) != 42 {
+		t.Fatalf("nm.Value(n) should be 42 when computing a new value: %d", nm.Value(n))
 	}
 	// Update an existing value.
-	n = m.Compute("foobar", func(n node.Node[string, int]) node.Node[string, int] {
-		if n.Value() != 42 {
-			t.Fatalf("n.Value() should be 42 when updating the value: %d", n.Value())
+	n = m.Compute("foobar", func(n node.Node) node.Node {
+		if nm.Value(n) != 42 {
+			t.Fatalf("nm.Value(n) should be 42 when updating the value: %d", nm.Value(n))
 		}
-		return newTestNode(nm, "foobar", n.Value()+42)
+		return newTestNode(nm, "foobar", nm.Value(n)+42)
 	})
 	if n == nil {
 		t.Fatal("n should be non nil when computing a new value")
 	}
-	if n.Value() != 84 {
-		t.Fatalf("n.Value() should be 84 when computing a new value: %d", n.Value())
+	if nm.Value(n) != 84 {
+		t.Fatalf("nm.Value(n) should be 84 when computing a new value: %d", nm.Value(n))
 	}
 	// Delete an existing value.
-	n = m.Compute("foobar", func(n node.Node[string, int]) node.Node[string, int] {
-		if n.Value() != 84 {
-			t.Fatalf("n.Value() should be 84 when deleting the value: %d", n.Value())
+	n = m.Compute("foobar", func(n node.Node) node.Node {
+		if nm.Value(n) != 84 {
+			t.Fatalf("nm.Value(n) should be 84 when deleting the value: %d", nm.Value(n))
 		}
 		return nil
 	})
@@ -396,7 +404,7 @@ func TestMapCompute(t *testing.T) {
 		t.Fatal("n should be nil when deleting the value")
 	}
 	// Try to delete a non-existing value. Notice different key.
-	n = m.Compute("barbaz", func(n node.Node[string, int]) node.Node[string, int] {
+	n = m.Compute("barbaz", func(n node.Node) node.Node {
 		if n != nil {
 			t.Fatalf("n should be nil when trying to delete a non-existing value")
 		}
@@ -413,15 +421,15 @@ func TestMapStringSetThenDelete(t *testing.T) {
 
 	const numNodes = 1000
 	nm := testNodeManager[string, int]()
-	m := New(nm)
+	m := newTestMap(nm)
 	for i := 0; i < numNodes; i++ {
 		key := strconv.Itoa(i)
-		m.Compute(key, func(n node.Node[string, int]) node.Node[string, int] {
+		m.Compute(key, func(n node.Node) node.Node {
 			return newTestNode(nm, key, i)
 		})
 	}
 	for i := 0; i < numNodes; i++ {
-		m.Compute(strconv.Itoa(i), func(n node.Node[string, int]) node.Node[string, int] {
+		m.Compute(strconv.Itoa(i), func(n node.Node) node.Node {
 			return nil
 		})
 		if n := m.Get(strconv.Itoa(i)); n != nil {
@@ -435,14 +443,14 @@ func TestMapIntSetThenDelete(t *testing.T) {
 
 	const numNodes = 1000
 	nm := testNodeManager[int32, int32]()
-	m := New(nm)
+	m := newTestMap(nm)
 	for i := 0; i < numNodes; i++ {
-		m.Compute(int32(i), func(n node.Node[int32, int32]) node.Node[int32, int32] {
+		m.Compute(int32(i), func(n node.Node) node.Node {
 			return newTestNode(nm, int32(i), int32(i))
 		})
 	}
 	for i := 0; i < numNodes; i++ {
-		m.Compute(int32(i), func(n node.Node[int32, int32]) node.Node[int32, int32] {
+		m.Compute(int32(i), func(n node.Node) node.Node {
 			return nil
 		})
 		if n := m.Get(int32(i)); n != nil {
@@ -456,16 +464,16 @@ func TestMapStructSetThenDelete(t *testing.T) {
 
 	const numNodes = 1000
 	nm := testNodeManager[point, string]()
-	m := New(nm)
+	m := newTestMap(nm)
 	for i := 0; i < numNodes; i++ {
 		key := point{int32(i), 42}
-		m.Compute(key, func(n node.Node[point, string]) node.Node[point, string] {
+		m.Compute(key, func(n node.Node) node.Node {
 			return newTestNode(nm, key, strconv.Itoa(i))
 		})
 	}
 	for i := 0; i < numNodes; i++ {
 		key := point{int32(i), 42}
-		m.Compute(key, func(n node.Node[point, string]) node.Node[point, string] {
+		m.Compute(key, func(n node.Node) node.Node {
 			return nil
 		})
 		if n := m.Get(key); n != nil {
@@ -479,14 +487,14 @@ func TestMap_MetaMatchesNodes(t *testing.T) {
 
 	const numNodes = 1000
 	nm := testNodeManager[int, int]()
-	m := New(nm)
+	m := newTestMap(nm)
 	for i := 0; i < numNodes; i++ {
-		m.Compute(i, func(n node.Node[int, int]) node.Node[int, int] {
+		m.Compute(i, func(n node.Node) node.Node {
 			return newTestNode(nm, i, i)
 		})
 	}
 	for i := 0; i < numNodes; i += 2 {
-		m.Compute(i, func(n node.Node[int, int]) node.Node[int, int] {
+		m.Compute(i, func(n node.Node) node.Node {
 			return nil
 		})
 	}
@@ -512,7 +520,7 @@ func TestMap_MetaMatchesNodes(t *testing.T) {
 }
 
 // keysInRootBucket returns n int keys that m puts into its first bucket.
-func keysInRootBucket(m *Map[int, int, node.Node[int, int]], n int) []int {
+func keysInRootBucket(m *Map[int, node.Node], n int) []int {
 	table := m.table.Load()
 	//nolint:gosec // there is no overflow
 	mask := uint64(len(table.buckets) - 1)
@@ -537,14 +545,14 @@ func TestMap_UnlinksEmptyOverflowBucket(t *testing.T) {
 	t.Parallel()
 
 	nm := testNodeManager[int, int]()
-	m := New(nm)
+	m := newTestMap(nm)
 	set := func(k int) {
-		m.Compute(k, func(n node.Node[int, int]) node.Node[int, int] {
+		m.Compute(k, func(n node.Node) node.Node {
 			return newTestNode(nm, k, k)
 		})
 	}
 	del := func(k int) {
-		m.Compute(k, func(n node.Node[int, int]) node.Node[int, int] {
+		m.Compute(k, func(n node.Node) node.Node {
 			return nil
 		})
 	}
@@ -634,9 +642,9 @@ func TestMapSetThenParallelDelete_DoesNotShrinkBelowMinTableLen(t *testing.T) {
 
 	const numNodes = 1000
 	nm := testNodeManager[int, int]()
-	m := New(nm)
+	m := newTestMap(nm)
 	for i := 0; i < numNodes; i++ {
-		m.Compute(i, func(n node.Node[int, int]) node.Node[int, int] {
+		m.Compute(i, func(n node.Node) node.Node {
 			return newTestNode(nm, i, i)
 		})
 	}
@@ -644,7 +652,7 @@ func TestMapSetThenParallelDelete_DoesNotShrinkBelowMinTableLen(t *testing.T) {
 	cdone := make(chan bool)
 	go func() {
 		for i := 0; i < numNodes; i++ {
-			m.Compute(i, func(n node.Node[int, int]) node.Node[int, int] {
+			m.Compute(i, func(n node.Node) node.Node {
 				return nil
 			})
 		}
@@ -652,7 +660,7 @@ func TestMapSetThenParallelDelete_DoesNotShrinkBelowMinTableLen(t *testing.T) {
 	}()
 	go func() {
 		for i := 0; i < numNodes; i++ {
-			m.Compute(i, func(n node.Node[int, int]) node.Node[int, int] {
+			m.Compute(i, func(n node.Node) node.Node {
 				return nil
 			})
 		}
@@ -669,9 +677,9 @@ func TestMapSetThenParallelDelete_DoesNotShrinkBelowMinTableLen(t *testing.T) {
 	}
 }
 
-func sizeBasedOnTypedRange(m *Map[string, int, node.Node[string, int]]) int {
+func sizeBasedOnTypedRange(m *Map[string, node.Node]) int {
 	size := 0
-	m.Range(func(n node.Node[string, int]) bool {
+	m.Range(func(n node.Node) bool {
 		size++
 		return true
 	})
@@ -683,7 +691,7 @@ func TestMapSize(t *testing.T) {
 
 	const numNodes = 1000
 	nm := testNodeManager[string, int]()
-	m := New(nm)
+	m := newTestMap(nm)
 	size := m.Size()
 	if size != 0 {
 		t.Fatalf("zero size expected: %d", size)
@@ -691,7 +699,7 @@ func TestMapSize(t *testing.T) {
 	expectedSize := 0
 	for i := 0; i < numNodes; i++ {
 		key := strconv.Itoa(i)
-		m.Compute(key, func(n node.Node[string, int]) node.Node[string, int] {
+		m.Compute(key, func(n node.Node) node.Node {
 			return newTestNode(nm, key, i)
 		})
 		expectedSize++
@@ -705,7 +713,7 @@ func TestMapSize(t *testing.T) {
 		}
 	}
 	for i := 0; i < numNodes; i++ {
-		m.Compute(strconv.Itoa(i), func(n node.Node[string, int]) node.Node[string, int] {
+		m.Compute(strconv.Itoa(i), func(n node.Node) node.Node {
 			return nil
 		})
 		expectedSize--
@@ -727,11 +735,11 @@ func TestMap_ResizeKeepsHasher(t *testing.T) {
 	// while a node can't move to a bucket owned by another goroutine, i.e.
 	// while growing and shrinking keep the hasher.
 	nm := testNodeManager[int, int]()
-	m := New(nm)
+	m := newTestMap(nm)
 	hasher := m.table.Load().hasher
 	const numNodes = 10 * defaultMinMapTableLen * nodesPerMapBucket
 	for i := 0; i < numNodes; i++ {
-		m.Compute(i, func(n node.Node[int, int]) node.Node[int, int] {
+		m.Compute(i, func(n node.Node) node.Node {
 			return newTestNode(nm, i, i)
 		})
 	}
@@ -742,7 +750,7 @@ func TestMap_ResizeKeepsHasher(t *testing.T) {
 		t.Fatal("growing the table changed the hasher")
 	}
 	for i := 0; i < numNodes; i++ {
-		m.Compute(i, func(n node.Node[int, int]) node.Node[int, int] {
+		m.Compute(i, func(n node.Node) node.Node {
 			return nil
 		})
 	}
@@ -761,7 +769,7 @@ func TestMap_LateGrowDoesNotGrowAgain(t *testing.T) {
 	// the resize. If another writer has grown the table in between, the late
 	// one must not grow the new table again.
 	nm := testNodeManager[int, int]()
-	m := New(nm)
+	m := newTestMap(nm)
 	seen := m.table.Load()
 	m.resize(seen, mapGrowHint)
 	grown := len(m.table.Load().buckets)
@@ -784,7 +792,7 @@ func TestMapParallelCopy(t *testing.T) {
 		t.Skip("a table is copied by one goroutine with GOMAXPROCS=1")
 	}
 	nm := testNodeManager[int, int]()
-	m := New(nm)
+	m := newTestMap(nm)
 	const numNodes = 64 * minBucketsPerGoroutine * nodesPerMapBucket
 	var inserted, stop atomic.Int64
 	done := make(chan struct{})
@@ -793,7 +801,7 @@ func TestMapParallelCopy(t *testing.T) {
 		for stop.Load() == 0 {
 			n := int(inserted.Load())
 			for i := 0; i < n; i += 97 {
-				if got := m.Get(i); got == nil || got.Value() != i {
+				if got := m.Get(i); got == nil || nm.Value(got) != i {
 					t.Errorf("node %d is missing", i)
 					return
 				}
@@ -801,7 +809,7 @@ func TestMapParallelCopy(t *testing.T) {
 		}
 	}()
 	for i := 0; i < numNodes; i++ {
-		m.Compute(i, func(n node.Node[int, int]) node.Node[int, int] {
+		m.Compute(i, func(n node.Node) node.Node {
 			return newTestNode(nm, i, i)
 		})
 		inserted.Store(int64(i + 1))
@@ -815,12 +823,12 @@ func TestMapParallelCopy(t *testing.T) {
 		t.Fatalf("size is %d, want %d", size, numNodes)
 	}
 	for i := 0; i < numNodes; i++ {
-		m.Compute(i, func(n node.Node[int, int]) node.Node[int, int] {
+		m.Compute(i, func(n node.Node) node.Node {
 			return nil
 		})
 		if i%1000 == 0 {
 			for j := i + 1; j < numNodes; j += 101 {
-				if got := m.Get(j); got == nil || got.Value() != j {
+				if got := m.Get(j); got == nil || nm.Value(got) != j {
 					t.Fatalf("node %d is missing after deleting %d nodes", j, i+1)
 				}
 			}
@@ -841,7 +849,7 @@ func TestMapParallelWritersDuringResize(t *testing.T) {
 	// once, so that writers keep running into resizes, then shrink it back, and
 	// check that no node is lost or duplicated.
 	nm := testNodeManager[int, int]()
-	m := New(nm)
+	m := newTestMap(nm)
 	const (
 		numWriters = 16
 		perWriter  = 16 * minBucketsPerGoroutine * nodesPerMapBucket
@@ -852,7 +860,7 @@ func TestMapParallelWritersDuringResize(t *testing.T) {
 		go func(base int) {
 			defer wg.Done()
 			for i := base; i < base+perWriter; i++ {
-				m.Compute(i, func(n node.Node[int, int]) node.Node[int, int] {
+				m.Compute(i, func(n node.Node) node.Node {
 					return newTestNode(nm, i, i)
 				})
 			}
@@ -863,7 +871,7 @@ func TestMapParallelWritersDuringResize(t *testing.T) {
 		t.Fatalf("size is %d, want %d", size, numWriters*perWriter)
 	}
 	for i := 0; i < numWriters*perWriter; i++ {
-		if n := m.Get(i); n == nil || n.Value() != i {
+		if n := m.Get(i); n == nil || nm.Value(n) != i {
 			t.Fatalf("node %d is missing", i)
 		}
 	}
@@ -876,7 +884,7 @@ func TestMapParallelWritersDuringResize(t *testing.T) {
 		go func(base int) {
 			defer wg.Done()
 			for i := base; i < base+perWriter; i++ {
-				m.Compute(i, func(n node.Node[int, int]) node.Node[int, int] {
+				m.Compute(i, func(n node.Node) node.Node {
 					return nil
 				})
 			}
@@ -891,27 +899,28 @@ func TestMapParallelWritersDuringResize(t *testing.T) {
 	}
 }
 
-func sizeBasedOnTypedRangeInt(m *Map[int, int, node.Node[int, int]]) int {
+func sizeBasedOnTypedRangeInt(m *Map[int, node.Node]) int {
 	size := 0
-	m.Range(func(n node.Node[int, int]) bool {
+	m.Range(func(n node.Node) bool {
 		size++
 		return true
 	})
 	return size
 }
 
-func parallelRandTypedResizer(m *Map[string, int, node.Node[string, int]], numIters, numNodes int, cdone chan bool) {
+func parallelRandTypedResizer(m *Map[string, node.Node], numIters, numNodes int, cdone chan bool) {
+	nm := managerOf[string, int](m)
 	r := rand.New(rand.NewSource(time.Now().UnixNano()))
 	for i := 0; i < numIters; i++ {
 		coin := r.Int63n(2)
 		for j := 0; j < numNodes; j++ {
 			key := strconv.Itoa(j)
 			if coin == 1 {
-				m.Compute(key, func(n node.Node[string, int]) node.Node[string, int] {
-					return newTestNode(m.nodeManager, key, j)
+				m.Compute(key, func(n node.Node) node.Node {
+					return newTestNode(nm, key, j)
 				})
 			} else {
-				m.Compute(key, func(n node.Node[string, int]) node.Node[string, int] {
+				m.Compute(key, func(n node.Node) node.Node {
 					return nil
 				})
 			}
@@ -926,7 +935,7 @@ func TestMapParallelResize(t *testing.T) {
 	const numIters = 1_000
 	const numNodes = 2 * nodesPerMapBucket * defaultMinMapTableLen
 	nm := testNodeManager[string, int]()
-	m := New(nm)
+	m := newTestMap(nm)
 	cdone := make(chan bool)
 	go parallelRandTypedResizer(m, numIters, numNodes, cdone)
 	go parallelRandTypedResizer(m, numIters, numNodes, cdone)
@@ -940,7 +949,7 @@ func TestMapParallelResize(t *testing.T) {
 			// The entry may be deleted and that's ok.
 			continue
 		}
-		if n.Value() != i {
+		if nm.Value(n) != i {
 			t.Fatalf("values do not match for %d: %v", i, n)
 		}
 	}
@@ -956,17 +965,18 @@ func TestMapParallelResize(t *testing.T) {
 
 func parallelSeqTypedSetter(
 	t *testing.T,
-	m *Map[string, int, node.Node[string, int]],
+	m *Map[string, node.Node],
 	storeEach, numIters, numNodes int,
 	cdone chan bool,
 ) {
+	nm := managerOf[string, int](m)
 	for i := 0; i < numIters; i++ {
 		for j := 0; j < numNodes; j++ {
 			//nolint:gocritic // nesting is normal here
 			if storeEach == 0 || j%storeEach == 0 {
 				key := strconv.Itoa(j)
-				m.Compute(key, func(n node.Node[string, int]) node.Node[string, int] {
-					return newTestNode(m.nodeManager, key, j)
+				m.Compute(key, func(n node.Node) node.Node {
+					return newTestNode(nm, key, j)
 				})
 				// Due to atomic snapshots we must see a "<j>"/j pair.
 				n := m.Get(key)
@@ -974,7 +984,7 @@ func parallelSeqTypedSetter(
 					t.Errorf("node was not found for %d", j)
 					break
 				}
-				if n.Value() != j {
+				if nm.Value(n) != j {
 					t.Errorf("value was not expected for %d: %v", j, n)
 					break
 				}
@@ -991,7 +1001,7 @@ func TestMapParallelSetter(t *testing.T) {
 	const numIters = 10_000
 	const numNodes = 100
 	nm := testNodeManager[string, int]()
-	m := New(nm)
+	m := newTestMap(nm)
 	cdone := make(chan bool)
 	for i := 0; i < numSetters; i++ {
 		go parallelSeqTypedSetter(t, m, i, numIters, numNodes, cdone)
@@ -1006,7 +1016,7 @@ func TestMapParallelSetter(t *testing.T) {
 		if n == nil {
 			t.Fatalf("node not found for %d", i)
 		}
-		if n.Value() != i {
+		if nm.Value(n) != i {
 			t.Fatalf("values do not match for %d: %v", i, n)
 		}
 	}
@@ -1014,23 +1024,24 @@ func TestMapParallelSetter(t *testing.T) {
 
 func parallelRandTypedSetter(
 	t *testing.T,
-	m *Map[string, int, node.Node[string, int]],
+	m *Map[string, node.Node],
 	numIters, numNodes int,
 	cdone chan bool,
 ) {
+	nm := managerOf[string, int](m)
 	r := rand.New(rand.NewSource(time.Now().UnixNano()))
 	for i := 0; i < numIters; i++ {
 		j := r.Intn(numNodes)
 		key := strconv.Itoa(j)
-		newNode := m.Compute(key, func(n node.Node[string, int]) node.Node[string, int] {
+		newNode := m.Compute(key, func(n node.Node) node.Node {
 			if n != nil {
 				return n
 			}
-			return newTestNode(m.nodeManager, key, j)
+			return newTestNode(nm, key, j)
 		})
 		if newNode != nil {
-			if newNode.Value() != j {
-				t.Errorf("value was not expected for %d: %d", j, newNode.Value())
+			if nm.Value(newNode) != j {
+				t.Errorf("value was not expected for %d: %d", j, nm.Value(newNode))
 			}
 		}
 	}
@@ -1039,22 +1050,23 @@ func parallelRandTypedSetter(
 
 func parallelRandTypedDeleter(
 	t *testing.T,
-	m *Map[string, int, node.Node[string, int]],
+	m *Map[string, node.Node],
 	numIters, numNodes int,
 	cdone chan bool,
 ) {
+	nm := managerOf[string, int](m)
 	r := rand.New(rand.NewSource(time.Now().UnixNano()))
 	for i := 0; i < numIters; i++ {
 		j := r.Intn(numNodes)
 		key := strconv.Itoa(j)
-		var oldNode node.Node[string, int]
-		m.Compute(key, func(n node.Node[string, int]) node.Node[string, int] {
+		var oldNode node.Node
+		m.Compute(key, func(n node.Node) node.Node {
 			oldNode = n
 			return nil
 		})
 		if oldNode != nil {
-			if oldNode.Value() != j {
-				t.Errorf("value was not expected for %d: %d", j, oldNode.Value())
+			if nm.Value(oldNode) != j {
+				t.Errorf("value was not expected for %d: %d", j, nm.Value(oldNode))
 			}
 		}
 	}
@@ -1063,16 +1075,17 @@ func parallelRandTypedDeleter(
 
 func parallelTypedGetter(
 	t *testing.T,
-	m *Map[string, int, node.Node[string, int]],
+	m *Map[string, node.Node],
 	numIters, numNodes int,
 	cdone chan bool,
 ) {
+	nm := managerOf[string, int](m)
 	for i := 0; i < numIters; i++ {
 		for j := 0; j < numNodes; j++ {
 			// Due to atomic snapshots we must either see no entry, or a "<j>"/j pair.
 			if n := m.Get(strconv.Itoa(j)); n != nil {
-				if n.Value() != j {
-					t.Errorf("value was not expected for %d: %d", j, n.Value())
+				if nm.Value(n) != j {
+					t.Errorf("value was not expected for %d: %d", j, nm.Value(n))
 				}
 			}
 		}
@@ -1086,7 +1099,7 @@ func TestMapAtomicSnapshot(t *testing.T) {
 	const numIters = 100_000
 	const numNodes = 100
 	nm := testNodeManager[string, int]()
-	m := New(nm)
+	m := newTestMap(nm)
 	cdone := make(chan bool)
 	// Update or delete random entry in parallel with gets.
 	go parallelRandTypedSetter(t, m, numIters, numNodes, cdone)
@@ -1105,7 +1118,7 @@ func TestMapParallelSetsAndDeletes(t *testing.T) {
 	const numIters = 100_000
 	const numNodes = 1000
 	nm := testNodeManager[string, int]()
-	m := New(nm)
+	m := newTestMap(nm)
 	cdone := make(chan bool)
 	// Update random entry in parallel with deletes.
 	for i := 0; i < numWorkers; i++ {
@@ -1118,15 +1131,16 @@ func TestMapParallelSetsAndDeletes(t *testing.T) {
 	}
 }
 
-func parallelTypedComputer(m *Map[uint64, uint64, node.Node[uint64, uint64]], numIters, numNodes int, cdone chan bool) {
+func parallelTypedComputer(m *Map[uint64, node.Node], numIters, numNodes int, cdone chan bool) {
+	nm := managerOf[uint64, uint64](m)
 	for i := 0; i < numIters; i++ {
 		for j := 0; j < numNodes; j++ {
-			m.Compute(uint64(j), func(oldNode node.Node[uint64, uint64]) node.Node[uint64, uint64] {
+			m.Compute(uint64(j), func(oldNode node.Node) node.Node {
 				v := uint64(1)
 				if oldNode != nil {
-					v = oldNode.Value() + 1
+					v = nm.Value(oldNode) + 1
 				}
-				return newTestNode(m.nodeManager, uint64(j), v)
+				return newTestNode(nm, uint64(j), v)
 			})
 		}
 	}
@@ -1139,7 +1153,7 @@ func TestMapParallelComputes(t *testing.T) {
 	const numWorkers = 4 // Also stands for numNodes.
 	const numIters = 10_000
 	nm := testNodeManager[uint64, uint64]()
-	m := New(nm)
+	m := newTestMap(nm)
 	cdone := make(chan bool)
 	for i := 0; i < numWorkers; i++ {
 		go parallelTypedComputer(m, numIters, numWorkers, cdone)
@@ -1154,17 +1168,18 @@ func TestMapParallelComputes(t *testing.T) {
 		if n == nil {
 			t.Fatalf("node not found for %d", i)
 		}
-		if n.Value() != numWorkers*numIters {
-			t.Fatalf("values do not match for %d: %v", i, n.Value())
+		if nm.Value(n) != numWorkers*numIters {
+			t.Fatalf("values do not match for %d: %v", i, nm.Value(n))
 		}
 	}
 }
 
-func parallelTypedRangeSetter(m *Map[int, int, node.Node[int, int]], numNodes int, stopFlag *int64, cdone chan bool) {
+func parallelTypedRangeSetter(m *Map[int, node.Node], numNodes int, stopFlag *int64, cdone chan bool) {
+	nm := managerOf[int, int](m)
 	for {
 		for i := 0; i < numNodes; i++ {
-			m.Compute(i, func(n node.Node[int, int]) node.Node[int, int] {
-				return newTestNode(m.nodeManager, i, i)
+			m.Compute(i, func(n node.Node) node.Node {
+				return newTestNode(nm, i, i)
 			})
 		}
 		if atomic.LoadInt64(stopFlag) != 0 {
@@ -1174,10 +1189,10 @@ func parallelTypedRangeSetter(m *Map[int, int, node.Node[int, int]], numNodes in
 	cdone <- true
 }
 
-func parallelTypedRangeDeleter(m *Map[int, int, node.Node[int, int]], numSetter int, stopFlag *int64, cdone chan bool) {
+func parallelTypedRangeDeleter(m *Map[int, node.Node], numSetter int, stopFlag *int64, cdone chan bool) {
 	for {
 		for i := 0; i < numSetter; i++ {
-			m.Compute(i, func(n node.Node[int, int]) node.Node[int, int] {
+			m.Compute(i, func(n node.Node) node.Node {
 				return nil
 			})
 		}
@@ -1193,9 +1208,9 @@ func TestMapParallelRange(t *testing.T) {
 
 	const numNodes = 10_000
 	nm := testNodeManager[int, int]()
-	m := NewWithSize(nm, numNodes)
+	m := newTestMapWithSize(nm, numNodes)
 	for i := 0; i < numNodes; i++ {
-		m.Compute(i, func(n node.Node[int, int]) node.Node[int, int] {
+		m.Compute(i, func(n node.Node) node.Node {
 			return newTestNode(nm, i, i)
 		})
 	}
@@ -1206,12 +1221,12 @@ func TestMapParallelRange(t *testing.T) {
 	go parallelTypedRangeDeleter(m, numNodes, &stopFlag, cdone)
 	// Iterate the map and verify that no duplicate keys were met.
 	met := make(map[int]int)
-	m.Range(func(n node.Node[int, int]) bool {
-		if n.Key() != n.Value() {
-			t.Fatalf("got unexpected value for key %d: %d", n.Key(), n.Value())
+	m.Range(func(n node.Node) bool {
+		if nm.Key(n) != nm.Value(n) {
+			t.Fatalf("got unexpected value for key %d: %d", nm.Key(n), nm.Value(n))
 			return false
 		}
-		met[n.Key()] += 1
+		met[nm.Key(n)] += 1
 		return true
 	})
 	if len(met) == 0 {
@@ -1230,26 +1245,27 @@ func TestMapParallelRange(t *testing.T) {
 
 func parallelTypedShrinker(
 	t *testing.T,
-	m *Map[uint64, *point, node.Node[uint64, *point]],
+	m *Map[uint64, node.Node],
 	numIters, numNodes int,
 	stopFlag *int64, cdone chan bool,
 ) {
+	nm := managerOf[uint64, *point](m)
 	for i := 0; i < numIters; i++ {
 		for j := 0; j < numNodes; j++ {
 			wasPresent := false
-			n := m.Compute(uint64(j), func(n node.Node[uint64, *point]) node.Node[uint64, *point] {
+			n := m.Compute(uint64(j), func(n node.Node) node.Node {
 				if n != nil {
 					wasPresent = true
 					return n
 				}
-				return newTestNode(m.nodeManager, uint64(j), &point{int32(j), int32(j)})
+				return newTestNode(nm, uint64(j), &point{int32(j), int32(j)})
 			})
 			if wasPresent {
-				t.Errorf("node was present for %d: %v", j, n.Value())
+				t.Errorf("node was present for %d: %v", j, nm.Value(n))
 			}
 		}
 		for j := 0; j < numNodes; j++ {
-			m.Compute(uint64(j), func(n node.Node[uint64, *point]) node.Node[uint64, *point] {
+			m.Compute(uint64(j), func(n node.Node) node.Node {
 				return nil
 			})
 		}
@@ -1260,28 +1276,29 @@ func parallelTypedShrinker(
 
 func parallelTypedUpdater(
 	t *testing.T,
-	m *Map[uint64, *point, node.Node[uint64, *point]],
+	m *Map[uint64, node.Node],
 	idx int, stopFlag *int64,
 	cdone chan bool,
 ) {
+	nm := managerOf[uint64, *point](m)
 	for atomic.LoadInt64(stopFlag) != 1 {
 		sleepUs := int(xruntime.Fastrand() % 10)
 		wasPresent := false
-		n := m.Compute(uint64(idx), func(n node.Node[uint64, *point]) node.Node[uint64, *point] {
+		n := m.Compute(uint64(idx), func(n node.Node) node.Node {
 			if n != nil {
 				wasPresent = true
 				return n
 			}
-			return newTestNode(m.nodeManager, uint64(idx), &point{int32(idx), int32(idx)})
+			return newTestNode(nm, uint64(idx), &point{int32(idx), int32(idx)})
 		})
 		if wasPresent {
-			t.Errorf("value was present for %d: %v", idx, n.Value())
+			t.Errorf("value was present for %d: %v", idx, nm.Value(n))
 		}
 		time.Sleep(time.Duration(sleepUs) * time.Microsecond)
 		if n := m.Get(uint64(idx)); n == nil {
 			t.Errorf("node was not found for %d", idx)
 		}
-		m.Compute(uint64(idx), func(n node.Node[uint64, *point]) node.Node[uint64, *point] {
+		m.Compute(uint64(idx), func(n node.Node) node.Node {
 			return nil
 		})
 	}
@@ -1294,7 +1311,7 @@ func TestMapDoesNotLoseNodesOnResize(t *testing.T) {
 	const numIters = 10_000
 	const numNodes = 128
 	nm := testNodeManager[uint64, *point]()
-	m := New(nm)
+	m := newTestMap(nm)
 	cdone := make(chan bool)
 	stopFlag := int64(0)
 	go parallelTypedShrinker(t, m, numIters, numNodes, &stopFlag, cdone)

@@ -3751,7 +3751,7 @@ func TestCache_CallSupersedesRefreshOfRemovedNode(t *testing.T) {
 				require.True(t, shouldLoad)
 				require.NotSame(t, doomed, cl)
 				require.Same(t, cl, c.cache.singleflight.getCall(1))
-				c.cache.singleflight.adopt(cl, n.Value(), 0, n)
+				c.cache.singleflight.adopt(cl, c.cache.nodeManager.Value(n), 0, n)
 			},
 		},
 	}
@@ -4535,7 +4535,7 @@ func TestCache_LoadRegisteredWhileInvalidationIsAppliedDoesNotAdoptOldValue(t *t
 				sawOld   bool
 				early    bool
 				// the node the re-check adopted, nil if none
-				adopted = make(chan node.Node[int, int], 1)
+				adopted = make(chan node.Node, 1)
 			)
 			c = Must(&Options[int, int]{
 				OnAtomicDeletion: func(DeletionEvent[int, int]) {

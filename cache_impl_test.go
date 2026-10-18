@@ -36,7 +36,7 @@ const (
 	unreachable = math.MaxUint32
 )
 
-func firstBeforeAccess(c *Cache[int, int]) node.Node[int, int] {
+func firstBeforeAccess(c *Cache[int, int]) node.Node {
 	return c.cache.evictionPolicy.probation.Head()
 }
 
@@ -50,8 +50,8 @@ func updateRecency(t *testing.T, c *Cache[int, int], isRead bool, fn func()) {
 		require.NotEqual(t, first, c.cache.evictionPolicy.probation.Head())
 		require.Equal(t, first, c.cache.evictionPolicy.protected.Tail())
 	} else {
-		require.NotEqual(t, first.Key(), c.cache.evictionPolicy.probation.Head().Key())
-		require.Equal(t, first.Key(), c.cache.evictionPolicy.protected.Tail().Key())
+		require.NotEqual(t, c.cache.nodeManager.Key(first), c.cache.nodeManager.Key(c.cache.evictionPolicy.probation.Head()))
+		require.Equal(t, c.cache.nodeManager.Key(first), c.cache.nodeManager.Key(c.cache.evictionPolicy.protected.Tail()))
 	}
 }
 
@@ -235,7 +235,7 @@ func TestCache_Eviction(t *testing.T) {
 		expected := make([]int, 0, maximum)
 		h := c.cache.evictionPolicy.window.Head()
 		for h != nil {
-			expected = append(expected, h.Key())
+			expected = append(expected, c.cache.nodeManager.Key(h))
 			h = h.Next()
 		}
 		c.cache.evictionPolicy.windowMaximum = 0
@@ -245,7 +245,7 @@ func TestCache_Eviction(t *testing.T) {
 		actual := make([]int, 0, maximum)
 		h = c.cache.evictionPolicy.probation.Head()
 		for h != nil {
-			actual = append(actual, h.Key())
+			actual = append(actual, c.cache.nodeManager.Key(h))
 			h = h.Next()
 		}
 
@@ -282,12 +282,12 @@ func TestCache_Eviction(t *testing.T) {
 		expected := make([]int, 0, maximum)
 		h := c.cache.evictionPolicy.probation.Head()
 		for h != nil {
-			expected = append(expected, h.Key())
+			expected = append(expected, c.cache.nodeManager.Key(h))
 			h = h.Next()
 		}
 		h = c.cache.evictionPolicy.protected.Head()
 		for h != nil {
-			expected = append(expected, h.Key())
+			expected = append(expected, c.cache.nodeManager.Key(h))
 			h = h.Next()
 		}
 		c.SetMaximum(0)
@@ -329,7 +329,7 @@ func TestCache_Eviction(t *testing.T) {
 		expected := make([]int, 0, maximum)
 		h := c.cache.evictionPolicy.window.Head()
 		for h != nil {
-			expected = append(expected, h.Key())
+			expected = append(expected, c.cache.nodeManager.Key(h))
 			h = h.Next()
 		}
 
@@ -374,7 +374,7 @@ func TestCache_Eviction(t *testing.T) {
 		expected := make([]int, 0, maximum)
 		h := c.cache.evictionPolicy.window.Head()
 		for h != nil {
-			expected = append(expected, h.Key())
+			expected = append(expected, c.cache.nodeManager.Key(h))
 			h = h.Next()
 		}
 
@@ -425,17 +425,17 @@ func TestCache_Eviction(t *testing.T) {
 		expected := make([]int, 0, maximum)
 		h := e.window.Head()
 		for h != nil {
-			expected = append(expected, h.Key())
+			expected = append(expected, c.cache.nodeManager.Key(h))
 			h = h.Next()
 		}
 		h = e.probation.Head()
 		for h != nil {
-			expected = append(expected, h.Key())
+			expected = append(expected, c.cache.nodeManager.Key(h))
 			h = h.Next()
 		}
 		h = e.protected.Head()
 		for h != nil {
-			expected = append(expected, h.Key())
+			expected = append(expected, c.cache.nodeManager.Key(h))
 			h = h.Next()
 		}
 
@@ -479,17 +479,17 @@ func TestCache_Eviction(t *testing.T) {
 		expected := make([]int, 0, maximum)
 		h := e.window.Head()
 		for h != nil {
-			expected = append(expected, h.Key())
+			expected = append(expected, c.cache.nodeManager.Key(h))
 			h = h.Next()
 		}
 		h = e.probation.Head()
 		for h != nil {
-			expected = append(expected, h.Key())
+			expected = append(expected, c.cache.nodeManager.Key(h))
 			h = h.Next()
 		}
 		h = e.protected.Head()
 		for h != nil {
-			expected = append(expected, h.Key())
+			expected = append(expected, c.cache.nodeManager.Key(h))
 			h = h.Next()
 		}
 
@@ -526,7 +526,7 @@ func TestCache_Eviction(t *testing.T) {
 
 		c.cache.evictionMutex.Lock()
 		expected := e.window.Head()
-		key := expected.Key()
+		key := c.cache.nodeManager.Key(expected)
 
 		done := make(chan struct{})
 		go func() {
@@ -576,7 +576,7 @@ func TestCache_Eviction(t *testing.T) {
 
 		c.cache.evictionMutex.Lock()
 		expected := e.probation.Head()
-		key := expected.Key()
+		key := c.cache.nodeManager.Key(expected)
 
 		done := make(chan struct{})
 		go func() {
@@ -634,7 +634,7 @@ func TestCache_Eviction(t *testing.T) {
 		c.SetMaximum(0)
 		c.cache.evictNodes()
 
-		require.True(t, c.has(candidate.Key()))
+		require.True(t, c.has(c.cache.nodeManager.Key(candidate)))
 		require.Equal(t, uint64(0), c.WeightedSize())
 		require.Equal(t, uint64(0), c.GetMaximum())
 	})
@@ -723,7 +723,7 @@ func TestCache_Eviction(t *testing.T) {
 
 		first := firstBeforeAccess(c)
 		updateRecency(t, c, true, func() {
-			require.True(t, c.has(first.Key()))
+			require.True(t, c.has(c.cache.nodeManager.Key(first)))
 		})
 	})
 	t.Run("updateRecency_onSetIfAbsent", func(t *testing.T) {
@@ -753,9 +753,9 @@ func TestCache_Eviction(t *testing.T) {
 
 		first := firstBeforeAccess(c)
 		updateRecency(t, c, false, func() {
-			v, ok := c.SetIfAbsent(first.Key(), first.Value()+1)
+			v, ok := c.SetIfAbsent(c.cache.nodeManager.Key(first), c.cache.nodeManager.Value(first)+1)
 			require.False(t, ok)
-			require.Equal(t, first.Value(), v)
+			require.Equal(t, c.cache.nodeManager.Value(first), v)
 		})
 	})
 	t.Run("updateRecency_onSet", func(t *testing.T) {
@@ -785,9 +785,9 @@ func TestCache_Eviction(t *testing.T) {
 
 		first := firstBeforeAccess(c)
 		// capture before Set: the node may be updated in place
-		firstValue := first.Value()
+		firstValue := c.cache.nodeManager.Value(first)
 		updateRecency(t, c, false, func() {
-			v, ok := c.Set(first.Key(), firstValue+1)
+			v, ok := c.Set(c.cache.nodeManager.Key(first), firstValue+1)
 			require.False(t, ok)
 			require.Equal(t, firstValue, v)
 		})
@@ -1014,7 +1014,7 @@ func TestCache_CornerCases(t *testing.T) {
 		}
 
 		require.Panics(t, func() {
-			c.cache.runTask(&task[int, int]{
+			c.cache.runTask(&task{
 				writeReason: unknownReason,
 			})
 		})
@@ -1197,7 +1197,7 @@ func TestCache_Scheduler(t *testing.T) {
 
 		c.cache.drainStatus.Store(processingToIdle)
 		for i := uint32(0); i < maxWriteBufferSize; i++ {
-			c.cache.writeBuffer.TryPush(&task[int, int]{writeReason: addReason})
+			c.cache.writeBuffer.TryPush(&task{writeReason: addReason})
 		}
 
 		c.cache.afterWriteTask(nil)

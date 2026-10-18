@@ -80,16 +80,16 @@ type cache[K comparable, V any] struct {
 	drainStatus        atomic.Uint32
 	_                  [xruntime.CacheLineSize - 4]byte
 	nodeManager        *node.Manager[K, V]
-	hashmap            *hashmap.Map[K, V, node.Node[K, V]]
-	evictionPolicy     *policy[K, V]
-	timerWheel         *expiration.Wheel[K, V]
+	hashmap            *hashmap.Map[K, node.Node]
+	evictionPolicy     *policy[K]
+	timerWheel         *expiration.Wheel
 	stats              stats.Recorder
 	statsSnapshoter    stats.Snapshoter
 	logger             Logger
 	clock              timeSource
 	statsClock         *realSource
-	readBuffer         *lossy.Striped[K, V]
-	writeBuffer        *queue.MPSC[task[K, V]]
+	readBuffer         *lossy.Striped
+	writeBuffer        *queue.MPSC[task]
 	executor           func(fn func())
 	singleflight       *group[K, V]
 	evictionMutex      sync.Mutex
@@ -153,7 +153,7 @@ func newCache[K comparable, V any](o *Options[K, V]) *cache[K, V] {
 
 	c := &cache[K, V]{
 		nodeManager:        nodeManager,
-		hashmap:            hashmap.NewWithSize[K, V, node.Node[K, V]](nodeManager, o.getInitialCapacity()),
+		hashmap:            hashmap.NewWithSize[K, node.Node](nodeManager, o.getInitialCapacity()),
 		stats:              statsRecorder,
 		statsSnapshoter:    statsSnapshoter,
 		logger:             logger,
@@ -175,7 +175,7 @@ func newCache[K comparable, V any](o *Options[K, V]) *cache[K, V] {
 	c.singleflight.publish = c.publish
 	// read on every refresh, so that tests can replace the executor
 	c.singleflight.executor = func(fn func()) { c.executor(fn) }
-	c.singleflight.nodeOf = func(key K) node.Node[K, V] { return c.hashmap.Get(key) }
+	c.singleflight.nodeOf = func(key K) node.Node { return c.hashmap.Get(key) }
 
 	if withStats {
 		c.statsClock.Init()
@@ -188,11 +188,11 @@ func newCache[K comparable, V any](o *Options[K, V]) *cache[K, V] {
 			//nolint:gosec // there's no overflow
 			expectedSize = min(maximum, uint64(o.getInitialCapacity()))
 		}
-		c.evictionPolicy = newPolicy[K, V](withWeight, expectedSize, c.evictNode)
+		c.evictionPolicy = newPolicy[K](withWeight, expectedSize, nodeManager.KeyOffset(), c.evictNode)
 	}
 
 	if o.ExpiryCalculator != nil {
-		c.timerWheel = expiration.NewWheel(nodeManager)
+		c.timerWheel = expiration.NewWheel(nodeManager.Kind)
 	}
 
 	c.withExpiration = o.ExpiryCalculator != nil
@@ -204,8 +204,8 @@ func newCache[K comparable, V any](o *Options[K, V]) *cache[K, V] {
 	c.withMaintenance = c.withEviction || c.withExpiration
 
 	if c.withMaintenance {
-		c.readBuffer = lossy.NewStriped(maxStripedBufferSize, nodeManager)
-		c.writeBuffer = queue.NewMPSC[task[K, V]](minWriteBufferSize, maxWriteBufferSize)
+		c.readBuffer = lossy.NewStriped(maxStripedBufferSize, nodeManager.Kind)
+		c.writeBuffer = queue.NewMPSC[task](minWriteBufferSize, maxWriteBufferSize)
 	}
 	if c.withTime {
 		c.clock.Init()
@@ -229,7 +229,7 @@ func newCache[K comparable, V any](o *Options[K, V]) *cache[K, V] {
 // newNode creates a node for a write whose weight and timestamps have already been computed.
 // With updatable, the node can have its value replaced in place: a value that would be kept
 // inline is kept behind an atomic pointer instead.
-func (c *cache[K, V]) newNode(key K, value V, weight uint32, expiresAt, refreshableAt int64, updatable bool) node.Node[K, V] {
+func (c *cache[K, V]) newNode(key K, value V, weight uint32, expiresAt, refreshableAt int64, updatable bool) node.Node {
 	if updatable {
 		return c.nodeManager.CreateUpdatable(key, value, expiresAt, refreshableAt, weight)
 	}
@@ -270,12 +270,12 @@ func (c *cache[K, V]) writeEntry(key K, value V, weight uint32, old *previous[K,
 	}
 }
 
-func (c *cache[K, V]) nodeToEntry(n node.Node[K, V], nanos int64) Entry[K, V] {
-	return c.nodeValueToEntry(n, n.Value(), nanos)
+func (c *cache[K, V]) nodeToEntry(n node.Node, nanos int64) Entry[K, V] {
+	return c.nodeValueToEntry(n, c.nodeManager.Value(n), nanos)
 }
 
 // nodeValueToEntry is nodeToEntry with the value the caller loaded from the node.
-func (c *cache[K, V]) nodeValueToEntry(n node.Node[K, V], value V, nanos int64) Entry[K, V] {
+func (c *cache[K, V]) nodeValueToEntry(n node.Node, value V, nanos int64) Entry[K, V] {
 	nowNano := noTime
 	if c.withTime {
 		nowNano = nanos
@@ -292,7 +292,7 @@ func (c *cache[K, V]) nodeValueToEntry(n node.Node[K, V], value V, nanos int64) 
 	}
 
 	return Entry[K, V]{
-		Key:               n.Key(),
+		Key:               c.nodeManager.Key(n),
 		Value:             value,
 		Weight:            n.Weight(),
 		ExpiresAtNano:     expiresAt,
@@ -321,7 +321,7 @@ func (c *cache[K, V]) GetIfPresent(key K) (V, bool) {
 // getNode returns the node associated with the key in this cache, and its value. The value is
 // loaded once and is the one ExpireAfterRead is shown, so a read that returns it comes before an
 // update in place that replaces it.
-func (c *cache[K, V]) getNode(key K, nowNano int64) (n node.Node[K, V], value V) {
+func (c *cache[K, V]) getNode(key K, nowNano int64) (n node.Node, value V) {
 	n = c.hashmap.Get(key)
 	if n == nil {
 		c.stats.RecordMisses(1)
@@ -339,7 +339,7 @@ func (c *cache[K, V]) getNode(key K, nowNano int64) (n node.Node[K, V], value V)
 	if c.withReadExpiry {
 		value = c.calcExpiresAtAfterRead(n, nowNano)
 	} else {
-		value = n.Value()
+		value = c.nodeManager.Value(n)
 	}
 	c.afterRead(n, true)
 
@@ -351,7 +351,7 @@ func (c *cache[K, V]) getNode(key K, nowNano int64) (n node.Node[K, V], value V)
 // Unlike getNode, this function does not produce any side effects
 // such as updating statistics or the eviction policy. As in getNode, a node that a write is
 // replacing or removing is the key's node until the write changes the table.
-func (c *cache[K, V]) getNodeQuietly(key K, nowNano int64) node.Node[K, V] {
+func (c *cache[K, V]) getNodeQuietly(key K, nowNano int64) node.Node {
 	n := c.hashmap.Get(key)
 	if n == nil || n.HasExpired(nowNano) {
 		return nil
@@ -360,7 +360,7 @@ func (c *cache[K, V]) getNodeQuietly(key K, nowNano int64) node.Node[K, V] {
 	return n
 }
 
-func (c *cache[K, V]) afterRead(got node.Node[K, V], recordHit bool) {
+func (c *cache[K, V]) afterRead(got node.Node, recordHit bool) {
 	if recordHit {
 		c.stats.RecordHits(1)
 	}
@@ -393,8 +393,8 @@ func (c *cache[K, V]) SetIfAbsent(key K, value V) (V, bool) {
 // calcExpiresAtAfterRead moves the deadline of n as ExpireAfterRead asks for the entry with the
 // value it loads, and returns that value for the read to return. The cache must have read expiry
 // (withReadExpiry).
-func (c *cache[K, V]) calcExpiresAtAfterRead(n node.Node[K, V], nowNano int64) V {
-	value, valuePtr, valueWord := n.ValueAndIdentity()
+func (c *cache[K, V]) calcExpiresAtAfterRead(n node.Node, nowNano int64) V {
+	value, valuePtr, valueWord := c.nodeManager.ValueAndIdentity(n)
 	entry := c.nodeValueToEntry(n, value, nowNano)
 	// The new deadline is derived from the entry the calculator was shown, so it may only replace
 	// that entry's deadline. A writer can store a new deadline in place in the meantime, and
@@ -411,7 +411,7 @@ func (c *cache[K, V]) calcExpiresAtAfterRead(n node.Node[K, V], nowNano int64) V
 		// tell: the update may store the very deadline the entry had, for example when the clock
 		// has not moved. An update in the few instructions between this check and the CAS still
 		// can, as the writer stores the value before the deadline.
-		if _, p, w := n.ValueAndIdentity(); p != valuePtr || w != valueWord {
+		if _, p, w := c.nodeManager.ValueAndIdentity(n); p != valuePtr || w != valueWord {
 			return value
 		}
 		n.CASExpiresAt(entry.ExpiresAtNano, next)
@@ -459,7 +459,7 @@ func (c *cache[K, V]) SetExpiresAfter(key K, expiresAfter time.Duration) {
 // setExpiresAt is SetExpiresAfter with the deadline that deadline returns for the current time.
 func (c *cache[K, V]) setExpiresAt(key K, deadline func(nowNano int64) int64) {
 	var (
-		n       node.Node[K, V]
+		n       node.Node
 		nowNano int64
 		earlier bool
 	)
@@ -467,7 +467,7 @@ func (c *cache[K, V]) setExpiresAt(key K, deadline func(nowNano int64) int64) {
 	// the deadline before its calculator runs and stores the result after, so a deadline set
 	// without the lock in between would be overwritten with one computed from the former. The
 	// clock is read under the lock too, as in mutate.
-	c.hashmap.Compute(key, func(cur node.Node[K, V]) node.Node[K, V] {
+	c.hashmap.Compute(key, func(cur node.Node) node.Node {
 		if cur == nil {
 			return nil
 		}
@@ -516,7 +516,7 @@ func (c *cache[K, V]) SetRefreshableAfter(key K, refreshableAfter time.Duration)
 // setRefreshableAt is SetRefreshableAfter with the time that deadline returns for the current time.
 func (c *cache[K, V]) setRefreshableAt(key K, deadline func(nowNano int64) int64) {
 	// Under the key's bucket lock, as for setExpiresAt.
-	c.hashmap.Compute(key, func(n node.Node[K, V]) node.Node[K, V] {
+	c.hashmap.Compute(key, func(n node.Node) node.Node {
 		if n == nil {
 			return nil
 		}
@@ -724,7 +724,7 @@ func (c *cache[K, V]) doCompute(
 		return zeroValue[V](), false
 	}
 	// The node may be updated in place by another writer once the bucket lock is released, so
-	// the result is the value seen under the lock, not m.next.Value().
+	// the result is the value seen under the lock, not c.nodeManager.Value(m.next).
 	return result, true
 }
 
@@ -760,12 +760,12 @@ func (c *cache[K, V]) startRefresh(
 			return cl, false
 		}
 	}
-	c.hashmap.Compute(key, func(current node.Node[K, V]) node.Node[K, V] {
+	c.hashmap.Compute(key, func(current node.Node) node.Node {
 		// The time is read again under the lock, as a mutation does: the entry may have expired
 		// while the refresh waited for it, and a load of the key registered since must not be
 		// replaced by a refresh of the expired value.
 		nowNano = max(nowNano, c.clock.NowNano())
-		var base node.Node[K, V]
+		var base node.Node
 		if current != nil && !current.HasExpired(nowNano) {
 			base = current
 		}
@@ -854,7 +854,7 @@ func (c *cache[K, V]) refreshTask(ctx context.Context, cl *call[K, V], loader Lo
 	// the loader is called in a closure, see doCall
 	refresher := func(ctx context.Context, key K) (V, error) {
 		if cl.base != nil {
-			return loader.Reload(ctx, key, cl.base.Value())
+			return loader.Reload(ctx, key, c.nodeManager.Value(cl.base))
 		}
 		return loader.Load(ctx, key)
 	}
@@ -898,7 +898,7 @@ func (c *cache[K, V]) Get(ctx context.Context, key K, loader Loader[K, V]) (V, e
 		// retired after OnAtomicDeletion, so a refresh requested while the listener runs waits for
 		// the bucket lock, and then finds the key's new node.
 		if !n.IsFresh(nowNano) && n.IsAlive() {
-			c.refreshKey(ctx, n.Key(), loader, false)
+			c.refreshKey(ctx, c.nodeManager.Key(n), loader, false)
 		}
 		return value, nil
 	}
@@ -1048,10 +1048,10 @@ func (c *cache[K, V]) commitCall(cl *call[K, V]) mutation[K, V] {
 // does not join cl and get the removed value. Read without the lock, the value could be removed
 // before cl is finished, and cl would stay registered with it. The node is nil if the key has
 // no live value any more.
-func (c *cache[K, V]) readForAdoption(cl *call[K, V], nowNano int64) (value V, expiresAt int64, live node.Node[K, V]) {
-	c.hashmap.Compute(cl.key, func(n node.Node[K, V]) node.Node[K, V] {
+func (c *cache[K, V]) readForAdoption(cl *call[K, V], nowNano int64) (value V, expiresAt int64, live node.Node) {
+	c.hashmap.Compute(cl.key, func(n node.Node) node.Node {
 		if n != nil && !n.HasExpired(nowNano) {
-			value, expiresAt, live = n.Value(), c.expiresAtOf(n), n
+			value, expiresAt, live = c.nodeManager.Value(n), c.expiresAtOf(n), n
 			cl.committed.Store(true)
 		}
 		return n
@@ -1068,13 +1068,13 @@ func (c *cache[K, V]) readForAdoption(cl *call[K, V], nowNano int64) (value V, e
 // change that the invalidation follows.
 func (c *cache[K, V]) valueAfterRefusal(key K) (value V, ok bool) {
 	if n := c.getNodeQuietly(key, c.clock.NowNano()); n != nil {
-		return n.Value(), true
+		return c.nodeManager.Value(n), true
 	}
 	return zeroValue[V](), false
 }
 
 // expiresAtOf returns when n expires, or 0 if entries do not expire (see call.expiresAt).
-func (c *cache[K, V]) expiresAtOf(n node.Node[K, V]) int64 {
+func (c *cache[K, V]) expiresAtOf(n node.Node) int64 {
 	if !c.withExpiration {
 		return 0
 	}
@@ -1203,7 +1203,7 @@ func (c *cache[K, V]) bulkRefreshTask(
 				for _, k := range keys {
 					// read when the reload starts, as for a single refresh: a write that changed
 					// it since the request has cancelled the refresh
-					oldValues = append(oldValues, toReloadCalls[k].base.Value())
+					oldValues = append(oldValues, c.nodeManager.Value(toReloadCalls[k].base))
 				}
 				return bulkLoader.BulkReload(ctx, keys, oldValues)
 			}
@@ -1597,11 +1597,11 @@ func (r nodeRemoval) cause() DeletionCause {
 // stats if it is an eviction (countEviction), and returns the cause reported to the synchronous
 // listener. kept reports that n stays, as described by removal.
 func (c *cache[K, V]) deleteNodeFromMap(
-	n node.Node[K, V],
+	n node.Node,
 	nowNano int64,
 	removal nodeRemoval,
-) (deleted node.Node[K, V], deletedCause DeletionCause, kept bool) {
-	c.hashmap.Compute(n.Key(), func(current node.Node[K, V]) node.Node[K, V] {
+) (deleted node.Node, deletedCause DeletionCause, kept bool) {
+	c.hashmap.Compute(c.nodeManager.Key(n), func(current node.Node) node.Node {
 		// n is not nil, so a current n is in the table
 		isCurrent := n == current
 		if isCurrent {
@@ -1621,7 +1621,7 @@ func (c *cache[K, V]) deleteNodeFromMap(
 			}
 		}
 		if removal == removeInvalidated {
-			c.singleflight.invalidate(n.Key())
+			c.singleflight.invalidate(c.nodeManager.Key(n))
 		} else if isCurrent {
 			// An eviction must not cancel an in-flight load: it was most likely started
 			// because this very node has expired, and dropping it would make the loaded
@@ -1629,14 +1629,14 @@ func (c *cache[K, V]) deleteNodeFromMap(
 			// that has already committed it, is dropped, and only if n is still the key's node:
 			// the policy may evict a node that was already replaced, and the call then belongs
 			// to the value that replaced it.
-			c.singleflight.deleteOnRemoval(n.Key())
+			c.singleflight.deleteOnRemoval(c.nodeManager.Key(n))
 		}
 		if !isCurrent {
 			return current
 		}
 		deleted = current
 		deletedCause = removalCause(!deleted.HasExpired(nowNano), removal.cause())
-		c.retire(deleted, deleted.Value(), deletedCause)
+		c.retire(deleted, c.nodeManager.Value(deleted), deletedCause)
 		return nil
 	})
 	if deleted != nil {
@@ -1646,14 +1646,14 @@ func (c *cache[K, V]) deleteNodeFromMap(
 	return deleted, deletedCause, kept
 }
 
-func (c *cache[K, V]) deleteNode(n node.Node[K, V], nowNano int64) bool {
+func (c *cache[K, V]) deleteNode(n node.Node, nowNano int64) bool {
 	deleted, cause, _ := c.deleteNodeFromMap(n, nowNano, removeInvalidated)
 	c.afterDelete(deleted, cause, true, false)
 	return deleted != nil
 }
 
 // afterDelete takes the cause that the synchronous listener was given under the lock.
-func (c *cache[K, V]) afterDelete(deleted node.Node[K, V], cause DeletionCause, alreadyLocked, onExecutor bool) {
+func (c *cache[K, V]) afterDelete(deleted node.Node, cause DeletionCause, alreadyLocked, onExecutor bool) {
 	if deleted == nil {
 		return
 	}
@@ -1662,11 +1662,11 @@ func (c *cache[K, V]) afterDelete(deleted node.Node[K, V], cause DeletionCause, 
 	if c.withMaintenance {
 		defer c.afterDeletePolicies(deleted, alreadyLocked)
 	}
-	c.notifyDeletionFrom(onExecutor, deleted.Key(), deleted.Value(), cause)
+	c.notifyDeletionFrom(onExecutor, c.nodeManager.Key(deleted), c.nodeManager.Value(deleted), cause)
 }
 
 // afterDeletePolicies hands a removal to the policies.
-func (c *cache[K, V]) afterDeletePolicies(deleted node.Node[K, V], alreadyLocked bool) {
+func (c *cache[K, V]) afterDeletePolicies(deleted node.Node, alreadyLocked bool) {
 	t := newTask(deleted, nil, deleteReason)
 	if alreadyLocked {
 		c.runTask(t)
@@ -1800,7 +1800,7 @@ func (c *cache[K, V]) tick() <-chan time.Time {
 // leaves the policy, which then unlinks it. The policy has no clock, so the time of the
 // maintenance pass is used: an entry that has expired, but that the timer wheel has not reached
 // yet, is reported as expired, as every other path reports it.
-func (c *cache[K, V]) evictNode(n node.Node[K, V]) bool {
+func (c *cache[K, V]) evictNode(n node.Node) bool {
 	return c.removeNode(n, c.maintenanceNanos, removeForSize)
 }
 
@@ -1808,7 +1808,7 @@ func (c *cache[K, V]) evictNode(n node.Node[K, V]) bool {
 // reports whether it removed the node. The wheel reads that time before the hash table's lock is
 // taken, and a writer can update the node in place in between, extending its lifetime. Such a
 // node stays in the cache, and the wheel schedules it again.
-func (c *cache[K, V]) expireNode(n node.Node[K, V], nowNanos int64) bool {
+func (c *cache[K, V]) expireNode(n node.Node, nowNanos int64) bool {
 	if !c.removeNode(n, nowNanos, removeExpired) {
 		return false
 	}
@@ -1821,7 +1821,7 @@ func (c *cache[K, V]) expireNode(n node.Node[K, V], nowNanos int64) bool {
 // that did it).
 // It returns false if n is kept, as described by removal. The caller unlinks n from the eviction
 // policy.
-func (c *cache[K, V]) removeNode(n node.Node[K, V], nowNanos int64, removal nodeRemoval) bool {
+func (c *cache[K, V]) removeNode(n node.Node, nowNanos int64, removal nodeRemoval) bool {
 	// Once n has left the table, user code may call runtime.Goexit: RecordEviction, which counts
 	// the removal, OnDeletion, or the executor OnDeletion is submitted to. Then the caller never
 	// unlinks n, and its walk does not resume, so n is unlinked here. After a Goexit in
@@ -1844,7 +1844,7 @@ func (c *cache[K, V]) removeNode(n node.Node[K, V], nowNanos int64, removal node
 		c.timerWheel.Unschedule(n)
 	}
 	if deleted != nil {
-		c.notifyDeletionFrom(false, n.Key(), n.Value(), cause)
+		c.notifyDeletionFrom(false, c.nodeManager.Key(n), c.nodeManager.Value(n), cause)
 	}
 	finished = true
 	return true
@@ -1857,16 +1857,16 @@ func (c *cache[K, V]) removeNode(n node.Node[K, V], nowNanos int64, removal node
 // releasing its lock, and in a bounded cache the node that replaced it is not in the policy until
 // its task runs. Each key is reported once: Range copies a bucket with all of its keys at once, and
 // a replacing node is not linked into the policy while it is walked under evictionMutex.
-func (c *cache[K, V]) current(n node.Node[K, V]) node.Node[K, V] {
+func (c *cache[K, V]) current(n node.Node) node.Node {
 	if n.IsAlive() {
 		return n
 	}
-	return c.hashmap.Get(n.Key())
+	return c.hashmap.Get(c.nodeManager.Key(n))
 }
 
-func (c *cache[K, V]) nodes() iter.Seq[node.Node[K, V]] {
-	return func(yield func(node.Node[K, V]) bool) {
-		c.hashmap.Range(func(n node.Node[K, V]) bool {
+func (c *cache[K, V]) nodes() iter.Seq[node.Node] {
+	return func(yield func(node.Node) bool) {
+		c.hashmap.Range(func(n node.Node) bool {
 			nowNano := c.clock.NowNano()
 			if n = c.current(n); n == nil || n.HasExpired(nowNano) {
 				c.scheduleDrainBuffers()
@@ -1896,7 +1896,7 @@ func (c *cache[K, V]) entries() iter.Seq[Entry[K, V]] {
 func (c *cache[K, V]) All() iter.Seq2[K, V] {
 	return func(yield func(K, V) bool) {
 		for n := range c.nodes() {
-			if !yield(n.Key(), n.Value()) {
+			if !yield(c.nodeManager.Key(n), c.nodeManager.Value(n)) {
 				return
 			}
 		}
@@ -1912,7 +1912,7 @@ func (c *cache[K, V]) All() iter.Seq2[K, V] {
 func (c *cache[K, V]) Keys() iter.Seq[K] {
 	return func(yield func(K) bool) {
 		for n := range c.nodes() {
-			if !yield(n.Key()) {
+			if !yield(c.nodeManager.Key(n)) {
 				return
 			}
 		}
@@ -1928,7 +1928,7 @@ func (c *cache[K, V]) Keys() iter.Seq[K] {
 func (c *cache[K, V]) Values() iter.Seq[V] {
 	return func(yield func(V) bool) {
 		for n := range c.nodes() {
-			if !yield(n.Value()) {
+			if !yield(c.nodeManager.Value(n)) {
 				return
 			}
 		}
@@ -1943,21 +1943,21 @@ func (c *cache[K, V]) InvalidateAll() {
 	c.rescheduleCleanUpIfIncomplete()
 
 	for _, n := range nodes {
-		c.Invalidate(n.Key())
+		c.Invalidate(c.nodeManager.Key(n))
 	}
 }
 
 // invalidateAllLocked discards entries under evictionMutex while the write buffer has room, and
 // returns the rest to be invalidated one by one, together with the keys whose node was replaced
 // after the snapshot.
-func (c *cache[K, V]) invalidateAllLocked() []node.Node[K, V] {
+func (c *cache[K, V]) invalidateAllLocked() []node.Node {
 	c.evictionMutex.Lock()
 	defer c.evictionMutex.Unlock()
 
 	if c.withMaintenance {
 		// the replayed writes can evict
 		c.readMaintenanceTime()
-		c.readBuffer.DrainTo(func(n node.Node[K, V]) {})
+		c.readBuffer.DrainTo(func(n node.Node) {})
 		for {
 			t := c.writeBuffer.TryPop()
 			if t == nil {
@@ -1967,18 +1967,18 @@ func (c *cache[K, V]) invalidateAllLocked() []node.Node[K, V] {
 		}
 	}
 	// Discard all entries, falling back to one-by-one to avoid excessive lock hold times
-	nodes := make([]node.Node[K, V], 0, c.EstimatedSize())
+	nodes := make([]node.Node, 0, c.EstimatedSize())
 	threshold := uint64(maxWriteBufferSize / 2)
-	c.hashmap.Range(func(n node.Node[K, V]) bool {
+	c.hashmap.Range(func(n node.Node) bool {
 		nodes = append(nodes, n)
 		return true
 	})
 	nowNano := c.clock.NowNano()
-	var replaced []node.Node[K, V]
+	var replaced []node.Node
 	for len(nodes) > 0 && c.writeBuffer.Size() < threshold {
 		n := nodes[len(nodes)-1]
 		nodes = nodes[:len(nodes)-1]
-		if !c.deleteNode(n, nowNano) && c.hashmap.Get(n.Key()) != nil {
+		if !c.deleteNode(n, nowNano) && c.hashmap.Get(c.nodeManager.Key(n)) != nil {
 			// The key's node was replaced after the snapshot, e.g. by a reload that completed in
 			// the meantime. The new node's insertion may still be in the write buffer, so it is
 			// not removed here under the lock: the key is invalidated with the rest.
@@ -2013,7 +2013,7 @@ func (c *cache[K, V]) skipReadBuffer() bool {
 		(!c.withExpiration && c.withEviction && c.evictionPolicy.sketch.isNotInitialized())
 }
 
-func (c *cache[K, V]) afterWriteTask(t *task[K, V]) {
+func (c *cache[K, V]) afterWriteTask(t *task) {
 	// In scenarios where the writing goroutines cannot make progress then they attempt to provide
 	// assistance by performing the eviction work directly. This can resolve cases where the
 	// maintenance task is scheduled but not running. Deferred, so that t is not lost when the
@@ -2114,7 +2114,7 @@ func (c *cache[K, V]) drainBuffers() {
 	}
 }
 
-func (c *cache[K, V]) performCleanUp(t *task[K, V]) {
+func (c *cache[K, V]) performCleanUp(t *task) {
 	c.evictionMutex.Lock()
 	c.maintenanceAndUnlock(t)
 	c.rescheduleCleanUpIfIncomplete()
@@ -2122,7 +2122,7 @@ func (c *cache[K, V]) performCleanUp(t *task[K, V]) {
 
 // maintenanceAndUnlock runs maintenance with evictionMutex held by the caller and releases it,
 // also when maintenance panics, so that a panic does not stop maintenance and every writer.
-func (c *cache[K, V]) maintenanceAndUnlock(t *task[K, V]) {
+func (c *cache[K, V]) maintenanceAndUnlock(t *task) {
 	defer c.evictionMutex.Unlock()
 	c.maintenance(t)
 }
@@ -2141,7 +2141,7 @@ func (c *cache[K, V]) rescheduleCleanUpIfIncomplete() {
 	}
 }
 
-func (c *cache[K, V]) maintenance(t *task[K, V]) {
+func (c *cache[K, V]) maintenance(t *task) {
 	completed := false
 	// The writer's task t is not in the write buffer, so the pass runs it even if replaying the
 	// buffer stops it: a task that reports an eviction may run an OnDeletion, or hand it to an
@@ -2212,7 +2212,7 @@ func (c *cache[K, V]) drainWriteBuffer() {
 	c.drainStatus.Store(processingToRequired)
 }
 
-func (c *cache[K, V]) runTask(t *task[K, V]) {
+func (c *cache[K, V]) runTask(t *task) {
 	if t == nil {
 		return
 	}
@@ -2256,7 +2256,7 @@ func (c *cache[K, V]) runTask(t *task[K, V]) {
 	}
 }
 
-func (c *cache[K, V]) onAccess(n node.Node[K, V]) {
+func (c *cache[K, V]) onAccess(n node.Node) {
 	if c.withEviction {
 		c.evictionPolicy.access(n)
 	}
@@ -2288,8 +2288,8 @@ func (c *cache[K, V]) climb() {
 // newTask allocates a task. Tasks are not pooled: writers on every P would take them and
 // maintenance on one P would return them, so writers would mostly steal from the pool of that P,
 // which costs more than the allocation.
-func newTask[K comparable, V any](n, old node.Node[K, V], writeReason reason) *task[K, V] {
-	return &task[K, V]{
+func newTask(n, old node.Node, writeReason reason) *task {
+	return &task{
 		n:           n,
 		old:         old,
 		writeReason: writeReason,
@@ -2450,18 +2450,18 @@ func (c *cache[K, V]) evictionOrder(hottest bool) iter.Seq[Entry[K, V]] {
 // it, so that a removal by maintenance is retried on its next pass. Retired first, an expired n
 // would also leave the timer wheel, which does not reschedule a retired node, and in a cache
 // without a maximum size only a write of its key would remove it.
-func (c *cache[K, V]) retire(n node.Node[K, V], value V, cause DeletionCause) {
-	c.notifyAtomicDeletion(n.Key(), value, cause)
+func (c *cache[K, V]) retire(n node.Node, value V, cause DeletionCause) {
+	c.notifyAtomicDeletion(c.nodeManager.Key(n), value, cause)
 	c.makeRetired(n)
 }
 
-func (c *cache[K, V]) makeRetired(n node.Node[K, V]) {
+func (c *cache[K, V]) makeRetired(n node.Node) {
 	if n != nil && c.withMaintenance && n.IsAlive() {
 		n.Retire()
 	}
 }
 
-func (c *cache[K, V]) makeDead(n node.Node[K, V]) {
+func (c *cache[K, V]) makeDead(n node.Node) {
 	if !c.withMaintenance {
 		return
 	}

@@ -50,7 +50,7 @@ func TestNode_MissingNodesAreNilInterfaces(t *testing.T) {
 						if got := nm.FromPointer(nil); got != nil {
 							t.Fatalf("FromPointer(nil) = %#v, want a nil interface", got)
 						}
-						for _, n := range []node.Node[int, int]{n, u} {
+						for _, n := range []node.Node{n, u} {
 							if withSize || withWeight {
 								if n.Prev() != nil || n.Next() != nil {
 									t.Fatalf("Prev() = %#v, Next() = %#v, want nil interfaces", n.Prev(), n.Next())

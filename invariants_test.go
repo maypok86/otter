@@ -52,11 +52,11 @@ func validateCache[K comparable, V any](t testing.TB, c *Cache[K, V]) {
 		}
 	}
 
-	inMap := make(map[unsafe.Pointer]node.Node[K, V])
-	ci.hashmap.Range(func(n node.Node[K, V]) bool {
+	inMap := make(map[unsafe.Pointer]node.Node)
+	ci.hashmap.Range(func(n node.Node) bool {
 		inMap[n.AsPointer()] = n
 		if !n.IsAlive() {
-			report("key %v: the node in the hash table is not alive", n.Key())
+			report("key %v: the node in the hash table is not alive", ci.nodeManager.Key(n))
 		}
 		return true
 	})
@@ -65,37 +65,37 @@ func validateCache[K comparable, V any](t testing.TB, c *Cache[K, V]) {
 		p := ci.evictionPolicy
 		queued := make(map[unsafe.Pointer]string, len(inMap))
 		var weighted, window, protected uint64
-		walk := func(name string, d *deque.Linked[K, V], belongs func(n node.Node[K, V]) bool, size *uint64) {
+		walk := func(name string, d *deque.Linked, belongs func(n node.Node) bool, size *uint64) {
 			// The walk follows the forward links; the back-links, the length and the tail must
 			// agree with them.
-			var prev node.Node[K, V]
+			var prev node.Node
 			linked := 0
 			for n := range d.All() {
 				if other, ok := queued[n.AsPointer()]; ok {
 					if other == name {
 						// the walk would follow the cycle for ever
-						report("%s: the forward links loop back to key %v", name, n.Key())
+						report("%s: the forward links loop back to key %v", name, ci.nodeManager.Key(n))
 						break
 					}
-					report("key %v: the node is in both %s and %s", n.Key(), other, name)
+					report("key %v: the node is in both %s and %s", ci.nodeManager.Key(n), other, name)
 				}
 				queued[n.AsPointer()] = name
 				if n.Prev() != prev {
-					report("key %v: the node's back-link in %s does not point to the node before it", n.Key(), name)
+					report("key %v: the node's back-link in %s does not point to the node before it", ci.nodeManager.Key(n), name)
 				}
 				prev = n
 				linked++
 				if !belongs(n) {
-					report("key %v: the node is in %s, but its queue type is %d", n.Key(), name, n.GetQueueType())
+					report("key %v: the node is in %s, but its queue type is %d", ci.nodeManager.Key(n), name, n.GetQueueType())
 				}
 				if !n.IsAlive() {
-					report("key %v: a node that is not alive is in %s", n.Key(), name)
+					report("key %v: a node that is not alive is in %s", ci.nodeManager.Key(n), name)
 				}
 				if _, ok := inMap[n.AsPointer()]; !ok {
-					report("key %v: the node is in %s, but not in the hash table", n.Key(), name)
+					report("key %v: the node is in %s, but not in the hash table", ci.nodeManager.Key(n), name)
 				}
 				if n.PolicyWeight() != n.Weight() {
-					report("key %v: the policy accounts weight %d, but the node weighs %d", n.Key(), n.PolicyWeight(), n.Weight())
+					report("key %v: the policy accounts weight %d, but the node weighs %d", ci.nodeManager.Key(n), n.PolicyWeight(), n.Weight())
 				}
 				w := uint64(n.PolicyWeight())
 				weighted += w
@@ -110,13 +110,13 @@ func validateCache[K comparable, V any](t testing.TB, c *Cache[K, V]) {
 				report("%s: the tail is not the last linked node", name)
 			}
 		}
-		walk("window", p.window, func(n node.Node[K, V]) bool { return n.InWindow() }, &window)
-		walk("probation", p.probation, func(n node.Node[K, V]) bool { return n.InMainProbation() }, nil)
-		walk("protected", p.protected, func(n node.Node[K, V]) bool { return n.InMainProtected() }, &protected)
+		walk("window", p.window, func(n node.Node) bool { return n.InWindow() }, &window)
+		walk("probation", p.probation, func(n node.Node) bool { return n.InMainProbation() }, nil)
+		walk("protected", p.protected, func(n node.Node) bool { return n.InMainProtected() }, &protected)
 
 		for ptr, n := range inMap {
 			if _, ok := queued[ptr]; !ok {
-				report("key %v: the node is in the hash table, but in no policy queue", n.Key())
+				report("key %v: the node is in the hash table, but in no policy queue", ci.nodeManager.Key(n))
 			}
 		}
 		if p.weightedSize != weighted {
@@ -150,19 +150,19 @@ func validateCache[K comparable, V any](t testing.TB, c *Cache[K, V]) {
 				break
 			}
 			if scheduled[n.AsPointer()] {
-				report("key %v: the node is scheduled in the timer wheel twice", n.Key())
+				report("key %v: the node is scheduled in the timer wheel twice", ci.nodeManager.Key(n))
 			}
 			scheduled[n.AsPointer()] = true
 			if !n.IsAlive() {
-				report("key %v: a node that is not alive is in the timer wheel", n.Key())
+				report("key %v: a node that is not alive is in the timer wheel", ci.nodeManager.Key(n))
 			}
 			if _, ok := inMap[n.AsPointer()]; !ok {
-				report("key %v: the node is in the timer wheel, but not in the hash table", n.Key())
+				report("key %v: the node is in the timer wheel, but not in the hash table", ci.nodeManager.Key(n))
 			}
 		}
 		for ptr, n := range inMap {
 			if !scheduled[ptr] {
-				report("key %v: the node is in the hash table, but not in the timer wheel", n.Key())
+				report("key %v: the node is in the hash table, but not in the timer wheel", ci.nodeManager.Key(n))
 			}
 		}
 	}
@@ -192,19 +192,19 @@ func TestValidateCache_ReportsBrokenPolicy(t *testing.T) {
 
 	tests := []struct {
 		name    string
-		corrupt func(p *policy[int, int])
+		corrupt func(p *policy[int])
 		want    string
 	}{
-		{"window maximum", func(p *policy[int, int]) { p.windowMaximum = p.maximum + 1 }, "windowMaximum"},
-		{"protected maximum", func(p *policy[int, int]) { p.mainProtectedMaximum = p.maximum }, "mainProtectedMaximum"},
-		{"back-link", func(p *policy[int, int]) { p.probation.Tail().SetPrev(nil) }, "back-link"},
-		{"length", func(p *policy[int, int]) {
+		{"window maximum", func(p *policy[int]) { p.windowMaximum = p.maximum + 1 }, "windowMaximum"},
+		{"protected maximum", func(p *policy[int]) { p.mainProtectedMaximum = p.maximum }, "mainProtectedMaximum"},
+		{"back-link", func(p *policy[int]) { p.probation.Tail().SetPrev(nil) }, "back-link"},
+		{"length", func(p *policy[int]) {
 			// unlinked by its neighbours, which keeps the links consistent but not the length
 			n := p.probation.Head().Next()
 			n.Prev().SetNext(n.Next())
 			n.Next().SetPrev(n.Prev())
 		}, "Len()"},
-		{"cycle", func(p *policy[int, int]) { p.probation.Tail().SetNext(p.probation.Head()) }, "forward links loop back"},
+		{"cycle", func(p *policy[int]) { p.probation.Tail().SetNext(p.probation.Head()) }, "forward links loop back"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -17,6 +17,7 @@ package otter
 import (
 	"cmp"
 	"iter"
+	"unsafe"
 
 	"github.com/maypok86/otter/v2/internal/deque"
 	"github.com/maypok86/otter/v2/internal/generated/node"
@@ -43,11 +44,11 @@ const (
 	queueTransferThreshold = 1_000
 )
 
-type policy[K comparable, V any] struct {
+type policy[K comparable] struct {
 	sketch                    *sketch[K]
-	window                    *deque.Linked[K, V]
-	probation                 *deque.Linked[K, V]
-	protected                 *deque.Linked[K, V]
+	window                    *deque.Linked
+	probation                 *deque.Linked
+	protected                 *deque.Linked
 	maximum                   uint64
 	weightedSize              uint64
 	windowMaximum             uint64
@@ -64,24 +65,29 @@ type policy[K comparable, V any] struct {
 	// evict asks the cache to remove a node chosen for eviction, and reports whether the node
 	// leaves the policy. The cache keeps a node whose weight a writer has set to zero in place
 	// since the policy accounted it: a zero-weight entry is never evicted for size.
-	evict func(n node.Node[K, V]) bool
+	evict func(n node.Node) bool
+	// keyOffset is the offset of the key in a node: the policy reads keys for the sketch
+	// without depending on the value type.
+	keyOffset uintptr
 }
 
 // newPolicy returns a policy that evicts through evict. A positive expectedSize sizes the
 // frequency sketch up front.
-func newPolicy[K comparable, V any](
+func newPolicy[K comparable](
 	isWeighted bool,
 	expectedSize uint64,
-	evict func(n node.Node[K, V]) bool,
-) *policy[K, V] {
-	p := &policy[K, V]{
+	keyOffset uintptr,
+	evict func(n node.Node) bool,
+) *policy[K] {
+	p := &policy[K]{
 		sketch:     newSketch[K](),
-		window:     deque.NewLinked[K, V](isExp),
-		probation:  deque.NewLinked[K, V](isExp),
-		protected:  deque.NewLinked[K, V](isExp),
+		window:     deque.NewLinked(isExp),
+		probation:  deque.NewLinked(isExp),
+		protected:  deque.NewLinked(isExp),
 		isWeighted: isWeighted,
 		rand:       xruntime.Fastrand,
 		evict:      evict,
+		keyOffset:  keyOffset,
 	}
 	if expectedSize > 0 {
 		p.sketch.ensureCapacity(expectedSize)
@@ -89,16 +95,20 @@ func newPolicy[K comparable, V any](
 	return p
 }
 
+func (p *policy[K]) keyOf(n node.Node) K {
+	return *(*K)(unsafe.Add(node.PointerOf(n), p.keyOffset))
+}
+
 // access updates the eviction policy based on node accesses.
-func (p *policy[K, V]) access(n node.Node[K, V]) {
-	p.sketch.increment(n.Key())
+func (p *policy[K]) access(n node.Node) {
+	p.sketch.increment(p.keyOf(n))
 	p.reorderNode(n)
 	p.hitsInSample++
 }
 
 // reorderNode moves n as an access does, without counting one in the sketch or the climber's
 // sample.
-func (p *policy[K, V]) reorderNode(n node.Node[K, V]) {
+func (p *policy[K]) reorderNode(n node.Node) {
 	switch {
 	case n.InWindow():
 		reorder(p.window, n)
@@ -110,7 +120,7 @@ func (p *policy[K, V]) reorderNode(n node.Node[K, V]) {
 }
 
 // accessUpdated is the access of an update; a quiet update only reorders n.
-func (p *policy[K, V]) accessUpdated(n node.Node[K, V], quiet bool) {
+func (p *policy[K]) accessUpdated(n node.Node, quiet bool) {
 	if quiet {
 		p.reorderNode(n)
 		return
@@ -122,7 +132,7 @@ func (p *policy[K, V]) accessUpdated(n node.Node[K, V], quiet bool) {
 //
 // A node's weight is accounted in the weighted sizes if and only if the node is linked into
 // one of the queues, so that removing it subtracts exactly what was added.
-func (p *policy[K, V]) add(n node.Node[K, V]) {
+func (p *policy[K]) add(n node.Node) {
 	// the current weight, which a writer may have changed in place since the insertion
 	nodeWeight := uint64(n.Weight())
 	// An out-of-order write: the node was replaced or removed before its insertion was
@@ -144,7 +154,7 @@ func (p *policy[K, V]) add(n node.Node[K, V]) {
 		p.sketch.ensureCapacity(capacity)
 	}
 
-	p.sketch.increment(n.Key())
+	p.sketch.increment(p.keyOf(n))
 	p.missesInSample++
 
 	if !isAlive {
@@ -163,7 +173,7 @@ func (p *policy[K, V]) add(n node.Node[K, V]) {
 	}
 }
 
-func (p *policy[K, V]) update(n, old node.Node[K, V], quiet bool) {
+func (p *policy[K]) update(n, old node.Node, quiet bool) {
 	if !n.IsAlive() {
 		// n was replaced or removed before this update was replayed. The task that replaced or
 		// removed it accounts for n, so only old, which n replaced, leaves the policy. Linking n
@@ -211,7 +221,7 @@ func (p *policy[K, V]) update(n, old node.Node[K, V], quiet bool) {
 }
 
 // updateNode puts n in the place of old, which must be linked, and stops accounting old.
-func (p *policy[K, V]) updateNode(n, old node.Node[K, V]) {
+func (p *policy[K]) updateNode(n, old node.Node) {
 	oldWeight := uint64(old.PolicyWeight())
 	n.SetQueueType(old.GetQueueType())
 
@@ -231,7 +241,7 @@ func (p *policy[K, V]) updateNode(n, old node.Node[K, V]) {
 // reweigh brings the weight accounted for n in line with the weight a writer set in place.
 // Replaying it any number of times, in any order relative to n's other tasks, converges to
 // n's current weight.
-func (p *policy[K, V]) reweigh(n node.Node[K, V]) {
+func (p *policy[K]) reweigh(n node.Node) {
 	// Not linked: its insertion has not been replayed yet (add takes the current weight), or it
 	// has already left the policy. There is nothing to adjust.
 	if !p.contains(n) {
@@ -255,7 +265,7 @@ func (p *policy[K, V]) reweigh(n node.Node[K, V]) {
 }
 
 // contains reports whether n is present in the queue its type points to.
-func (p *policy[K, V]) contains(n node.Node[K, V]) bool {
+func (p *policy[K]) contains(n node.Node) bool {
 	switch {
 	case n.InWindow():
 		return p.window.Contains(n)
@@ -269,7 +279,7 @@ func (p *policy[K, V]) contains(n node.Node[K, V]) bool {
 // evictNode evicts n for size: the cache removes it, unless it keeps it (see evict), and n is
 // then unlinked. A kept node stays linked, and its reweigh task brings its accounted weight to
 // zero.
-func (p *policy[K, V]) evictNode(n node.Node[K, V]) {
+func (p *policy[K]) evictNode(n node.Node) {
 	if p.evict(n) {
 		p.makeDead(n)
 	}
@@ -277,7 +287,7 @@ func (p *policy[K, V]) evictNode(n node.Node[K, V]) {
 
 // makeDead removes n from its queue and from the weighted sizes if it is linked (its add or
 // update may not have been replayed yet, in which case it was never accounted) and marks it dead.
-func (p *policy[K, V]) makeDead(n node.Node[K, V]) {
+func (p *policy[K]) makeDead(n node.Node) {
 	if n.IsDead() {
 		return
 	}
@@ -298,7 +308,7 @@ func (p *policy[K, V]) makeDead(n node.Node[K, V]) {
 // adjustAccounted replaces oldWeight with newWeight in the weighted size of the policy and
 // of the queue n's type points to. It is the only place that changes these sizes when a node
 // is linked, unlinked or reweighed; moves between queues adjust them where they happen.
-func (p *policy[K, V]) adjustAccounted(n node.Node[K, V], oldWeight, newWeight uint64) {
+func (p *policy[K]) adjustAccounted(n node.Node, oldWeight, newWeight uint64) {
 	p.weightedSize = p.weightedSize - oldWeight + newWeight
 	switch {
 	case n.InWindow():
@@ -308,7 +318,7 @@ func (p *policy[K, V]) adjustAccounted(n node.Node[K, V], oldWeight, newWeight u
 	}
 }
 
-func (p *policy[K, V]) setMaximumSize(maximum uint64) {
+func (p *policy[K]) setMaximumSize(maximum uint64) {
 	if maximum == p.maximum {
 		return
 	}
@@ -338,7 +348,7 @@ func (p *policy[K, V]) setMaximumSize(maximum uint64) {
 }
 
 // Promote the node from probation to protected on access.
-func (p *policy[K, V]) reorderProbation(n node.Node[K, V]) {
+func (p *policy[K]) reorderProbation(n node.Node) {
 	nodeWeight := uint64(n.PolicyWeight())
 
 	if p.probation.NotContains(n) {
@@ -357,13 +367,13 @@ func (p *policy[K, V]) reorderProbation(n node.Node[K, V]) {
 	n.MakeMainProtected()
 }
 
-func (p *policy[K, V]) evictNodes() {
+func (p *policy[K]) evictNodes() {
 	candidate := p.evictFromWindow()
 	p.evictFromMain(candidate)
 }
 
-func (p *policy[K, V]) evictFromWindow() node.Node[K, V] {
-	var first node.Node[K, V]
+func (p *policy[K]) evictFromWindow() node.Node {
+	var first node.Node
 	n := p.window.Head()
 	for p.windowWeightedSize > p.windowMaximum {
 		// The pending operations will adjust the size to reflect the correct weight
@@ -388,7 +398,7 @@ func (p *policy[K, V]) evictFromWindow() node.Node[K, V] {
 	return first
 }
 
-func (p *policy[K, V]) evictFromMain(candidate node.Node[K, V]) {
+func (p *policy[K]) evictFromMain(candidate node.Node) {
 	victimQueue := node.InMainProbationQueue
 	candidateQueue := node.InMainProbationQueue
 	victim := p.probation.Head()
@@ -468,7 +478,7 @@ func (p *policy[K, V]) evictFromMain(candidate node.Node[K, V]) {
 		}
 
 		// Evict the entry with the lowest frequency
-		if p.admit(candidate.Key(), victim.Key()) {
+		if p.admit(p.keyOf(candidate), p.keyOf(victim)) {
 			evict := victim
 			victim = victim.Next()
 			p.evictNode(evict)
@@ -484,10 +494,10 @@ func (p *policy[K, V]) evictFromMain(candidate node.Node[K, V]) {
 // hottest returns the nodes from the most to the least likely to be retained: the protected queue
 // from its most recently used end, then the probation and window queues merged by descending
 // frequency.
-func (p *policy[K, V]) hottest() iter.Seq[node.Node[K, V]] {
+func (p *policy[K]) hottest() iter.Seq[node.Node] {
 	return xiter.Concat(
 		p.protected.Backward(),
-		xiter.MergeFunc(p.probation.Backward(), p.window.Backward(), func(a, b node.Node[K, V]) int {
+		xiter.MergeFunc(p.probation.Backward(), p.window.Backward(), func(a, b node.Node) int {
 			return -p.compareFrequency(a, b)
 		}),
 	)
@@ -496,7 +506,7 @@ func (p *policy[K, V]) hottest() iter.Seq[node.Node[K, V]] {
 // coldest returns the nodes from the least to the most likely to be retained: the window and
 // probation queues merged by ascending frequency, then the protected queue from its least
 // recently used end.
-func (p *policy[K, V]) coldest() iter.Seq[node.Node[K, V]] {
+func (p *policy[K]) coldest() iter.Seq[node.Node] {
 	return xiter.Concat(
 		xiter.MergeFunc(p.window.All(), p.probation.All(), p.compareFrequency),
 		p.protected.All(),
@@ -505,11 +515,11 @@ func (p *policy[K, V]) coldest() iter.Seq[node.Node[K, V]] {
 
 // compareFrequency orders nodes by ascending frequency. MergeFunc yields the lesser head first,
 // and the first sequence on equal frequencies.
-func (p *policy[K, V]) compareFrequency(a, b node.Node[K, V]) int {
-	return cmp.Compare(p.sketch.frequency(a.Key()), p.sketch.frequency(b.Key()))
+func (p *policy[K]) compareFrequency(a, b node.Node) int {
+	return cmp.Compare(p.sketch.frequency(p.keyOf(a)), p.sketch.frequency(p.keyOf(b)))
 }
 
-func (p *policy[K, V]) admit(candidateKey, victimKey K) bool {
+func (p *policy[K]) admit(candidateKey, victimKey K) bool {
 	victimFreq := p.sketch.frequency(victimKey)
 	candidateFreq := p.sketch.frequency(candidateKey)
 	if candidateFreq > victimFreq {
@@ -524,7 +534,7 @@ func (p *policy[K, V]) admit(candidateKey, victimKey K) bool {
 	return false
 }
 
-func (p *policy[K, V]) climb() {
+func (p *policy[K]) climb() {
 	p.determineAdjustment()
 	p.demoteFromMainProtected()
 	amount := p.adjustment
@@ -538,7 +548,7 @@ func (p *policy[K, V]) climb() {
 	}
 }
 
-func (p *policy[K, V]) determineAdjustment() {
+func (p *policy[K]) determineAdjustment() {
 	if p.sketch.isNotInitialized() {
 		p.previousSampleHitRate = 0.0
 		p.missesInSample = 0
@@ -583,7 +593,7 @@ func (p *policy[K, V]) determineAdjustment() {
 	p.hitsInSample = 0
 }
 
-func (p *policy[K, V]) demoteFromMainProtected() {
+func (p *policy[K]) demoteFromMainProtected() {
 	mainProtectedMaximum := p.mainProtectedMaximum
 	mainProtectedWeightedSize := p.mainProtectedWeightedSize
 	if mainProtectedWeightedSize <= mainProtectedMaximum {
@@ -607,7 +617,7 @@ func (p *policy[K, V]) demoteFromMainProtected() {
 	p.mainProtectedWeightedSize = mainProtectedWeightedSize
 }
 
-func (p *policy[K, V]) increaseWindow() {
+func (p *policy[K]) increaseWindow() {
 	if p.mainProtectedMaximum == 0 {
 		return
 	}
@@ -653,7 +663,7 @@ func (p *policy[K, V]) increaseWindow() {
 	p.adjustment = quota
 }
 
-func (p *policy[K, V]) decreaseWindow() {
+func (p *policy[K]) decreaseWindow() {
 	if p.windowMaximum <= 1 {
 		return
 	}
@@ -696,7 +706,7 @@ func abs(a float64) float64 {
 	return a
 }
 
-func reorder[K comparable, V any](d *deque.Linked[K, V], n node.Node[K, V]) {
+func reorder(d *deque.Linked, n node.Node) {
 	if d.Contains(n) {
 		d.MoveToBack(n)
 	}
