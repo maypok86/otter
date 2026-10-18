@@ -32,7 +32,10 @@ neither can block the other.
 - `StopAllGoroutines` closes `stop` once and waits for `done`, and is documented as forbidden
   inside functions the cache runs.
 - Other goroutines: the default executor (`go fn()`), the goroutines that wait for a joined
-  refresh (`refreshKey`, `sendAfterJoined`), and whatever a custom executor starts.
+  load or refresh and its successor (`refreshKey`, `sendAfterJoined`, `joinedResult`), the
+  goroutine `group.finish` starts to submit the refresh registered in place of a joined load
+  that failed for its owner's context (`loadAgain`, the `again` closures of `refreshKey` and
+  `bulkRefreshKeys`), and whatever a custom executor starts.
 - `NewCoarseClock` (`clock.go`) starts a goroutine that belongs to the clock, not to a cache:
   it holds the clock through a `weak.Pointer`, stores the time on every tick of its ticker, and
   returns when the clock is gone or `Stop` closes `stop`. `StopAllGoroutines` does not stop it.

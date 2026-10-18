@@ -741,12 +741,21 @@ func (c *cache[K, V]) doCompute(
 // been refreshed or replaced since the read, or the key is gone: there is nothing left to refresh,
 // and cl is nil. Without this, every read that saw the key stale before the first refresh
 // completed would reload it again.
-func (c *cache[K, V]) startRefresh(key K, isManual bool, nowNano int64) (cl *call[K, V], shouldLoad bool) {
+//
+// again is the manual refresh's way to run a refresh registered in place of a load it joins,
+// if the load fails for its owner's context (see loadAgain); it is nil for a refresh that a read
+// starts, which never joins a load.
+func (c *cache[K, V]) startRefresh(
+	key K,
+	isManual bool,
+	nowNano int64,
+	again func(s *call[K, V]),
+) (cl *call[K, V], shouldLoad bool) {
 	// fast path: a read that saw a change does not find the calls the change cancelled. A call is
 	// joined only if it was started from the key's live node, or from an absent key that is
 	// still absent, and has not committed (see group.startRefresh); then it is not superseded
-	// either.
-	if cl := c.singleflight.getCall(key); cl != nil && !cl.committed.Load() {
+	// either. A load is joined only under the lock, see call.again.
+	if cl := c.singleflight.getCall(key); cl != nil && cl.isRefresh && !cl.committed.Load() {
 		if n := c.getNodeQuietly(key, nowNano); cl.base == n && (n == nil || n.IsAlive()) {
 			return cl, false
 		}
@@ -764,6 +773,9 @@ func (c *cache[K, V]) startRefresh(key K, isManual bool, nowNano int64) (cl *cal
 			return current
 		}
 		cl, shouldLoad = c.singleflight.startRefresh(key, base)
+		if !shouldLoad && !cl.isRefresh && again != nil && cl.again == nil {
+			cl.again = &loadAgain[K, V]{submit: again}
+		}
 		return current
 	})
 	return cl, shouldLoad
@@ -795,8 +807,15 @@ func (c *cache[K, V]) refreshKey(
 		// and the read returns the value it found. submitRefresh has finished the call by then.
 		defer recoverCallback(c.logger, "Panicked while starting a refresh")
 	}
+	var again func(s *call[K, V])
+	if isManual {
+		again = func(s *call[K, V]) {
+			defer recoverCallback(c.logger, "Panicked while starting a refresh")
+			c.singleflight.submitRefresh([]*call[K, V]{s}, func() { c.refreshTask(ctx, s, loader, nil) })
+		}
+	}
 	nowNano := c.clock.NowNano()
-	cl, shouldLoad := c.startRefresh(key, isManual, nowNano)
+	cl, shouldLoad := c.startRefresh(key, isManual, nowNano, again)
 	if cl == nil {
 		return ch
 	}
@@ -808,39 +827,42 @@ func (c *cache[K, V]) refreshKey(
 		// goroutine of its own, and the error is logged by the call's owner.
 		if isManual {
 			go func() {
-				cl.wait()
-				ch <- cl.refreshResult()
+				ch <- joinedResult(cl)
 			}()
 		}
 		return ch
 	}
-	c.singleflight.submitRefresh([]*call[K, V]{cl}, func() {
-		// Deferred, so that a loader that calls runtime.Goexit is reported like one that panics.
-		defer func() {
-			if cl.err != nil && !cl.isNotFound {
-				c.logger.Error(ctx, "Returned an error during the refreshing", cl.err)
-			}
-
-			if isManual {
-				ch <- cl.refreshResult()
-			}
-		}()
-
-		// the loader is called in a closure, see doCall
-		refresher := func(ctx context.Context, key K) (V, error) {
-			if cl.base != nil {
-				return loader.Reload(ctx, key, cl.base.Value())
-			}
-			return loader.Load(ctx, key)
-		}
-
-		//nolint:errcheck // there is no need to check error
-		_ = c.wrapRefresh(func() error {
-			return c.singleflight.doCall(ctx, cl, refresher)
-		})
-	})
+	c.singleflight.submitRefresh([]*call[K, V]{cl}, func() { c.refreshTask(ctx, cl, loader, ch) })
 
 	return ch
+}
+
+// refreshTask runs cl, a refresh that the caller registered, with loader, logs its error, and
+// sends its result to ch unless ch is nil.
+func (c *cache[K, V]) refreshTask(ctx context.Context, cl *call[K, V], loader Loader[K, V], ch chan<- RefreshResult[K, V]) {
+	// Deferred, so that a loader that calls runtime.Goexit is reported like one that panics.
+	defer func() {
+		if cl.err != nil && !cl.isNotFound {
+			c.logger.Error(ctx, "Returned an error during the refreshing", cl.err)
+		}
+
+		if ch != nil {
+			ch <- cl.refreshResult()
+		}
+	}()
+
+	// the loader is called in a closure, see doCall
+	refresher := func(ctx context.Context, key K) (V, error) {
+		if cl.base != nil {
+			return loader.Reload(ctx, key, cl.base.Value())
+		}
+		return loader.Load(ctx, key)
+	}
+
+	//nolint:errcheck // there is no need to check error
+	_ = c.wrapRefresh(func() error {
+		return c.singleflight.doCall(ctx, cl, refresher)
+	})
 }
 
 // Get returns the value associated with key in this cache, obtaining that value from loader if necessary.
@@ -981,6 +1003,14 @@ func (c *cache[K, V]) commitCall(cl *call[K, V]) mutation[K, V] {
 		if cl.err != nil {
 			// A failed load reports its error: no value of the key is involved. A failed refresh
 			// of an absent key leaves an expired node that it matched as it is.
+			if authoritative && cl.again != nil && cl.failedForOwner() {
+				// The failure comes from the context of the Get or BulkGet that ran the load and says
+				// nothing about the key, and a manual refresh, which no context cancels, waits
+				// for it: the refresh loads the key again, as a joined Get would. Registered here,
+				// the refresh starts from the state the load found and is cancelled by every
+				// change since the request, as the load would have been.
+				cl.again.successor = c.singleflight.succeed(cl)
+			}
 			if authoritative && cl.isRefresh && prev.live {
 				// A failed refresh of a live value keeps it, and a Get that joined the refresh
 				// after missing the key returns that value, as a hit would: the reload's error
@@ -1076,6 +1106,15 @@ func (c *cache[K, V]) bulkRefreshKeys(
 		// as in refreshKey
 		defer recoverCallback(c.logger, "Panicked while starting a refresh")
 	}
+	var again func(s *call[K, V])
+	if isManual {
+		again = func(s *call[K, V]) {
+			defer recoverCallback(c.logger, "Panicked while starting a refresh")
+			c.singleflight.submitRefresh([]*call[K, V]{s}, func() {
+				c.bulkRefreshTask(ctx, bulkLoader, map[K]*call[K, V]{s.key: s}, nil)
+			})
+		}
+	}
 	nowNano := c.clock.NowNano()
 	var (
 		toLoadCalls   map[K]*call[K, V]
@@ -1099,7 +1138,7 @@ func (c *cache[K, V]) bulkRefreshKeys(
 		}
 	}()
 	for i, key := range keys {
-		cl, shouldLoad := c.startRefresh(key, isManual, nowNano)
+		cl, shouldLoad := c.startRefresh(key, isManual, nowNano, again)
 		if shouldLoad {
 			owned = append(owned, cl)
 			if cl.base != nil {
@@ -1131,8 +1170,8 @@ func (c *cache[K, V]) bulkRefreshKeys(
 
 	c.singleflight.submitRefresh(owned, func() {
 		// Deferred, so that a bulk loader that calls runtime.Goexit, like one that panics, does not
-		// skip the reload or the results. Deferred calls run in reverse order: the results are
-		// deferred first, so that they are sent after the load and the reload.
+		// skip the results. They are sent after the load and the reload, which bulkRefreshTask
+		// runs in a defer of its own.
 		if isManual {
 			defer func() {
 				results := make([]RefreshResult[K, V], 0, len(keys))
@@ -1142,46 +1181,58 @@ func (c *cache[K, V]) bulkRefreshKeys(
 				sendAfterJoined(ch, results, foundCalls)
 			}()
 		}
-		if len(toReloadCalls) > 0 {
-			defer func() {
-				reload := func(ctx context.Context, keys []K) (map[K]V, error) {
-					oldValues := make([]V, 0, len(keys))
-					for _, k := range keys {
-						// read when the reload starts, as for a single refresh: a write that changed
-						// it since the request has cancelled the refresh
-						oldValues = append(oldValues, toReloadCalls[k].base.Value())
-					}
-					return bulkLoader.BulkReload(ctx, keys, oldValues)
-				}
-
-				reloadErr := c.wrapRefresh(func() error {
-					return c.singleflight.doBulkCall(ctx, toReloadCalls, reload)
-				})
-				if reloadErr != nil {
-					c.logger.Error(ctx, "BulkReload returned an error", reloadErr)
-				}
-			}()
-		}
-
-		if len(toLoadCalls) > 0 {
-			loadErr := c.wrapRefresh(func() error {
-				// the loader is called in a closure, see doCall
-				return c.singleflight.doBulkCall(ctx, toLoadCalls, func(ctx context.Context, keys []K) (map[K]V, error) {
-					return bulkLoader.BulkLoad(ctx, keys)
-				})
-			})
-			if loadErr != nil {
-				c.logger.Error(ctx, "BulkLoad returned an error", loadErr)
-			}
-		}
+		c.bulkRefreshTask(ctx, bulkLoader, toLoadCalls, toReloadCalls)
 	})
 
 	return ch
 }
 
+// bulkRefreshTask runs the refreshes in toLoadCalls and toReloadCalls, which the caller
+// registered, with bulkLoader, and logs their errors.
+func (c *cache[K, V]) bulkRefreshTask(
+	ctx context.Context,
+	bulkLoader BulkLoader[K, V],
+	toLoadCalls, toReloadCalls map[K]*call[K, V],
+) {
+	// Deferred, so that a bulk loader that calls runtime.Goexit, like one that panics, does not
+	// skip the reload.
+	if len(toReloadCalls) > 0 {
+		defer func() {
+			reload := func(ctx context.Context, keys []K) (map[K]V, error) {
+				oldValues := make([]V, 0, len(keys))
+				for _, k := range keys {
+					// read when the reload starts, as for a single refresh: a write that changed
+					// it since the request has cancelled the refresh
+					oldValues = append(oldValues, toReloadCalls[k].base.Value())
+				}
+				return bulkLoader.BulkReload(ctx, keys, oldValues)
+			}
+
+			reloadErr := c.wrapRefresh(func() error {
+				return c.singleflight.doBulkCall(ctx, toReloadCalls, reload)
+			})
+			if reloadErr != nil {
+				c.logger.Error(ctx, "BulkReload returned an error", reloadErr)
+			}
+		}()
+	}
+
+	if len(toLoadCalls) > 0 {
+		loadErr := c.wrapRefresh(func() error {
+			// the loader is called in a closure, see doCall
+			return c.singleflight.doBulkCall(ctx, toLoadCalls, func(ctx context.Context, keys []K) (map[K]V, error) {
+				return bulkLoader.BulkLoad(ctx, keys)
+			})
+		})
+		if loadErr != nil {
+			c.logger.Error(ctx, "BulkLoad returned an error", loadErr)
+		}
+	}
+}
+
 // sendAfterJoined sends results to ch with the results of joined, calls that other loads or
-// refreshes own, appended once they have finished. They are waited for in a goroutine of its
-// own, not in an executor task, for the reason given in refreshKey.
+// refreshes own, appended once they have finished (see joinedResult). They are waited for in a
+// goroutine of its own, not in an executor task, for the reason given in refreshKey.
 func sendAfterJoined[K comparable, V any](ch chan<- []RefreshResult[K, V], results []RefreshResult[K, V], joined []*call[K, V]) {
 	if len(joined) == 0 {
 		ch <- results
@@ -1189,11 +1240,22 @@ func sendAfterJoined[K comparable, V any](ch chan<- []RefreshResult[K, V], resul
 	}
 	go func() {
 		for _, cl := range joined {
-			cl.wait()
-			results = append(results, cl.refreshResult())
+			results = append(results, joinedResult(cl))
 		}
 		ch <- results
 	}()
+}
+
+// joinedResult waits for cl, a call that a manual refresh joined, and returns the result the
+// refresh reports: cl's, or that of the refresh registered in its place if cl is a load that
+// failed for its owner's context (see loadAgain).
+func joinedResult[K comparable, V any](cl *call[K, V]) RefreshResult[K, V] {
+	cl.wait()
+	if a := cl.again; a != nil && a.successor != nil {
+		a.successor.wait()
+		return a.successor.refreshResult()
+	}
+	return cl.refreshResult()
 }
 
 // BulkGet returns the value associated with key in this cache, obtaining that value from loader if necessary.

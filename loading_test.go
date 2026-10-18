@@ -2553,6 +2553,480 @@ func TestCache_BulkGetReloadsWhenOwnerContextFails(t *testing.T) {
 	require.Equal(t, uint64(2), tbl.loads.Load())
 }
 
+// getWithCancelledOwner starts a Get of key 1 whose load waits for the Get's context to be
+// cancelled and then fails with an error that does not wrap context.Canceled, as an RPC client's
+// may not. A load with any other context returns load(key), or key * 10 if load is nil. cancel
+// cancels the Get's context once the caller has joined the load, and returns the Get's error.
+func getWithCancelledOwner(
+	t *testing.T,
+	c *Cache[int, int],
+	load func(key int) (int, error),
+) (tl *testLoader[int, int], cancel func() error) {
+	t.Helper()
+
+	ownerCtx, cancelOwner := context.WithCancel(context.Background())
+	t.Cleanup(cancelOwner)
+	started := make(chan struct{})
+	tl = newTestLoader[int, int](func(ctx context.Context, key int) (int, error) {
+		if ctx == ownerCtx {
+			close(started)
+			<-ctx.Done()
+			return 0, errors.New("rpc: cancelled")
+		}
+		if load != nil {
+			return load(key)
+		}
+		return key * 10, nil
+	})
+	owner := make(chan error, 1)
+	go func() {
+		_, err := c.Get(ownerCtx, 1, tl)
+		owner <- err
+	}()
+	<-started
+	return tl, func() error {
+		cancelOwner()
+		return <-owner
+	}
+}
+
+// bulkLoaderTimesTen returns key * 10 for every key.
+func bulkLoaderTimesTen() *testBulkLoader[int, int] {
+	return newTestBulkLoader[int, int](func(_ context.Context, keys []int) (map[int]int, error) {
+		res := make(map[int]int, len(keys))
+		for _, k := range keys {
+			res[k] = k * 10
+		}
+		return res, nil
+	})
+}
+
+// A Refresh of an absent key joins a Get's load, and the Get gives up. The refresh, which no
+// context cancels, loads the key again instead of reporting that failure, as a joined Get does,
+// and that Get waits for the refresh rather than load the key a third time. The refresh is
+// registered before Refresh returns, so it has joined the load by then.
+func TestCache_RefreshReloadsWhenOwnerContextFails(t *testing.T) {
+	t.Parallel()
+
+	c := Must(&Options[int, int]{MaximumSize: 100, RefreshCalculator: RefreshWriting[int, int](time.Hour)})
+	tl, cancel := getWithCancelledOwner(t, c, nil)
+	refreshed := c.Refresh(context.Background(), 1, tl)
+	waiter := make(chan getResult, 1)
+	go func() {
+		v, err := c.Get(context.Background(), 1, tl)
+		waiter <- getResult{v, err}
+	}()
+	waitForJoinedLoad(t)
+	require.Error(t, cancel())
+
+	r := <-refreshed
+	require.NoError(t, r.Err)
+	require.Equal(t, 10, r.Value)
+	w := <-waiter
+	require.NoError(t, w.err)
+	require.Equal(t, 10, w.value)
+	require.Equal(t, uint64(2), tl.loads.Load())
+	v, ok := c.GetIfPresent(1)
+	require.True(t, ok)
+	require.Equal(t, 10, v)
+}
+
+func TestCache_BulkRefreshReloadsWhenOwnerContextFails(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		keys []int
+		want []RefreshResult[int, int]
+	}{
+		// 2 is the refresh's own, and 1 joins the Get's load
+		{name: "mixed", keys: []int{1, 2}, want: []RefreshResult[int, int]{{Key: 1, Value: 10}, {Key: 2, Value: 20}}},
+		{name: "all joined", keys: []int{1}, want: []RefreshResult[int, int]{{Key: 1, Value: 10}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			c := Must(&Options[int, int]{MaximumSize: 100, RefreshCalculator: RefreshWriting[int, int](time.Hour)})
+			_, cancel := getWithCancelledOwner(t, c, nil)
+			tbl := bulkLoaderTimesTen()
+			refreshed := c.BulkRefresh(context.Background(), tt.keys, tbl)
+			require.Error(t, cancel())
+
+			require.ElementsMatch(t, tt.want, <-refreshed)
+			require.Equal(t, uint64(len(tt.keys)), tbl.loads.Load())
+			v, ok := c.GetIfPresent(1)
+			require.True(t, ok)
+			require.Equal(t, 10, v)
+		})
+	}
+}
+
+// The refresh that loads the key again is registered when the failed load commits, under the
+// key's bucket lock, so a change of the key that follows the request cancels it as it would
+// have cancelled the load: an invalidation before the load fails leaves nothing to load again,
+// and a write or an invalidation after the failure, while the refresh is being submitted, is
+// kept over what the refresh loads.
+func TestCache_RefreshAfterOwnerContextFailsKeepsLaterChanges(t *testing.T) {
+	t.Parallel()
+
+	for _, bulk := range []bool{false, true} {
+		for _, change := range []string{"invalidate before the failure", "set after the failure", "invalidate after the failure"} {
+			t.Run(fmt.Sprintf("bulk=%v/%s", bulk, change), func(t *testing.T) {
+				t.Parallel()
+
+				var armed atomic.Bool
+				entered, release := make(chan struct{}), make(chan struct{})
+				c := Must(&Options[int, int]{
+					MaximumSize:       100,
+					RefreshCalculator: RefreshWriting[int, int](time.Hour),
+					// holds the submission of the refresh that loads the key again
+					Executor: func(fn func()) {
+						if armed.CompareAndSwap(true, false) {
+							close(entered)
+							<-release
+						}
+						go fn()
+					},
+				})
+				tl, cancel := getWithCancelledOwner(t, c, nil)
+				tbl := bulkLoaderTimesTen()
+				var result func() RefreshResult[int, int]
+				if bulk {
+					ch := c.BulkRefresh(context.Background(), []int{1}, tbl)
+					result = func() RefreshResult[int, int] { return (<-ch)[0] }
+				} else {
+					ch := c.Refresh(context.Background(), 1, tl)
+					result = func() RefreshResult[int, int] { return <-ch }
+				}
+
+				switch change {
+				case "invalidate before the failure":
+					c.Invalidate(1)
+					require.Error(t, cancel())
+					require.Error(t, result().Err, "the refresh did not report the failure")
+					require.Equal(t, uint64(1), tl.loads.Load()+tbl.loads.Load(), "the key was loaded again")
+				default:
+					armed.Store(true)
+					require.Error(t, cancel())
+					select {
+					case <-entered:
+					case <-time.After(10 * time.Second):
+						t.Fatal("the key was not loaded again")
+					}
+					if change == "set after the failure" {
+						c.Set(1, 5)
+					} else {
+						c.Invalidate(1)
+					}
+					close(release)
+					require.NoError(t, result().Err)
+				}
+
+				v, ok := c.GetIfPresent(1)
+				if change == "set after the failure" {
+					require.True(t, ok)
+					require.Equal(t, 5, v, "the refresh overwrote the write")
+				} else {
+					require.False(t, ok, "the refresh brought the invalidated key back")
+				}
+			})
+		}
+	}
+}
+
+// The refresh that loads the key again is submitted on a goroutine of the cache. If the
+// executor panics or calls runtime.Goexit there, the refresh reports that as its error instead
+// of crashing the program or never reporting, and the key loads afterwards. A loader that calls
+// runtime.Goexit under a caller-runs executor is reported as such.
+func TestCache_RefreshAfterOwnerContextFailsReportsFailures(t *testing.T) {
+	t.Parallel()
+
+	for _, mode := range []string{"executor panics", "executor exits", "loader exits"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+
+			var armed, loaderExits atomic.Bool
+			logger := &recordingLogger{}
+			c := Must(&Options[int, int]{
+				MaximumSize:       100,
+				RefreshCalculator: RefreshWriting[int, int](time.Hour),
+				Logger:            logger,
+				Executor: func(fn func()) {
+					if armed.CompareAndSwap(true, false) {
+						switch mode {
+						case "executor panics":
+							panic("executor failed")
+						case "executor exits":
+							runtime.Goexit()
+						}
+					}
+					fn()
+				},
+			})
+			tl, cancel := getWithCancelledOwner(t, c, func(key int) (int, error) {
+				if loaderExits.CompareAndSwap(true, false) {
+					runtime.Goexit()
+				}
+				return key * 10, nil
+			})
+			refreshed := c.Refresh(context.Background(), 1, tl)
+			armed.Store(true)
+			loaderExits.Store(mode == "loader exits")
+			require.Error(t, cancel())
+
+			r := <-refreshed
+			require.Equal(t, 1, r.Key)
+			switch mode {
+			case "executor panics":
+				var pe *panicError
+				require.ErrorAs(t, r.Err, &pe)
+				// logged once the panic leaves submitRefresh, which has finished the refresh by then
+				require.Eventually(t, func() bool {
+					return slices.Contains(logger.get(), "Panicked while starting a refresh")
+				}, 10*time.Second, time.Millisecond)
+			case "executor exits":
+				require.ErrorIs(t, r.Err, errRefreshExited)
+			default:
+				require.ErrorIs(t, r.Err, errLoaderExited)
+			}
+			completes(t, "a Get after the failure", func() {
+				v, err := c.Get(context.Background(), 1, tl)
+				require.NoError(t, err)
+				require.Equal(t, 10, v)
+			})
+		})
+	}
+}
+
+// A bulk refresh that has joined the load of an earlier key and then fails on the clock, under
+// a later key's bucket lock, still has the load loaded again once it fails: every later load of
+// the key would wait for the refresh registered in its place otherwise.
+func TestCache_ClockFailureInBulkRefreshStillRunsRefreshAfterJoinedLoad(t *testing.T) {
+	t.Parallel()
+
+	for _, goexit := range []bool{false, true} {
+		t.Run(fmt.Sprintf("goexit=%v", goexit), func(t *testing.T) {
+			t.Parallel()
+
+			clock := &exitingClock{nonTickingClock: newNonTickingClock(), goexit: goexit}
+			c := Must(&Options[int, int]{
+				MaximumSize:       100,
+				RefreshCalculator: RefreshWriting[int, int](time.Hour),
+				Clock:             clock,
+				Logger:            &recordingLogger{},
+			})
+			tl, cancel := getWithCancelledOwner(t, c, nil)
+			tbl := bulkLoaderTimesTen()
+
+			// fails once the refresh has joined the load of key 1, while key 2 is registered
+			afterJoin := func() bool {
+				cl := c.cache.singleflight.getCall(1)
+				return cl != nil && !cl.isRefresh && cl.again != nil
+			}
+			clock.fail.Store(&afterJoin)
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				defer func() { _ = recover() }()
+				c.BulkRefresh(context.Background(), []int{1, 2}, tbl)
+			}()
+			<-done
+			clock.fail.Store(nil)
+			require.Error(t, cancel())
+
+			completes(t, "a Get after the joined load failed", func() {
+				v, err := c.Get(context.Background(), 1, tl)
+				require.NoError(t, err)
+				require.Equal(t, 10, v)
+			})
+			require.Equal(t, uint64(1), tbl.loads.Load(), "the refresh after the joined load did not run")
+		})
+	}
+}
+
+// A bulk refresh of [1, 2] joins the load of 1 and registers 2. If the executor fails while it
+// is handed the refresh of 2, the load of 1 is still loaded again once it fails: the refresh
+// registered in its place does not wait for the task that never runs.
+func TestCache_ExecutorFailureInBulkRefreshStillLoadsJoinedKeyAgain(t *testing.T) {
+	t.Parallel()
+
+	for _, goexit := range []bool{false, true} {
+		t.Run(fmt.Sprintf("goexit=%v", goexit), func(t *testing.T) {
+			t.Parallel()
+
+			var failing atomic.Bool
+			c := Must(&Options[int, int]{
+				MaximumSize:       100,
+				RefreshCalculator: RefreshWriting[int, int](time.Hour),
+				Executor: func(fn func()) {
+					if failing.CompareAndSwap(true, false) {
+						if goexit {
+							runtime.Goexit()
+						}
+						panic("executor failed")
+					}
+					go fn()
+				},
+			})
+			tl, cancel := getWithCancelledOwner(t, c, nil)
+			tbl := bulkLoaderTimesTen()
+			failing.Store(true)
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				defer func() { _ = recover() }()
+				c.BulkRefresh(context.Background(), []int{1, 2}, tbl)
+			}()
+			<-done
+			require.Error(t, cancel())
+
+			completes(t, "a Get after the joined load failed", func() {
+				v, err := c.Get(context.Background(), 1, tl)
+				require.NoError(t, err)
+				require.Equal(t, 10, v)
+			})
+		})
+	}
+}
+
+// The refresh registered in place of a joined load that failed runs as soon as the load fails,
+// not after the bulk refresh's own load of other keys: a Get of the key waits for it.
+func TestCache_RefreshAfterOwnerContextFailsDoesNotWaitForOtherKeys(t *testing.T) {
+	t.Parallel()
+
+	c := Must(&Options[int, int]{MaximumSize: 100, RefreshCalculator: RefreshWriting[int, int](time.Hour)})
+	tl, cancel := getWithCancelledOwner(t, c, nil)
+	release := make(chan struct{})
+	tbl := newTestBulkLoader[int, int](func(_ context.Context, keys []int) (map[int]int, error) {
+		if slices.Contains(keys, 2) {
+			<-release
+		}
+		res := make(map[int]int, len(keys))
+		for _, k := range keys {
+			res[k] = k * 10
+		}
+		return res, nil
+	})
+	refreshed := c.BulkRefresh(context.Background(), []int{1, 2}, tbl)
+	require.Error(t, cancel())
+
+	completes(t, "a Get of the joined key while the load of another key is in flight", func() {
+		v, err := c.Get(context.Background(), 1, tl)
+		require.NoError(t, err)
+		require.Equal(t, 10, v)
+	})
+	close(release)
+	require.ElementsMatch(t, []RefreshResult[int, int]{{Key: 1, Value: 10}, {Key: 2, Value: 20}}, <-refreshed)
+}
+
+// Several refreshes that join one failed load all report the result of the one refresh
+// registered in its place, which runs with the loader of the first of them.
+func TestCache_SeveralRefreshesShareTheLoadAfterOwnerContextFails(t *testing.T) {
+	t.Parallel()
+
+	c := Must(&Options[int, int]{MaximumSize: 100, RefreshCalculator: RefreshWriting[int, int](time.Hour)})
+	tl, cancel := getWithCancelledOwner(t, c, nil)
+	tbl := bulkLoaderTimesTen()
+	first := c.Refresh(context.Background(), 1, tl)
+	second := c.Refresh(context.Background(), 1, tl)
+	bulk := c.BulkRefresh(context.Background(), []int{1}, tbl)
+	require.Error(t, cancel())
+
+	for _, r := range []RefreshResult[int, int]{<-first, <-second, (<-bulk)[0]} {
+		require.NoError(t, r.Err)
+		require.Equal(t, 10, r.Value)
+	}
+	require.Equal(t, uint64(2), tl.loads.Load())
+	require.Zero(t, tbl.loads.Load())
+}
+
+// The refresh registered in place of a failed load that a refresh joined fills the key in every
+// configuration, whether the key is absent or holds an expired entry, which the refresh replaces.
+func TestCache_RefreshReloadsWhenOwnerContextFailsInEveryConfiguration(t *testing.T) {
+	t.Parallel()
+
+	for _, expired := range []bool{false, true} {
+		for _, bulk := range []bool{false, true} {
+			t.Run(fmt.Sprintf("expired=%v/bulk=%v", expired, bulk), func(t *testing.T) {
+				t.Parallel()
+
+				spec := cacheSpec{refresh: withRefresh, population: allPopulations, executor: allExecutors}
+				if expired {
+					spec.expiry = withExpiry
+				}
+				forEachSpec(t, spec, func(t *testing.T, cc *cacheContext) {
+					if expired {
+						cc.cache.Set(1, -1)
+						cc.advance(2 * specExpiry)
+					} else {
+						cc.cache.Invalidate(1)
+					}
+					ownerCtx, cancelOwner := context.WithCancel(context.Background())
+					defer cancelOwner()
+					started := make(chan struct{})
+					tl := newTestLoader[int, int](func(ctx context.Context, key int) (int, error) {
+						if ctx == ownerCtx {
+							close(started)
+							<-ctx.Done()
+							return 0, errors.New("rpc: cancelled")
+						}
+						return key * 10, nil
+					})
+					owner := make(chan error, 1)
+					go func() {
+						_, err := cc.cache.GetContext(ownerCtx, 1, tl)
+						owner <- err
+					}()
+					<-started
+
+					var receive func() (RefreshResult[int, int], bool)
+					if bulk {
+						ch := cc.cache.BulkRefreshContext(context.Background(), []int{1}, bulkLoaderTimesTen())
+						receive = func() (RefreshResult[int, int], bool) {
+							select {
+							case rs := <-ch:
+								return rs[0], true
+							default:
+								return RefreshResult[int, int]{}, false
+							}
+						}
+					} else {
+						ch := cc.cache.Refresh(1, tl)
+						receive = func() (RefreshResult[int, int], bool) {
+							select {
+							case r := <-ch:
+								return r, true
+							default:
+								return RefreshResult[int, int]{}, false
+							}
+						}
+					}
+					cancelOwner()
+					require.Error(t, <-owner)
+
+					// queued tasks run only when the test runs them
+					deadline := time.Now().Add(10 * time.Second)
+					r, ok := receive()
+					for ; !ok; r, ok = receive() {
+						require.True(t, time.Now().Before(deadline), "the refresh did not report")
+						cc.run()
+						time.Sleep(time.Millisecond)
+					}
+					require.NoError(t, r.Err)
+					require.Equal(t, 10, r.Value)
+					// A joined refresh reports before its write is published, and the load is
+					// counted after: the checks at the end need the policies to have the key.
+					require.Eventually(t, func() bool {
+						return cc.stats.Snapshot().LoadSuccesses == 1
+					}, 10*time.Second, time.Millisecond)
+					cc.requireValue(t, 1, 10)
+				})
+			})
+		}
+	}
+}
+
 func TestCache_BulkGetKeepsResultOfJoinedLoadOfKeyItsLoaderReturns(t *testing.T) {
 	t.Parallel()
 
