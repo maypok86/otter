@@ -103,9 +103,12 @@ Every change decided from a key's current value (`set`, `doCompute`, `Invalidate
      goroutine it can make one between a write's release of the lock and its submission: a
      node updated in place stays linked, so its eviction or expiration can be reported before
      the value the update replaced. The task is handed off in a `defer`, so a listener or an
-     executor that calls `runtime.Goexit` does not lose it.
+     executor that calls `runtime.Goexit` does not lose it. For the same reason, a task always
+     goes before the access (`afterRead` may submit a drain), and `removeNode` unlinks a node
+     whose `OnDeletion` exits the goroutine, since the walk that would unlink it does not resume.
 4. Tasks go to the bounded MPSC write buffer. When it is full, the writer runs
-   `performCleanUp` itself under `evictionMutex`.
+   `performCleanUp` itself under `evictionMutex`, in a `defer`, so that the task is not lost if
+   the drain it scheduled exits the goroutine.
 
 User callbacks under the bucket lock: the weigher, `ExpiryCalculator.ExpireAfterCreate/Update`
 (and `ExpireAfterRead` when `SetIfAbsent` finds a live entry, unless reads keep the deadline),
@@ -122,6 +125,8 @@ callback that holds the lock of the same bucket.
 
 `maintenance` (under `evictionMutex`): drain the read buffer (`onAccess`), drain the write
 buffer (`runTask`), run the caller's task, expire (`expireNodes`), evict (`evictNodes`), climb.
+The caller's task is in neither buffer, so a pass that a panic or `runtime.Goexit` interrupts
+before it (a replayed eviction reports to `OnDeletion`) still runs it in its `defer`.
 `drainStatus` (`idle`, `required`, `processingToIdle`, `processingToRequired`) decides whether
 another drain must be scheduled.
 

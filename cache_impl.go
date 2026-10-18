@@ -216,7 +216,7 @@ func newCache[K comparable, V any](o *Options[K, V]) *cache[K, V] {
 		// goroutine returns by itself once the cache is collected.
 		c.stop = make(chan struct{})
 		c.done = make(chan struct{})
-		go periodicCleanUp(weak.Make(c), c.stop, c.done)
+		go periodicCleanUp(weak.Make(c), nil, c.stop, c.done)
 	}
 
 	if c.withEviction {
@@ -484,13 +484,15 @@ func (c *cache[K, V]) setExpiresAt(key K, deadline func(nowNano int64) int64) {
 	if n == nil {
 		return
 	}
-	c.afterRead(n, false)
 	if earlier {
 		// The read buffer may drop the access, and the node would then wait in the timer wheel's
 		// bucket for its former deadline, so an earlier deadline goes through the write buffer. A
 		// later one needs nothing: the wheel re-checks the node when its former bucket expires.
+		// The task goes first, as for a write: afterRead may submit a drain to an executor that
+		// calls runtime.Goexit.
 		c.afterWriteTask(newTask(n, nil, reconcileReason))
 	}
+	c.afterRead(n, false)
 }
 
 // SetRefreshableAfter specifies that each entry should be eligible for reloading once a fixed duration has elapsed.
@@ -1631,25 +1633,46 @@ func (c *cache[K, V]) notifyAtomicDeletion(key K, value V, cause DeletionCause) 
 // cache, because it must not keep the cache reachable: a callback that the cache holds may hold
 // the cache itself, and then it would never be collected. It returns when stop is closed, and
 // closes done then.
-func periodicCleanUp[K comparable, V any](wc weak.Pointer[cache[K, V]], stop, done chan struct{}) {
-	defer close(done)
+//
+// A clean-up runs user code (the listeners, the clock, the recorder and the executor), which may
+// call runtime.Goexit. That ends the goroutine, and the loop goes on in a new one with the same
+// ticks: the cache keeps its periodic clean-ups, and done is closed once. The ticks are nil only
+// in the first goroutine, and a Goexit in Clock.Tick ends the periodic clean-ups, as a panic of
+// Tick does: a new goroutine would call Tick again, and exit again.
+func periodicCleanUp[K comparable, V any](
+	wc weak.Pointer[cache[K, V]],
+	tick <-chan time.Time,
+	stop, done chan struct{},
+) {
+	returned := false
+	defer func() {
+		if !returned && tick != nil {
+			go periodicCleanUp(wc, tick, stop, done)
+			return
+		}
+		close(done)
+	}()
 
-	c := wc.Value()
-	if c == nil {
-		return
-	}
-	tick := c.tick()
 	if tick == nil {
-		// Without ticks, nothing would tell the goroutine that the cache is gone.
-		return
+		c := wc.Value()
+		if c == nil {
+			return
+		}
+		tick = c.tick()
+		if tick == nil {
+			// Without ticks, nothing would tell the goroutine that the cache is gone.
+			return
+		}
 	}
 	for {
 		select {
 		case <-stop:
+			returned = true
 			return
 		case <-tick:
 			c := wc.Value()
 			if c == nil {
+				returned = true
 				return
 			}
 			c.CleanUp()
@@ -1660,7 +1683,7 @@ func periodicCleanUp[K comparable, V any](wc weak.Pointer[cache[K, V]], stop, do
 
 // tick returns the clock's ticks for the periodic clean-up. The clock is user code, and that
 // goroutine is the cache's own: if Tick panics, the panic is logged, nil is returned, and the cache
-// does without periodic clean-ups.
+// does without periodic clean-ups. So does it if Tick calls runtime.Goexit (see periodicCleanUp).
 func (c *cache[K, V]) tick() <-chan time.Time {
 	defer recoverCallback(c.logger, "Clock.Tick panicked")
 	return c.clock.Tick(time.Second)
@@ -1692,8 +1715,22 @@ func (c *cache[K, V]) expireNode(n node.Node[K, V], nowNanos int64) bool {
 // It returns false if n is kept, as described by removal. The caller unlinks n from the eviction
 // policy.
 func (c *cache[K, V]) removeNode(n node.Node[K, V], nowNanos int64, removal nodeRemoval) bool {
+	// Once n has left the table, user code may call runtime.Goexit: RecordEviction, which counts
+	// the removal, OnDeletion, or the executor OnDeletion is submitted to. Then the caller never
+	// unlinks n, and its walk does not resume, so n is unlinked here. After a Goexit in
+	// OnAtomicDeletion, n is still alive and in the table (see retire), and it stays linked.
+	finished := false
+	defer func() {
+		if !finished && n.IsRetired() {
+			if c.withExpiration {
+				c.timerWheel.Unschedule(n)
+			}
+			c.makeDead(n)
+		}
+	}()
 	deleted, cause, kept := c.deleteNodeFromMap(n, nowNanos, removal)
 	if kept {
+		finished = true
 		return false
 	}
 	if c.withExpiration {
@@ -1702,6 +1739,7 @@ func (c *cache[K, V]) removeNode(n node.Node[K, V], nowNanos int64, removal node
 	if deleted != nil {
 		c.notifyDeletionFrom(false, n.Key(), n.Value(), cause)
 	}
+	finished = true
 	return true
 }
 
@@ -1867,19 +1905,26 @@ func (c *cache[K, V]) skipReadBuffer() bool {
 }
 
 func (c *cache[K, V]) afterWriteTask(t *task[K, V]) {
+	// In scenarios where the writing goroutines cannot make progress then they attempt to provide
+	// assistance by performing the eviction work directly. This can resolve cases where the
+	// maintenance task is scheduled but not running. Deferred, so that t is not lost when the
+	// executor, or maintenance run by a synchronous one, calls runtime.Goexit while the buffer is
+	// full.
+	pushed := false
+	defer func() {
+		if !pushed {
+			c.performCleanUp(t)
+		}
+	}()
 	for i := 0; i < writeBufferRetries; i++ {
 		if c.writeBuffer.TryPush(t) {
+			pushed = true
 			c.scheduleAfterWrite()
 			return
 		}
 		c.scheduleDrainBuffers()
 		runtime.Gosched()
 	}
-
-	// In scenarios where the writing goroutines cannot make progress then they attempt to provide
-	// assistance by performing the eviction work directly. This can resolve cases where the
-	// maintenance task is scheduled but not running.
-	c.performCleanUp(t)
 }
 
 func (c *cache[K, V]) scheduleAfterWrite() {
@@ -1988,18 +2033,29 @@ func (c *cache[K, V]) rescheduleCleanUpIfIncomplete() {
 }
 
 func (c *cache[K, V]) maintenance(t *task[K, V]) {
-	c.drainStatus.Store(processingToIdle)
-	c.readMaintenanceTime()
 	completed := false
+	// The writer's task t is not in the write buffer, so the pass runs it even if replaying the
+	// buffer stops it: a task that reports an eviction may run an OnDeletion, or hand it to an
+	// executor, that panics or calls runtime.Goexit. The order of the tasks does not matter to
+	// the policies. A task that was started is not run again.
+	ranTask := t == nil
 	defer func() {
 		if !completed {
-			// interrupted by a panic: the buffers may still hold work
+			// Interrupted by a panic or runtime.Goexit, also of the clock: the buffers may still
+			// hold work. The status is stored first, since the writer's task may run user code
+			// that exits again.
 			c.drainStatus.Store(required)
+			if !ranTask {
+				c.runTask(t)
+			}
 		}
 	}()
+	c.drainStatus.Store(processingToIdle)
+	c.readMaintenanceTime()
 
 	c.drainReadBuffer()
 	c.drainWriteBuffer()
+	ranTask = true
 	c.runTask(t)
 	c.expireNodes()
 	c.evictNodes()

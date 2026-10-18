@@ -27,6 +27,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/maypok86/otter/v2/internal/lossy"
 	"github.com/maypok86/otter/v2/stats"
 )
 
@@ -199,6 +200,44 @@ func TestCache_PanicInStatsIsLogged(t *testing.T) {
 	msgs := logger.get()
 	require.Contains(t, msgs, "StatsRecorder.RecordHits panicked")
 	require.Contains(t, msgs, "StatsRecorder.RecordEviction panicked")
+}
+
+type exitingRecorder struct {
+	*stats.Counter
+	exit *atomic.Bool
+}
+
+func (r *exitingRecorder) RecordEviction(weight uint32) {
+	if r.exit.CompareAndSwap(true, false) {
+		runtime.Goexit()
+	}
+	r.Counter.RecordEviction(weight)
+}
+
+// A RecordEviction that calls runtime.Goexit after maintenance has expired a node does not leave
+// the node linked into the policy. An eviction for size would remove it again.
+func TestCache_GoexitInRecordEvictionUnlinksTheRemovedNode(t *testing.T) {
+	t.Parallel()
+
+	var exit atomic.Bool
+	clk := newNonTickingClock()
+	c := Must(&Options[int, int]{
+		MaximumSize:      10,
+		ExpiryCalculator: ExpiryWriting[int, int](time.Minute),
+		Clock:            clk,
+		StatsRecorder:    &exitingRecorder{Counter: stats.NewCounter(), exit: &exit},
+		Executor:         syncExecutor,
+	})
+	for i := range 5 {
+		c.Set(i, i)
+	}
+	c.CleanUp()
+
+	clk.Sleep(2 * time.Minute)
+	exit.Store(true)
+	runExiting(c.CleanUp)
+	require.False(t, exit.Load(), "RecordEviction was not called")
+	validateCache(t, c)
 }
 
 type panickingRecorder struct {
@@ -1288,4 +1327,331 @@ func TestCache_NilLoaderOrContextDoesNotStrandKey(t *testing.T) {
 			require.Zero(t, e.escaped.Load(), "a panic escaped the refresh task")
 		})
 	}
+}
+
+// runExiting runs fn on a goroutine of its own, which fn may exit with runtime.Goexit.
+func runExiting(fn func()) {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		fn()
+	}()
+	<-done
+}
+
+// exitingExecutor runs tasks on the caller, and calls runtime.Goexit instead while exit is set.
+func exitingExecutor(exit *atomic.Bool) func(fn func()) {
+	return func(fn func()) {
+		if exit.Load() {
+			runtime.Goexit()
+		}
+		fn()
+	}
+}
+
+// An OnDeletion that calls runtime.Goexit on a caller-runs executor while maintenance reports an
+// eviction or an expiration does not leave the removed node linked into the policy.
+func TestCache_GoexitInOnDeletionUnlinksTheRemovedNode(t *testing.T) {
+	t.Parallel()
+
+	exitOnce := func(cc *cacheContext) *atomic.Bool {
+		var exit atomic.Bool
+		cc.onDeletion = func(DeletionEvent[int, int]) {
+			if exit.CompareAndSwap(true, false) {
+				runtime.Goexit()
+			}
+		}
+		exit.Store(true)
+		return &exit
+	}
+
+	t.Run("eviction", func(t *testing.T) {
+		t.Parallel()
+
+		forEachSpec(t, cacheSpec{
+			maximum:    []maximumKind{sizeBounded, weightBounded},
+			population: []populationKind{fullCache},
+			executor:   []executorKind{callerRuns},
+		}, func(t *testing.T, cc *cacheContext) {
+			exit := exitOnce(cc)
+			// The write's drain runs inline and evicts an entry, whose OnDeletion exits.
+			runExiting(func() { cc.cache.Set(absentKey, 1) })
+			require.False(t, exit.Load(), "OnDeletion was not called")
+			// A node left linked would still count, and a pass over the maximum would evict it
+			// again. A removal brings the policy within its maximum first, and it then stays.
+			for _, key := range cc.keys() {
+				if _, ok := cc.cache.GetEntryQuietly(key); ok {
+					cc.cache.Invalidate(key)
+					break
+				}
+			}
+			cc.check(t)
+		})
+	})
+	t.Run("expiration", func(t *testing.T) {
+		t.Parallel()
+
+		forEachSpec(t, cacheSpec{
+			expiry:     withExpiry,
+			population: []populationKind{fullCache},
+			executor:   []executorKind{callerRuns},
+		}, func(t *testing.T, cc *cacheContext) {
+			exit := exitOnce(cc)
+			cc.advance(2 * specExpiry)
+			runExiting(cc.cache.CleanUp)
+			require.False(t, exit.Load(), "OnDeletion was not called")
+			cc.check(t)
+		})
+	})
+}
+
+// An executor that calls runtime.Goexit when it is handed the drain that an in-place write or
+// SetExpiresAfter submits does not lose the reconcile task of a changed weight or an earlier
+// deadline.
+func TestCache_GoexitInExecutorKeepsTheReconcileTask(t *testing.T) {
+	t.Parallel()
+
+	t.Run("weight", func(t *testing.T) {
+		t.Parallel()
+
+		var exit atomic.Bool
+		c := Must(&Options[int, int]{
+			MaximumWeight: 10,
+			Weigher:       func(_, v int) uint32 { return uint32(v) },
+			Executor:      exitingExecutor(&exit),
+		})
+		c.Set(1, 1)
+		c.CleanUp()
+
+		exit.Store(true)
+		// The executor exits after the write's task is pushed, and the drain stays required.
+		runExiting(func() { c.Set(2, 1) })
+		// In place, from 1 to 9: the access finds the drain required and submits it.
+		runExiting(func() { c.Set(1, 9) })
+		exit.Store(false)
+		validateCache(t, c)
+	})
+	t.Run("SetExpiresAfter", func(t *testing.T) {
+		t.Parallel()
+
+		var exit atomic.Bool
+		clk := newNonTickingClock()
+		c := Must(&Options[int, int]{
+			MaximumSize:      10,
+			ExpiryCalculator: ExpiryWriting[int, int](time.Hour),
+			Clock:            clk,
+			Executor:         exitingExecutor(&exit),
+		})
+		c.Set(1, 1)
+		c.Set(2, 2)
+		c.CleanUp()
+
+		exit.Store(true)
+		runExiting(func() {
+			// Reads of another key fill this goroutine's stripe of the read buffer, so the
+			// access of SetExpiresAfter is dropped and it submits a drain.
+			for c.cache.readBuffer.Add(c.cache.hashmap.Get(2)) != lossy.Full {
+			}
+			c.SetExpiresAfter(1, time.Minute)
+		})
+		exit.Store(false)
+
+		clk.Sleep(2 * time.Minute)
+		c.CleanUp()
+		require.Equal(t, 1, c.EstimatedSize(), "the entry is not removed at its new deadline")
+	})
+}
+
+// An executor that calls runtime.Goexit when a writer that found the write buffer full submits
+// a drain does not lose the writer's task: the entry stays evictable.
+func TestCache_GoexitInExecutorKeepsTheTaskOfAFullBuffer(t *testing.T) {
+	t.Parallel()
+
+	var exit atomic.Bool
+	c := Must(&Options[int, int]{
+		MaximumSize: 10,
+		Executor:    exitingExecutor(&exit),
+	})
+	exit.Store(true)
+	// Each drain submission exits after its write's task is pushed, until the buffer is full.
+	for i := range int(maxWriteBufferSize) + 5 {
+		runExiting(func() { c.Set(i, i) })
+	}
+	exit.Store(false)
+	validateCache(t, c)
+	require.LessOrEqual(t, c.EstimatedSize(), 10)
+}
+
+// writeUntilBlocked writes keys from 0 with value v until a write blocks, which is how the
+// goroutine is found in a stack dump. The writes are bounded, so that a writer that is not
+// stopped by a Goexit fails the test instead of hanging it.
+func writeUntilBlocked(c *Cache[int, int], last *atomic.Int64, v int) {
+	for i := range 4 * int(maxWriteBufferSize) {
+		last.Store(int64(i))
+		c.Set(i, v)
+	}
+}
+
+// writeUntilBlockedOnHeavy fills the write buffer with weightless writes but for one slot, buffers
+// a write heavier than the maximum in it, and blocks on another such write.
+func writeUntilBlockedOnHeavy(c *Cache[int, int], last *atomic.Int64) {
+	for i := 0; i < 4*int(maxWriteBufferSize) && c.cache.writeBuffer.Size() < uint64(maxWriteBufferSize)-1; i++ {
+		c.Set(i, 0)
+	}
+	c.Set(-2, 11)
+	last.Store(-3)
+	c.Set(-3, 11)
+}
+
+// blockWriter holds the eviction lock through an iteration while write runs on another goroutine,
+// until the writer finds the write buffer full and blocks on the lock in performCleanUp. It
+// returns the last key written once the writer has ended.
+func blockWriter(t *testing.T, c *Cache[int, int], write func(last *atomic.Int64)) int {
+	t.Helper()
+
+	var last atomic.Int64
+	done := make(chan struct{})
+	// The iteration holds the eviction lock, so the writes fill the buffer.
+	for range c.Hottest() {
+		go func() {
+			defer close(done)
+			write(&last)
+		}()
+		// Waits for the writer that found the buffer full to block on the lock. A stack dump stops
+		// the world, so the buffer is watched first, and the dumps are spaced out.
+		for c.cache.writeBuffer.Size() < uint64(maxWriteBufferSize) {
+			runtime.Gosched()
+		}
+		deadline := time.Now().Add(10 * time.Second)
+		buf := make([]byte, 1<<20)
+		for blocked := false; !blocked; {
+			time.Sleep(5 * time.Millisecond)
+			require.True(t, time.Now().Before(deadline), "the writer did not block on the lock")
+			size := runtime.Stack(buf, true)
+			if size == len(buf) {
+				// truncated: the parallel tests have many goroutines
+				buf = make([]byte, 2*len(buf))
+				continue
+			}
+			for _, g := range strings.Split(string(buf[:size]), "\n\n") {
+				if strings.Contains(g, "writeUntilBlocked") && strings.Contains(g, "performCleanUp") {
+					blocked = true
+				}
+			}
+		}
+		break
+	}
+	<-done
+	return int(last.Load())
+}
+
+// A writer that finds the write buffer full runs maintenance with its own task. An OnDeletion that
+// calls runtime.Goexit on a caller-runs executor, while the pass replays an entry heavier than the
+// maximum that was buffered first, does not lose that task.
+func TestCache_GoexitInWritersMaintenanceKeepsItsTask(t *testing.T) {
+	t.Parallel()
+
+	var exit atomic.Bool
+	c := Must(&Options[int, int]{
+		MaximumWeight: 10,
+		Weigher:       func(_, v int) uint32 { return uint32(v) },
+		OnDeletion: func(DeletionEvent[int, int]) {
+			if exit.CompareAndSwap(true, false) {
+				runtime.Goexit()
+			}
+		},
+		Executor: syncExecutor,
+	})
+	c.Set(-1, 1)
+	c.CleanUp()
+
+	exit.Store(true)
+	last := blockWriter(t, c, func(last *atomic.Int64) {
+		c.Set(-2, 11)
+		writeUntilBlocked(c, last, 0)
+	})
+	require.False(t, exit.Load(), "OnDeletion was not called")
+	_, ok := c.GetIfPresent(last)
+	require.True(t, ok, "the last write is not in the cache")
+	validateCache(t, c)
+}
+
+// An OnDeletion that exits again, when maintenance's defer runs the writer's task, still leaves
+// a drain required: otherwise reads and writes would stop scheduling drains, and the entries they
+// write would stay outside the policy.
+func TestCache_GoexitInWritersTaskOfInterruptedPassKeepsDraining(t *testing.T) {
+	t.Parallel()
+
+	var exits atomic.Int64
+	c := Must(&Options[int, int]{
+		MaximumWeight: 10,
+		Weigher:       func(_, v int) uint32 { return uint32(v) },
+		OnDeletion: func(DeletionEvent[int, int]) {
+			if exits.Add(-1) >= 0 {
+				runtime.Goexit()
+			}
+		},
+		Executor: syncExecutor,
+	})
+	c.Set(-1, 1)
+	c.CleanUp()
+
+	// The pass exits on the last buffered task, and its defer on the writer's own, which leaves
+	// the buffer empty.
+	exits.Store(2)
+	blockWriter(t, c, func(last *atomic.Int64) { writeUntilBlockedOnHeavy(c, last) })
+	require.LessOrEqual(t, exits.Load(), int64(0), "OnDeletion did not exit twice")
+
+	present := 0
+	for i := range 20 {
+		c.Set(-10-i, 1)
+	}
+	for i := range 20 {
+		if _, ok := c.GetEntryQuietly(-10 - i); ok {
+			present++
+		}
+	}
+	require.LessOrEqual(t, present, 10, "no drain ran after the interrupted pass")
+	validateCache(t, c)
+}
+
+// goexitClock calls runtime.Goexit on a reading while exits is set.
+type goexitClock struct {
+	*nonTickingClock
+	exits atomic.Bool
+}
+
+func (c *goexitClock) NowNano() int64 {
+	if c.exits.Load() {
+		runtime.Goexit()
+	}
+	return c.nonTickingClock.NowNano()
+}
+
+// A clock that calls runtime.Goexit while maintenance reads it interrupts the pass like a panic
+// further on: the drain is left required, so the next write schedules it.
+func TestCache_GoexitInClockDuringMaintenance(t *testing.T) {
+	t.Parallel()
+
+	clock := &goexitClock{nonTickingClock: newNonTickingClock()}
+	c := Must(&Options[int, int]{
+		MaximumSize:      10,
+		ExpiryCalculator: ExpiryWriting[int, int](time.Hour),
+		Clock:            clock,
+		// runs every drain on the writer, so no pass runs concurrently with the checks below
+		Executor: syncExecutor,
+	})
+	for i := range 20 {
+		c.Set(i, i)
+	}
+	c.CleanUp()
+
+	clock.exits.Store(true)
+	runExiting(c.CleanUp)
+	clock.exits.Store(false)
+
+	for i := 20; i < 30; i++ {
+		c.Set(i, i)
+	}
+	require.Equal(t, 10, c.EstimatedSize(), "no drain ran after the interrupted pass")
 }

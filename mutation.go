@@ -181,12 +181,13 @@ func (c *cache[K, V]) afterWritePolicies(m mutation[K, V]) {
 		// Updated in place: the policies observe an access through the lossy read buffer, and a
 		// changed weight through a task, which must not be lost. The expiration time can only
 		// move later (see atomicSet), which needs no task: the timer wheel reschedules a node that
-		// it finds has not expired yet.
-		if !quiet {
-			c.afterRead(n, false)
-		}
+		// it finds has not expired yet. The task is handed off first: afterRead may submit a
+		// drain, and an executor that calls runtime.Goexit would lose it.
 		if m.reconcile {
 			c.afterWriteTask(newTask(n, nil, reconcileReason))
+		}
+		if !quiet {
+			c.afterRead(n, false)
 		}
 	case old == nil:
 		c.afterWriteTask(newTask(n, nil, addReason))
