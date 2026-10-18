@@ -203,9 +203,10 @@ refresh of an absent key, which loads it just the same. A committed load stays
 registered until `finish` deletes it, and a `Get` that joined it after the removal would return
 the removed value; `committed` is set by `commitCall` under the key's bucket lock, which the
 removal holds too. A load that adopts a value it finds after winning its call slot reads it
-under that lock too (`readForAdoption`) and is marked committed there, for the same reason. A refresh whose base is removed or replaced without cancelling it
-cannot write, so the next call for the key replaces it instead of joining it
-(`group.superseded`); a read that finds a node being removed does not refresh it.
+under that lock too (`readForAdoption`) and is marked committed there, for the same reason. A refresh whose base is removed or replaced without cancelling it,
+or has expired by the time of the caller's miss, cannot write, so the next call for the key
+replaces it instead of joining it (`group.superseded`); a read that finds a node being removed
+does not refresh it.
 A fake call (a key the bulk loader returned without being asked) has no call for an invalidation
 to cancel: it fills only a key without a live value or a call, and only if no key has been
 invalidated since its bulk load started (`group.invalidations`).

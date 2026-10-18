@@ -1863,7 +1863,7 @@ func TestCache_RefreshDoesNotJoinLoadOfLiveKey(t *testing.T) {
 	})
 	c.cache.singleflight.init()
 	c.Set(1, 1)
-	load, _ := c.cache.singleflight.startLoad(1)
+	load, _ := c.cache.singleflight.startLoad(1, 0)
 	defer c.cache.singleflight.adopt(load, 1, 0, nil)
 
 	ch := c.Refresh(context.Background(), 1, reloadAdds{})
@@ -2679,7 +2679,7 @@ func TestCache_RemovalDropsCommittedLoad(t *testing.T) {
 			c.cache.singleflight.init()
 
 			// The load writes its value; its call is deleted and its waiters woken only after.
-			cl, shouldLoad := c.cache.singleflight.startLoad(1)
+			cl, shouldLoad := c.cache.singleflight.startLoad(1, 0)
 			require.True(t, shouldLoad)
 			cl.value = 10
 			c.cache.commitCall(cl)
@@ -2708,7 +2708,7 @@ func TestCache_RemovalKeepsLoadInFlight(t *testing.T) {
 	c := Must(&Options[int, int]{MaximumSize: 100})
 	c.Set(1, 1)
 	c.cache.singleflight.init()
-	cl, shouldLoad := c.cache.singleflight.startLoad(1)
+	cl, shouldLoad := c.cache.singleflight.startLoad(1, 0)
 	require.True(t, shouldLoad)
 
 	c.cache.evictNode(c.cache.hashmap.Get(1))
@@ -2797,7 +2797,7 @@ func TestCache_LoadKeepsValueWrittenBeforeItsRegistration(t *testing.T) {
 				// The load is registered after the write: as if the Get had missed the key before
 				// the write stored its value.
 				c.Set(1, 2)
-				cl, shouldLoad := c.cache.singleflight.startLoad(1)
+				cl, shouldLoad := c.cache.singleflight.startLoad(1, 0)
 				require.True(t, shouldLoad)
 
 				if bulk {
@@ -3102,21 +3102,6 @@ func TestCache_GetJoinedRefreshNotWritten(t *testing.T) {
 			},
 			want: 3,
 		},
-		{
-			name: "refresh whose node expires",
-			start: func(c *Cache[int, int], clock *nonTickingClock) {
-				c.Set(1, 1)
-				clock.Sleep(30 * time.Second)
-				v, err := c.Get(ctx, 1, splitLoader{reload: func(context.Context, int, int) (int, error) {
-					return 2, nil
-				}})
-				require.NoError(t, err)
-				require.Equal(t, 1, v)
-				clock.Sleep(time.Minute)
-			},
-			change: func(*Cache[int, int], *nonTickingClock) {},
-			want:   5,
-		},
 	}
 	for _, tt := range tests {
 		for _, bulk := range []bool{false, true} {
@@ -3158,6 +3143,104 @@ func TestCache_GetJoinedRefreshNotWritten(t *testing.T) {
 			require.Equal(t, tt.want, v, "%s, bulk=%v", tt.name, bulk)
 		}
 	}
+}
+
+func TestCache_GetDoesNotJoinRefreshOfExpiredEntry(t *testing.T) {
+	t.Parallel()
+
+	// A Get that misses a key because its entry has expired does not join the refresh of that
+	// entry: the cache refuses the refresh's result, and the Get would wait for the reload only to
+	// load the key afterwards.
+	for _, bulk := range []bool{false, true} {
+		t.Run(fmt.Sprintf("bulk=%v", bulk), func(t *testing.T) {
+			t.Parallel()
+
+			forEachSpec(t, cacheSpec{expiry: withExpiry, refresh: withRefresh}, func(t *testing.T, cc *cacheContext) {
+				cc.cache.Set(1, 1)
+				cc.run()
+				// The read finds the entry stale, and its refresh waits in the queue.
+				cc.advance(specRefresh + 10*time.Second)
+				v, err := cc.cache.Get(1, splitLoader{reload: func(context.Context, int, int) (int, error) { return 2, nil }})
+				require.NoError(t, err)
+				require.Equal(t, 1, v)
+				cc.advance(2 * specExpiry)
+
+				got := make(chan getResult, 1)
+				go func() {
+					if bulk {
+						res, err := cc.cache.BulkGet([]int{1}, newTestBulkLoader[int, int](func(context.Context, []int) (map[int]int, error) {
+							return map[int]int{1: 5}, nil
+						}))
+						got <- getResult{res[1], err}
+						return
+					}
+					v, err := cc.cache.Get(1, splitLoader{load: func(context.Context, int) (int, error) { return 5, nil }})
+					got <- getResult{v, err}
+				}()
+				select {
+				case r := <-got:
+					require.NoError(t, r.err)
+					require.Equal(t, 5, r.value)
+				case <-time.After(5 * time.Second):
+					cc.run()
+					<-got
+					t.Fatal("the Get waited for the refresh of the expired entry")
+				}
+				cc.run()
+				cc.requireValue(t, 1, 5)
+			})
+		})
+	}
+}
+
+func TestCache_GetThatJoinedRefreshOfExpiringEntryLoads(t *testing.T) {
+	t.Parallel()
+
+	// A Get that read the clock before the entry expired joins its refresh. The entry expires
+	// before the refresh completes, so its result is refused, and the Get loads the key itself.
+	ctx := context.Background()
+	var q queuedExecutor
+	clock := newNonTickingClock()
+	c := Must(&Options[int, int]{
+		ExpiryCalculator:  ExpiryWriting[int, int](time.Minute),
+		RefreshCalculator: RefreshWriting[int, int](10 * time.Second),
+		Clock:             clock,
+		Executor:          q.execute,
+	})
+	c.Set(1, 1)
+	clock.Sleep(30 * time.Second)
+	v, err := c.Get(ctx, 1, splitLoader{reload: func(context.Context, int, int) (int, error) {
+		return 2, nil
+	}})
+	require.NoError(t, err)
+	require.Equal(t, 1, v)
+	missedAt := clock.NowNano()
+
+	got := make(chan getResult, 1)
+	go func() {
+		// Get's loop with a clock reading taken before the expiry
+		nowNano := missedAt
+		for {
+			v, retry, err := c.cache.loadOrJoin(ctx, 1, splitLoader{load: func(context.Context, int) (int, error) {
+				return 5, nil
+			}}, nowNano)
+			if !retry {
+				got <- getResult{v, err}
+				return
+			}
+			nowNano = c.cache.clock.NowNano()
+		}
+	}()
+	waitForJoinedLoad(t)
+	clock.Sleep(time.Minute)
+	q.run()
+
+	r := <-got
+	require.NoError(t, r.err)
+	require.Equal(t, 5, r.value)
+	v, ok := c.GetIfPresent(1)
+	require.True(t, ok)
+	require.Equal(t, 5, v)
 }
 
 func TestCache_GetStopsReloadingInvalidatedKeyWhenContextEnds(t *testing.T) {
@@ -3248,7 +3331,7 @@ func TestCache_GetDoesNotTakeLoadedValueExpiredBeforeIt(t *testing.T) {
 		{
 			name: "written",
 			start: func(c *Cache[int, int]) func() {
-				cl, _ := c.cache.singleflight.startLoad(1)
+				cl, _ := c.cache.singleflight.startLoad(1, 0)
 				cl.value = 1
 				m := c.cache.commitCall(cl)
 				return func() {
@@ -3262,7 +3345,7 @@ func TestCache_GetDoesNotTakeLoadedValueExpiredBeforeIt(t *testing.T) {
 			name: "written during the load",
 			start: func(c *Cache[int, int]) func() {
 				c.Set(1, 3)
-				cl, _ := c.cache.singleflight.startLoad(1)
+				cl, _ := c.cache.singleflight.startLoad(1, 0)
 				cl.value = 1
 				m := c.cache.commitCall(cl)
 				return func() {
@@ -3276,7 +3359,7 @@ func TestCache_GetDoesNotTakeLoadedValueExpiredBeforeIt(t *testing.T) {
 			name: "adopted",
 			start: func(c *Cache[int, int]) func() {
 				c.Set(1, 3)
-				cl, _ := c.cache.singleflight.startLoad(1)
+				cl, _ := c.cache.singleflight.startLoad(1, 0)
 				value, expiresAt, n := c.cache.readForAdoption(cl, c.cache.clock.NowNano())
 				return func() {
 					c.cache.singleflight.adopt(cl, value, expiresAt, n)
@@ -3353,7 +3436,7 @@ func TestCache_GetDoesNotTakeLoadedValueExpiredAtZero(t *testing.T) {
 		Executor: func(func()) {},
 	})
 	c.cache.singleflight.init()
-	cl, _ := c.cache.singleflight.startLoad(1)
+	cl, _ := c.cache.singleflight.startLoad(1, 0)
 	cl.value = 1
 	m := c.cache.commitCall(cl)
 	clock.now.Store(1)
@@ -3478,7 +3561,7 @@ func TestCache_LoadRegisteredWhileInvalidationIsAppliedDoesNotAdoptOldValue(t *t
 					// A Get registers its load, looks the key up and re-checks it: the node is
 					// still there. The listener runs under the bucket lock, so nothing here may
 					// fail the test.
-					adopting, _ = c.cache.singleflight.startLoad(1)
+					adopting, _ = c.cache.singleflight.startLoad(1, 0)
 					sawOld = c.cache.getNodeQuietly(1, c.cache.clock.NowNano()) != nil
 					go func() {
 						_, _, n := c.cache.readForAdoption(adopting, c.cache.clock.NowNano())
@@ -3526,7 +3609,7 @@ func TestCache_EvictionDropsLoadThatAdoptedItsValue(t *testing.T) {
 		c.cache.singleflight.init()
 		c.Set(1, 1)
 		n := c.cache.getNodeQuietly(1, c.cache.clock.NowNano())
-		cl, _ := c.cache.singleflight.startLoad(1)
+		cl, _ := c.cache.singleflight.startLoad(1, 0)
 		value, expiresAt, live := c.cache.readForAdoption(cl, c.cache.clock.NowNano())
 		require.NotNil(t, live)
 		require.Equal(t, 1, value)
@@ -3545,7 +3628,7 @@ func TestCache_EvictionDropsLoadThatAdoptedItsValue(t *testing.T) {
 		c.cache.singleflight.init()
 		c.Set(1, 1)
 		n := c.cache.getNodeQuietly(1, c.cache.clock.NowNano())
-		cl, _ := c.cache.singleflight.startLoad(1)
+		cl, _ := c.cache.singleflight.startLoad(1, 0)
 		c.cache.evictNode(n) // after the lock-free check found the value
 		_, _, live := c.cache.readForAdoption(cl, c.cache.clock.NowNano())
 		require.Nil(t, live)

@@ -191,10 +191,10 @@ func (g *group[K, V]) getCall(key K) *call[K, V] {
 	return g.calls.Get(key)
 }
 
-// startLoad registers a load of key, or returns the call already registered for it. shouldLoad
-// reports that the caller registered the call and must run it.
-func (g *group[K, V]) startLoad(key K) (c *call[K, V], shouldLoad bool) {
-	return g.startCall(key, false, nil)
+// startLoad registers a load of key, which a Get missed at nowNano, or returns the call already
+// registered for it. shouldLoad reports that the caller registered the call and must run it.
+func (g *group[K, V]) startLoad(key K, nowNano int64) (c *call[K, V], shouldLoad bool) {
+	return g.startCall(key, false, nil, nowNano)
 }
 
 // startRefresh registers a refresh of key, whose node is base (nil if absent), or returns the call
@@ -205,17 +205,17 @@ func (g *group[K, V]) startLoad(key K) (c *call[K, V], shouldLoad bool) {
 // current state (see isRefreshBase): a load, whose base is nil, never writes over a live value.
 // It is replaced rather than joined, and still completes for its own waiters.
 func (g *group[K, V]) startRefresh(key K, base node.Node[K, V]) (c *call[K, V], shouldLoad bool) {
-	return g.startCall(key, true, base)
+	return g.startCall(key, true, base, 0)
 }
 
-func (g *group[K, V]) startCall(key K, isRefresh bool, base node.Node[K, V]) (c *call[K, V], shouldLoad bool) {
+func (g *group[K, V]) startCall(key K, isRefresh bool, base node.Node[K, V], nowNano int64) (c *call[K, V], shouldLoad bool) {
 	// A refresh's base is the key's live node, read under its bucket lock, so a call started from
 	// the same base is not superseded.
 	joins := func(c *call[K, V]) bool {
 		if isRefresh {
 			return c.base == base
 		}
-		return !g.superseded(c)
+		return !g.superseded(c, nowNano)
 	}
 	// fast path
 	if c := g.getCall(key); c != nil && joins(c) {
@@ -232,15 +232,18 @@ func (g *group[K, V]) startCall(key K, isRefresh bool, base node.Node[K, V]) (c 
 	}), shouldLoad
 }
 
-// superseded reports whether c is a refresh whose base has been removed or replaced, so that its
-// result will not be written (see isRefreshBase). Writes and removals cancel a refresh of their
+// superseded reports whether c is a refresh whose base has been removed, replaced or had expired
+// by nowNano, so that its result will not be written (see isRefreshBase). An expired base stays
+// expired while c is registered: SetExpiresAfter skips an expired entry, and a write over it
+// cancels c. Writes and removals cancel a refresh of their
 // node under its bucket lock, so a refresh is superseded only by its own commit, which replaces
 // or removes the base before finish deletes the call. The next call for its key replaces it
 // rather than join it: a Get would wait for a value it then refuses. The refresh still completes
 // for the callers that joined it before. A removed or replaced node never comes back, so a
 // refresh that is superseded stays so.
-func (g *group[K, V]) superseded(c *call[K, V]) bool {
-	return c.isRefresh && c.base != nil && (!c.base.IsAlive() || g.nodeOf(c.key) != c.base)
+func (g *group[K, V]) superseded(c *call[K, V], nowNano int64) bool {
+	return c.isRefresh && c.base != nil &&
+		(!c.base.IsAlive() || c.base.HasExpired(nowNano) || g.nodeOf(c.key) != c.base)
 }
 
 // adopt finishes c, which the caller registered, with a value that is already in the cache,

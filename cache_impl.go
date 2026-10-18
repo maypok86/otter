@@ -898,7 +898,7 @@ func (c *cache[K, V]) loadOrJoin(
 	loader Loader[K, V],
 	nowNano int64,
 ) (value V, retry bool, err error) {
-	cl, shouldLoad := c.singleflight.startLoad(key)
+	cl, shouldLoad := c.singleflight.startLoad(key, nowNano)
 	if shouldLoad {
 		// Re-check the map before loading. The getNode above runs before this
 		// call slot is claimed, so it can miss a value that a concurrently
@@ -1261,7 +1261,7 @@ func (c *cache[K, V]) bulkLoadOrJoin(
 	var toLoadCalls map[K]*call[K, V]
 	i := 0
 	for key := range misses {
-		cl, shouldLoad := c.singleflight.startLoad(key)
+		cl, shouldLoad := c.singleflight.startLoad(key, nowNano)
 		if shouldLoad {
 			// Winning the call slot means that a value written before is visible, see Get.
 			if c.getNodeQuietly(key, nowNano) != nil {
