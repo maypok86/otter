@@ -1694,8 +1694,22 @@ func (c *cache[K, V]) expireNode(n node.Node[K, V], nowNanos int64) bool {
 // It returns false if n is kept, as described by removal. The caller unlinks n from the eviction
 // policy.
 func (c *cache[K, V]) removeNode(n node.Node[K, V], nowNanos int64, removal nodeRemoval) bool {
+	// Once n has left the table, user code may call runtime.Goexit: RecordEviction, which counts
+	// the removal, OnDeletion, or the executor OnDeletion is submitted to. Then the caller never
+	// unlinks n, and its walk does not resume, so n is unlinked here. After a Goexit in
+	// OnAtomicDeletion, n is still alive and in the table (see retire), and it stays linked.
+	finished := false
+	defer func() {
+		if !finished && n.IsRetired() {
+			if c.withExpiration {
+				c.timerWheel.Unschedule(n)
+			}
+			c.makeDead(n)
+		}
+	}()
 	deleted, cause, kept := c.deleteNodeFromMap(n, nowNanos, removal)
 	if kept {
+		finished = true
 		return false
 	}
 	if c.withExpiration {
@@ -1704,6 +1718,7 @@ func (c *cache[K, V]) removeNode(n node.Node[K, V], nowNanos int64, removal node
 	if deleted != nil {
 		c.notifyDeletionFrom(false, n.Key(), n.Value(), cause)
 	}
+	finished = true
 	return true
 }
 

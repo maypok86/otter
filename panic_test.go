@@ -202,6 +202,44 @@ func TestCache_PanicInStatsIsLogged(t *testing.T) {
 	require.Contains(t, msgs, "StatsRecorder.RecordEviction panicked")
 }
 
+type exitingRecorder struct {
+	*stats.Counter
+	exit *atomic.Bool
+}
+
+func (r *exitingRecorder) RecordEviction(weight uint32) {
+	if r.exit.CompareAndSwap(true, false) {
+		runtime.Goexit()
+	}
+	r.Counter.RecordEviction(weight)
+}
+
+// A RecordEviction that calls runtime.Goexit after maintenance has expired a node does not leave
+// the node linked into the policy. An eviction for size would remove it again.
+func TestCache_GoexitInRecordEvictionUnlinksTheRemovedNode(t *testing.T) {
+	t.Parallel()
+
+	var exit atomic.Bool
+	clk := newNonTickingClock()
+	c := Must(&Options[int, int]{
+		MaximumSize:      10,
+		ExpiryCalculator: ExpiryWriting[int, int](time.Minute),
+		Clock:            clk,
+		StatsRecorder:    &exitingRecorder{Counter: stats.NewCounter(), exit: &exit},
+		Executor:         syncExecutor,
+	})
+	for i := range 5 {
+		c.Set(i, i)
+	}
+	c.CleanUp()
+
+	clk.Sleep(2 * time.Minute)
+	exit.Store(true)
+	runExiting(c.CleanUp)
+	require.False(t, exit.Load(), "RecordEviction was not called")
+	validateCache(t, c)
+}
+
 type panickingRecorder struct {
 	*stats.Counter
 }
@@ -1309,6 +1347,62 @@ func exitingExecutor(exit *atomic.Bool) func(fn func()) {
 		}
 		fn()
 	}
+}
+
+// An OnDeletion that calls runtime.Goexit on a caller-runs executor while maintenance reports an
+// eviction or an expiration does not leave the removed node linked into the policy.
+func TestCache_GoexitInOnDeletionUnlinksTheRemovedNode(t *testing.T) {
+	t.Parallel()
+
+	exitOnce := func(cc *cacheContext) *atomic.Bool {
+		var exit atomic.Bool
+		cc.onDeletion = func(DeletionEvent[int, int]) {
+			if exit.CompareAndSwap(true, false) {
+				runtime.Goexit()
+			}
+		}
+		exit.Store(true)
+		return &exit
+	}
+
+	t.Run("eviction", func(t *testing.T) {
+		t.Parallel()
+
+		forEachSpec(t, cacheSpec{
+			maximum:    []maximumKind{sizeBounded, weightBounded},
+			population: []populationKind{fullCache},
+			executor:   []executorKind{callerRuns},
+		}, func(t *testing.T, cc *cacheContext) {
+			exit := exitOnce(cc)
+			// The write's drain runs inline and evicts an entry, whose OnDeletion exits.
+			runExiting(func() { cc.cache.Set(absentKey, 1) })
+			require.False(t, exit.Load(), "OnDeletion was not called")
+			// A node left linked would still count, and a pass over the maximum would evict it
+			// again. A removal brings the policy within its maximum first, and it then stays.
+			for _, key := range cc.keys() {
+				if _, ok := cc.cache.GetEntryQuietly(key); ok {
+					cc.cache.Invalidate(key)
+					break
+				}
+			}
+			cc.check(t)
+		})
+	})
+	t.Run("expiration", func(t *testing.T) {
+		t.Parallel()
+
+		forEachSpec(t, cacheSpec{
+			expiry:     withExpiry,
+			population: []populationKind{fullCache},
+			executor:   []executorKind{callerRuns},
+		}, func(t *testing.T, cc *cacheContext) {
+			exit := exitOnce(cc)
+			cc.advance(2 * specExpiry)
+			runExiting(cc.cache.CleanUp)
+			require.False(t, exit.Load(), "OnDeletion was not called")
+			cc.check(t)
+		})
+	})
 }
 
 // An executor that calls runtime.Goexit when it is handed the drain that an in-place write or
