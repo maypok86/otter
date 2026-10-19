@@ -230,6 +230,15 @@ Audits read this file **after** recording their findings (Phase 1.5 of the audit
   deletes the call; the `Get`s that joined before stay blocked, since nothing closes the call's
   `done`. A dropped drain leaves `drainStatus` in a processing state until the periodic clean-up,
   a full write buffer or `CleanUp` runs maintenance.
+- **A `Get` of an absent key waits for the executor to start a refresh of the key it joins.** A
+  refresh of an absent key is registered before it is submitted (see above) and is never
+  superseded, so a `Get` joins it and, with an executor that queues tasks, waits for the tasks
+  ahead of it as well as for the load: one load serves both. The `Get` still returns when its
+  context ends. Loading instead when the refresh has not started would load the key twice, or
+  would need a claim between the task and the `Get` that makes the `Get` run the refresh's loader
+  on its own goroutine, under its own context rather than `WithoutCancel`. The default executor
+  and the bounded pool shown on `Options.Executor` start every task at once, so the wait is
+  only the queue the caller chose.
 
 ## Policy
 

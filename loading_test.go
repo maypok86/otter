@@ -4729,3 +4729,70 @@ func TestCache_RefreshCompletionIsNotAnAccess(t *testing.T) {
 		validateCache(t, c)
 	}
 }
+
+// A Get of an absent key joins a refresh of it that waits in the executor's queue: the Get ends
+// with its context, and one load serves the Get and the refresh once the executor runs it.
+func TestCache_GetJoinsQueuedRefreshOfAbsentKey(t *testing.T) {
+	t.Parallel()
+
+	var (
+		mu    sync.Mutex
+		queue []func()
+	)
+	c := Must(&Options[int, int]{
+		RefreshCalculator: RefreshWriting[int, int](time.Hour),
+		Executor: func(fn func()) {
+			mu.Lock()
+			queue = append(queue, fn)
+			mu.Unlock()
+		},
+	})
+	runQueue := func() {
+		for {
+			mu.Lock()
+			if len(queue) == 0 {
+				mu.Unlock()
+				return
+			}
+			fn := queue[0]
+			queue = queue[1:]
+			mu.Unlock()
+			fn()
+		}
+	}
+	tl := newTestLoader[int, int](func(_ context.Context, key int) (int, error) {
+		return key * 10, nil
+	})
+
+	refreshed := c.Refresh(context.Background(), 1, tl)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	timedOut := make(chan error, 1)
+	go func() {
+		_, err := c.Get(ctx, 1, tl)
+		timedOut <- err
+	}()
+	select {
+	case err := <-timedOut:
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+	case <-time.After(5 * time.Second):
+		t.Fatal("Get waits for the queued refresh after its context is done")
+	}
+	require.Zero(t, tl.loads.Load())
+
+	waiter := make(chan getResult, 1)
+	go func() {
+		v, err := c.Get(context.Background(), 1, tl)
+		waiter <- getResult{v, err}
+	}()
+	waitForJoinedLoad(t)
+	runQueue()
+	r := <-refreshed
+	require.NoError(t, r.Err)
+	require.Equal(t, 10, r.Value)
+	w := <-waiter
+	require.NoError(t, w.err)
+	require.Equal(t, 10, w.value)
+	require.Equal(t, uint64(1), tl.loads.Load())
+	runQueue()
+}
