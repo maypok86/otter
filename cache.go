@@ -149,7 +149,8 @@ func (c *Cache[K, V]) SetIfAbsent(key K, value V) (V, bool) {
 // This call locks a hash table bucket while the compute function
 // is executed. It means that modifications on other entries in
 // the bucket will be blocked until the remappingFunc executes, and so will
-// refreshes of them and a growth of the hash table, during which writes of every key wait.
+// refreshes of them, a growth of the hash table and an eviction or expiration of an entry in the
+// bucket, during which writes of every key wait.
 // Consider this when the function includes long-running operations.
 //
 // WARNING: The function may only read entries with [Cache.GetIfPresent],
@@ -175,7 +176,8 @@ func (c *Cache[K, V]) Compute(
 // This call locks a hash table bucket while the compute function
 // is executed. It means that modifications on other entries in
 // the bucket will be blocked until the valueFn executes, and so will
-// refreshes of them and a growth of the hash table, during which writes of every key wait.
+// refreshes of them, a growth of the hash table and an eviction or expiration of an entry in the
+// bucket, during which writes of every key wait.
 // Consider this when the function includes long-running operations.
 //
 // WARNING: The function may only read entries with [Cache.GetIfPresent],
@@ -211,7 +213,8 @@ func (c *Cache[K, V]) ComputeIfAbsent(
 // This call locks a hash table bucket while the compute function
 // is executed. It means that modifications on other entries in
 // the bucket will be blocked until the valueFn executes, and so will
-// refreshes of them and a growth of the hash table, during which writes of every key wait.
+// refreshes of them, a growth of the hash table and an eviction or expiration of an entry in the
+// bucket, during which writes of every key wait.
 // Consider this when the function includes long-running operations.
 //
 // WARNING: The function may only read entries with [Cache.GetIfPresent],

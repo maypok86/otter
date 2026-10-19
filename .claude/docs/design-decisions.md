@@ -179,6 +179,16 @@ Audits read this file **after** recording their findings (Phase 1.5 of the audit
   (`GetIfPresent`, `GetEntry`, `GetEntryQuietly`, `EstimatedSize`) with an executor that runs
   tasks on other goroutines is a bug. With a caller-runs executor such a read may run
   maintenance inline under the held bucket lock, which is documented on `Options.Executor`.
+- **Maintenance waits for a bucket lock while it holds `evictionMutex`.** An eviction or an
+  expiration removes the node from the hash table under its bucket lock (`deleteNodeFromMap`), to
+  stay atomic with writers. User code that holds that lock (a `Compute*` function, the weigher, a
+  calculator, `OnAtomicDeletion`) holds up maintenance with it, and once the write buffer is full
+  every write that hands maintenance a task waits in `performCleanUp`: inserts, replacements,
+  removals and load commits of every key, and the methods that take `evictionMutex`. Lock-free
+  reads and in-place updates that keep the weight go on; an in-place update that changes the
+  weight hands over a reconcile task and waits like the other writes. Skipping a busy bucket with `TryLock` would also skip victims
+  under ordinary contention, changing the eviction order, and leave the cache over its maximum
+  until a later pass; a long `Compute` function is discouraged instead.
 - **A panic of user code reaches the caller only when that code produces the caller's result.**
   The loader of a `Get`/`BulkGet` (as a `*panicError`), a `Compute` function, the weigher and
   the calculators of the caller's write, `ExpireAfterRead` of the caller's read, the loop body
