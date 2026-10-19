@@ -168,8 +168,9 @@ type Options[K comparable, V any] struct {
 	// another function that runs under a bucket lock may deadlock, and OnDeletion may run under the
 	// eviction policy's lock.
 	//
-	// Beware that configuring a cache with an executor that discards tasks or never runs them may
-	// experience non-deterministic behavior.
+	// Beware that the executor must run every task it accepts: one that discards tasks or never runs
+	// them loses deletion events and refreshes, and a lost refresh of an absent key makes each Get
+	// of the key wait for it until the Get's context ends.
 	//
 	// WARNING: The executor must not make the caller wait for other tasks, as a pool that blocks the
 	// submitter while all of its workers are busy does. The cache submits tasks while it holds its locks

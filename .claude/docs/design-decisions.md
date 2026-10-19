@@ -209,6 +209,17 @@ Audits read this file **after** recording their findings (Phase 1.5 of the audit
   released would not be enough: the drain's own submissions, and those of callbacks that run on
   the executor and call the cache, still come from a slot, and Go cannot tell the cache it is on
   one. A full pool runs the task on the caller instead, as `Options.Executor` shows.
+- **An executor that drops a task is the caller's bug; the cache does not recover from it.** A
+  refresh is registered before it is submitted, so that a write after the request cancels it
+  (`refreshKey`), and a task that never runs leaves the call registered: the cache cannot tell it
+  from a slow one without a timeout. A panic or `runtime.Goexit` of the executor is observed and
+  finishes the calls (`submitRefresh`, `abandon`); a silent drop is not. For a present key the
+  reads keep the old value, but the `Refresh` channel never reports and later refreshes of that
+  node join the lost one. A refresh of an absent key (`base == nil`) is never superseded, so every
+  `Get` of the key joins it and waits until its context ends, until a write or an invalidation
+  deletes the call; the `Get`s that joined before stay blocked, since nothing closes the call's
+  `done`. A dropped drain leaves `drainStatus` in a processing state until the periodic clean-up,
+  a full write buffer or `CleanUp` runs maintenance.
 
 ## Policy
 
