@@ -2162,7 +2162,8 @@ func (c *cache[K, V]) rescheduleCleanUpIfIncomplete() {
 
 	// An immediate scheduling cannot be performed on a custom executor because it may use a
 	// caller-runs policy. This could cause the caller's penalty to exceed the amortized threshold,
-	// e.g. repeated concurrent writes could result in a retry loop.
+	// e.g. repeated concurrent writes could result in a retry loop. The drain then waits for the
+	// next read, write or periodic clean-up (see Options.Executor).
 	if c.hasDefaultExecutor {
 		c.scheduleDrainBuffers()
 		return

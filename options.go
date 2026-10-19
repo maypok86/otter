@@ -168,6 +168,10 @@ type Options[K comparable, V any] struct {
 	// another function that runs under a bucket lock may deadlock, and OnDeletion may run under the
 	// eviction policy's lock.
 	//
+	// With an executor other than the default one, maintenance that a pass leaves unfinished waits
+	// for the next read or write of the cache, or for the next periodic clean-up of a cache with
+	// expiration, so an idle cache may stay above its maximum size until then.
+	//
 	// Beware that the executor must run every task it accepts: one that discards tasks or never runs
 	// them loses deletion events and refreshes, and a lost refresh of an absent key makes each Get
 	// of the key wait for it until the Get's context ends; a queued one makes it wait for the tasks

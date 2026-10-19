@@ -305,9 +305,19 @@ Audits read this file **after** recording their findings (Phase 1.5 of the audit
   Waiting for the lock would deadlock a `StopAllGoroutines` called by the holder: a `Hottest`/
   `Coldest` loop body or a `SaveCacheTo` writer. The holder ran maintenance when it took the
   lock, and with the default executor it schedules a drain on release if writes left one
-  required. With a custom executor, or with no writes, the work skipped waits for the next tick
-  or the next drain: entries written over the maximum or expired during an iteration may stay
-  up to a tick longer.
+  required. With no writes, the work skipped waits for the next tick or the next drain:
+  entries expired during an iteration may stay up to a tick longer. With a custom executor see
+  the next entry.
+- **A custom executor gets no rescheduled drain** (`rescheduleCleanUpIfIncomplete`). A pass, or a
+  holder of `evictionMutex` (an iteration, a save, `SetMaximum`), that ends with the drain still
+  required schedules the next drain only on the default executor. A caller-runs executor would
+  run it on the same stack, and concurrent writes that keep the drain required would nest passes
+  on that caller. So with a custom executor the buffered tasks wait for the next read, write or
+  `CleanUp`, or the periodic clean-up of a cache with expiration: an idle cache without
+  expiration may stay above its maximum by up to the write buffer's capacity, and the
+  `OnDeletion` events of those evictions wait as well. Scheduling the drain from a goroutine of
+  the cache would heal it at once without nesting, but it makes the cache call the executor
+  after every call has returned; the maintainer chose the documented delay.
 - **`StopAllGoroutines` stops only the periodic clean-up goroutine.** The goroutines that run
   executor tasks (refreshes, a load joined by a manual refresh, `OnDeletion`, drains) belong to
   the executor: they are neither stopped nor waited for, and operations after the stop still
