@@ -519,12 +519,17 @@ func (c *Cache[K, V]) Coldest() iter.Seq[Entry[K, V]] {
 	return c.cache.Coldest()
 }
 
-// StopAllGoroutines stops all goroutines launched by the cache.
-// It returns true if the call stops goroutines, false if goroutines have already been stopped.
+// StopAllGoroutines stops the goroutine that periodically cleans up a cache with expiration.
+// It returns false if an earlier call has stopped it or the cache has no expiration, and true
+// otherwise, also when the goroutine has already returned by itself.
+// It neither stops nor waits for the tasks given to the Executor (loads, refreshes, OnDeletion
+// calls), and later operations still submit them.
 //
 // NOTE: In the vast majority of cases, you do not need to call this method: once the cache is no
-// longer reachable, the goroutines stop at the next tick of the Clock. However, it can sometimes be
-// useful, for example with a Clock that does not tick, or when using synctest.
+// longer reachable, the goroutine stops at the next tick of the Clock. However, it can sometimes be
+// useful, for example with a Clock that does not tick. With testing/synctest, call it before the
+// bubble's function returns: time in the bubble stops then, and the goroutine would never see its
+// next tick.
 // You can think of this method as analogous to the Stop method of [time.Timer].
 // It does not stop the goroutine of a [CoarseClock], which belongs to the clock.
 //

@@ -170,7 +170,10 @@ Audits read this file **after** recording their findings (Phase 1.5 of the audit
   and `Compute*` functions, the weigher, the calculators and `OnAtomicDeletion` run under the
   bucket lock to stay atomic with the write; the loop body of `Hottest`/`Coldest`,
   `SaveCacheTo`'s writer, `RecordEviction` in maintenance and `OnDeletion` on a caller-runs
-  executor run under `evictionMutex`. A deadlock from such a callback that writes (any key),
+  executor run under `evictionMutex`. The `Logger` runs under whichever lock the panicking
+  callback it reports held (`recoverCallback`), and `Clock.NowNano` under the bucket lock of
+  every mutation and under `evictionMutex`; the Clock's doc carries no warning, since a clock that
+  calls the cache is not a realistic configuration. A deadlock from such a callback that writes (any key),
   loads, iterates or calls a method that takes `evictionMutex` is the documented contract
   (the docs of each callback, of `Hottest`/`Coldest` and of `Options.Executor`), not a bug. A deadlock from a single-entry read
   (`GetIfPresent`, `GetEntry`, `GetEntryQuietly`, `EstimatedSize`) with an executor that runs
@@ -206,6 +209,17 @@ Audits read this file **after** recording their findings (Phase 1.5 of the audit
   released would not be enough: the drain's own submissions, and those of callbacks that run on
   the executor and call the cache, still come from a slot, and Go cannot tell the cache it is on
   one. A full pool runs the task on the caller instead, as `Options.Executor` shows.
+- **An executor that drops a task is the caller's bug; the cache does not recover from it.** A
+  refresh is registered before it is submitted, so that a write after the request cancels it
+  (`refreshKey`), and a task that never runs leaves the call registered: the cache cannot tell it
+  from a slow one without a timeout. A panic or `runtime.Goexit` of the executor is observed and
+  finishes the calls (`submitRefresh`, `abandon`); a silent drop is not. For a present key the
+  reads keep the old value, but the `Refresh` channel never reports and later refreshes of that
+  node join the lost one. A refresh of an absent key (`base == nil`) is never superseded, so every
+  `Get` of the key joins it and waits until its context ends, until a write or an invalidation
+  deletes the call; the `Get`s that joined before stay blocked, since nothing closes the call's
+  `done`. A dropped drain leaves `drainStatus` in a processing state until the periodic clean-up,
+  a full write buffer or `CleanUp` runs maintenance.
 
 ## Policy
 
@@ -265,6 +279,30 @@ Audits read this file **after** recording their findings (Phase 1.5 of the audit
   `testing.PB`) made reads of a cache instance about 1.6x slower, so throughput was bimodal
   between instances. The padding costs about 400 bytes per cache plus 64 bytes per
   ring, at most 2.4 KB with 32 stripes.
+
+## Lifecycle
+
+- **A periodic clean-up that finds `evictionMutex` held skips its tick** (`cleanUpOnTick`).
+  Waiting for the lock would deadlock a `StopAllGoroutines` called by the holder: a `Hottest`/
+  `Coldest` loop body or a `SaveCacheTo` writer. The holder ran maintenance when it took the
+  lock, and with the default executor it schedules a drain on release if writes left one
+  required. With a custom executor, or with no writes, the work skipped waits for the next tick
+  or the next drain: entries written over the maximum or expired during an iteration may stay
+  up to a tick longer.
+- **`StopAllGoroutines` stops only the periodic clean-up goroutine.** The goroutines that run
+  executor tasks (refreshes, a load joined by a manual refresh, `OnDeletion`, drains) belong to
+  the executor: they are neither stopped nor waited for, and operations after the stop still
+  submit them. With the default executor each ends with its task. A caller that must not close a
+  resource under a running loader or listener waits for them itself, e.g. with its own executor.
+- **A cache with expiration created in a testing/synctest bubble must be stopped before the
+  bubble's function returns**, or `synctest.Test` panics ("main bubble goroutine has exited but
+  blocked goroutines remain"), even when the cache was collected. The periodic clean-up blocks
+  durably on the tick channel, and bubble time stops once the function returns, so the tick that
+  would end it never comes. No cleanup can stop it: cleanups run outside the bubble, and closing
+  a bubble's channel from there is fatal. A goroutine that does not block durably would keep the
+  bubble from idling, so fake time would never advance. `time.AfterFunc` instead of a goroutine
+  would avoid it for the built-in clocks only; a custom `Clock` hands out a channel, which needs
+  a goroutine.
 
 ## Rejected approaches
 

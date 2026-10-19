@@ -23,11 +23,14 @@ neither can block the other.
 - `New` (`cache.go`) builds the internal `cache` (`newCache`, `cache_impl.go`) and wraps it in
   `Cache`.
 - With expiration, `newCache` starts `periodicCleanUp`, which holds the cache through a
-  `weak.Pointer` and runs `CleanUp` on every tick of `Clock.Tick` until the cache's `stop`
-  channel is closed or, at a tick, the cache is gone; it closes `done` when it returns, at once
-  if `Tick` gives no ticks. A `runtime.Goexit` in user code that a clean-up runs ends the
-  goroutine, and its defer starts a new one with the same ticks, so `done` is still closed once;
-  a Goexit in `Tick` itself ends the periodic clean-ups. No cleanup is registered: cleanups run
+  `weak.Pointer` and runs maintenance on every tick (`cleanUpOnTick`, which skips the tick while
+  `evictionMutex` is held) until the cache's `stop` channel is closed or, at a tick, the cache is
+  gone; it closes `done` when it returns, at once if the ticks are nil, and on a closed tick
+  channel. The ticks come from `timeSource.Ticker`: the built-in clocks hand out a `time.Ticker`,
+  stopped on every final return, and a custom clock its `Tick` channel. A `runtime.Goexit` in
+  user code that a clean-up runs ends the goroutine, and its defer starts a new one with the
+  same ticks, so `done` is still closed once; a Goexit in `Tick` itself ends the periodic
+  clean-ups. No cleanup is registered: cleanups run
   outside `testing/synctest` bubbles, where touching a bubbled channel is a fatal error.
 - `StopAllGoroutines` closes `stop` once and waits for `done`, and is documented as forbidden
   inside functions the cache runs.
@@ -50,13 +53,15 @@ neither can block the other.
    nothing between ticks that reaches the internal `cache`, and that no other goroutine the
    cache starts holds it longer than its task. A clock that does not tick leaves the goroutine
    behind a collected cache: is that documented?
-2. **Blocking.** `StopAllGoroutines` waits for the goroutine, which may be inside `CleanUp`:
-   waiting for `evictionMutex` (held by a `Hottest` loop or a long maintenance pass), running
-   `OnDeletion` on a synchronous executor, or in a slow clock. `Clock.Tick` is called once,
+2. **Blocking.** `StopAllGoroutines` waits for the goroutine, which may be inside a clean-up:
+   running `OnDeletion` on a synchronous executor, a listener, the stats recorder or a slow
+   clock. A tick that finds `evictionMutex` held is skipped, so a `Hottest` loop does not hold
+   the goroutine; find what else in a clean-up can wait for something a caller of
+   `StopAllGoroutines` holds (a bucket lock, a channel the caller would fill later). `Clock.Tick` is called once,
    before the loop, while the goroutine holds the cache: can a `Tick` that does not return keep
    `StopAllGoroutines` blocked and the cache alive forever?
 3. **Stop from inside the cache.** `StopAllGoroutines` called from `OnDeletion` on a synchronous
-   executor during a periodic `CleanUp` deadlocks: it waits for `done`, which only the goroutine
+   executor during a periodic clean-up deadlocks: it waits for `done`, which only the goroutine
    running the listener closes, when it returns. It is documented
    as forbidden. Find the paths where user code runs on the periodic goroutine without the user
    choosing a synchronous executor, if any, and other functions that run there that the
