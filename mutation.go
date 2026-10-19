@@ -162,12 +162,15 @@ func (c *cache[K, V]) mutate(
 // of the previous value in the stats if it is an eviction (countEviction), and reports the
 // previous value to the OnDeletion listener with the cause decided under the lock.
 func (c *cache[K, V]) publish(m mutation[K, V]) {
-	c.countEviction(m.cause, m.weight)
 	onExecutor := m.from == fromRefresh
 	switch m.op {
 	case opWrite:
+		// counted by afterWrite, once the hand-off to the policies cannot be lost
 		c.afterWrite(m, onExecutor)
 	case opInvalidate, opRemoveExpired:
+		// Only an expired entry is counted, and a removal whose task is lost leaves it in the
+		// timer wheel, which removes it on the next pass.
+		c.countEviction(m.cause, m.weight)
 		c.afterDelete(m.node, m.cause, false, onExecutor)
 	default:
 	}
@@ -180,11 +183,12 @@ func (c *cache[K, V]) afterWrite(m mutation[K, V], onExecutor bool) {
 	// task, and before the write reaches the policies: a task handed to the write buffer may be
 	// replayed at once on this goroutine (by an executor that runs tasks on the caller, or when the
 	// buffer is full), and that maintenance may evict or expire the new value, whose event must not
-	// come first. The write reaches the policies even if the listener or the executor calls
-	// runtime.Goexit: the table has changed already.
+	// come first. The write reaches the policies even if the recorder, the listener or the
+	// executor calls runtime.Goexit: the table has changed already.
 	if c.withMaintenance {
 		defer c.afterWritePolicies(m)
 	}
+	c.countEviction(m.cause, m.weight)
 	if m.node != nil {
 		c.notifyDeletionFrom(onExecutor, c.nodeManager.Key(m.node), m.value, m.cause)
 	}

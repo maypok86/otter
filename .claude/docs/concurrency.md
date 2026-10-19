@@ -120,10 +120,11 @@ Every change decided from a key's current value (`set`, `doCompute`, `Invalidate
      removals it decides itself (evictions, expirations found by the timer wheel). On another
      goroutine it can make one between a write's release of the lock and its submission: a
      node updated in place stays linked, so its eviction or expiration can be reported before
-     the value the update replaced. The task is handed off in a `defer`, so a listener or an
-     executor that calls `runtime.Goexit` does not lose it. For the same reason, a task always
-     goes before the access (`afterRead` may submit a drain), and `removeNode` unlinks a node
-     whose `OnDeletion` exits the goroutine, since the walk that would unlink it does not resume.
+     the value the update replaced. The task is handed off in a `defer`, so a listener, an
+     executor or a stats recorder (`RecordEviction` of a write over an expired entry) that calls
+     `runtime.Goexit` does not lose it; `doCompute` records its hit or miss after it publishes. For the same reason, a task always goes before the access (`afterRead` may submit
+     a drain), and `removeNode` unlinks a node whose `OnDeletion` exits the goroutine, since the
+     walk that would unlink it does not resume.
 4. Tasks go to the bounded MPSC write buffer. When it is full, the writer runs
    `performCleanUp` itself under `evictionMutex`, in a `defer`, so that the task is not lost if
    the drain it scheduled exits the goroutine.
@@ -188,7 +189,9 @@ reweigh task brings the accounted weight to zero.
 `group` (`singleflight.go`) owns the lifecycle of a `call`: `Get`/`BulkGet` register one with
 `startLoad`, refreshes with `startRefresh`; waiters block on it until it finishes or their own
 context is done (`waitContext`). A load that fails after its owner's context is done
-(`failedForOwner`) is not shared: a waiter with a live context loads the key again. If a manual
+(`failedForOwner`) is not shared: a waiter with a live context loads the key again. A caller
+whose context is already done registers no load, so these retries meet only loads whose owner
+gave up while loading. If a manual
 refresh joined it, which happens only under the key's bucket lock (`call.again`), `commitCall`
 registers a refresh in the load's place under that lock (`loadAgain.successor`): a write or an
 invalidation after the request cancels it, as it would have cancelled the load, and the waiters

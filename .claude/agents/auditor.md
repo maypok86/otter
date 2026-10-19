@@ -161,8 +161,9 @@ finding; report it with a witness); interleavings near these areas deserve prior
    analysis moving every `SetValue` argument to the heap.
 7. **`runtime.Goexit` in user code**: the eviction lock stayed held when the executor called it
    (03c332a); loads, bulk loads and refreshes whose loader or write called it left calls
-   unfinished (3bae3ad, e11146e, a52d48a, d3dd898); an `OnDeletion` or executor that called it
-   before a write's task reached the write buffer left the new node outside the policy.
+   unfinished (3bae3ad, e11146e, a52d48a, d3dd898); an `OnDeletion`, an executor or a stats
+   recorder that called it before a write's task reached the write buffer left the new node
+   outside the policy.
 8. **Notification order**: `OnDeletion` got the events of one key out of the order of the
    writes, when a replacement was reported from its task and when maintenance on the writer
    evicted the new value first (9eb9033, 5a1e874).

@@ -35,7 +35,10 @@ func recoverCallback(logger Logger, msg string) {
 
 // safeRecorder is a stats.Recorder that recovers and logs panics of the user's recorder. The
 // cache records stats between committing a change and replaying it to the policies, where a
-// panic would leave the change out of the policies.
+// panic would leave the change out of the policies. A runtime.Goexit cannot be stopped, so a
+// write is handed to the policies in a defer around the recorder (afterWrite) or before it runs
+// (doCompute); a removal counts its eviction first and leaves a lost task to the timer wheel
+// (publish, deleteNodeFromMap).
 type safeRecorder struct {
 	recorder stats.Recorder
 	logger   Logger

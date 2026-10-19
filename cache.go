@@ -149,7 +149,8 @@ func (c *Cache[K, V]) SetIfAbsent(key K, value V) (V, bool) {
 // This call locks a hash table bucket while the compute function
 // is executed. It means that modifications on other entries in
 // the bucket will be blocked until the remappingFunc executes, and so will
-// refreshes of them and a growth of the hash table, during which writes of every key wait.
+// refreshes of them, a growth of the hash table and an eviction or expiration of an entry in the
+// bucket, during which writes of every key wait.
 // Consider this when the function includes long-running operations.
 //
 // WARNING: The function may only read entries with [Cache.GetIfPresent],
@@ -175,7 +176,8 @@ func (c *Cache[K, V]) Compute(
 // This call locks a hash table bucket while the compute function
 // is executed. It means that modifications on other entries in
 // the bucket will be blocked until the valueFn executes, and so will
-// refreshes of them and a growth of the hash table, during which writes of every key wait.
+// refreshes of them, a growth of the hash table and an eviction or expiration of an entry in the
+// bucket, during which writes of every key wait.
 // Consider this when the function includes long-running operations.
 //
 // WARNING: The function may only read entries with [Cache.GetIfPresent],
@@ -211,7 +213,8 @@ func (c *Cache[K, V]) ComputeIfAbsent(
 // This call locks a hash table bucket while the compute function
 // is executed. It means that modifications on other entries in
 // the bucket will be blocked until the valueFn executes, and so will
-// refreshes of them and a growth of the hash table, during which writes of every key wait.
+// refreshes of them, a growth of the hash table and an eviction or expiration of an entry in the
+// bucket, during which writes of every key wait.
 // Consider this when the function includes long-running operations.
 //
 // WARNING: The function may only read entries with [Cache.GetIfPresent],
@@ -261,7 +264,7 @@ func (c *Cache[K, V]) SetRefreshableAfter(key K, refreshableAfter time.Duration)
 //
 // A write or an invalidation of key during the load discards the loaded value: Get then returns
 // the value key has or loads key again, until ctx is done, so the loader may be called more than
-// once.
+// once. A Get whose ctx is already done returns a cached value but does not load a missing one.
 //
 // No observable state associated with this cache is modified until loading completes.
 //
@@ -290,7 +293,8 @@ func (c *Cache[K, V]) Get(ctx context.Context, key K, loader Loader[K, V]) (V, e
 //
 // A write or an invalidation of a key during the load discards its loaded value: BulkGet then
 // takes the value the key has or loads the key again, until ctx is done, so the bulk loader may be
-// called more than once.
+// called more than once. A BulkGet whose ctx is already done returns the cached values but does not
+// load the missing ones.
 //
 // No observable state associated with this cache is modified until loading completes.
 //

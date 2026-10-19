@@ -179,6 +179,16 @@ Audits read this file **after** recording their findings (Phase 1.5 of the audit
   (`GetIfPresent`, `GetEntry`, `GetEntryQuietly`, `EstimatedSize`) with an executor that runs
   tasks on other goroutines is a bug. With a caller-runs executor such a read may run
   maintenance inline under the held bucket lock, which is documented on `Options.Executor`.
+- **Maintenance waits for a bucket lock while it holds `evictionMutex`.** An eviction or an
+  expiration removes the node from the hash table under its bucket lock (`deleteNodeFromMap`), to
+  stay atomic with writers. User code that holds that lock (a `Compute*` function, the weigher, a
+  calculator, `OnAtomicDeletion`) holds up maintenance with it, and once the write buffer is full
+  every write that hands maintenance a task waits in `performCleanUp`: inserts, replacements,
+  removals and load commits of every key, and the methods that take `evictionMutex`. Lock-free
+  reads and in-place updates that keep the weight go on; an in-place update that changes the
+  weight hands over a reconcile task and waits like the other writes. Skipping a busy bucket with `TryLock` would also skip victims
+  under ordinary contention, changing the eviction order, and leave the cache over its maximum
+  until a later pass; a long `Compute` function is discouraged instead.
 - **A panic of user code reaches the caller only when that code produces the caller's result.**
   The loader of a `Get`/`BulkGet` (as a `*panicError`), a `Compute` function, the weigher and
   the calculators of the caller's write, `ExpireAfterRead` of the caller's read, the loop body
@@ -220,6 +230,15 @@ Audits read this file **after** recording their findings (Phase 1.5 of the audit
   deletes the call; the `Get`s that joined before stay blocked, since nothing closes the call's
   `done`. A dropped drain leaves `drainStatus` in a processing state until the periodic clean-up,
   a full write buffer or `CleanUp` runs maintenance.
+- **A `Get` of an absent key waits for the executor to start a refresh of the key it joins.** A
+  refresh of an absent key is registered before it is submitted (see above) and is never
+  superseded, so a `Get` joins it and, with an executor that queues tasks, waits for the tasks
+  ahead of it as well as for the load: one load serves both. The `Get` still returns when its
+  context ends. Loading instead when the refresh has not started would load the key twice, or
+  would need a claim between the task and the `Get` that makes the `Get` run the refresh's loader
+  on its own goroutine, under its own context rather than `WithoutCancel`. The default executor
+  and the bounded pool shown on `Options.Executor` start every task at once, so the wait is
+  only the queue the caller chose.
 
 ## Policy
 
@@ -284,11 +303,21 @@ Audits read this file **after** recording their findings (Phase 1.5 of the audit
 
 - **A periodic clean-up that finds `evictionMutex` held skips its tick** (`cleanUpOnTick`).
   Waiting for the lock would deadlock a `StopAllGoroutines` called by the holder: a `Hottest`/
-  `Coldest` loop body or a `SaveCacheTo` writer. The holder ran maintenance when it took the
-  lock, and with the default executor it schedules a drain on release if writes left one
-  required. With a custom executor, or with no writes, the work skipped waits for the next tick
-  or the next drain: entries written over the maximum or expired during an iteration may stay
-  up to a tick longer.
+  `Coldest` loop body or a `SaveCacheTo` writer. The skipped tick marks a drain required, as a
+  write does, and with the default executor the holder schedules it on release, so the entries
+  that expired while it held the lock go then. Without that, a pass that read the time before
+  the tick would leave them to a next tick or write, and a fake clock in a test may deliver
+  neither. With a custom executor see the next entry.
+- **A custom executor gets no rescheduled drain** (`rescheduleCleanUpIfIncomplete`). A pass, or a
+  holder of `evictionMutex` (an iteration, a save, `SetMaximum`), that ends with the drain still
+  required schedules the next drain only on the default executor. A caller-runs executor would
+  run it on the same stack, and concurrent writes that keep the drain required would nest passes
+  on that caller. So with a custom executor the buffered tasks wait for the next read, write or
+  `CleanUp`, or the periodic clean-up of a cache with expiration: an idle cache without
+  expiration may stay above its maximum by up to the write buffer's capacity, and the
+  `OnDeletion` events of those evictions wait as well. Scheduling the drain from a goroutine of
+  the cache would heal it at once without nesting, but it makes the cache call the executor
+  after every call has returned; the maintainer chose the documented delay.
 - **`StopAllGoroutines` stops only the periodic clean-up goroutine.** The goroutines that run
   executor tasks (refreshes, a load joined by a manual refresh, `OnDeletion`, drains) belong to
   the executor: they are neither stopped nor waited for, and operations after the stop still

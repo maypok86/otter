@@ -2380,13 +2380,16 @@ func TestCache_GetWaiterReturnsWhenItsContextIsDone(t *testing.T) {
 	}()
 	<-started
 
+	// A Get whose context has already ended would not join the load.
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
+	defer cancel()
 	waiter := make(chan getResult, 1)
 	go func() {
 		v, err := c.Get(ctx, 1, tl)
 		waiter <- getResult{v, err}
 	}()
+	waitForJoinedLoad(t)
+	cancel()
 	select {
 	case r := <-waiter:
 		require.ErrorIs(t, r.err, context.Canceled)
@@ -2423,9 +2426,10 @@ func TestCache_BulkGetWaiterReturnsWhenItsContextIsDone(t *testing.T) {
 	}()
 	<-started
 
-	// BulkGet loads key 2 itself and joins the load of key 1.
+	// BulkGet loads key 2 itself and joins the load of key 1; its context ends while it waits.
+	// A BulkGet whose context has already ended would not load key 2.
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
+	defer cancel()
 	tbl := newTestBulkLoader[int, int](func(_ context.Context, keys []int) (map[int]int, error) {
 		res := make(map[int]int, len(keys))
 		for _, k := range keys {
@@ -2442,6 +2446,8 @@ func TestCache_BulkGetWaiterReturnsWhenItsContextIsDone(t *testing.T) {
 		values, err := c.BulkGet(ctx, []int{1, 2}, tbl)
 		done <- bulkResult{values, err}
 	}()
+	waitForJoinedLoad(t)
+	cancel()
 	select {
 	case r := <-done:
 		require.ErrorIs(t, r.err, context.Canceled)
@@ -2462,6 +2468,66 @@ func TestCache_BulkGetWaiterReturnsWhenItsContextIsDone(t *testing.T) {
 		v, ok := c.GetIfPresent(1)
 		return ok && v == 10
 	}, 5*time.Second, time.Millisecond)
+}
+
+// A Get whose context has ended does not load a missing key, even with a loader that ignores
+// the context: such a load would fail for its owner's context, and a Get with a live context
+// that joined it would have to load again, so callers that give up could keep it waiting.
+// A present key is still returned, and an expired one is missing.
+func TestCache_GetWithEndedContextDoesNotLoad(t *testing.T) {
+	t.Parallel()
+
+	spec := cacheSpec{population: []populationKind{partialCache}, executor: allExecutors}
+	forEachSpec(t, spec, func(t *testing.T, cc *cacheContext) {
+		tl := newTestLoader[int, int](func(_ context.Context, key int) (int, error) {
+			return key * 10, nil
+		})
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		v, err := cc.cache.GetContext(ctx, 1, tl)
+		require.NoError(t, err)
+		require.Equal(t, cc.original[1], v)
+
+		v, err = cc.cache.GetContext(ctx, absentKey, tl)
+		require.ErrorIs(t, err, context.Canceled)
+		require.Zero(t, v)
+		_, ok := cc.cache.GetIfPresent(absentKey)
+		require.False(t, ok)
+
+		if cc.expiry != noExpiry {
+			cc.advance(2 * specExpiry)
+			_, err = cc.cache.GetContext(ctx, 1, tl)
+			require.ErrorIs(t, err, context.Canceled)
+		}
+		require.Zero(t, tl.loads.Load())
+		require.Zero(t, tl.reloads.Load())
+	})
+}
+
+func TestCache_BulkGetWithEndedContextDoesNotLoad(t *testing.T) {
+	t.Parallel()
+
+	spec := cacheSpec{population: []populationKind{partialCache}, executor: allExecutors}
+	forEachSpec(t, spec, func(t *testing.T, cc *cacheContext) {
+		tbl := bulkLoaderTimesTen()
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		values, err := cc.cache.BulkGetContext(ctx, []int{1, absentKey}, tbl)
+		require.ErrorIs(t, err, context.Canceled)
+		require.Equal(t, map[int]int{1: cc.original[1]}, values)
+		_, ok := cc.cache.GetIfPresent(absentKey)
+		require.False(t, ok)
+
+		if cc.expiry != noExpiry {
+			cc.advance(2 * specExpiry)
+			values, err = cc.cache.BulkGetContext(ctx, []int{1}, tbl)
+			require.ErrorIs(t, err, context.Canceled)
+			require.Empty(t, values)
+		}
+		require.Zero(t, tbl.loads.Load())
+	})
 }
 
 func TestCache_GetReloadsWhenOwnerContextFails(t *testing.T) {
@@ -4662,4 +4728,71 @@ func TestCache_RefreshCompletionIsNotAnAccess(t *testing.T) {
 		ci.evictionMutex.Unlock()
 		validateCache(t, c)
 	}
+}
+
+// A Get of an absent key joins a refresh of it that waits in the executor's queue: the Get ends
+// with its context, and one load serves the Get and the refresh once the executor runs it.
+func TestCache_GetJoinsQueuedRefreshOfAbsentKey(t *testing.T) {
+	t.Parallel()
+
+	var (
+		mu    sync.Mutex
+		queue []func()
+	)
+	c := Must(&Options[int, int]{
+		RefreshCalculator: RefreshWriting[int, int](time.Hour),
+		Executor: func(fn func()) {
+			mu.Lock()
+			queue = append(queue, fn)
+			mu.Unlock()
+		},
+	})
+	runQueue := func() {
+		for {
+			mu.Lock()
+			if len(queue) == 0 {
+				mu.Unlock()
+				return
+			}
+			fn := queue[0]
+			queue = queue[1:]
+			mu.Unlock()
+			fn()
+		}
+	}
+	tl := newTestLoader[int, int](func(_ context.Context, key int) (int, error) {
+		return key * 10, nil
+	})
+
+	refreshed := c.Refresh(context.Background(), 1, tl)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	timedOut := make(chan error, 1)
+	go func() {
+		_, err := c.Get(ctx, 1, tl)
+		timedOut <- err
+	}()
+	select {
+	case err := <-timedOut:
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+	case <-time.After(5 * time.Second):
+		t.Fatal("Get waits for the queued refresh after its context is done")
+	}
+	require.Zero(t, tl.loads.Load())
+
+	waiter := make(chan getResult, 1)
+	go func() {
+		v, err := c.Get(context.Background(), 1, tl)
+		waiter <- getResult{v, err}
+	}()
+	waitForJoinedLoad(t)
+	runQueue()
+	r := <-refreshed
+	require.NoError(t, r.Err)
+	require.Equal(t, 10, r.Value)
+	w := <-waiter
+	require.NoError(t, w.err)
+	require.Equal(t, 10, w.value)
+	require.Equal(t, uint64(1), tl.loads.Load())
+	runQueue()
 }

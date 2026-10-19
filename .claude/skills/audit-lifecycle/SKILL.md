@@ -24,7 +24,7 @@ neither can block the other.
   `Cache`.
 - With expiration, `newCache` starts `periodicCleanUp`, which holds the cache through a
   `weak.Pointer` and runs maintenance on every tick (`cleanUpOnTick`, which skips the tick while
-  `evictionMutex` is held) until the cache's `stop` channel is closed or, at a tick, the cache is
+  `evictionMutex` is held and leaves a drain required for the holder) until the cache's `stop` channel is closed or, at a tick, the cache is
   gone; it closes `done` when it returns, at once if the ticks are nil, and on a closed tick
   channel. The ticks come from `timeSource.Ticker`: the built-in clocks hand out a `time.Ticker`,
   stopped on every final return, and a custom clock its `Tick` channel. A `runtime.Goexit` in

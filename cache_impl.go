@@ -712,6 +712,9 @@ func (c *cache[K, V]) doCompute(
 	if notValidOp {
 		panic(fmt.Sprintf("otter: invalid ComputeOp: %d", op))
 	}
+	c.publish(m)
+	// recorded after the mutation is published, so that a recorder that calls runtime.Goexit
+	// cannot keep the change out of the policies
 	if recordStats {
 		if m.live {
 			c.stats.RecordHits(1)
@@ -719,7 +722,6 @@ func (c *cache[K, V]) doCompute(
 			c.stats.RecordMisses(1)
 		}
 	}
-	c.publish(m)
 	if m.next == nil {
 		return zeroValue[V](), false
 	}
@@ -840,14 +842,18 @@ func (c *cache[K, V]) refreshKey(
 // refreshTask runs cl, a refresh that the caller registered, with loader, logs its error, and
 // sends its result to ch unless ch is nil.
 func (c *cache[K, V]) refreshTask(ctx context.Context, cl *call[K, V], loader Loader[K, V], ch chan<- RefreshResult[K, V]) {
-	// Deferred, so that a loader that calls runtime.Goexit is reported like one that panics.
+	// Deferred, so that a loader that calls runtime.Goexit is reported like one that panics. The
+	// result is sent from a defer of its own, which runs after the log: a Logger.Error that calls
+	// runtime.Goexit would skip the rest of a deferred function shared with it, and the caller
+	// would wait for the channel forever.
+	if ch != nil {
+		defer func() {
+			ch <- cl.refreshResult()
+		}()
+	}
 	defer func() {
 		if cl.err != nil && !cl.isNotFound {
 			c.logger.Error(ctx, "Returned an error during the refreshing", cl.err)
-		}
-
-		if ch != nil {
-			ch <- cl.refreshResult()
 		}
 	}()
 
@@ -904,14 +910,17 @@ func (c *cache[K, V]) Get(ctx context.Context, key K, loader Loader[K, V]) (V, e
 	}
 
 	for {
+		// A Get whose context has ended does not start a load: the load would fail for its
+		// context, and a waiter with a live context that joined it would retry, so callers that
+		// give up could keep it from loading the key. A key invalidated faster than it loads
+		// refuses every load, and the loader may ignore ctx: checked before each retry as well,
+		// ctx bounds the wait whatever the loader does.
+		if err := ctx.Err(); err != nil {
+			return zeroValue[V](), err
+		}
 		value, retry, err := c.loadOrJoin(ctx, key, loader, nowNano)
 		if !retry {
 			return value, err
-		}
-		// A key invalidated faster than it loads refuses every load. The loader may ignore ctx,
-		// so ctx is checked here too: it bounds the wait whatever the loader does.
-		if err := ctx.Err(); err != nil {
-			return zeroValue[V](), err
 		}
 		nowNano = c.clock.NowNano()
 	}
@@ -1316,16 +1325,14 @@ func (c *cache[K, V]) BulkGet(ctx context.Context, keys []K, bulkLoader BulkLoad
 
 	var errsFromCalls []error
 	for len(misses) > 0 {
+		// as in Get
+		if err := ctx.Err(); err != nil {
+			return result, err
+		}
 		var err error
 		misses, errsFromCalls, err = c.bulkLoadOrJoin(ctx, misses, bulkLoader, result, errsFromCalls)
 		if err != nil {
 			return result, err
-		}
-		// as in Get
-		if len(misses) > 0 {
-			if err := ctx.Err(); err != nil {
-				return result, err
-			}
 		}
 	}
 
@@ -1798,11 +1805,14 @@ func periodicCleanUp[K comparable, V any](
 	}
 }
 
-// cleanUpOnTick skips the tick while evictionMutex is held: the work waits for the next tick, or
-// for a drain that a write or the holder schedules. Waiting for the lock would make
-// StopAllGoroutines, called by the holder, wait for its own caller.
+// cleanUpOnTick does not wait while evictionMutex is held: waiting would make StopAllGoroutines,
+// called by the holder, wait for its own caller. It marks a drain required instead, as a write
+// does, so that the holder runs one when it releases the lock (on the default executor; see
+// rescheduleCleanUpIfIncomplete), with the time of the tick or later. A pass that holds the lock
+// may have read the time before the tick, and there may be no other tick or write to come.
 func (c *cache[K, V]) cleanUpOnTick() {
 	if !c.evictionMutex.TryLock() {
+		c.scheduleAfterWrite()
 		return
 	}
 	c.maintenanceAndUnlock(nil)
@@ -2155,7 +2165,8 @@ func (c *cache[K, V]) rescheduleCleanUpIfIncomplete() {
 
 	// An immediate scheduling cannot be performed on a custom executor because it may use a
 	// caller-runs policy. This could cause the caller's penalty to exceed the amortized threshold,
-	// e.g. repeated concurrent writes could result in a retry loop.
+	// e.g. repeated concurrent writes could result in a retry loop. The drain then waits for the
+	// next read, write or periodic clean-up (see Options.Executor).
 	if c.hasDefaultExecutor {
 		c.scheduleDrainBuffers()
 		return

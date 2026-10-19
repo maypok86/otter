@@ -1702,3 +1702,40 @@ func (w *callingWriter) Write(p []byte) (int, error) {
 	}
 	return len(p), nil
 }
+
+// A tick that comes while the policy's lock is held is skipped, but it leaves a drain required,
+// which the holder runs when it releases the lock. Otherwise an idle cache would keep expired
+// entries until a tick or a write that may never come.
+func TestCache_SkippedTickCleansUpOnceTheLockIsReleased(t *testing.T) {
+	t.Parallel()
+
+	clock := &manualTickClock{nonTickingClock: newNonTickingClock(), ticks: make(chan time.Time)}
+	var expired atomic.Int64
+	c := Must(&Options[int, int]{
+		MaximumSize:      100,
+		ExpiryCalculator: ExpiryWriting[int, int](time.Second),
+		Clock:            clock,
+		OnDeletion: func(e DeletionEvent[int, int]) {
+			if e.Cause == CauseExpiration {
+				expired.Add(1)
+			}
+		},
+	})
+	t.Cleanup(func() { c.StopAllGoroutines() })
+	for i := range 10 {
+		c.Set(i, i)
+	}
+	c.CleanUp()
+
+	for range c.Hottest() {
+		clock.Sleep(2 * time.Second)
+		clock.ticks <- time.Time{}
+		require.Eventually(t, func() bool {
+			return c.cache.drainStatus.Load() == required
+		}, 5*time.Second, time.Millisecond, "the skipped tick left no drain required")
+		break
+	}
+	require.Eventually(t, func() bool {
+		return expired.Load() == 10
+	}, 5*time.Second, time.Millisecond)
+}
