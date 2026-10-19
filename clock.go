@@ -39,7 +39,8 @@ type Clock interface {
 	// The cache uses this method only for proactive expiration and calls Tick(time.Second) in a separate goroutine.
 	// A nil channel, or one that is closed, means no ticks: the cache then does without periodic clean-ups.
 	//
-	// By default, [time.Tick] is used.
+	// By default, the ticks of a [time.Ticker] are used, and the ticker is stopped when that goroutine
+	// returns.
 	Tick(duration time.Duration) <-chan time.Time
 }
 
@@ -48,6 +49,15 @@ type timeSource interface {
 	Init()
 	Sleep(duration time.Duration)
 	ProcessTick()
+	// Ticker returns the ticks for the periodic clean-up and a function that stops them, or nil when
+	// they cannot be stopped. The built-in clocks stop their ticker: with GODEBUG=asynctimerchan=1
+	// (Go 1.24-1.26), an unstopped ticker is never collected and fires for the life of the process.
+	Ticker(duration time.Duration) (tick <-chan time.Time, stopTick func())
+}
+
+func newStoppableTicker(duration time.Duration) (tick <-chan time.Time, stopTick func()) {
+	t := time.NewTicker(duration)
+	return t.C, t.Stop
 }
 
 func newTimeSource(clock Clock) timeSource {
@@ -94,6 +104,10 @@ func (cs *customSource) Tick(duration time.Duration) <-chan time.Time {
 	return cs.clock.Tick(duration)
 }
 
+func (cs *customSource) Ticker(duration time.Duration) (tick <-chan time.Time, stopTick func()) {
+	return cs.clock.Tick(duration), nil
+}
+
 func (cs *customSource) Sleep(duration time.Duration) {
 	time.Sleep(duration)
 }
@@ -129,6 +143,10 @@ func (c *realSource) NowNano() int64 {
 
 func (c *realSource) Tick(duration time.Duration) <-chan time.Time {
 	return time.Tick(duration)
+}
+
+func (c *realSource) Ticker(duration time.Duration) (tick <-chan time.Time, stopTick func()) {
+	return newStoppableTicker(duration)
 }
 
 func (c *realSource) Sleep(duration time.Duration) {
@@ -240,6 +258,10 @@ type coarseSource struct {
 
 func (c coarseSource) Init() {}
 
+func (c coarseSource) Ticker(duration time.Duration) (tick <-chan time.Time, stopTick func()) {
+	return newStoppableTicker(duration)
+}
+
 func (c coarseSource) Sleep(duration time.Duration) {
 	time.Sleep(duration)
 }
@@ -329,6 +351,10 @@ func (f *fakeSource) Tick(d time.Duration) <-chan time.Time {
 		f.enableTick <- d
 	})
 	return f.ticker
+}
+
+func (f *fakeSource) Ticker(duration time.Duration) (tick <-chan time.Time, stopTick func()) {
+	return f.Tick(duration), nil
 }
 
 func (f *fakeSource) Sleep(d time.Duration) {
