@@ -41,7 +41,9 @@ func recoverCallback(logger Logger, msg string) {
 // (publish, deleteNodeFromMap).
 type safeRecorder struct {
 	recorder stats.Recorder
-	logger   Logger
+	// byCause is recorder if it implements stats.EvictionCauseRecorder, and nil otherwise.
+	byCause stats.EvictionCauseRecorder
+	logger  Logger
 }
 
 func (r *safeRecorder) RecordHits(count int) {
@@ -57,6 +59,16 @@ func (r *safeRecorder) RecordMisses(count int) {
 func (r *safeRecorder) RecordEviction(weight uint32) {
 	defer recoverCallback(r.logger, "StatsRecorder.RecordEviction panicked")
 	r.recorder.RecordEviction(weight)
+}
+
+func (r *safeRecorder) RecordOverflow(weight uint32) {
+	defer recoverCallback(r.logger, "StatsRecorder.RecordOverflow panicked")
+	r.byCause.RecordOverflow(weight)
+}
+
+func (r *safeRecorder) RecordExpiration(weight uint32) {
+	defer recoverCallback(r.logger, "StatsRecorder.RecordExpiration panicked")
+	r.byCause.RecordExpiration(weight)
 }
 
 func (r *safeRecorder) RecordLoadSuccess(loadTime time.Duration) {
