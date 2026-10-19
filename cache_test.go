@@ -1597,3 +1597,38 @@ func TestCache_StopAllGoroutinesWithoutExpiration(t *testing.T) {
 	c := Must(&Options[int, int]{MaximumSize: 10})
 	require.False(t, c.StopAllGoroutines())
 }
+
+// A clock whose Tick channel is closed delivers no ticks. The periodic clean-up goroutine returns
+// instead of spinning on the always-ready channel, which would also keep the cache reachable.
+func TestCache_ClosedTickChannelEndsPeriodicCleanUp(t *testing.T) {
+	t.Parallel()
+
+	clock := &manualTickClock{nonTickingClock: newNonTickingClock(), ticks: make(chan time.Time)}
+	close(clock.ticks)
+	c := Must(&Options[int, int]{
+		MaximumSize:      10,
+		ExpiryCalculator: ExpiryWriting[int, int](time.Hour),
+		Clock:            clock,
+	})
+	t.Cleanup(func() { c.StopAllGoroutines() })
+	c.Set(1, 1)
+
+	select {
+	case <-c.cache.done:
+	case <-time.After(time.Second):
+		require.Fail(t, "the periodic clean-up goroutine did not return on a closed tick channel")
+	}
+	v, ok := c.GetIfPresent(1)
+	require.True(t, ok)
+	require.Equal(t, 1, v)
+}
+
+// manualTickClock delivers a tick when the test sends one.
+type manualTickClock struct {
+	*nonTickingClock
+	ticks chan time.Time
+}
+
+func (c *manualTickClock) Tick(time.Duration) <-chan time.Time {
+	return c.ticks
+}

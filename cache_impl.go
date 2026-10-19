@@ -1776,7 +1776,13 @@ func periodicCleanUp[K comparable, V any](
 		case <-stop:
 			returned = true
 			return
-		case <-tick:
+		case _, ok := <-tick:
+			if !ok {
+				// A closed channel is always ready: the loop would spin and keep the cache
+				// reachable. It means no more ticks, as a nil one does.
+				returned = true
+				return
+			}
 			c := wc.Value()
 			if c == nil {
 				returned = true

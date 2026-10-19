@@ -37,6 +37,7 @@ type Clock interface {
 	// Tick returns a channel that delivers “ticks” of a clock at intervals.
 	//
 	// The cache uses this method only for proactive expiration and calls Tick(time.Second) in a separate goroutine.
+	// A nil channel, or one that is closed, means no ticks: the cache then does without periodic clean-ups.
 	//
 	// By default, [time.Tick] is used.
 	Tick(duration time.Duration) <-chan time.Time
