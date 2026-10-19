@@ -2089,3 +2089,122 @@ func testReadExtendsDeadline[V any](t *testing.T, v V) {
 	require.True(t, ok)
 	require.Equal(t, time.Minute, entry.ExpiresAfter(), "the read did not extend the deadline")
 }
+
+// causeRecorder is a stats.Counter that also counts evictions and their weight by cause.
+type causeRecorder struct {
+	*stats.Counter
+	mu      sync.Mutex
+	counts  map[DeletionCause]int
+	weights map[DeletionCause]uint64
+}
+
+func newCauseRecorder() *causeRecorder {
+	return &causeRecorder{
+		Counter: stats.NewCounter(),
+		counts:  make(map[DeletionCause]int),
+		weights: make(map[DeletionCause]uint64),
+	}
+}
+
+func (r *causeRecorder) add(cause DeletionCause, weight uint32) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.counts[cause]++
+	r.weights[cause] += uint64(weight)
+}
+
+func (r *causeRecorder) RecordOverflow(weight uint32) { r.add(CauseOverflow, weight) }
+
+func (r *causeRecorder) RecordExpiration(weight uint32) { r.add(CauseExpiration, weight) }
+
+// A recorder that implements stats.EvictionCauseRecorder is given the cause of every eviction,
+// whichever path removes the entry, and RecordEviction still counts all of them.
+func TestCache_EvictionCauseRecorder(t *testing.T) {
+	t.Parallel()
+
+	weigher := func(_, v int) uint32 { return uint32(v%3 + 1) }
+	for _, tt := range []struct {
+		name string
+		run  func(c *Cache[int, int], clk *nonTickingClock)
+		// the cause that run must lead to, or zero if it must not evict
+		cause DeletionCause
+	}{
+		{"overflow", func(c *Cache[int, int], _ *nonTickingClock) {
+			for i := range 30 {
+				c.Set(i, i)
+			}
+			c.CleanUp()
+		}, CauseOverflow},
+		{"expiration/timerWheel", func(c *Cache[int, int], clk *nonTickingClock) {
+			for i := range 5 {
+				c.Set(i, i)
+			}
+			clk.Sleep(2 * time.Minute)
+			c.CleanUp()
+		}, CauseExpiration},
+		{"expiration/set", func(c *Cache[int, int], clk *nonTickingClock) {
+			c.Set(1, 1)
+			clk.Sleep(2 * time.Minute)
+			c.Set(1, 2)
+		}, CauseExpiration},
+		{"expiration/compute", func(c *Cache[int, int], clk *nonTickingClock) {
+			c.Set(1, 1)
+			clk.Sleep(2 * time.Minute)
+			c.Compute(1, func(int, bool) (int, ComputeOp) { return 0, CancelOp })
+		}, CauseExpiration},
+		{"manual", func(c *Cache[int, int], _ *nonTickingClock) {
+			c.Set(1, 1)
+			c.Set(1, 2)
+			c.Invalidate(1)
+		}, 0},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var (
+				mu      sync.Mutex
+				counts  = make(map[DeletionCause]int)
+				weights = make(map[DeletionCause]uint64)
+			)
+			rec := newCauseRecorder()
+			clk := newNonTickingClock()
+			c := Must(&Options[int, int]{
+				MaximumWeight:    20,
+				Weigher:          weigher,
+				ExpiryCalculator: ExpiryWriting[int, int](time.Minute),
+				Clock:            clk,
+				StatsRecorder:    rec,
+				Executor:         syncExecutor,
+				OnDeletion: func(e DeletionEvent[int, int]) {
+					if !e.WasEvicted() {
+						return
+					}
+					mu.Lock()
+					defer mu.Unlock()
+					counts[e.Cause]++
+					weights[e.Cause] += uint64(weigher(e.Key, e.Value))
+				},
+			})
+			tt.run(c, clk)
+
+			mu.Lock()
+			defer mu.Unlock()
+			if tt.cause == 0 {
+				require.Empty(t, counts)
+			} else {
+				require.Positive(t, counts[tt.cause], "nothing was removed with %v", tt.cause)
+			}
+			require.Equal(t, counts, rec.counts)
+			require.Equal(t, weights, rec.weights)
+			var total, totalWeight uint64
+			for cause, n := range counts {
+				total += uint64(n)
+				totalWeight += weights[cause]
+			}
+			s := rec.Snapshot()
+			require.Equal(t, total, s.Evictions)
+			require.Equal(t, totalWeight, s.EvictionWeight)
+			validateCache(t, c)
+		})
+	}
+}

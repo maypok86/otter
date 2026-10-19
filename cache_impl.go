@@ -85,6 +85,7 @@ type cache[K comparable, V any] struct {
 	timerWheel         *expiration.Wheel
 	stats              stats.Recorder
 	statsSnapshoter    stats.Snapshoter
+	statsByCause       stats.EvictionCauseRecorder
 	logger             Logger
 	clock              timeSource
 	statsClock         *realSource
@@ -144,8 +145,15 @@ func newCache[K comparable, V any](o *Options[K, V]) *cache[K, V] {
 	var logger Logger = &safeLogger{logger: o.getLogger()}
 	var statsRecorder stats.Recorder = &stats.NoopRecorder{}
 	var statsSnapshoter stats.Snapshoter = &stats.NoopRecorder{}
+	var statsByCause stats.EvictionCauseRecorder
 	if withStats {
-		statsRecorder = &safeRecorder{recorder: o.StatsRecorder, logger: logger}
+		safe := &safeRecorder{recorder: o.StatsRecorder, logger: logger}
+		statsRecorder = safe
+		// The user's recorder is checked, not safe, which implements every method.
+		if byCause, ok := o.StatsRecorder.(stats.EvictionCauseRecorder); ok {
+			safe.byCause = byCause
+			statsByCause = safe
+		}
 		if snapshoter, ok := o.StatsRecorder.(stats.Snapshoter); ok {
 			statsSnapshoter = snapshoter
 		}
@@ -156,6 +164,7 @@ func newCache[K comparable, V any](o *Options[K, V]) *cache[K, V] {
 		hashmap:            hashmap.NewWithSize[K, node.Node](nodeManager, o.getInitialCapacity()),
 		stats:              statsRecorder,
 		statsSnapshoter:    statsSnapshoter,
+		statsByCause:       statsByCause,
 		logger:             logger,
 		singleflight:       &group[K, V]{},
 		executor:           o.getExecutor(),
@@ -1686,10 +1695,24 @@ func (c *cache[K, V]) afterDeletePolicies(deleted node.Node, alreadyLocked bool)
 // listeners are given is an eviction, so that the two never disagree. It is called once the
 // bucket lock is released, and before the OnDeletion listener is notified, so that the listener
 // sees the eviction it is told about. weight is the removed entry's weight, read when it was
-// removed; causeUnknown means that nothing was removed.
+// removed; causeUnknown means that nothing was removed. A recorder that implements
+// stats.EvictionCauseRecorder is also given the cause; every path that removes an entry comes
+// here, so the counts by cause add up to RecordEviction's.
 func (c *cache[K, V]) countEviction(cause DeletionCause, weight uint32) {
-	if cause != causeUnknown && cause.IsEviction() {
-		c.stats.RecordEviction(weight)
+	if cause == causeUnknown || !cause.IsEviction() {
+		return
+	}
+	c.stats.RecordEviction(weight)
+	if c.statsByCause == nil {
+		return
+	}
+	// A cause added later is counted by RecordEviction alone rather than as another cause.
+	switch cause {
+	case CauseOverflow:
+		c.statsByCause.RecordOverflow(weight)
+	case CauseExpiration:
+		c.statsByCause.RecordExpiration(weight)
+	default:
 	}
 }
 
@@ -1853,8 +1876,8 @@ func (c *cache[K, V]) expireNode(n node.Node, nowNanos int64) bool {
 // It returns false if n is kept, as described by removal. The caller unlinks n from the eviction
 // policy.
 func (c *cache[K, V]) removeNode(n node.Node, nowNanos int64, removal nodeRemoval) bool {
-	// Once n has left the table, user code may call runtime.Goexit: RecordEviction, which counts
-	// the removal, OnDeletion, or the executor OnDeletion is submitted to. Then the caller never
+	// Once n has left the table, user code may call runtime.Goexit: the stats recorder, which
+	// counts the removal, OnDeletion, or the executor OnDeletion is submitted to. Then the caller never
 	// unlinks n, and its walk does not resume, so n is unlinked here. After a Goexit in
 	// OnAtomicDeletion, n is still alive and in the table (see retire), and it stays linked.
 	finished := false

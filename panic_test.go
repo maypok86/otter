@@ -249,6 +249,105 @@ func (r *panickingRecorder) RecordHits(count int) { panic("stats boom") }
 
 func (r *panickingRecorder) RecordEviction(weight uint32) { panic("stats boom") }
 
+type panickingCauseRecorder struct {
+	*stats.Counter
+}
+
+func (r *panickingCauseRecorder) RecordOverflow(weight uint32) { panic("stats boom") }
+
+func (r *panickingCauseRecorder) RecordExpiration(weight uint32) { panic("stats boom") }
+
+// A panic in a stats.EvictionCauseRecorder method is logged, and RecordEviction, called before it,
+// still counts the eviction.
+func TestCache_PanicInEvictionCauseRecorderIsLogged(t *testing.T) {
+	t.Parallel()
+
+	logger := &recordingLogger{}
+	clk := newNonTickingClock()
+	counter := stats.NewCounter()
+	c := Must(&Options[int, int]{
+		MaximumSize:      10,
+		ExpiryCalculator: ExpiryWriting[int, int](time.Minute),
+		Clock:            clk,
+		Executor:         syncExecutor,
+		Logger:           logger,
+		StatsRecorder:    &panickingCauseRecorder{Counter: counter},
+	})
+
+	completes(t, "evictions with a panicking stats recorder", func() {
+		for i := range 20 {
+			c.Set(i, i)
+		}
+		c.CleanUp()
+		clk.Sleep(2 * time.Minute)
+		c.CleanUp()
+	})
+	require.Zero(t, c.EstimatedSize())
+	require.EqualValues(t, 20, counter.Snapshot().Evictions)
+	validateCache(t, c)
+
+	msgs := logger.get()
+	require.Contains(t, msgs, "StatsRecorder.RecordOverflow panicked")
+	require.Contains(t, msgs, "StatsRecorder.RecordExpiration panicked")
+}
+
+type exitingCauseRecorder struct {
+	*stats.Counter
+	exit *atomic.Value
+}
+
+func (r *exitingCauseRecorder) RecordOverflow(weight uint32) {
+	if r.exit.CompareAndSwap("RecordOverflow", "") {
+		runtime.Goexit()
+	}
+}
+
+func (r *exitingCauseRecorder) RecordExpiration(weight uint32) {
+	if r.exit.CompareAndSwap("RecordExpiration", "") {
+		runtime.Goexit()
+	}
+}
+
+// A stats.EvictionCauseRecorder method that calls runtime.Goexit after maintenance has removed a
+// node, for size or because it expired, does not leave the node linked into the policy.
+func TestCache_GoexitInEvictionCauseRecorderUnlinksTheRemovedNode(t *testing.T) {
+	t.Parallel()
+
+	for _, method := range []string{"RecordOverflow", "RecordExpiration"} {
+		t.Run(method, func(t *testing.T) {
+			t.Parallel()
+
+			var exit atomic.Value
+			exit.Store("")
+			clk := newNonTickingClock()
+			c := Must(&Options[int, int]{
+				MaximumSize:      5,
+				ExpiryCalculator: ExpiryWriting[int, int](time.Minute),
+				Clock:            clk,
+				StatsRecorder:    &exitingCauseRecorder{Counter: stats.NewCounter(), exit: &exit},
+				Executor:         syncExecutor,
+			})
+			for i := range 5 {
+				c.Set(i, i)
+			}
+			c.CleanUp()
+
+			exit.Store(method)
+			if method == "RecordOverflow" {
+				runExiting(func() {
+					c.Set(5, 5)
+					c.CleanUp()
+				})
+			} else {
+				clk.Sleep(2 * time.Minute)
+				runExiting(c.CleanUp)
+			}
+			require.Empty(t, exit.Load(), "%s was not called", method)
+			validateCache(t, c)
+		})
+	}
+}
+
 // A panicking custom executor does not leave the eviction lock held.
 func TestCache_PanicInExecutorDoesNotStopMaintenance(t *testing.T) {
 	t.Parallel()
