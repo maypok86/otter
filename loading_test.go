@@ -2380,13 +2380,16 @@ func TestCache_GetWaiterReturnsWhenItsContextIsDone(t *testing.T) {
 	}()
 	<-started
 
+	// A Get whose context has already ended would not join the load.
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
+	defer cancel()
 	waiter := make(chan getResult, 1)
 	go func() {
 		v, err := c.Get(ctx, 1, tl)
 		waiter <- getResult{v, err}
 	}()
+	waitForJoinedLoad(t)
+	cancel()
 	select {
 	case r := <-waiter:
 		require.ErrorIs(t, r.err, context.Canceled)
@@ -2423,9 +2426,10 @@ func TestCache_BulkGetWaiterReturnsWhenItsContextIsDone(t *testing.T) {
 	}()
 	<-started
 
-	// BulkGet loads key 2 itself and joins the load of key 1.
+	// BulkGet loads key 2 itself and joins the load of key 1; its context ends while it waits.
+	// A BulkGet whose context has already ended would not load key 2.
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
+	defer cancel()
 	tbl := newTestBulkLoader[int, int](func(_ context.Context, keys []int) (map[int]int, error) {
 		res := make(map[int]int, len(keys))
 		for _, k := range keys {
@@ -2442,6 +2446,8 @@ func TestCache_BulkGetWaiterReturnsWhenItsContextIsDone(t *testing.T) {
 		values, err := c.BulkGet(ctx, []int{1, 2}, tbl)
 		done <- bulkResult{values, err}
 	}()
+	waitForJoinedLoad(t)
+	cancel()
 	select {
 	case r := <-done:
 		require.ErrorIs(t, r.err, context.Canceled)
@@ -2462,6 +2468,66 @@ func TestCache_BulkGetWaiterReturnsWhenItsContextIsDone(t *testing.T) {
 		v, ok := c.GetIfPresent(1)
 		return ok && v == 10
 	}, 5*time.Second, time.Millisecond)
+}
+
+// A Get whose context has ended does not load a missing key, even with a loader that ignores
+// the context: such a load would fail for its owner's context, and a Get with a live context
+// that joined it would have to load again, so callers that give up could keep it waiting.
+// A present key is still returned, and an expired one is missing.
+func TestCache_GetWithEndedContextDoesNotLoad(t *testing.T) {
+	t.Parallel()
+
+	spec := cacheSpec{population: []populationKind{partialCache}, executor: allExecutors}
+	forEachSpec(t, spec, func(t *testing.T, cc *cacheContext) {
+		tl := newTestLoader[int, int](func(_ context.Context, key int) (int, error) {
+			return key * 10, nil
+		})
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		v, err := cc.cache.GetContext(ctx, 1, tl)
+		require.NoError(t, err)
+		require.Equal(t, cc.original[1], v)
+
+		v, err = cc.cache.GetContext(ctx, absentKey, tl)
+		require.ErrorIs(t, err, context.Canceled)
+		require.Zero(t, v)
+		_, ok := cc.cache.GetIfPresent(absentKey)
+		require.False(t, ok)
+
+		if cc.expiry != noExpiry {
+			cc.advance(2 * specExpiry)
+			_, err = cc.cache.GetContext(ctx, 1, tl)
+			require.ErrorIs(t, err, context.Canceled)
+		}
+		require.Zero(t, tl.loads.Load())
+		require.Zero(t, tl.reloads.Load())
+	})
+}
+
+func TestCache_BulkGetWithEndedContextDoesNotLoad(t *testing.T) {
+	t.Parallel()
+
+	spec := cacheSpec{population: []populationKind{partialCache}, executor: allExecutors}
+	forEachSpec(t, spec, func(t *testing.T, cc *cacheContext) {
+		tbl := bulkLoaderTimesTen()
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		values, err := cc.cache.BulkGetContext(ctx, []int{1, absentKey}, tbl)
+		require.ErrorIs(t, err, context.Canceled)
+		require.Equal(t, map[int]int{1: cc.original[1]}, values)
+		_, ok := cc.cache.GetIfPresent(absentKey)
+		require.False(t, ok)
+
+		if cc.expiry != noExpiry {
+			cc.advance(2 * specExpiry)
+			values, err = cc.cache.BulkGetContext(ctx, []int{1}, tbl)
+			require.ErrorIs(t, err, context.Canceled)
+			require.Empty(t, values)
+		}
+		require.Zero(t, tbl.loads.Load())
+	})
 }
 
 func TestCache_GetReloadsWhenOwnerContextFails(t *testing.T) {

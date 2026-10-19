@@ -188,7 +188,9 @@ reweigh task brings the accounted weight to zero.
 `group` (`singleflight.go`) owns the lifecycle of a `call`: `Get`/`BulkGet` register one with
 `startLoad`, refreshes with `startRefresh`; waiters block on it until it finishes or their own
 context is done (`waitContext`). A load that fails after its owner's context is done
-(`failedForOwner`) is not shared: a waiter with a live context loads the key again. If a manual
+(`failedForOwner`) is not shared: a waiter with a live context loads the key again. A caller
+whose context is already done registers no load, so these retries meet only loads whose owner
+gave up while loading. If a manual
 refresh joined it, which happens only under the key's bucket lock (`call.again`), `commitCall`
 registers a refresh in the load's place under that lock (`loadAgain.successor`): a write or an
 invalidation after the request cancels it, as it would have cancelled the load, and the waiters
