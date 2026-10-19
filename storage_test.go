@@ -117,7 +117,7 @@ func TestCache_ValueStorage(t *testing.T) {
 	})
 }
 
-// Every node type is the shared header followed by the value field alone: a node that has not
+// Every node is the header and the key followed by the value field alone: a node that has not
 // been updated carries no box pointer, a boxed node no inline copy of the value, and a value kept
 // in one atomic word neither.
 func TestCache_NodeSize(t *testing.T) {
@@ -126,12 +126,13 @@ func TestCache_NodeSize(t *testing.T) {
 	type large [64]byte
 	pointerSize := unsafe.Sizeof(uintptr(0))
 	boxed := unsafe.Sizeof(node.BSBoxed[int, large]{})
-	header := boxed - pointerSize
+	// the header and the key
+	prefix := boxed - pointerSize
 
-	require.Equal(t, header+unsafe.Sizeof(large{}), unsafe.Sizeof(node.BSInline[int, large]{}))
+	require.Equal(t, prefix+unsafe.Sizeof(large{}), unsafe.Sizeof(node.BSInline[int, large]{}))
 	require.Equal(t, boxed, unsafe.Sizeof(node.BSP[int, *int]{}))
-	// a value of zero size is not stored: such a node is allocated as the header alone
-	require.Equal(t, header, unsafe.Sizeof(node.BS[int, struct{}]{}))
+	// a value of zero size is not stored: such a node is allocated as the prefix and the key alone
+	require.Equal(t, prefix, unsafe.Sizeof(node.BSEmpty[int, struct{}]{}))
 	require.Equal(t, unsafe.Sizeof(node.BSInline[int, *int]{}), unsafe.Sizeof(node.BSP[int, *int]{}))
 	if pointerSize == 8 {
 		require.Equal(t, unsafe.Sizeof(node.BSInline[int, uint64]{}), unsafe.Sizeof(node.BSU64[int, uint64]{}))

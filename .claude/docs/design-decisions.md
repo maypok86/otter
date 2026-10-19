@@ -243,8 +243,21 @@ Audits read this file **after** recording their findings (Phase 1.5 of the audit
 - **On 32-bit platforms, nodes with a pointer-shaped value and an 8-byte atomic in the header
   are 8 bytes larger** than before the header/layout split. Go cannot place the value in the
   header's padding; a separate header per storage would undo the binary-size win.
-- **Every node type is instantiated for every `(K, V)` shape**, because `NewManager` chooses the
-  variant at runtime. The variants share one header type to keep that cost small.
+- **Every node layout is instantiated for every `(K, V)` shape**, because `NewManager` chooses the
+  feature set and the variant at runtime. Only the layouts are: they are types without methods,
+  and the headers, whose methods are the bulk of the node code, do not depend on `K` and `V`.
+  Building the layouts at runtime with `reflect.StructOf` would also drop the layout types
+  (about 24 KB per cache type), but `reflect.New` costs about 8 ns more per created node.
+- **Creating a node costs two indirect calls** (`Manager.alloc`, `Kind.init`) instead of one, so a
+  `Set` that replaces a node of an unbounded cache is ~2.5 ns (~4%) slower than with generic node
+  types. Reads are not: `Manager.Value` takes the node pointer from the interface's data word
+  (`node.PointerOf`) and returns the inline value of a stateless node before the variant switch.
+  The cost is visible only in micro-benchmarks, beside the node allocation itself.
+- **The default logger keeps about 1 MB of `log/slog` and `encoding/json` in every binary**, even
+  with a custom `Options.Logger`: `getLogger` refers to `newDefaultLogger` statically, and
+  `recoverCallback` on the deletion path calls `Logger.Error`. Programs that already log through
+  slog pay nothing extra. A default logger on `log` would cost ~17 KB but would stop following
+  `slog.SetDefault`, which was judged more important.
 - **The read buffer pads small objects with whole cache lines**: `Striped`, the table header
   `striped`, the table of stripes (`newBuffers`) and the space before a ring's `head`. Every
   read loads them, and without the padding each one shares a cache line with whatever the

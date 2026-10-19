@@ -41,7 +41,7 @@ func TestNewStriped(t *testing.T) {
 		WithSize:       true,
 		WithExpiration: true,
 	})
-	s := NewStriped(64, nm)
+	s := NewStriped(64, nm.Kind)
 	if got := s.striped.Load(); got != nil {
 		t.Fatalf("the striped buffer must be nil, but got: %v", got)
 	}
@@ -65,7 +65,7 @@ func TestStriped_Add(t *testing.T) {
 		WithSize:       true,
 		WithExpiration: true,
 	})
-	s := NewStriped(maxBufferLen, nm)
+	s := NewStriped(maxBufferLen, nm.Kind)
 	n := nm.Create(1, 2, 100, 0, 1)
 
 	var wg sync.WaitGroup
@@ -99,11 +99,11 @@ func TestStriped_DrainTo(t *testing.T) {
 		WithSize:       true,
 		WithExpiration: true,
 	})
-	s := NewStriped(64, nm)
+	s := NewStriped(64, nm.Kind)
 	n := nm.Create(1, 2, 100, 0, 1)
 
 	var drains int
-	s.DrainTo(func(n node.Node[int, int]) {
+	s.DrainTo(func(n node.Node) {
 		drains++
 	})
 	if drains != 0 {
@@ -118,7 +118,7 @@ func TestStriped_DrainTo(t *testing.T) {
 		t.Fatalf("the status must be success, but got: %v", res)
 	}
 
-	s.DrainTo(func(n node.Node[int, int]) {
+	s.DrainTo(func(n node.Node) {
 		drains++
 	})
 	if drains != 1 {
@@ -137,7 +137,7 @@ func TestStriped_AddAndDrain(t *testing.T) {
 		WithSize:       true,
 		WithExpiration: true,
 	})
-	s := NewStriped(maxBufferLen, nm)
+	s := NewStriped(maxBufferLen, nm.Kind)
 	n := nm.Create(1, 2, 100, 0, 1)
 
 	var (
@@ -157,7 +157,7 @@ func TestStriped_AddAndDrain(t *testing.T) {
 					return
 				}
 				if res == Full && mu.TryLock() {
-					s.DrainTo(func(n node.Node[int, int]) {
+					s.DrainTo(func(n node.Node) {
 						drains.Add(1)
 					})
 					mu.Unlock()
@@ -169,7 +169,7 @@ func TestStriped_AddAndDrain(t *testing.T) {
 
 	wg.Wait()
 
-	s.DrainTo(func(n node.Node[int, int]) {
+	s.DrainTo(func(n node.Node) {
 		drains.Add(1)
 	})
 
@@ -181,12 +181,12 @@ func TestStriped_AddAndDrain(t *testing.T) {
 func TestStriped_Len(t *testing.T) {
 	t.Parallel()
 
-	s := &Striped[int, int]{}
+	s := &Striped{}
 	require.Equal(t, 0, s.Len())
 	nm := node.NewManager[int, int](node.Config{})
-	r := newRing(nm, nm.Create(1, 1, 0, 2, 3))
-	ss := &striped[int, int]{
-		buffers: make([]atomic.Pointer[ring[int, int]], 2),
+	r := newRing(nm.Kind, nm.Create(1, 1, 0, 2, 3))
+	ss := &striped{
+		buffers: make([]atomic.Pointer[ring], 2),
 		len:     2,
 	}
 	ss.buffers[0].Store(r)
@@ -200,19 +200,19 @@ func TestPadding(t *testing.T) {
 	line := uintptr(xruntime.CacheLineSize)
 
 	// Every Add reads these fields, so no other object may share their cache lines.
-	var s Striped[int, int]
-	require.GreaterOrEqual(t, unsafe.Offsetof(s.nodeManager), line)
+	var s Striped
+	require.GreaterOrEqual(t, unsafe.Offsetof(s.kind), line)
 	require.GreaterOrEqual(t, unsafe.Sizeof(s)-unsafe.Offsetof(s.busy)-unsafe.Sizeof(s.busy), line)
 
-	var bs striped[int, int]
+	var bs striped
 	require.GreaterOrEqual(t, unsafe.Offsetof(bs.buffers), line)
 	require.GreaterOrEqual(t, unsafe.Sizeof(bs)-unsafe.Offsetof(bs.len)-unsafe.Sizeof(bs.len), line)
 
-	var r ring[int, int]
+	var r ring
 	require.GreaterOrEqual(t, unsafe.Offsetof(r.head), line)
 
 	// The padding of the stripes stays out of reach of the slice.
-	buffers := newBuffers[int, int](2)
+	buffers := newBuffers(2)
 	require.Len(t, buffers, 2)
 	require.Equal(t, 2, cap(buffers))
 }

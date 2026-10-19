@@ -60,28 +60,28 @@ const (
 // adding new buffers when contention is detected, up to an internal maximum. When rehashing in
 // order to discover an available buffer, the producer may retry adding its element to determine
 // whether it found a satisfactory buffer or if resizing is necessary.
-type ring[K comparable, V any] struct {
+type ring struct {
 	// Producers read head on every add, so it is kept off the cache line of the object that the
 	// allocator put before the ring.
-	_           [xruntime.CacheLineSize]byte
-	head        atomic.Uint64
-	_           [xruntime.CacheLineSize - unsafe.Sizeof(atomic.Uint64{})]byte
-	tail        atomic.Uint64
-	_           [xruntime.CacheLineSize - unsafe.Sizeof(atomic.Uint64{})]byte
-	nodeManager *node.Manager[K, V]
-	buffer      [bufferSize]unsafe.Pointer // node.Node[K, V]
+	_      [xruntime.CacheLineSize]byte
+	head   atomic.Uint64
+	_      [xruntime.CacheLineSize - unsafe.Sizeof(atomic.Uint64{})]byte
+	tail   atomic.Uint64
+	_      [xruntime.CacheLineSize - unsafe.Sizeof(atomic.Uint64{})]byte
+	kind   *node.Kind
+	buffer [bufferSize]unsafe.Pointer // node.Node
 }
 
-func newRing[K comparable, V any](nodeManager *node.Manager[K, V], n node.Node[K, V]) *ring[K, V] {
-	r := &ring[K, V]{
-		nodeManager: nodeManager,
+func newRing(kind *node.Kind, n node.Node) *ring {
+	r := &ring{
+		kind: kind,
 	}
 	r.buffer[0] = n.AsPointer()
 	r.tail.Store(1)
 	return r
 }
 
-func (r *ring[K, V]) add(n node.Node[K, V]) Status {
+func (r *ring) add(n node.Node) Status {
 	head := r.head.Load()
 	tail := r.tail.Load()
 	size := tail - head
@@ -101,7 +101,7 @@ func (r *ring[K, V]) add(n node.Node[K, V]) Status {
 	return Failed
 }
 
-func (r *ring[K, V]) drainTo(consumer func(n node.Node[K, V])) {
+func (r *ring) drainTo(consumer func(n node.Node)) {
 	head := r.head.Load()
 	tail := r.tail.Load()
 	size := tail - head
@@ -109,7 +109,7 @@ func (r *ring[K, V]) drainTo(consumer func(n node.Node[K, V])) {
 		return
 	}
 
-	nm := r.nodeManager
+	kind := r.kind
 	for head != tail {
 		index := head & mask
 		ptr := atomic.LoadPointer(&r.buffer[index])
@@ -118,13 +118,13 @@ func (r *ring[K, V]) drainTo(consumer func(n node.Node[K, V])) {
 			break
 		}
 		atomic.StorePointer(&r.buffer[index], nil)
-		consumer(nm.FromPointer(ptr))
+		consumer(kind.FromPointer(ptr))
 		head++
 	}
 	r.head.Store(head)
 }
 
-func (r *ring[K, V]) len() int {
+func (r *ring) len() int {
 	// The head is loaded first: it never passes the tail, so a tail loaded later is never
 	// behind it, while a head loaded after the tail may already be ahead of it.
 	head := r.head.Load()
@@ -133,7 +133,7 @@ func (r *ring[K, V]) len() int {
 }
 
 /*
-func (r *ring[K, V]) clear() {
+func (r *ring) clear() {
 	for i := 0; i < bufferSize; i++ {
 		atomic.StorePointer(&r.buffer[i], nil)
 	}

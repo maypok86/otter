@@ -18,7 +18,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 )
 
@@ -66,7 +65,7 @@ func (g *generator) printImports() {
 }
 
 func (g *generator) printStructComment() {
-	g.p("// %s is a cache entry that provide the following features:", g.structName)
+	g.p("// %s is the header of a cache entry that provide the following features:", g.structName)
 	g.p("//")
 	g.p("// 1. Base")
 	i := 2
@@ -79,32 +78,25 @@ func (g *generator) printStructComment() {
 			i++
 		}
 	}
-	if g.withState() {
-		g.p("//")
-		g.p("// It is the header of the layouts that store the value (%s...): a node is allocated", g.variantName(g.variants[0]))
-		g.p("// as one of them, whose first field is the header, so that a pointer to the header is a")
-		g.p("// pointer to the whole node. The layouts do not embed the header: they have no methods,")
-		g.p("// which keeps the code of one node type per feature set.")
-	}
+	g.p("//")
+	g.p("// A node is allocated as one of the layouts that follow the header with the key and the")
+	g.p("// value (%s...), so that a pointer to the header is a pointer to the whole node. The", g.variantName(g.variants[0]))
+	g.p("// header does not depend on the key and value types: its methods are compiled once,")
+	g.p("// whatever caches a program creates, and only the layouts are instantiated per cache type.")
 }
 
 func (g *generator) printStruct() {
 	g.printStructComment()
 
-	g.p("type %s[K comparable, V any] struct {", g.structName)
+	g.p("type %s struct {", g.structName)
 	g.in()
-	g.p("key        K")
-	if !g.withState() {
-		// never updated in place, so the value is kept in the node itself, next to the key
-		g.p("value      V")
-	}
 	if g.isBounded() {
-		g.p("prev       *%s[K, V]", g.structName)
-		g.p("next       *%s[K, V]", g.structName)
+		g.p("prev       *%s", g.structName)
+		g.p("next       *%s", g.structName)
 	}
 	if g.features[expiration] {
-		g.p("prevExp    *%s[K, V]", g.structName)
-		g.p("nextExp    *%s[K, V]", g.structName)
+		g.p("prevExp    *%s", g.structName)
+		g.p("nextExp    *%s", g.structName)
 		g.p("expiresAt  atomic.Int64")
 	}
 	if g.features[refresh] {
@@ -133,35 +125,35 @@ func (g *generator) printStruct() {
 	g.p("}")
 	g.p("")
 
-	if !g.withState() {
-		return
-	}
 	for _, v := range g.variants {
-		if v == emptyVariant {
-			// allocated as the header alone
-			continue
-		}
 		name := g.variantName(v)
 		switch v {
 		case inlineVariant:
-			g.p("// %s is the layout of a %s whose value is kept inline and never changed. The first", name, g.structName)
-			g.p("// update of a live entry replaces the node with a %s.", g.variantName(boxedVariant))
+			if g.withState() {
+				g.p("// %s is the layout of a %s whose value is kept inline and never changed. The first", name, g.structName)
+				g.p("// update of a live entry replaces the node with a %s.", g.variantName(boxedVariant))
+			} else {
+				g.p("// %s is the layout of a %s, which is never updated in place.", name, g.structName)
+			}
 			g.p("type %s[K comparable, V any] struct {", name)
 			g.in()
-			g.p("header %s[K, V]", g.structName)
+			g.p("header %s", g.structName)
+			g.p("key K")
 			g.p("value V")
 		case boxedVariant:
 			g.p("// %s is the layout of a %s whose value lives behind an atomic pointer and is", name, g.structName)
 			g.p("// replaced in place.")
 			g.p("type %s[K comparable, V any] struct {", name)
 			g.in()
-			g.p("header %s[K, V]", g.structName)
+			g.p("header %s", g.structName)
+			g.p("key K")
 			g.p("value atomic.Pointer[V]")
 		case pointerVariant:
 			g.p("// %s is the layout of a %s whose pointer-shaped value is kept in an atomic pointer.", name, g.structName)
 			g.p("type %s[K comparable, V any] struct {", name)
 			g.in()
-			g.p("header %s[K, V]", g.structName)
+			g.p("header %s", g.structName)
+			g.p("key K")
 			// accessed only atomically; holds the value's pointer word, so the GC sees it
 			g.p("value unsafe.Pointer")
 		case wordVariant:
@@ -169,8 +161,15 @@ func (g *generator) printStruct() {
 			g.p("// is kept in an atomic.Uint64.")
 			g.p("type %s[K comparable, V any] struct {", name)
 			g.in()
-			g.p("header %s[K, V]", g.structName)
+			g.p("header %s", g.structName)
+			g.p("key K")
 			g.p("value atomic.Uint64")
+		case emptyVariant:
+			g.p("// %s is the layout of a %s without a value field, for values of zero size.", name, g.structName)
+			g.p("type %s[K comparable, V any] struct {", name)
+			g.in()
+			g.p("header %s", g.structName)
+			g.p("key K")
 		default:
 			panic(fmt.Sprintf("unknown variant %v", v))
 		}
@@ -181,38 +180,54 @@ func (g *generator) printStruct() {
 }
 
 func (g *generator) printConstructors() {
-	g.p("// New%s creates a new %s allocated as the given variant's layout (see variantsOf in the", g.structName, g.structName)
-	g.p("// generator); nodes without state have a single layout and ignore it.")
-	g.p("func New%s[K comparable, V any](key K, value V, expiresAt, refreshableAt int64, weight uint32, variant uint8) Node[K, V] {", g.structName)
+	lower := strings.ToLower(g.structName)
+
+	// alloc and layout are the only functions instantiated per cache type
+	g.p("// alloc%s allocates a node as the given variant's layout and returns its header; nodes", g.structName)
+	g.p("// without state have a single layout and ignore the variant.")
+	g.p("func alloc%s[K comparable, V any](variant uint8) unsafe.Pointer {", g.structName)
 	g.in()
 	if g.withState() {
-		g.p("var n *%s[K, V]", g.structName)
 		g.p("switch variant {")
 		for _, v := range g.variants[1:] {
 			g.p("case %s:", v.constant)
 			g.in()
-			if v == emptyVariant {
-				g.p("n = &%s[K, V]{}", g.structName)
-			} else {
-				g.p("n = &(&%s[K, V]{}).header", g.variantName(v))
-			}
+			g.p("return unsafe.Pointer(new(%s[K, V]))", g.variantName(v))
 			g.out()
 		}
 		g.p("default:")
 		g.in()
-		g.p("n = &(&%s[K, V]{}).header", g.variantName(g.variants[0]))
+		g.p("return unsafe.Pointer(new(%s[K, V]))", g.variantName(g.variants[0]))
 		g.out()
 		g.p("}")
-		g.p("n.key = key")
-		g.p("n.variant = variant")
-		g.p("n.SetValue(value)")
 	} else {
-		g.p("n := &%s[K, V]{", g.structName)
-		g.in()
-		g.p("key: key,")
-		g.p("value: value,")
-		g.out()
-		g.p("}")
+		g.p("return unsafe.Pointer(new(%s[K, V]))", g.variantName(g.variants[0]))
+	}
+	g.out()
+	g.p("}")
+	g.p("")
+
+	g.p("// layout%s returns the offsets of the key and of the value of every variant's layout.", g.structName)
+	g.p("func layout%s[K comparable, V any]() (key uintptr, values [variantCount]uintptr) {", g.structName)
+	g.in()
+	g.p("key = unsafe.Offsetof(%s[K, V]{}.key)", g.variantName(g.variants[0]))
+	for _, v := range g.variants {
+		if v == emptyVariant {
+			continue
+		}
+		g.p("values[%s] = unsafe.Offsetof(%s[K, V]{}.value)", v.constant, g.variantName(v))
+	}
+	g.p("return key, values")
+	g.out()
+	g.p("}")
+	g.p("")
+
+	g.p("// init%s initializes the header of a node allocated by alloc%s.", g.structName, g.structName)
+	g.p("func init%s(ptr unsafe.Pointer, expiresAt, refreshableAt int64, weight uint32, variant uint8) Node {", g.structName)
+	g.in()
+	g.p("n := (*%s)(ptr)", g.structName)
+	if g.withState() {
+		g.p("n.variant = variant")
 	}
 	if g.features[weight] {
 		g.p("n.policyWeight = weight")
@@ -233,183 +248,54 @@ func (g *generator) printConstructors() {
 	g.p("")
 
 	g.p("// CastPointerTo%s casts a pointer to %s.", g.structName, g.structName)
-	g.p("func CastPointerTo%s[K comparable, V any](ptr unsafe.Pointer) Node[K, V] {", g.structName)
+	g.p("func CastPointerTo%s(ptr unsafe.Pointer) Node {", g.structName)
 	g.in()
 	g.p("if ptr == nil {")
 	g.in()
 	g.p("return nil")
 	g.out()
 	g.p("}")
-	g.p("return (*%s[K, V])(ptr)", g.structName)
+	g.p("return (*%s)(ptr)", g.structName)
+	g.out()
+	g.p("}")
+	g.p("")
+
+	g.p("var %sKind = Kind{", lower)
+	g.in()
+	g.p("fromPointer: CastPointerTo%s,", g.structName)
+	g.p("init:        init%s,", g.structName)
+	g.p("newHeader:   func() unsafe.Pointer { return unsafe.Pointer(new(%s)) },", g.structName)
+	if g.withState() {
+		g.p("variantOffset: unsafe.Offsetof(%s{}.variant),", g.structName)
+		g.p("withState:   true,")
+	}
 	g.out()
 	g.p("}")
 	g.p("")
 }
 
-// printValueFunctions prints the value accessors. They convert the header back to the layout the
-// node was allocated as, whose pointer it was taken from.
 func (g *generator) printValueFunctions() {
-	cast := func(v variant) string {
-		return fmt.Sprintf("(*%s[K, V])(unsafe.Pointer(n))", g.variantName(v))
-	}
-	// the inline variant is the default of every switch
-	byVariant := func(emit func(v variant)) {
-		g.p("switch n.variant {")
-		for _, v := range g.variants[1:] {
-			g.p("case %s:", v.constant)
-			g.in()
-			emit(v)
-			g.out()
-		}
-		g.p("default:")
-		g.in()
-		emit(g.variants[0])
-		g.out()
-		g.p("}")
-	}
-
-	if !g.withState() {
-		g.p("func (n *%s[K, V]) Value() V {", g.structName)
-		g.in()
-		g.p("return n.value")
-		g.out()
-		g.p("}")
-		g.p("")
-		g.p("func (n *%s[K, V]) SetValue(v V) {", g.structName)
-		g.in()
-		g.p("panic(\"otter: a node without state is never updated in place\")")
-		g.out()
-		g.p("}")
-		g.p("")
-		g.p("func (n *%s[K, V]) CanSetValue() bool {", g.structName)
-		g.in()
+	g.p("func (n *%s) CanSetValue() bool {", g.structName)
+	g.in()
+	if g.withState() {
+		g.p("return n.variant != %s", inlineVariant.constant)
+	} else {
 		g.p("return false")
-		g.out()
-		g.p("}")
-		g.p("")
-		g.p("func (n *%s[K, V]) ValueAndIdentity() (V, unsafe.Pointer, uint64) {", g.structName)
-		g.in()
-		g.p("return n.value, nil, 0")
-		g.out()
-		g.p("}")
-		g.p("")
-		return
 	}
-
-	g.p("func (n *%s[K, V]) Value() V {", g.structName)
-	g.in()
-	byVariant(func(v variant) {
-		switch v {
-		case inlineVariant:
-			g.p("return %s.value", cast(v))
-		case boxedVariant:
-			g.p("return *%s.value.Load()", cast(v))
-		case pointerVariant:
-			g.p("p := atomic.LoadPointer(&%s.value)", cast(v))
-			g.p("return *(*V)(unsafe.Pointer(&p))")
-		case wordVariant:
-			g.p("w := %s.value.Load()", cast(v))
-			g.p("return *(*V)(unsafe.Pointer(&w))")
-		case emptyVariant:
-			g.p("var zero V")
-			g.p("return zero")
-		default:
-			panic(fmt.Sprintf("unknown variant %v", v))
-		}
-	})
-	g.out()
-	g.p("}")
-	g.p("")
-
-	// SetValue also stores the value of a new node; later, it is only called when CanSetValue
-	// (see the Node interface)
-	g.p("func (n *%s[K, V]) SetValue(v V) {", g.structName)
-	g.in()
-	byVariant(func(v variant) {
-		switch v {
-		case inlineVariant:
-			g.p("%s.value = v", cast(v))
-		case boxedVariant:
-			g.p("n.setBoxedValue(v)")
-		case pointerVariant:
-			g.p("atomic.StorePointer(&%s.value, *(*unsafe.Pointer)(unsafe.Pointer(&v)))", cast(v))
-		case wordVariant:
-			g.p("var w uint64")
-			g.p("*(*V)(unsafe.Pointer(&w)) = v")
-			g.p("%s.value.Store(w)", cast(v))
-		case emptyVariant:
-			g.p("// a value of zero size has nothing to store")
-		default:
-			panic(fmt.Sprintf("unknown variant %v", v))
-		}
-	})
-	g.out()
-	g.p("}")
-	g.p("")
-
-	if slices.Contains(g.variants, boxedVariant) {
-		// Separate from SetValue: escape analysis works per function, and the pointer taken to
-		// the value here would otherwise move the value of every SetValue call to the heap.
-		g.p("func (n *%s[K, V]) setBoxedValue(v V) {", g.structName)
-		g.in()
-		g.p("%s.value.Store(&v)", cast(boxedVariant))
-		g.out()
-		g.p("}")
-		g.p("")
-	}
-
-	g.p("func (n *%s[K, V]) CanSetValue() bool {", g.structName)
-	g.in()
-	g.p("return n.variant != %s", inlineVariant.constant)
-	g.out()
-	g.p("}")
-	g.p("")
-
-	g.p("func (n *%s[K, V]) ValueAndIdentity() (V, unsafe.Pointer, uint64) {", g.structName)
-	g.in()
-	byVariant(func(v variant) {
-		switch v {
-		case inlineVariant:
-			// never replaced in place
-			g.p("return %s.value, nil, 0", cast(v))
-		case boxedVariant:
-			// the box is loaded once, so the value is the one it identifies
-			g.p("p := %s.value.Load()", cast(v))
-			g.p("return *p, unsafe.Pointer(p), 0")
-		case pointerVariant:
-			g.p("p := atomic.LoadPointer(&%s.value)", cast(v))
-			g.p("return *(*V)(unsafe.Pointer(&p)), p, 0")
-		case wordVariant:
-			g.p("w := %s.value.Load()", cast(v))
-			g.p("return *(*V)(unsafe.Pointer(&w)), nil, w")
-		case emptyVariant:
-			g.p("var zero V")
-			g.p("return zero, nil, 0")
-		default:
-			panic(fmt.Sprintf("unknown variant %v", v))
-		}
-	})
 	g.out()
 	g.p("}")
 	g.p("")
 }
 
 func (g *generator) printFunctions() {
-	g.p("func (n *%s[K, V]) Key() K {", g.structName)
-	g.in()
-	g.p("return n.key")
-	g.out()
-	g.p("}")
-	g.p("")
-
-	g.p("func (n *%s[K, V]) AsPointer() unsafe.Pointer {", g.structName)
+	g.p("func (n *%s) AsPointer() unsafe.Pointer {", g.structName)
 	g.in()
 	g.p("return unsafe.Pointer(n)")
 	g.out()
 	g.p("}")
 	g.p("")
 
-	g.p("func (n *%s[K, V]) Prev() Node[K, V] {", g.structName)
+	g.p("func (n *%s) Prev() Node {", g.structName)
 	g.in()
 	if g.isBounded() {
 		// A nil field is returned as a nil interface, not as a typed nil, so that callers
@@ -427,7 +313,7 @@ func (g *generator) printFunctions() {
 	g.p("}")
 	g.p("")
 
-	g.p("func (n *%s[K, V]) SetPrev(v Node[K, V]) {", g.structName)
+	g.p("func (n *%s) SetPrev(v Node) {", g.structName)
 	g.in()
 	if g.isBounded() {
 		g.p("if v == nil {")
@@ -436,7 +322,7 @@ func (g *generator) printFunctions() {
 		g.p("return")
 		g.out()
 		g.p("}")
-		g.p("n.prev = (*%s[K, V])(v.AsPointer())", g.structName)
+		g.p("n.prev = (*%s)(v.AsPointer())", g.structName)
 	} else {
 		g.p("panic(\"not implemented\")")
 	}
@@ -444,7 +330,7 @@ func (g *generator) printFunctions() {
 	g.p("}")
 	g.p("")
 
-	g.p("func (n *%s[K, V]) Next() Node[K, V] {", g.structName)
+	g.p("func (n *%s) Next() Node {", g.structName)
 	g.in()
 	if g.isBounded() {
 		g.p("if n.next == nil {")
@@ -460,7 +346,7 @@ func (g *generator) printFunctions() {
 	g.p("}")
 	g.p("")
 
-	g.p("func (n *%s[K, V]) SetNext(v Node[K, V]) {", g.structName)
+	g.p("func (n *%s) SetNext(v Node) {", g.structName)
 	g.in()
 	if g.isBounded() {
 		g.p("if v == nil {")
@@ -469,7 +355,7 @@ func (g *generator) printFunctions() {
 		g.p("return")
 		g.out()
 		g.p("}")
-		g.p("n.next = (*%s[K, V])(v.AsPointer())", g.structName)
+		g.p("n.next = (*%s)(v.AsPointer())", g.structName)
 	} else {
 		g.p("panic(\"not implemented\")")
 	}
@@ -477,7 +363,7 @@ func (g *generator) printFunctions() {
 	g.p("}")
 	g.p("")
 
-	g.p("func (n *%s[K, V]) PrevExp() Node[K, V] {", g.structName)
+	g.p("func (n *%s) PrevExp() Node {", g.structName)
 	g.in()
 	if g.features[expiration] {
 		g.p("if n.prevExp == nil {")
@@ -493,7 +379,7 @@ func (g *generator) printFunctions() {
 	g.p("}")
 	g.p("")
 
-	g.p("func (n *%s[K, V]) SetPrevExp(v Node[K, V]) {", g.structName)
+	g.p("func (n *%s) SetPrevExp(v Node) {", g.structName)
 	g.in()
 	if g.features[expiration] {
 		g.p("if v == nil {")
@@ -502,7 +388,7 @@ func (g *generator) printFunctions() {
 		g.p("return")
 		g.out()
 		g.p("}")
-		g.p("n.prevExp = (*%s[K, V])(v.AsPointer())", g.structName)
+		g.p("n.prevExp = (*%s)(v.AsPointer())", g.structName)
 	} else {
 		g.p("panic(\"not implemented\")")
 	}
@@ -510,7 +396,7 @@ func (g *generator) printFunctions() {
 	g.p("}")
 	g.p("")
 
-	g.p("func (n *%s[K, V]) NextExp() Node[K, V] {", g.structName)
+	g.p("func (n *%s) NextExp() Node {", g.structName)
 	g.in()
 	if g.features[expiration] {
 		g.p("if n.nextExp == nil {")
@@ -526,7 +412,7 @@ func (g *generator) printFunctions() {
 	g.p("}")
 	g.p("")
 
-	g.p("func (n *%s[K, V]) SetNextExp(v Node[K, V]) {", g.structName)
+	g.p("func (n *%s) SetNextExp(v Node) {", g.structName)
 	g.in()
 	if g.features[expiration] {
 		g.p("if v == nil {")
@@ -535,7 +421,7 @@ func (g *generator) printFunctions() {
 		g.p("return")
 		g.out()
 		g.p("}")
-		g.p("n.nextExp = (*%s[K, V])(v.AsPointer())", g.structName)
+		g.p("n.nextExp = (*%s)(v.AsPointer())", g.structName)
 	} else {
 		g.p("panic(\"not implemented\")")
 	}
@@ -543,7 +429,7 @@ func (g *generator) printFunctions() {
 	g.p("}")
 	g.p("")
 
-	g.p("func (n *%s[K, V]) HasExpired(now int64) bool {", g.structName)
+	g.p("func (n *%s) HasExpired(now int64) bool {", g.structName)
 	g.in()
 	if g.features[expiration] {
 		g.p("return n.ExpiresAt() <= now")
@@ -554,7 +440,7 @@ func (g *generator) printFunctions() {
 	g.p("}")
 	g.p("")
 
-	g.p("func (n *%s[K, V]) ExpiresAt() int64 {", g.structName)
+	g.p("func (n *%s) ExpiresAt() int64 {", g.structName)
 	g.in()
 	if g.features[expiration] {
 		g.p("return n.expiresAt.Load()")
@@ -565,7 +451,7 @@ func (g *generator) printFunctions() {
 	g.p("}")
 	g.p("")
 
-	g.p("func (n *%s[K, V]) CASExpiresAt(old, new int64) bool {", g.structName)
+	g.p("func (n *%s) CASExpiresAt(old, new int64) bool {", g.structName)
 	g.in()
 	if g.features[expiration] {
 		g.p("return n.expiresAt.CompareAndSwap(old, new)")
@@ -576,7 +462,7 @@ func (g *generator) printFunctions() {
 	g.p("}")
 	g.p("")
 
-	g.p("func (n *%s[K, V]) SetExpiresAt(new int64) {", g.structName)
+	g.p("func (n *%s) SetExpiresAt(new int64) {", g.structName)
 	g.in()
 	if g.features[expiration] {
 		g.p("n.expiresAt.Store(new)")
@@ -587,7 +473,7 @@ func (g *generator) printFunctions() {
 	g.p("}")
 	g.p("")
 
-	g.p("func (n *%s[K, V]) RefreshableAt() int64 {", g.structName)
+	g.p("func (n *%s) RefreshableAt() int64 {", g.structName)
 	g.in()
 	if g.features[refresh] {
 		g.p("return n.refreshableAt.Load()")
@@ -598,7 +484,7 @@ func (g *generator) printFunctions() {
 	g.p("}")
 	g.p("")
 
-	g.p("func (n *%s[K, V]) CASRefreshableAt(old, new int64) bool {", g.structName)
+	g.p("func (n *%s) CASRefreshableAt(old, new int64) bool {", g.structName)
 	g.in()
 	if g.features[refresh] {
 		g.p("return n.refreshableAt.CompareAndSwap(old, new)")
@@ -609,7 +495,7 @@ func (g *generator) printFunctions() {
 	g.p("}")
 	g.p("")
 
-	g.p("func (n *%s[K, V]) SetRefreshableAt(new int64) {", g.structName)
+	g.p("func (n *%s) SetRefreshableAt(new int64) {", g.structName)
 	g.in()
 	if g.features[refresh] {
 		g.p("n.refreshableAt.Store(new)")
@@ -620,7 +506,7 @@ func (g *generator) printFunctions() {
 	g.p("}")
 	g.p("")
 
-	g.p("func (n *%s[K, V]) IsFresh(now int64) bool {", g.structName)
+	g.p("func (n *%s) IsFresh(now int64) bool {", g.structName)
 	g.in()
 	if g.features[refresh] {
 		g.p("return n.IsAlive() && n.RefreshableAt() > now")
@@ -631,7 +517,7 @@ func (g *generator) printFunctions() {
 	g.p("}")
 	g.p("")
 
-	g.p("func (n *%s[K, V]) Weight() uint32 {", g.structName)
+	g.p("func (n *%s) Weight() uint32 {", g.structName)
 	g.in()
 	if g.features[weight] {
 		g.p("return n.weight.Load()")
@@ -642,7 +528,7 @@ func (g *generator) printFunctions() {
 	g.p("}")
 	g.p("")
 
-	g.p("func (n *%s[K, V]) SetWeight(weight uint32) {", g.structName)
+	g.p("func (n *%s) SetWeight(weight uint32) {", g.structName)
 	g.in()
 	if g.features[weight] {
 		g.p("n.weight.Store(weight)")
@@ -653,7 +539,7 @@ func (g *generator) printFunctions() {
 	g.p("}")
 	g.p("")
 
-	g.p("func (n *%s[K, V]) PolicyWeight() uint32 {", g.structName)
+	g.p("func (n *%s) PolicyWeight() uint32 {", g.structName)
 	g.in()
 	if g.features[weight] {
 		g.p("return n.policyWeight")
@@ -664,7 +550,7 @@ func (g *generator) printFunctions() {
 	g.p("}")
 	g.p("")
 
-	g.p("func (n *%s[K, V]) SetPolicyWeight(weight uint32) {", g.structName)
+	g.p("func (n *%s) SetPolicyWeight(weight uint32) {", g.structName)
 	g.in()
 	if g.features[weight] {
 		g.p("n.policyWeight = weight")
@@ -673,7 +559,7 @@ func (g *generator) printFunctions() {
 	g.p("}")
 	g.p("")
 
-	g.p("func (n *%s[K, V]) IsAlive() bool {", g.structName)
+	g.p("func (n *%s) IsAlive() bool {", g.structName)
 	g.in()
 	if g.withState() {
 		g.p("return n.state.Load() == aliveState")
@@ -684,7 +570,7 @@ func (g *generator) printFunctions() {
 	g.p("}")
 	g.p("")
 
-	g.p("func (n *%s[K, V]) IsRetired() bool {", g.structName)
+	g.p("func (n *%s) IsRetired() bool {", g.structName)
 	g.in()
 	if g.withState() {
 		g.p("return n.state.Load() == retiredState")
@@ -695,7 +581,7 @@ func (g *generator) printFunctions() {
 	g.p("}")
 	g.p("")
 
-	g.p("func (n *%s[K, V]) Retire() {", g.structName)
+	g.p("func (n *%s) Retire() {", g.structName)
 	g.in()
 	if g.withState() {
 		g.p("n.state.Store(retiredState)")
@@ -706,7 +592,7 @@ func (g *generator) printFunctions() {
 	g.p("}")
 	g.p("")
 
-	g.p("func (n *%s[K, V]) IsDead() bool {", g.structName)
+	g.p("func (n *%s) IsDead() bool {", g.structName)
 	g.in()
 	if g.withState() {
 		g.p("return n.state.Load() == deadState")
@@ -717,7 +603,7 @@ func (g *generator) printFunctions() {
 	g.p("}")
 	g.p("")
 
-	g.p("func (n *%s[K, V]) Die() {", g.structName)
+	g.p("func (n *%s) Die() {", g.structName)
 	g.in()
 	if g.withState() {
 		g.p("n.state.Store(deadState)")
@@ -728,7 +614,7 @@ func (g *generator) printFunctions() {
 	g.p("}")
 	g.p("")
 
-	g.p("func (n *%s[K, V]) GetQueueType() uint8 {", g.structName)
+	g.p("func (n *%s) GetQueueType() uint8 {", g.structName)
 	g.in()
 	if g.isBounded() {
 		g.p("return n.queueType")
@@ -739,7 +625,7 @@ func (g *generator) printFunctions() {
 	g.p("}")
 	g.p("")
 
-	g.p("func (n *%s[K, V]) SetQueueType(queueType uint8) {", g.structName)
+	g.p("func (n *%s) SetQueueType(queueType uint8) {", g.structName)
 	g.in()
 	if g.isBounded() {
 		g.p("n.queueType = queueType")
@@ -750,42 +636,42 @@ func (g *generator) printFunctions() {
 	g.p("}")
 	g.p("")
 
-	g.p("func (n *%s[K, V]) InWindow() bool {", g.structName)
+	g.p("func (n *%s) InWindow() bool {", g.structName)
 	g.in()
 	g.p("return n.GetQueueType() == InWindowQueue")
 	g.out()
 	g.p("}")
 	g.p("")
 
-	g.p("func (n *%s[K, V]) MakeWindow() {", g.structName)
+	g.p("func (n *%s) MakeWindow() {", g.structName)
 	g.in()
 	g.p("n.SetQueueType(InWindowQueue)")
 	g.out()
 	g.p("}")
 	g.p("")
 
-	g.p("func (n *%s[K, V]) InMainProbation() bool {", g.structName)
+	g.p("func (n *%s) InMainProbation() bool {", g.structName)
 	g.in()
 	g.p("return n.GetQueueType() == InMainProbationQueue")
 	g.out()
 	g.p("}")
 	g.p("")
 
-	g.p("func (n *%s[K, V]) MakeMainProbation() {", g.structName)
+	g.p("func (n *%s) MakeMainProbation() {", g.structName)
 	g.in()
 	g.p("n.SetQueueType(InMainProbationQueue)")
 	g.out()
 	g.p("}")
 	g.p("")
 
-	g.p("func (n *%s[K, V]) InMainProtected() bool {", g.structName)
+	g.p("func (n *%s) InMainProtected() bool {", g.structName)
 	g.in()
 	g.p("return n.GetQueueType() == InMainProtectedQueue")
 	g.out()
 	g.p("}")
 	g.p("")
 
-	g.p("func (n *%s[K, V]) MakeMainProtected() {", g.structName)
+	g.p("func (n *%s) MakeMainProtected() {", g.structName)
 	g.in()
 	g.p("n.SetQueueType(InMainProtectedQueue)")
 	g.out()

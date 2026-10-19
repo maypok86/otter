@@ -8,7 +8,7 @@ import (
 	"unsafe"
 )
 
-// BEW is a cache entry that provide the following features:
+// BEW is the header of a cache entry that provide the following features:
 //
 // 1. Base
 //
@@ -16,16 +16,15 @@ import (
 //
 // 3. Weight
 //
-// It is the header of the layouts that store the value (BEWInline...): a node is allocated
-// as one of them, whose first field is the header, so that a pointer to the header is a
-// pointer to the whole node. The layouts do not embed the header: they have no methods,
-// which keeps the code of one node type per feature set.
-type BEW[K comparable, V any] struct {
-	key          K
-	prev         *BEW[K, V]
-	next         *BEW[K, V]
-	prevExp      *BEW[K, V]
-	nextExp      *BEW[K, V]
+// A node is allocated as one of the layouts that follow the header with the key and the
+// value (BEWInline...), so that a pointer to the header is a pointer to the whole node. The
+// header does not depend on the key and value types: its methods are compiled once,
+// whatever caches a program creates, and only the layouts are instantiated per cache type.
+type BEW struct {
+	prev         *BEW
+	next         *BEW
+	prevExp      *BEW
+	nextExp      *BEW
 	expiresAt    atomic.Int64
 	weight       atomic.Uint32
 	policyWeight uint32
@@ -37,49 +36,71 @@ type BEW[K comparable, V any] struct {
 // BEWInline is the layout of a BEW whose value is kept inline and never changed. The first
 // update of a live entry replaces the node with a BEWBoxed.
 type BEWInline[K comparable, V any] struct {
-	header BEW[K, V]
+	header BEW
+	key    K
 	value  V
 }
 
 // BEWBoxed is the layout of a BEW whose value lives behind an atomic pointer and is
 // replaced in place.
 type BEWBoxed[K comparable, V any] struct {
-	header BEW[K, V]
+	header BEW
+	key    K
 	value  atomic.Pointer[V]
 }
 
 // BEWP is the layout of a BEW whose pointer-shaped value is kept in an atomic pointer.
 type BEWP[K comparable, V any] struct {
-	header BEW[K, V]
+	header BEW
+	key    K
 	value  unsafe.Pointer
 }
 
 // BEWU64 is the layout of a BEW whose value, without pointers and of at most 8 bytes,
 // is kept in an atomic.Uint64.
 type BEWU64[K comparable, V any] struct {
-	header BEW[K, V]
+	header BEW
+	key    K
 	value  atomic.Uint64
 }
 
-// NewBEW creates a new BEW allocated as the given variant's layout (see variantsOf in the
-// generator); nodes without state have a single layout and ignore it.
-func NewBEW[K comparable, V any](key K, value V, expiresAt, refreshableAt int64, weight uint32, variant uint8) Node[K, V] {
-	var n *BEW[K, V]
+// BEWEmpty is the layout of a BEW without a value field, for values of zero size.
+type BEWEmpty[K comparable, V any] struct {
+	header BEW
+	key    K
+}
+
+// allocBEW allocates a node as the given variant's layout and returns its header; nodes
+// without state have a single layout and ignore the variant.
+func allocBEW[K comparable, V any](variant uint8) unsafe.Pointer {
 	switch variant {
 	case boxedVariant:
-		n = &(&BEWBoxed[K, V]{}).header
+		return unsafe.Pointer(new(BEWBoxed[K, V]))
 	case pointerVariant:
-		n = &(&BEWP[K, V]{}).header
+		return unsafe.Pointer(new(BEWP[K, V]))
 	case wordVariant:
-		n = &(&BEWU64[K, V]{}).header
+		return unsafe.Pointer(new(BEWU64[K, V]))
 	case emptyVariant:
-		n = &BEW[K, V]{}
+		return unsafe.Pointer(new(BEWEmpty[K, V]))
 	default:
-		n = &(&BEWInline[K, V]{}).header
+		return unsafe.Pointer(new(BEWInline[K, V]))
 	}
-	n.key = key
+}
+
+// layoutBEW returns the offsets of the key and of the value of every variant's layout.
+func layoutBEW[K comparable, V any]() (key uintptr, values [variantCount]uintptr) {
+	key = unsafe.Offsetof(BEWInline[K, V]{}.key)
+	values[inlineVariant] = unsafe.Offsetof(BEWInline[K, V]{}.value)
+	values[boxedVariant] = unsafe.Offsetof(BEWBoxed[K, V]{}.value)
+	values[pointerVariant] = unsafe.Offsetof(BEWP[K, V]{}.value)
+	values[wordVariant] = unsafe.Offsetof(BEWU64[K, V]{}.value)
+	return key, values
+}
+
+// initBEW initializes the header of a node allocated by allocBEW.
+func initBEW(ptr unsafe.Pointer, expiresAt, refreshableAt int64, weight uint32, variant uint8) Node {
+	n := (*BEW)(ptr)
 	n.variant = variant
-	n.SetValue(value)
 	n.policyWeight = weight
 	n.weight.Store(weight)
 	n.expiresAt.Store(expiresAt)
@@ -88,239 +109,185 @@ func NewBEW[K comparable, V any](key K, value V, expiresAt, refreshableAt int64,
 }
 
 // CastPointerToBEW casts a pointer to BEW.
-func CastPointerToBEW[K comparable, V any](ptr unsafe.Pointer) Node[K, V] {
+func CastPointerToBEW(ptr unsafe.Pointer) Node {
 	if ptr == nil {
 		return nil
 	}
-	return (*BEW[K, V])(ptr)
+	return (*BEW)(ptr)
 }
 
-func (n *BEW[K, V]) Key() K {
-	return n.key
+var bewKind = Kind{
+	fromPointer:   CastPointerToBEW,
+	init:          initBEW,
+	newHeader:     func() unsafe.Pointer { return unsafe.Pointer(new(BEW)) },
+	variantOffset: unsafe.Offsetof(BEW{}.variant),
+	withState:     true,
 }
 
-func (n *BEW[K, V]) AsPointer() unsafe.Pointer {
+func (n *BEW) AsPointer() unsafe.Pointer {
 	return unsafe.Pointer(n)
 }
 
-func (n *BEW[K, V]) Prev() Node[K, V] {
+func (n *BEW) Prev() Node {
 	if n.prev == nil {
 		return nil
 	}
 	return n.prev
 }
 
-func (n *BEW[K, V]) SetPrev(v Node[K, V]) {
+func (n *BEW) SetPrev(v Node) {
 	if v == nil {
 		n.prev = nil
 		return
 	}
-	n.prev = (*BEW[K, V])(v.AsPointer())
+	n.prev = (*BEW)(v.AsPointer())
 }
 
-func (n *BEW[K, V]) Next() Node[K, V] {
+func (n *BEW) Next() Node {
 	if n.next == nil {
 		return nil
 	}
 	return n.next
 }
 
-func (n *BEW[K, V]) SetNext(v Node[K, V]) {
+func (n *BEW) SetNext(v Node) {
 	if v == nil {
 		n.next = nil
 		return
 	}
-	n.next = (*BEW[K, V])(v.AsPointer())
+	n.next = (*BEW)(v.AsPointer())
 }
 
-func (n *BEW[K, V]) PrevExp() Node[K, V] {
+func (n *BEW) PrevExp() Node {
 	if n.prevExp == nil {
 		return nil
 	}
 	return n.prevExp
 }
 
-func (n *BEW[K, V]) SetPrevExp(v Node[K, V]) {
+func (n *BEW) SetPrevExp(v Node) {
 	if v == nil {
 		n.prevExp = nil
 		return
 	}
-	n.prevExp = (*BEW[K, V])(v.AsPointer())
+	n.prevExp = (*BEW)(v.AsPointer())
 }
 
-func (n *BEW[K, V]) NextExp() Node[K, V] {
+func (n *BEW) NextExp() Node {
 	if n.nextExp == nil {
 		return nil
 	}
 	return n.nextExp
 }
 
-func (n *BEW[K, V]) SetNextExp(v Node[K, V]) {
+func (n *BEW) SetNextExp(v Node) {
 	if v == nil {
 		n.nextExp = nil
 		return
 	}
-	n.nextExp = (*BEW[K, V])(v.AsPointer())
+	n.nextExp = (*BEW)(v.AsPointer())
 }
 
-func (n *BEW[K, V]) HasExpired(now int64) bool {
+func (n *BEW) HasExpired(now int64) bool {
 	return n.ExpiresAt() <= now
 }
 
-func (n *BEW[K, V]) ExpiresAt() int64 {
+func (n *BEW) ExpiresAt() int64 {
 	return n.expiresAt.Load()
 }
 
-func (n *BEW[K, V]) CASExpiresAt(old, new int64) bool {
+func (n *BEW) CASExpiresAt(old, new int64) bool {
 	return n.expiresAt.CompareAndSwap(old, new)
 }
 
-func (n *BEW[K, V]) SetExpiresAt(new int64) {
+func (n *BEW) SetExpiresAt(new int64) {
 	n.expiresAt.Store(new)
 }
 
-func (n *BEW[K, V]) RefreshableAt() int64 {
+func (n *BEW) RefreshableAt() int64 {
 	panic("not implemented")
 }
 
-func (n *BEW[K, V]) CASRefreshableAt(old, new int64) bool {
+func (n *BEW) CASRefreshableAt(old, new int64) bool {
 	panic("not implemented")
 }
 
-func (n *BEW[K, V]) SetRefreshableAt(new int64) {
+func (n *BEW) SetRefreshableAt(new int64) {
 	panic("not implemented")
 }
 
-func (n *BEW[K, V]) IsFresh(now int64) bool {
+func (n *BEW) IsFresh(now int64) bool {
 	return true
 }
 
-func (n *BEW[K, V]) Weight() uint32 {
+func (n *BEW) Weight() uint32 {
 	return n.weight.Load()
 }
 
-func (n *BEW[K, V]) SetWeight(weight uint32) {
+func (n *BEW) SetWeight(weight uint32) {
 	n.weight.Store(weight)
 }
 
-func (n *BEW[K, V]) PolicyWeight() uint32 {
+func (n *BEW) PolicyWeight() uint32 {
 	return n.policyWeight
 }
 
-func (n *BEW[K, V]) SetPolicyWeight(weight uint32) {
+func (n *BEW) SetPolicyWeight(weight uint32) {
 	n.policyWeight = weight
 }
 
-func (n *BEW[K, V]) IsAlive() bool {
+func (n *BEW) IsAlive() bool {
 	return n.state.Load() == aliveState
 }
 
-func (n *BEW[K, V]) IsRetired() bool {
+func (n *BEW) IsRetired() bool {
 	return n.state.Load() == retiredState
 }
 
-func (n *BEW[K, V]) Retire() {
+func (n *BEW) Retire() {
 	n.state.Store(retiredState)
 }
 
-func (n *BEW[K, V]) IsDead() bool {
+func (n *BEW) IsDead() bool {
 	return n.state.Load() == deadState
 }
 
-func (n *BEW[K, V]) Die() {
+func (n *BEW) Die() {
 	n.state.Store(deadState)
 }
 
-func (n *BEW[K, V]) GetQueueType() uint8 {
+func (n *BEW) GetQueueType() uint8 {
 	return n.queueType
 }
 
-func (n *BEW[K, V]) SetQueueType(queueType uint8) {
+func (n *BEW) SetQueueType(queueType uint8) {
 	n.queueType = queueType
 }
 
-func (n *BEW[K, V]) InWindow() bool {
+func (n *BEW) InWindow() bool {
 	return n.GetQueueType() == InWindowQueue
 }
 
-func (n *BEW[K, V]) MakeWindow() {
+func (n *BEW) MakeWindow() {
 	n.SetQueueType(InWindowQueue)
 }
 
-func (n *BEW[K, V]) InMainProbation() bool {
+func (n *BEW) InMainProbation() bool {
 	return n.GetQueueType() == InMainProbationQueue
 }
 
-func (n *BEW[K, V]) MakeMainProbation() {
+func (n *BEW) MakeMainProbation() {
 	n.SetQueueType(InMainProbationQueue)
 }
 
-func (n *BEW[K, V]) InMainProtected() bool {
+func (n *BEW) InMainProtected() bool {
 	return n.GetQueueType() == InMainProtectedQueue
 }
 
-func (n *BEW[K, V]) MakeMainProtected() {
+func (n *BEW) MakeMainProtected() {
 	n.SetQueueType(InMainProtectedQueue)
 }
 
-func (n *BEW[K, V]) Value() V {
-	switch n.variant {
-	case boxedVariant:
-		return *(*BEWBoxed[K, V])(unsafe.Pointer(n)).value.Load()
-	case pointerVariant:
-		p := atomic.LoadPointer(&(*BEWP[K, V])(unsafe.Pointer(n)).value)
-		return *(*V)(unsafe.Pointer(&p))
-	case wordVariant:
-		w := (*BEWU64[K, V])(unsafe.Pointer(n)).value.Load()
-		return *(*V)(unsafe.Pointer(&w))
-	case emptyVariant:
-		var zero V
-		return zero
-	default:
-		return (*BEWInline[K, V])(unsafe.Pointer(n)).value
-	}
-}
-
-func (n *BEW[K, V]) SetValue(v V) {
-	switch n.variant {
-	case boxedVariant:
-		n.setBoxedValue(v)
-	case pointerVariant:
-		atomic.StorePointer(&(*BEWP[K, V])(unsafe.Pointer(n)).value, *(*unsafe.Pointer)(unsafe.Pointer(&v)))
-	case wordVariant:
-		var w uint64
-		*(*V)(unsafe.Pointer(&w)) = v
-		(*BEWU64[K, V])(unsafe.Pointer(n)).value.Store(w)
-	case emptyVariant:
-		// a value of zero size has nothing to store
-	default:
-		(*BEWInline[K, V])(unsafe.Pointer(n)).value = v
-	}
-}
-
-func (n *BEW[K, V]) setBoxedValue(v V) {
-	(*BEWBoxed[K, V])(unsafe.Pointer(n)).value.Store(&v)
-}
-
-func (n *BEW[K, V]) CanSetValue() bool {
+func (n *BEW) CanSetValue() bool {
 	return n.variant != inlineVariant
-}
-
-func (n *BEW[K, V]) ValueAndIdentity() (V, unsafe.Pointer, uint64) {
-	switch n.variant {
-	case boxedVariant:
-		p := (*BEWBoxed[K, V])(unsafe.Pointer(n)).value.Load()
-		return *p, unsafe.Pointer(p), 0
-	case pointerVariant:
-		p := atomic.LoadPointer(&(*BEWP[K, V])(unsafe.Pointer(n)).value)
-		return *(*V)(unsafe.Pointer(&p)), p, 0
-	case wordVariant:
-		w := (*BEWU64[K, V])(unsafe.Pointer(n)).value.Load()
-		return *(*V)(unsafe.Pointer(&w)), nil, w
-	case emptyVariant:
-		var zero V
-		return zero, nil, 0
-	default:
-		return (*BEWInline[K, V])(unsafe.Pointer(n)).value, nil, 0
-	}
 }

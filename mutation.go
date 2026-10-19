@@ -69,7 +69,7 @@ type previous[K comparable, V any] struct {
 	// entry expired while the mutation waited for the lock.
 	nowNano int64
 	// node is the key's node, or nil if the key is absent.
-	node node.Node[K, V]
+	node node.Node
 	// value is node's value, read under the lock.
 	value V
 	// weight is node's weight, read under the lock: an update in place changes it.
@@ -92,7 +92,7 @@ type mutation[K comparable, V any] struct {
 	from origin
 	// next is the key's node afterwards, or nil if it is absent. After an update in place it is
 	// previous.node.
-	next node.Node[K, V]
+	next node.Node
 	// writeResult is what the write or removal decided about the previous value and, for a
 	// write, the new one.
 	writeResult
@@ -121,12 +121,12 @@ func (c *cache[K, V]) mutate(
 	decide func(prev previous[K, V]) (mutationOp, V),
 ) mutation[K, V] {
 	m := mutation[K, V]{from: from}
-	m.next = c.hashmap.Compute(key, func(current node.Node[K, V]) node.Node[K, V] {
+	m.next = c.hashmap.Compute(key, func(current node.Node) node.Node {
 		nowNano := c.clock.NowNano()
 		m.nowNano = nowNano
 		m.node = current
 		if current != nil {
-			m.value = current.Value()
+			m.value = c.nodeManager.Value(current)
 			m.weight = current.Weight()
 			m.live = !current.HasExpired(nowNano)
 			if c.withExpiration {
@@ -138,7 +138,7 @@ func (c *cache[K, V]) mutate(
 		m.op, value = decide(m.previous)
 		switch m.op {
 		case opWrite:
-			var n node.Node[K, V]
+			var n node.Node
 			n, m.writeResult = c.atomicSet(key, value, m.previous, from)
 			return n
 		case opInvalidate:
@@ -186,7 +186,7 @@ func (c *cache[K, V]) afterWrite(m mutation[K, V], onExecutor bool) {
 		defer c.afterWritePolicies(m)
 	}
 	if m.node != nil {
-		c.notifyDeletionFrom(onExecutor, m.node.Key(), m.value, m.cause)
+		c.notifyDeletionFrom(onExecutor, c.nodeManager.Key(m.node), m.value, m.cause)
 	}
 }
 
@@ -255,7 +255,7 @@ func (c *cache[K, V]) atomicSet(
 	value V,
 	prev previous[K, V],
 	from origin,
-) (node.Node[K, V], writeResult) {
+) (node.Node, writeResult) {
 	old, live, nowNano, oldValue := prev.node, prev.live, prev.nowNano, prev.value
 	// The user's weigher and calculators run before anything is changed: if one of them panics,
 	// the write is not applied and the panic reaches the caller.
@@ -293,7 +293,7 @@ func (c *cache[K, V]) atomicSet(
 		c.notifyAtomicDeletion(key, oldValue, written.cause)
 		// The value is stored before the deadline: a read that moves the deadline at the same
 		// time checks the value before its CAS (see calcExpiresAtAfterRead).
-		old.SetValue(value)
+		c.nodeManager.SetValue(old, value)
 		if c.isWeighted {
 			// only weighted nodes store a weight; the others always weigh 1
 			old.SetWeight(weight)
@@ -347,10 +347,10 @@ type writeResult struct {
 
 // retireRemoved retires old, which the caller removes from the hash table, without touching the
 // key's pending calls, and returns cause, which it reports to the synchronous listener.
-func (c *cache[K, V]) retireRemoved(old node.Node[K, V], cause DeletionCause) DeletionCause {
+func (c *cache[K, V]) retireRemoved(old node.Node, cause DeletionCause) DeletionCause {
 	if old == nil {
 		return 0
 	}
-	c.retire(old, old.Value(), cause)
+	c.retire(old, c.nodeManager.Value(old), cause)
 	return cause
 }

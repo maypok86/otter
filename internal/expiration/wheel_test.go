@@ -27,7 +27,7 @@ func getTestExp(sec int64) int64 {
 }
 
 // scheduledAt returns the levels of the wheel whose buckets hold n, once per occurrence.
-func scheduledAt[K comparable, V any](w *Wheel[K, V], n node.Node[K, V]) []int {
+func scheduledAt(w *Wheel, n node.Node) []int {
 	var levels []int
 	for level, bucket := range w.wheel {
 		for _, root := range bucket {
@@ -41,7 +41,7 @@ func scheduledAt[K comparable, V any](w *Wheel[K, V], n node.Node[K, V]) []int {
 	return levels
 }
 
-func match[K comparable, V any](t *testing.T, nodes []node.Node[K, V], keys []K) {
+func match[K comparable, V any](t *testing.T, nm *node.Manager[K, V], nodes []node.Node, keys []K) {
 	t.Helper()
 
 	if len(nodes) != len(keys) {
@@ -49,7 +49,7 @@ func match[K comparable, V any](t *testing.T, nodes []node.Node[K, V], keys []K)
 	}
 
 	for i, k := range keys {
-		if k != nodes[i].Key() {
+		if k != nm.Key(nodes[i]) {
 			t.Fatalf("Not valid entry found: %+v", nodes[i])
 		}
 	}
@@ -61,12 +61,12 @@ func TestWheel_Schedule(t *testing.T) {
 	nm := node.NewManager[string, string](node.Config{
 		WithExpiration: true,
 	})
-	nodes := []node.Node[string, string]{
+	nodes := []node.Node{
 		nm.Create("k1", "", getTestExp(1), 0, 1),
 		nm.Create("k2", "", getTestExp(69), 0, 1),
 		nm.Create("k3", "", getTestExp(4399), 0, 1),
 	}
-	w := NewWheel(nm)
+	w := NewWheel(nm.Kind)
 
 	for _, n := range nodes {
 		w.Schedule(n)
@@ -74,7 +74,7 @@ func TestWheel_Schedule(t *testing.T) {
 
 	for level, n := range nodes {
 		if got := scheduledAt(w, n); !slices.Equal(got, []int{level}) {
-			t.Fatalf("%s: scheduled at levels %v, want [%d]", n.Key(), got, level)
+			t.Fatalf("%s: scheduled at levels %v, want [%d]", nm.Key(n), got, level)
 		}
 	}
 }
@@ -86,7 +86,7 @@ func TestWheel_Advance(t *testing.T) {
 		WithExpiration: true,
 	})
 	now := time.Now().UnixNano()
-	nodes := []node.Node[string, string]{
+	nodes := []node.Node{
 		nm.Create("k1", "", now+getTestExp(1), 0, 1),
 		nm.Create("k2", "", now+getTestExp(10), 0, 1),
 		nm.Create("k3", "", now+getTestExp(30), 0, 1),
@@ -95,12 +95,12 @@ func TestWheel_Advance(t *testing.T) {
 		nm.Create("k6", "", now+getTestExp(142000), 0, 1),
 		nm.Create("k7", "", now+getTestExp(1420000), 0, 1),
 	}
-	var expired []node.Node[string, string]
-	expire := func(n node.Node[string, string], nowNanos int64) bool {
+	var expired []node.Node
+	expire := func(n node.Node, nowNanos int64) bool {
 		expired = append(expired, n)
 		return true
 	}
-	w := NewWheel(nm)
+	w := NewWheel(nm.Kind)
 	w.time = toWheel(now)
 
 	for _, n := range nodes {
@@ -111,27 +111,27 @@ func TestWheel_Advance(t *testing.T) {
 
 	w.Advance(now+getTestExp(2), expire)
 	keys = append(keys, "k1")
-	match(t, expired, keys)
+	match(t, nm, expired, keys)
 
 	w.Advance(now+getTestExp(64), expire)
 	keys = append(keys, "k2", "k3")
-	match(t, expired, keys)
+	match(t, nm, expired, keys)
 
 	w.Advance(now+getTestExp(121), expire)
 	keys = append(keys, "k4")
-	match(t, expired, keys)
+	match(t, nm, expired, keys)
 
 	w.Advance(now+getTestExp(12000), expire)
 	keys = append(keys, "k5")
-	match(t, expired, keys)
+	match(t, nm, expired, keys)
 
 	w.Advance(now+getTestExp(350000), expire)
 	keys = append(keys, "k6")
-	match(t, expired, keys)
+	match(t, nm, expired, keys)
 
 	w.Advance(now+getTestExp(1520000), expire)
 	keys = append(keys, "k7")
-	match(t, expired, keys)
+	match(t, nm, expired, keys)
 }
 
 // Schedule of a scheduled node moves it to the bucket of its current expiration time, so that
@@ -143,7 +143,7 @@ func TestWheel_ScheduleIsIdempotent(t *testing.T) {
 		WithExpiration: true,
 	})
 	now := time.Now().UnixNano()
-	w := NewWheel(nm)
+	w := NewWheel(nm.Kind)
 	w.time = toWheel(now)
 	n := nm.Create("k1", "", now+getTestExp(1), 0, 1)
 
@@ -168,17 +168,17 @@ func TestWheel_ScheduleDeadNode(t *testing.T) {
 		WithExpiration: true,
 	})
 	now := time.Now().UnixNano()
-	w := NewWheel(nm)
+	w := NewWheel(nm.Kind)
 	w.time = toWheel(now)
 	scheduled := nm.Create("k1", "", now+getTestExp(1), 0, 1)
 	unscheduled := nm.Create("k2", "", now+getTestExp(1), 0, 1)
 	w.Schedule(scheduled)
 
-	for _, n := range []node.Node[string, string]{scheduled, unscheduled} {
+	for _, n := range []node.Node{scheduled, unscheduled} {
 		n.Die()
 		w.Schedule(n)
 		if got := scheduledAt(w, n); len(got) != 0 {
-			t.Fatalf("%s: a dead node is scheduled at levels %v", n.Key(), got)
+			t.Fatalf("%s: a dead node is scheduled at levels %v", nm.Key(n), got)
 		}
 	}
 }
@@ -192,13 +192,13 @@ func TestWheel_AdvanceKeepsDeclinedNode(t *testing.T) {
 		WithExpiration: true,
 	})
 	now := time.Now().UnixNano()
-	w := NewWheel(nm)
+	w := NewWheel(nm.Kind)
 	w.time = toWheel(now)
 	n := nm.Create("k1", "", now+getTestExp(1), 0, 1)
 	w.Schedule(n)
 
 	calls := 0
-	w.Advance(now+getTestExp(2), func(n node.Node[string, string], nowNanos int64) bool {
+	w.Advance(now+getTestExp(2), func(n node.Node, nowNanos int64) bool {
 		calls++
 		n.SetExpiresAt(nowNanos + getTestExp(30))
 		return false
@@ -210,12 +210,12 @@ func TestWheel_AdvanceKeepsDeclinedNode(t *testing.T) {
 		t.Fatalf("kept node scheduled at levels %v, want [0]", got)
 	}
 
-	var expired []node.Node[string, string]
-	w.Advance(now+getTestExp(40), func(n node.Node[string, string], nowNanos int64) bool {
+	var expired []node.Node
+	w.Advance(now+getTestExp(40), func(n node.Node, nowNanos int64) bool {
 		expired = append(expired, n)
 		return true
 	})
-	match(t, expired, []string{"k1"})
+	match(t, nm, expired, []string{"k1"})
 }
 
 func TestWheel_SchedulePassedDeadline(t *testing.T) {
@@ -225,19 +225,19 @@ func TestWheel_SchedulePassedDeadline(t *testing.T) {
 		WithExpiration: true,
 	})
 	now := time.Now().UnixNano()
-	var expired []node.Node[string, string]
-	expire := func(n node.Node[string, string], nowNanos int64) bool {
+	var expired []node.Node
+	expire := func(n node.Node, nowNanos int64) bool {
 		expired = append(expired, n)
 		return true
 	}
-	w := NewWheel(nm)
+	w := NewWheel(nm.Kind)
 	w.time = toWheel(now)
 
 	// the deadline is behind the wheel's clock when the node is scheduled
 	w.Schedule(nm.Create("k1", "", now-getTestExp(10), 0, 1))
 
 	w.Advance(now+getTestExp(2), expire)
-	match(t, expired, []string{"k1"})
+	match(t, nm, expired, []string{"k1"})
 }
 
 // A node is expired by the sweep that reaches its deadline, as HasExpired reports it, and not
@@ -249,19 +249,19 @@ func TestWheel_AdvanceAtDeadline(t *testing.T) {
 		WithExpiration: true,
 	})
 	now := time.Now().UnixNano()
-	var expired []node.Node[string, string]
-	expire := func(n node.Node[string, string], nowNanos int64) bool {
+	var expired []node.Node
+	expire := func(n node.Node, nowNanos int64) bool {
 		expired = append(expired, n)
 		return true
 	}
-	w := NewWheel(nm)
+	w := NewWheel(nm.Kind)
 	w.time = toWheel(now)
 
 	deadline := now + getTestExp(2)
 	w.Schedule(nm.Create("k1", "", deadline, 0, 1))
 
 	w.Advance(deadline, expire)
-	match(t, expired, []string{"k1"})
+	match(t, nm, expired, []string{"k1"})
 }
 
 func TestWheel_All(t *testing.T) {
@@ -271,7 +271,7 @@ func TestWheel_All(t *testing.T) {
 		WithExpiration: true,
 	})
 	now := time.Now().UnixNano()
-	w := NewWheel(nm)
+	w := NewWheel(nm.Kind)
 	w.time = toWheel(now)
 
 	want := []string{"k1", "k2", "k3", "k4", "k5"}
@@ -283,7 +283,7 @@ func TestWheel_All(t *testing.T) {
 	collect := func() []string {
 		var keys []string
 		for n := range w.All() {
-			keys = append(keys, n.Key())
+			keys = append(keys, nm.Key(n))
 		}
 		slices.Sort(keys)
 		return keys
@@ -294,7 +294,7 @@ func TestWheel_All(t *testing.T) {
 
 	// removed entries are not reported
 	for n := range w.All() {
-		if n.Key() == "k3" {
+		if nm.Key(n) == "k3" {
 			w.Unschedule(n)
 			break
 		}
@@ -313,9 +313,9 @@ func TestWheel_AdvancePanicKeepsNodes(t *testing.T) {
 		WithExpiration: true,
 	})
 	now := time.Now().UnixNano()
-	w := NewWheel(nm)
+	w := NewWheel(nm.Kind)
 	w.time = toWheel(now)
-	nodes := []node.Node[string, string]{
+	nodes := []node.Node{
 		nm.Create("k1", "", now+getTestExp(1), 0, 1),
 		nm.Create("k2", "", now+getTestExp(1), 0, 1),
 		nm.Create("k3", "", now+getTestExp(1), 0, 1),
@@ -324,28 +324,28 @@ func TestWheel_AdvancePanicKeepsNodes(t *testing.T) {
 		w.Schedule(n)
 	}
 
-	var expired []node.Node[string, string]
+	var expired []node.Node
 	func() {
 		defer func() {
 			if r := recover(); r != "expire boom" {
 				t.Fatalf("recovered %v, want the expire panic", r)
 			}
 		}()
-		w.Advance(now+getTestExp(2), func(n node.Node[string, string], nowNanos int64) bool {
-			if n.Key() == "k2" {
+		w.Advance(now+getTestExp(2), func(n node.Node, nowNanos int64) bool {
+			if nm.Key(n) == "k2" {
 				panic("expire boom")
 			}
 			expired = append(expired, n)
 			return true
 		})
 	}()
-	match(t, expired, []string{"k1"})
+	match(t, nm, expired, []string{"k1"})
 
-	w.Advance(now+getTestExp(70), func(n node.Node[string, string], nowNanos int64) bool {
+	w.Advance(now+getTestExp(70), func(n node.Node, nowNanos int64) bool {
 		expired = append(expired, n)
 		return true
 	})
-	match(t, expired, []string{"k1", "k2", "k3"})
+	match(t, nm, expired, []string{"k1", "k2", "k3"})
 }
 
 // A panic of expire does not advance the wheel: the next Advance sweeps the buckets the
@@ -357,7 +357,7 @@ func TestWheel_AdvancePanicDoesNotSkipBuckets(t *testing.T) {
 		WithExpiration: true,
 	})
 	now := time.Now().UnixNano()
-	w := NewWheel(nm)
+	w := NewWheel(nm.Kind)
 	w.time = toWheel(now)
 	// The deadlines are two seconds apart, so the nodes are in different level-0 buckets.
 	w.Schedule(nm.Create("k1", "", now+getTestExp(1), 0, 1))
@@ -369,14 +369,14 @@ func TestWheel_AdvancePanicDoesNotSkipBuckets(t *testing.T) {
 				t.Fatalf("recovered %v, want the expire panic", r)
 			}
 		}()
-		w.Advance(now+getTestExp(4), func(n node.Node[string, string], nowNanos int64) bool {
+		w.Advance(now+getTestExp(4), func(n node.Node, nowNanos int64) bool {
 			panic("expire boom")
 		})
 	}()
 
 	expired := make(map[string]bool)
-	w.Advance(now+getTestExp(5), func(n node.Node[string, string], nowNanos int64) bool {
-		expired[n.Key()] = true
+	w.Advance(now+getTestExp(5), func(n node.Node, nowNanos int64) bool {
+		expired[nm.Key(n)] = true
 		return true
 	})
 	if !expired["k1"] || !expired["k2"] || len(expired) != 2 {
@@ -392,20 +392,20 @@ func TestWheel_AdvanceAcrossZero(t *testing.T) {
 	nm := node.NewManager[string, string](node.Config{
 		WithExpiration: true,
 	})
-	var expired []node.Node[string, string]
-	expire := func(n node.Node[string, string], nowNanos int64) bool {
+	var expired []node.Node
+	expire := func(n node.Node, nowNanos int64) bool {
 		expired = append(expired, n)
 		return true
 	}
-	w := NewWheel(nm)
+	w := NewWheel(nm.Kind)
 	start := -int64(10 * time.Second)
 	w.Advance(start, expire)
 
 	w.Schedule(nm.Create("k1", "", start+int64(5*time.Second), 0, 1))
 	w.Schedule(nm.Create("k2", "", start+int64(20*time.Second), 0, 1))
 	w.Advance(int64(time.Second), expire)
-	match(t, expired, []string{"k1"})
+	match(t, nm, expired, []string{"k1"})
 
 	w.Advance(int64(10*time.Second), expire)
-	match(t, expired, []string{"k1", "k2"})
+	match(t, nm, expired, []string{"k1", "k2"})
 }

@@ -377,18 +377,18 @@ func TestCache_RefreshAfterUpdateSeesNewExpiration(t *testing.T) {
 func TestCache_UnmaintainedNodesHaveNoValuePointer(t *testing.T) {
 	t.Parallel()
 
-	require.Equal(t, unsafe.Sizeof(struct{ key, value int }{}), unsafe.Sizeof(node.B[int, int]{}))
+	require.Equal(t, unsafe.Sizeof(struct{ key, value int }{}), unsafe.Sizeof(node.BInline[int, int]{}))
 	require.Equal(t, unsafe.Sizeof(struct {
 		key, value    int
 		refreshableAt atomic.Int64
-	}{}), unsafe.Sizeof(node.BR[int, int]{}))
+	}{}), unsafe.Sizeof(node.BRInline[int, int]{}))
 
 	c := Must(&Options[int, int]{})
 	c.Set(1, 1)
 	c.Set(1, 2)
 	n := c.cache.hashmap.Get(1)
 	require.False(t, n.CanSetValue())
-	require.Equal(t, 2, n.Value())
+	require.Equal(t, 2, c.cache.nodeManager.Value(n))
 }
 
 // readHookExpiry expires entries a fixed time after every write and calls onRead from
@@ -919,10 +919,10 @@ func TestCache_InPlaceZeroWeightIsNotEvicted(t *testing.T) {
 	c.CleanUp()
 
 	p := ci.evictionPolicy
-	victim := p.probation.Head().Key()
+	victim := ci.nodeManager.Key(p.probation.Head())
 	// make the window's head a frequent candidate, so that admission evicts the victim
 	for i := 0; i < 4; i++ {
-		c.GetIfPresent(p.window.Head().Key())
+		c.GetIfPresent(ci.nodeManager.Key(p.window.Head()))
 	}
 	c.CleanUp()
 

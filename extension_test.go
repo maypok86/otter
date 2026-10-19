@@ -378,14 +378,14 @@ func TestCache_EvictionOrderMergesByFrequency(t *testing.T) {
 
 	// merge takes the head of first while firstWins says it goes before the head of second, and
 	// the head of second otherwise.
-	merge := func(first, second []node.Node[int, int], firstWins func(a, b node.Node[int, int]) bool) []int {
+	merge := func(first, second []node.Node, firstWins func(a, b node.Node) bool) []int {
 		keys := make([]int, 0, len(first)+len(second))
 		for len(first) > 0 || len(second) > 0 {
 			if len(second) == 0 || (len(first) > 0 && firstWins(first[0], second[0])) {
-				keys = append(keys, first[0].Key())
+				keys = append(keys, c.cache.nodeManager.Key(first[0]))
 				first = first[1:]
 			} else {
-				keys = append(keys, second[0].Key())
+				keys = append(keys, c.cache.nodeManager.Key(second[0]))
 				second = second[1:]
 			}
 		}
@@ -396,13 +396,13 @@ func TestCache_EvictionOrderMergesByFrequency(t *testing.T) {
 		c.cache.evictionMutex.Lock()
 		defer c.cache.evictionMutex.Unlock()
 		p := c.cache.evictionPolicy
-		freq := func(n node.Node[int, int]) uint64 {
-			return p.sketch.frequency(n.Key())
+		freq := func(n node.Node) uint64 {
+			return p.sketch.frequency(c.cache.nodeManager.Key(n))
 		}
-		keysOf := func(s []node.Node[int, int]) []int {
+		keysOf := func(s []node.Node) []int {
 			keys := make([]int, 0, len(s))
 			for _, n := range s {
-				keys = append(keys, n.Key())
+				keys = append(keys, c.cache.nodeManager.Key(n))
 			}
 			return keys
 		}
@@ -410,7 +410,7 @@ func TestCache_EvictionOrderMergesByFrequency(t *testing.T) {
 		probation := slices.Collect(p.probation.All())
 		protected := slices.Collect(p.protected.All())
 
-		wantColdest = merge(window, probation, func(w, pr node.Node[int, int]) bool {
+		wantColdest = merge(window, probation, func(w, pr node.Node) bool {
 			return freq(w) <= freq(pr)
 		})
 		wantColdest = append(wantColdest, keysOf(protected)...)
@@ -419,7 +419,7 @@ func TestCache_EvictionOrderMergesByFrequency(t *testing.T) {
 		slices.Reverse(probation)
 		slices.Reverse(protected)
 		wantHottest = keysOf(protected)
-		wantHottest = append(wantHottest, merge(probation, window, func(pr, w node.Node[int, int]) bool {
+		wantHottest = append(wantHottest, merge(probation, window, func(pr, w node.Node) bool {
 			return freq(pr) >= freq(w)
 		})...)
 	}()

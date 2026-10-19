@@ -20,20 +20,20 @@ import (
 	"github.com/maypok86/otter/v2/internal/generated/node"
 )
 
-type Linked[K comparable, V any] struct {
-	head  node.Node[K, V]
-	tail  node.Node[K, V]
+type Linked struct {
+	head  node.Node
+	tail  node.Node
 	len   int
 	isExp bool
 }
 
-func NewLinked[K comparable, V any](isExp bool) *Linked[K, V] {
-	return &Linked[K, V]{
+func NewLinked(isExp bool) *Linked {
+	return &Linked{
 		isExp: isExp,
 	}
 }
 
-func (d *Linked[K, V]) PushBack(n node.Node[K, V]) {
+func (d *Linked) PushBack(n node.Node) {
 	if d.IsEmpty() {
 		d.head = n
 		d.tail = n
@@ -46,7 +46,7 @@ func (d *Linked[K, V]) PushBack(n node.Node[K, V]) {
 	d.len++
 }
 
-func (d *Linked[K, V]) UpdateNode(n, old node.Node[K, V]) {
+func (d *Linked) UpdateNode(n, old node.Node) {
 	oldNext := d.getNext(old)
 	if oldNext == nil {
 		if d.tail == old {
@@ -70,7 +70,7 @@ func (d *Linked[K, V]) UpdateNode(n, old node.Node[K, V]) {
 	}
 }
 
-func (d *Linked[K, V]) PushFront(n node.Node[K, V]) {
+func (d *Linked) PushFront(n node.Node) {
 	if d.IsEmpty() {
 		d.head = n
 		d.tail = n
@@ -83,7 +83,7 @@ func (d *Linked[K, V]) PushFront(n node.Node[K, V]) {
 	d.len++
 }
 
-func (d *Linked[K, V]) PopFront() node.Node[K, V] {
+func (d *Linked) PopFront() node.Node {
 	if d.IsEmpty() {
 		return nil
 	}
@@ -94,7 +94,7 @@ func (d *Linked[K, V]) PopFront() node.Node[K, V] {
 }
 
 /*
-func (d *Linked[K, V]) PopBack() node.Node[K, V] {
+func (d *Linked) PopBack() node.Node {
 	if d.IsEmpty() {
 		return nil
 	}
@@ -105,29 +105,29 @@ func (d *Linked[K, V]) PopBack() node.Node[K, V] {
 }
 */
 
-func (d *Linked[K, V]) NotContains(n node.Node[K, V]) bool {
+func (d *Linked) NotContains(n node.Node) bool {
 	return !d.Contains(n)
 }
 
-func (d *Linked[K, V]) Contains(n node.Node[K, V]) bool {
+func (d *Linked) Contains(n node.Node) bool {
 	return d.getPrev(n) != nil || d.getNext(n) != nil || d.head == n
 }
 
-func (d *Linked[K, V]) MoveToBack(n node.Node[K, V]) {
+func (d *Linked) MoveToBack(n node.Node) {
 	if n != d.tail {
 		d.Delete(n)
 		d.PushBack(n)
 	}
 }
 
-func (d *Linked[K, V]) MoveToFront(n node.Node[K, V]) {
+func (d *Linked) MoveToFront(n node.Node) {
 	if n != d.head {
 		d.Delete(n)
 		d.PushFront(n)
 	}
 }
 
-func (d *Linked[K, V]) Delete(n node.Node[K, V]) {
+func (d *Linked) Delete(n node.Node) {
 	next := d.getNext(n)
 	prev := d.getPrev(n)
 
@@ -152,30 +152,30 @@ func (d *Linked[K, V]) Delete(n node.Node[K, V]) {
 	d.len--
 }
 
-func (d *Linked[K, V]) Clear() {
+func (d *Linked) Clear() {
 	for !d.IsEmpty() {
 		d.PopFront()
 	}
 }
 
-func (d *Linked[K, V]) Len() int {
+func (d *Linked) Len() int {
 	return d.len
 }
 
-func (d *Linked[K, V]) IsEmpty() bool {
+func (d *Linked) IsEmpty() bool {
 	return d.Len() == 0
 }
 
-func (d *Linked[K, V]) Head() node.Node[K, V] {
+func (d *Linked) Head() node.Node {
 	return d.head
 }
 
-func (d *Linked[K, V]) Tail() node.Node[K, V] {
+func (d *Linked) Tail() node.Node {
 	return d.tail
 }
 
-func (d *Linked[K, V]) All() iter.Seq[node.Node[K, V]] {
-	return func(yield func(node.Node[K, V]) bool) {
+func (d *Linked) All() iter.Seq[node.Node] {
+	return func(yield func(node.Node) bool) {
 		cursor := d.head
 		for cursor != nil {
 			if !yield(cursor) {
@@ -186,8 +186,8 @@ func (d *Linked[K, V]) All() iter.Seq[node.Node[K, V]] {
 	}
 }
 
-func (d *Linked[K, V]) Backward() iter.Seq[node.Node[K, V]] {
-	return func(yield func(node.Node[K, V]) bool) {
+func (d *Linked) Backward() iter.Seq[node.Node] {
+	return func(yield func(node.Node) bool) {
 		cursor := d.tail
 		for cursor != nil {
 			if !yield(cursor) {
@@ -198,7 +198,7 @@ func (d *Linked[K, V]) Backward() iter.Seq[node.Node[K, V]] {
 	}
 }
 
-func (d *Linked[K, V]) setPrev(to, n node.Node[K, V]) {
+func (d *Linked) setPrev(to, n node.Node) {
 	if d.isExp {
 		to.SetPrevExp(n)
 	} else {
@@ -206,7 +206,7 @@ func (d *Linked[K, V]) setPrev(to, n node.Node[K, V]) {
 	}
 }
 
-func (d *Linked[K, V]) setNext(to, n node.Node[K, V]) {
+func (d *Linked) setNext(to, n node.Node) {
 	if d.isExp {
 		to.SetNextExp(n)
 	} else {
@@ -214,7 +214,7 @@ func (d *Linked[K, V]) setNext(to, n node.Node[K, V]) {
 	}
 }
 
-func (d *Linked[K, V]) getNext(n node.Node[K, V]) node.Node[K, V] {
+func (d *Linked) getNext(n node.Node) node.Node {
 	if d.isExp {
 		return n.NextExp()
 	} else {
@@ -222,7 +222,7 @@ func (d *Linked[K, V]) getNext(n node.Node[K, V]) node.Node[K, V] {
 	}
 }
 
-func (d *Linked[K, V]) getPrev(n node.Node[K, V]) node.Node[K, V] {
+func (d *Linked) getPrev(n node.Node) node.Node {
 	if d.isExp {
 		return n.PrevExp()
 	} else {
