@@ -113,11 +113,15 @@ func CastPointerToBSE(ptr unsafe.Pointer) Node {
 }
 
 var bseKind = Kind{
-	fromPointer:   CastPointerToBSE,
-	init:          initBSE,
-	newHeader:     func() unsafe.Pointer { return unsafe.Pointer(new(BSE)) },
-	variantOffset: unsafe.Offsetof(BSE{}.variant),
-	withState:     true,
+	fromPointer:    CastPointerToBSE,
+	init:           initBSE,
+	newHeader:      func() unsafe.Pointer { return unsafe.Pointer(new(BSE)) },
+	variantOffset:  unsafe.Offsetof(BSE{}.variant),
+	withState:      true,
+	linksOffset:    unsafe.Offsetof(BSE{}.prev),
+	hasLinks:       true,
+	expLinksOffset: unsafe.Offsetof(BSE{}.prevExp),
+	hasExpLinks:    true,
 }
 
 func (n *BSE) AsPointer() unsafe.Pointer {
@@ -152,36 +156,6 @@ func (n *BSE) SetNext(v Node) {
 		return
 	}
 	n.next = (*BSE)(v.AsPointer())
-}
-
-func (n *BSE) PrevExp() Node {
-	if n.prevExp == nil {
-		return nil
-	}
-	return n.prevExp
-}
-
-func (n *BSE) SetPrevExp(v Node) {
-	if v == nil {
-		n.prevExp = nil
-		return
-	}
-	n.prevExp = (*BSE)(v.AsPointer())
-}
-
-func (n *BSE) NextExp() Node {
-	if n.nextExp == nil {
-		return nil
-	}
-	return n.nextExp
-}
-
-func (n *BSE) SetNextExp(v Node) {
-	if v == nil {
-		n.nextExp = nil
-		return
-	}
-	n.nextExp = (*BSE)(v.AsPointer())
 }
 
 func (n *BSE) HasExpired(now int64) bool {

@@ -117,11 +117,15 @@ func CastPointerToBEW(ptr unsafe.Pointer) Node {
 }
 
 var bewKind = Kind{
-	fromPointer:   CastPointerToBEW,
-	init:          initBEW,
-	newHeader:     func() unsafe.Pointer { return unsafe.Pointer(new(BEW)) },
-	variantOffset: unsafe.Offsetof(BEW{}.variant),
-	withState:     true,
+	fromPointer:    CastPointerToBEW,
+	init:           initBEW,
+	newHeader:      func() unsafe.Pointer { return unsafe.Pointer(new(BEW)) },
+	variantOffset:  unsafe.Offsetof(BEW{}.variant),
+	withState:      true,
+	linksOffset:    unsafe.Offsetof(BEW{}.prev),
+	hasLinks:       true,
+	expLinksOffset: unsafe.Offsetof(BEW{}.prevExp),
+	hasExpLinks:    true,
 }
 
 func (n *BEW) AsPointer() unsafe.Pointer {
@@ -156,36 +160,6 @@ func (n *BEW) SetNext(v Node) {
 		return
 	}
 	n.next = (*BEW)(v.AsPointer())
-}
-
-func (n *BEW) PrevExp() Node {
-	if n.prevExp == nil {
-		return nil
-	}
-	return n.prevExp
-}
-
-func (n *BEW) SetPrevExp(v Node) {
-	if v == nil {
-		n.prevExp = nil
-		return
-	}
-	n.prevExp = (*BEW)(v.AsPointer())
-}
-
-func (n *BEW) NextExp() Node {
-	if n.nextExp == nil {
-		return nil
-	}
-	return n.nextExp
-}
-
-func (n *BEW) SetNextExp(v Node) {
-	if v == nil {
-		n.nextExp = nil
-		return
-	}
-	n.nextExp = (*BEW)(v.AsPointer())
 }
 
 func (n *BEW) HasExpired(now int64) bool {

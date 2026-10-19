@@ -269,6 +269,14 @@ func (g *generator) printConstructors() {
 		g.p("variantOffset: unsafe.Offsetof(%s{}.variant),", g.structName)
 		g.p("withState:   true,")
 	}
+	if g.isBounded() {
+		g.p("linksOffset: unsafe.Offsetof(%s{}.prev),", g.structName)
+		g.p("hasLinks:    true,")
+	}
+	if g.features[expiration] {
+		g.p("expLinksOffset: unsafe.Offsetof(%s{}.prevExp),", g.structName)
+		g.p("hasExpLinks:    true,")
+	}
 	g.out()
 	g.p("}")
 	g.p("")
@@ -356,72 +364,6 @@ func (g *generator) printFunctions() {
 		g.out()
 		g.p("}")
 		g.p("n.next = (*%s)(v.AsPointer())", g.structName)
-	} else {
-		g.p("panic(\"not implemented\")")
-	}
-	g.out()
-	g.p("}")
-	g.p("")
-
-	g.p("func (n *%s) PrevExp() Node {", g.structName)
-	g.in()
-	if g.features[expiration] {
-		g.p("if n.prevExp == nil {")
-		g.in()
-		g.p("return nil")
-		g.out()
-		g.p("}")
-		g.p("return n.prevExp")
-	} else {
-		g.p("panic(\"not implemented\")")
-	}
-	g.out()
-	g.p("}")
-	g.p("")
-
-	g.p("func (n *%s) SetPrevExp(v Node) {", g.structName)
-	g.in()
-	if g.features[expiration] {
-		g.p("if v == nil {")
-		g.in()
-		g.p("n.prevExp = nil")
-		g.p("return")
-		g.out()
-		g.p("}")
-		g.p("n.prevExp = (*%s)(v.AsPointer())", g.structName)
-	} else {
-		g.p("panic(\"not implemented\")")
-	}
-	g.out()
-	g.p("}")
-	g.p("")
-
-	g.p("func (n *%s) NextExp() Node {", g.structName)
-	g.in()
-	if g.features[expiration] {
-		g.p("if n.nextExp == nil {")
-		g.in()
-		g.p("return nil")
-		g.out()
-		g.p("}")
-		g.p("return n.nextExp")
-	} else {
-		g.p("panic(\"not implemented\")")
-	}
-	g.out()
-	g.p("}")
-	g.p("")
-
-	g.p("func (n *%s) SetNextExp(v Node) {", g.structName)
-	g.in()
-	if g.features[expiration] {
-		g.p("if v == nil {")
-		g.in()
-		g.p("n.nextExp = nil")
-		g.p("return")
-		g.out()
-		g.p("}")
-		g.p("n.nextExp = (*%s)(v.AsPointer())", g.structName)
 	} else {
 		g.p("panic(\"not implemented\")")
 	}

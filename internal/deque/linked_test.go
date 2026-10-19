@@ -49,7 +49,7 @@ func checkLinkedPtrs(t *testing.T, d *Linked, nodes []node.Node) {
 		if i > 0 {
 			prev = nodes[i-1]
 		}
-		if p := d.getPrev(n); p != prev {
+		if p := prevOf(d, n); p != prev {
 			t.Errorf("elt[%d](%p).prev = %p, want %p", i, n, p, prev)
 		}
 
@@ -57,10 +57,18 @@ func checkLinkedPtrs(t *testing.T, d *Linked, nodes []node.Node) {
 		if i < len(nodes)-1 {
 			next = nodes[i+1]
 		}
-		if nn := d.getNext(n); nn != next {
+		if nn := nextOf(d, n); nn != next {
 			t.Errorf("nodes[%d](%p).next = %p, want %p", i, n, nn, next)
 		}
 	}
+}
+
+func prevOf(d *Linked, n node.Node) node.Node {
+	return d.kind.FromPointer(d.links(node.PointerOf(n)).Prev)
+}
+
+func nextOf(d *Linked, n node.Node) node.Node {
+	return d.kind.FromPointer(d.links(node.PointerOf(n)).Next)
 }
 
 var stringManager = node.NewManager[string, string](testConfig)
@@ -75,7 +83,7 @@ func newNode[K comparable](e K) node.Node {
 func TestLinked(t *testing.T) {
 	t.Parallel()
 
-	d := NewLinked(false)
+	d := NewLinked(stringManager.Kind)
 	checkLinkedPtrs(t, d, []node.Node{})
 	if n := d.PopFront(); n != nil {
 		t.Errorf("d.PopFront() = %p on an empty Linked, want nil", n)
@@ -123,7 +131,7 @@ func TestLinked(t *testing.T) {
 
 	// Check standard iteration.
 	sum := 0
-	for e := d.head; e != nil; e = d.getNext(e) {
+	for e := d.Head(); e != nil; e = nextOf(d, e) {
 		i, err := strconv.Atoi(stringManager.Value(e))
 		if err != nil {
 			continue
@@ -136,8 +144,8 @@ func TestLinked(t *testing.T) {
 
 	// Clear all elements by iterating
 	var next node.Node
-	for e := d.head; e != nil; e = next {
-		next = d.getNext(e)
+	for e := d.Head(); e != nil; e = next {
+		next = nextOf(d, e)
 		d.Delete(e)
 	}
 	checkLinkedPtrs(t, d, []node.Node{})
@@ -146,14 +154,14 @@ func TestLinked(t *testing.T) {
 func TestLinked_Delete(t *testing.T) {
 	t.Parallel()
 
-	d := NewLinked(true)
+	d := NewLinked(node.NewManager[int, int](testConfig).Kind)
 
 	e1 := newNode(1)
 	e2 := newNode(2)
 	d.PushBack(e1)
 	d.PushBack(e2)
 	checkLinkedPtrs(t, d, []node.Node{e1, e2})
-	e := d.head
+	e := d.Head()
 	d.Delete(e)
 	checkLinkedPtrs(t, d, []node.Node{e2})
 	d.Delete(e)

@@ -112,6 +112,8 @@ var bsKind = Kind{
 	newHeader:     func() unsafe.Pointer { return unsafe.Pointer(new(BS)) },
 	variantOffset: unsafe.Offsetof(BS{}.variant),
 	withState:     true,
+	linksOffset:   unsafe.Offsetof(BS{}.prev),
+	hasLinks:      true,
 }
 
 func (n *BS) AsPointer() unsafe.Pointer {
@@ -146,22 +148,6 @@ func (n *BS) SetNext(v Node) {
 		return
 	}
 	n.next = (*BS)(v.AsPointer())
-}
-
-func (n *BS) PrevExp() Node {
-	panic("not implemented")
-}
-
-func (n *BS) SetPrevExp(v Node) {
-	panic("not implemented")
-}
-
-func (n *BS) NextExp() Node {
-	panic("not implemented")
-}
-
-func (n *BS) SetNextExp(v Node) {
-	panic("not implemented")
 }
 
 func (n *BS) HasExpired(now int64) bool {

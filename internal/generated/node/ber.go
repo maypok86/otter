@@ -112,11 +112,13 @@ func CastPointerToBER(ptr unsafe.Pointer) Node {
 }
 
 var berKind = Kind{
-	fromPointer:   CastPointerToBER,
-	init:          initBER,
-	newHeader:     func() unsafe.Pointer { return unsafe.Pointer(new(BER)) },
-	variantOffset: unsafe.Offsetof(BER{}.variant),
-	withState:     true,
+	fromPointer:    CastPointerToBER,
+	init:           initBER,
+	newHeader:      func() unsafe.Pointer { return unsafe.Pointer(new(BER)) },
+	variantOffset:  unsafe.Offsetof(BER{}.variant),
+	withState:      true,
+	expLinksOffset: unsafe.Offsetof(BER{}.prevExp),
+	hasExpLinks:    true,
 }
 
 func (n *BER) AsPointer() unsafe.Pointer {
@@ -137,36 +139,6 @@ func (n *BER) Next() Node {
 
 func (n *BER) SetNext(v Node) {
 	panic("not implemented")
-}
-
-func (n *BER) PrevExp() Node {
-	if n.prevExp == nil {
-		return nil
-	}
-	return n.prevExp
-}
-
-func (n *BER) SetPrevExp(v Node) {
-	if v == nil {
-		n.prevExp = nil
-		return
-	}
-	n.prevExp = (*BER)(v.AsPointer())
-}
-
-func (n *BER) NextExp() Node {
-	if n.nextExp == nil {
-		return nil
-	}
-	return n.nextExp
-}
-
-func (n *BER) SetNextExp(v Node) {
-	if v == nil {
-		n.nextExp = nil
-		return
-	}
-	n.nextExp = (*BER)(v.AsPointer())
 }
 
 func (n *BER) HasExpired(now int64) bool {

@@ -83,22 +83,6 @@ func (n *BR) SetNext(v Node) {
 	panic("not implemented")
 }
 
-func (n *BR) PrevExp() Node {
-	panic("not implemented")
-}
-
-func (n *BR) SetPrevExp(v Node) {
-	panic("not implemented")
-}
-
-func (n *BR) NextExp() Node {
-	panic("not implemented")
-}
-
-func (n *BR) SetNextExp(v Node) {
-	panic("not implemented")
-}
-
 func (n *BR) HasExpired(now int64) bool {
 	return false
 }
