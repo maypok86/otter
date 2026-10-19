@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1792,4 +1793,124 @@ func TestCache_GoexitInClockDuringMaintenance(t *testing.T) {
 		c.Set(i, i)
 	}
 	require.Equal(t, 10, c.EstimatedSize(), "no drain ran after the interrupted pass")
+}
+
+// exitOnceRecorder calls runtime.Goexit once, in the method armed by exit.
+type exitOnceRecorder struct {
+	*stats.Counter
+	exit *atomic.Value
+}
+
+func (r *exitOnceRecorder) exitIf(method string) {
+	if r.exit.CompareAndSwap(method, "") {
+		runtime.Goexit()
+	}
+}
+
+func (r *exitOnceRecorder) RecordHits(count int) {
+	r.exitIf("RecordHits")
+	r.Counter.RecordHits(count)
+}
+
+func (r *exitOnceRecorder) RecordMisses(count int) {
+	r.exitIf("RecordMisses")
+	r.Counter.RecordMisses(count)
+}
+
+func (r *exitOnceRecorder) RecordEviction(weight uint32) {
+	r.exitIf("RecordEviction")
+	r.Counter.RecordEviction(weight)
+}
+
+// The stats recorder runs after a write has changed the table and before the write is handed to
+// the policies. A recorder that calls runtime.Goexit there does not keep the write from them: the
+// new value is linked into the policies and the timer wheel, so it expires, and a value that a
+// Compute replaced is reported.
+func TestCache_GoexitInStatsRecorderStillUpdatesThePolicies(t *testing.T) {
+	t.Parallel()
+
+	loader := LoaderFunc[int, int](func(context.Context, int) (int, error) { return 2, nil })
+	for _, tt := range []struct {
+		name   string
+		method string
+		key    int
+		write  func(c *Cache[int, int])
+		// the previous value has expired when the write runs
+		expired bool
+		event   string
+	}{
+		{"compute/insert", "RecordMisses", 2, func(c *Cache[int, int]) {
+			c.Compute(2, func(int, bool) (int, ComputeOp) { return 2, WriteOp })
+		}, false, ""},
+		{"compute/replace", "RecordHits", 1, func(c *Cache[int, int]) {
+			c.Compute(1, func(int, bool) (int, ComputeOp) { return 2, WriteOp })
+		}, false, "1=1:Replacement"},
+		{"set/overExpired", "RecordEviction", 1, func(c *Cache[int, int]) { c.Set(1, 2) }, true, ""},
+		{"load/overExpired", "RecordEviction", 1, func(c *Cache[int, int]) {
+			_, _ = c.Get(context.Background(), 1, loader)
+		}, true, ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var (
+				mu     sync.Mutex
+				events []string
+				exit   atomic.Value
+				// While hold is set, tasks wait in held: the drain that a read of the expired entry
+				// schedules would otherwise remove it before the load writes over it.
+				hold atomic.Bool
+				held []func()
+			)
+			exit.Store("")
+			clk := newNonTickingClock()
+			c := Must(&Options[int, int]{
+				MaximumSize:      10,
+				ExpiryCalculator: ExpiryWriting[int, int](time.Minute),
+				Clock:            clk,
+				StatsRecorder:    &exitOnceRecorder{Counter: stats.NewCounter(), exit: &exit},
+				Executor: func(fn func()) {
+					if hold.Load() {
+						held = append(held, fn)
+						return
+					}
+					fn()
+				},
+				OnDeletion: func(e DeletionEvent[int, int]) {
+					mu.Lock()
+					defer mu.Unlock()
+					events = append(events, fmt.Sprintf("%d=%d:%v", e.Key, e.Value, e.Cause))
+				},
+			})
+			hasEvent := func(event string) bool {
+				mu.Lock()
+				defer mu.Unlock()
+				return slices.Contains(events, event)
+			}
+			c.Set(1, 1)
+			c.CleanUp()
+			if tt.expired {
+				clk.Sleep(2 * time.Minute)
+			}
+
+			exit.Store(tt.method)
+			hold.Store(true)
+			runExiting(func() { tt.write(c) })
+			hold.Store(false)
+			for _, fn := range held {
+				fn()
+			}
+			require.Empty(t, exit.Load(), "%s was not called", tt.method)
+			validateCache(t, c)
+			if tt.event != "" {
+				require.True(t, hasEvent(tt.event), "%s was not reported", tt.event)
+			}
+
+			clk.Sleep(2 * time.Minute)
+			c.CleanUp()
+			require.True(t, hasEvent(fmt.Sprintf("%d=2:Expiration", tt.key)), "the written value did not expire")
+			require.Zero(t, c.EstimatedSize())
+			validateCache(t, c)
+		})
+	}
 }

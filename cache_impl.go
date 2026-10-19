@@ -712,6 +712,9 @@ func (c *cache[K, V]) doCompute(
 	if notValidOp {
 		panic(fmt.Sprintf("otter: invalid ComputeOp: %d", op))
 	}
+	c.publish(m)
+	// recorded after the mutation is published, so that a recorder that calls runtime.Goexit
+	// cannot keep the change out of the policies
 	if recordStats {
 		if m.live {
 			c.stats.RecordHits(1)
@@ -719,7 +722,6 @@ func (c *cache[K, V]) doCompute(
 			c.stats.RecordMisses(1)
 		}
 	}
-	c.publish(m)
 	if m.next == nil {
 		return zeroValue[V](), false
 	}

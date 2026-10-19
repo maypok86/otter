@@ -120,10 +120,11 @@ Every change decided from a key's current value (`set`, `doCompute`, `Invalidate
      removals it decides itself (evictions, expirations found by the timer wheel). On another
      goroutine it can make one between a write's release of the lock and its submission: a
      node updated in place stays linked, so its eviction or expiration can be reported before
-     the value the update replaced. The task is handed off in a `defer`, so a listener or an
-     executor that calls `runtime.Goexit` does not lose it. For the same reason, a task always
-     goes before the access (`afterRead` may submit a drain), and `removeNode` unlinks a node
-     whose `OnDeletion` exits the goroutine, since the walk that would unlink it does not resume.
+     the value the update replaced. The task is handed off in a `defer`, so a listener, an
+     executor or a stats recorder (`RecordEviction` of a write over an expired entry) that calls
+     `runtime.Goexit` does not lose it; `doCompute` records its hit or miss after it publishes. For the same reason, a task always goes before the access (`afterRead` may submit
+     a drain), and `removeNode` unlinks a node whose `OnDeletion` exits the goroutine, since the
+     walk that would unlink it does not resume.
 4. Tasks go to the bounded MPSC write buffer. When it is full, the writer runs
    `performCleanUp` itself under `evictionMutex`, in a `defer`, so that the task is not lost if
    the drain it scheduled exits the goroutine.
