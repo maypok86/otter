@@ -1262,6 +1262,50 @@ func TestCache_PanicInLoggerIsContained(t *testing.T) {
 	})
 }
 
+// exitingLogger calls runtime.Goexit when it logs an error, as a test logger that calls t.Fatal
+// from a goroutine of the cache does.
+type exitingLogger struct{}
+
+func (exitingLogger) Warn(context.Context, string, error) {}
+
+func (exitingLogger) Error(context.Context, string, error) { runtime.Goexit() }
+
+// The refresh goroutine logs a failed refresh before it reports it. A Logger that calls
+// runtime.Goexit ends that goroutine, but a manual refresh still delivers its result.
+func TestCache_GoexitInLoggerStillReportsRefresh(t *testing.T) {
+	t.Parallel()
+
+	newCache := func() *Cache[int, int] {
+		c := Must(&Options[int, int]{
+			MaximumSize:       10,
+			Logger:            exitingLogger{},
+			RefreshCalculator: RefreshWriting[int, int](time.Hour),
+		})
+		c.Set(1, 1)
+		return c
+	}
+	t.Run("Refresh", func(t *testing.T) {
+		t.Parallel()
+
+		ch := newCache().Refresh(context.Background(), 1, LoaderFunc[int, int](func(context.Context, int) (int, error) {
+			return 0, errors.New("reload failed")
+		}))
+		completes(t, "Refresh", func() {
+			require.EqualError(t, (<-ch).Err, "reload failed")
+		})
+	})
+	t.Run("BulkRefresh", func(t *testing.T) {
+		t.Parallel()
+
+		ch := newCache().BulkRefresh(context.Background(), []int{1, 2}, BulkLoaderFunc[int, int](func(context.Context, []int) (map[int]int, error) {
+			return nil, errors.New("reload failed")
+		}))
+		completes(t, "BulkRefresh", func() {
+			require.Len(t, <-ch, 2)
+		})
+	})
+}
+
 // The cache logs only errors, but safeLogger is a whole Logger, and its Warn drops a panic of the
 // user's logger as well.
 func TestSafeLogger_DropsPanics(t *testing.T) {

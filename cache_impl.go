@@ -840,14 +840,18 @@ func (c *cache[K, V]) refreshKey(
 // refreshTask runs cl, a refresh that the caller registered, with loader, logs its error, and
 // sends its result to ch unless ch is nil.
 func (c *cache[K, V]) refreshTask(ctx context.Context, cl *call[K, V], loader Loader[K, V], ch chan<- RefreshResult[K, V]) {
-	// Deferred, so that a loader that calls runtime.Goexit is reported like one that panics.
+	// Deferred, so that a loader that calls runtime.Goexit is reported like one that panics. The
+	// result is sent from a defer of its own, which runs after the log: a Logger.Error that calls
+	// runtime.Goexit would skip the rest of a deferred function shared with it, and the caller
+	// would wait for the channel forever.
+	if ch != nil {
+		defer func() {
+			ch <- cl.refreshResult()
+		}()
+	}
 	defer func() {
 		if cl.err != nil && !cl.isNotFound {
 			c.logger.Error(ctx, "Returned an error during the refreshing", cl.err)
-		}
-
-		if ch != nil {
-			ch <- cl.refreshResult()
 		}
 	}()
 
