@@ -1590,7 +1590,8 @@ func TestCache_GetEntryQuietlyDuringReplacement(t *testing.T) {
 	require.Equal(t, "a", got)
 }
 
-// A cache without expiration launches no goroutines, so StopAllGoroutines has nothing to stop.
+// A cache without expiration has no periodic clean-up goroutine, so StopAllGoroutines has nothing
+// to stop.
 func TestCache_StopAllGoroutinesWithoutExpiration(t *testing.T) {
 	t.Parallel()
 

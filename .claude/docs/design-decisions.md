@@ -275,6 +275,20 @@ Audits read this file **after** recording their findings (Phase 1.5 of the audit
   required. With a custom executor, or with no writes, the work skipped waits for the next tick
   or the next drain: entries written over the maximum or expired during an iteration may stay
   up to a tick longer.
+- **`StopAllGoroutines` stops only the periodic clean-up goroutine.** The goroutines that run
+  executor tasks (refreshes, a load joined by a manual refresh, `OnDeletion`, drains) belong to
+  the executor: they are neither stopped nor waited for, and operations after the stop still
+  submit them. With the default executor each ends with its task. A caller that must not close a
+  resource under a running loader or listener waits for them itself, e.g. with its own executor.
+- **A cache with expiration created in a testing/synctest bubble must be stopped before the
+  bubble's function returns**, or `synctest.Test` panics ("main bubble goroutine has exited but
+  blocked goroutines remain"), even when the cache was collected. The periodic clean-up blocks
+  durably on the tick channel, and bubble time stops once the function returns, so the tick that
+  would end it never comes. No cleanup can stop it: cleanups run outside the bubble, and closing
+  a bubble's channel from there is fatal. A goroutine that does not block durably would keep the
+  bubble from idling, so fake time would never advance. `time.AfterFunc` instead of a goroutine
+  would avoid it for the built-in clocks only; a custom `Clock` hands out a channel, which needs
+  a goroutine.
 
 ## Rejected approaches
 
