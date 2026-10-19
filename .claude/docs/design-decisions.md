@@ -170,7 +170,10 @@ Audits read this file **after** recording their findings (Phase 1.5 of the audit
   and `Compute*` functions, the weigher, the calculators and `OnAtomicDeletion` run under the
   bucket lock to stay atomic with the write; the loop body of `Hottest`/`Coldest`,
   `SaveCacheTo`'s writer, `RecordEviction` in maintenance and `OnDeletion` on a caller-runs
-  executor run under `evictionMutex`. A deadlock from such a callback that writes (any key),
+  executor run under `evictionMutex`. The `Logger` runs under whichever lock the panicking
+  callback it reports held (`recoverCallback`), and `Clock.NowNano` under the bucket lock of
+  every mutation and under `evictionMutex`; the Clock's doc carries no warning, since a clock that
+  calls the cache is not a realistic configuration. A deadlock from such a callback that writes (any key),
   loads, iterates or calls a method that takes `evictionMutex` is the documented contract
   (the docs of each callback, of `Hottest`/`Coldest` and of `Options.Executor`), not a bug. A deadlock from a single-entry read
   (`GetIfPresent`, `GetEntry`, `GetEntryQuietly`, `EstimatedSize`) with an executor that runs

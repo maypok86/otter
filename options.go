@@ -203,6 +203,8 @@ type Options[K comparable, V any] struct {
 	// Logger specifies the Logger implementation that will be used for logging warning and errors.
 	//
 	// The cache will use slog.Default() by default.
+	//
+	// WARNING: The logger may run while the cache holds its locks and must not call the cache.
 	Logger Logger
 }
 
