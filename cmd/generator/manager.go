@@ -71,14 +71,6 @@ type Node interface {
 	Next() Node
 	// SetNext sets the next node in the eviction policy.
 	SetNext(v Node)
-	// PrevExp returns the previous node in the expiration policy.
-	PrevExp() Node
-	// SetPrevExp sets the previous node in the expiration policy.
-	SetPrevExp(v Node)
-	// NextExp returns the next node in the expiration policy.
-	NextExp() Node
-	// SetNextExp sets the next node in the expiration policy.
-	SetNextExp(v Node)
 	// HasExpired returns true if node has expired.
 	HasExpired(now int64) bool
 	// ExpiresAt returns the expiration time.
@@ -146,6 +138,40 @@ type Kind struct {
 	// variantOffset is the offset of the variant byte in the header of a node with state.
 	variantOffset uintptr
 	withState     bool
+	// linksOffset and expLinksOffset are the offsets of the Links of the eviction policy and of
+	// the timer wheel in the header, and so in the node, which starts with its header.
+	linksOffset    uintptr
+	expLinksOffset uintptr
+	hasLinks       bool
+	hasExpLinks    bool
+}
+
+// Links is the pair of pointers that links a node into a list: prev and next of the eviction
+// policy, or prevExp and nextExp of the timer wheel. They are adjacent in every header, so a
+// list can follow them through a raw pointer to the node at the offset the Kind reports,
+// without calling the node's methods.
+type Links struct {
+	Prev unsafe.Pointer
+	Next unsafe.Pointer
+}
+
+// LinksOffset returns the offset of the eviction policy's Links in a node. It panics for nodes
+// of an unbounded cache, which have no such links: a list writing at a made-up offset would
+// overwrite the node's other fields.
+func (k *Kind) LinksOffset() uintptr {
+	if !k.hasLinks {
+		panic("node: the nodes have no eviction policy links")
+	}
+	return k.linksOffset
+}
+
+// ExpLinksOffset returns the offset of the timer wheel's Links in a node. It panics for nodes
+// without expiration, which have no such links.
+func (k *Kind) ExpLinksOffset() uintptr {
+	if !k.hasExpLinks {
+		panic("node: the nodes have no expiration links")
+	}
+	return k.expLinksOffset
 }
 
 // PointerOf returns the pointer to the node's header that n holds. Every node type is a pointer,

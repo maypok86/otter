@@ -66,6 +66,13 @@ pointer, or the word), so that a reader can tell whether it was replaced in plac
 sentinels are bare headers (`Kind.NewSentinel`) without a key or a value: a walk of a bucket
 must stop at its sentinel and never read its key.
 
+The policy's queues (`deque.Linked`) and the timer wheel hold raw node pointers and write the
+`prev`/`next` and `prevExp`/`nextExp` pairs as `node.Links` at `Kind.LinksOffset()` and
+`Kind.ExpLinksOffset()`, without calling the nodes' methods; the header is the first field of
+every layout, so its offsets are the node's. Both panic for a Kind without those links. The
+eviction loops still walk the queues with `Next` and `Prev`, and the nodes have no expiration
+link methods at all.
+
 ## Read path
 
 `GetIfPresent` → `getNode`: lock-free `hashmap.Get`, `HasExpired`, then loads the value once,

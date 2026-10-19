@@ -18,6 +18,7 @@ import (
 	"iter"
 	"math/bits"
 	"time"
+	"unsafe"
 
 	"github.com/maypok86/otter/v2/internal/generated/node"
 	"github.com/maypok86/otter/v2/internal/xmath"
@@ -43,11 +44,15 @@ var (
 )
 
 // Wheel is a hierarchical timer wheel: it keeps nodes in buckets by their expiration time and
-// expires them as its time advances.
+// expires them as its time advances. Each bucket is a circular list behind a sentinel node; the
+// wheel follows the nodes' expiration links through raw pointers (see node.Links), so linking
+// and unlinking do not call the nodes' methods.
 type Wheel struct {
-	wheel [][]node.Node
+	wheel [][]unsafe.Pointer
 	// time is in wheel units, see toWheel.
-	time uint64
+	time   uint64
+	offset uintptr
+	kind   *node.Kind
 }
 
 // toWheel converts a time of the cache's clock to the wheel's units. The wheel counts in uint64,
@@ -68,24 +73,31 @@ func fromWheel(t uint64) int64 {
 }
 
 func NewWheel(kind *node.Kind) *Wheel {
-	wheel := make([][]node.Node, len(buckets))
-	for i := 0; i < len(wheel); i++ {
-		wheel[i] = make([]node.Node, buckets[i])
-		for j := 0; j < len(wheel[i]); j++ {
-			fn := kind.NewSentinel()
-			fn.SetPrevExp(fn)
-			fn.SetNextExp(fn)
-			wheel[i][j] = fn
+	w := &Wheel{
+		wheel:  make([][]unsafe.Pointer, len(buckets)),
+		time:   toWheel(0),
+		offset: kind.ExpLinksOffset(),
+		kind:   kind,
+	}
+	for i := 0; i < len(w.wheel); i++ {
+		w.wheel[i] = make([]unsafe.Pointer, buckets[i])
+		for j := 0; j < len(w.wheel[i]); j++ {
+			root := node.PointerOf(kind.NewSentinel())
+			l := w.links(root)
+			l.Prev = root
+			l.Next = root
+			w.wheel[i][j] = root
 		}
 	}
-	return &Wheel{
-		wheel: wheel,
-		time:  toWheel(0),
-	}
+	return w
+}
+
+func (w *Wheel) links(p unsafe.Pointer) *node.Links {
+	return (*node.Links)(unsafe.Add(p, w.offset))
 }
 
 // findBucket determines the bucket that the timer event should be added to.
-func (w *Wheel) findBucket(expiration uint64) node.Node {
+func (w *Wheel) findBucket(expiration uint64) unsafe.Pointer {
 	var duration uint64
 	if expiration > w.time {
 		duration = expiration - w.time
@@ -112,12 +124,17 @@ func (w *Wheel) findBucket(expiration uint64) node.Node {
 // write buffer), and Schedule is idempotent, so callers do not need to know whether n is
 // scheduled yet.
 func (w *Wheel) Schedule(n node.Node) {
-	w.Unschedule(n)
+	w.schedule(n, node.PointerOf(n))
+}
+
+// schedule is Schedule for a node whose pointer the caller already has.
+func (w *Wheel) schedule(n node.Node, p unsafe.Pointer) {
+	w.unschedule(p)
 	if !n.IsAlive() {
 		return
 	}
 	root := w.findBucket(toWheel(n.ExpiresAt()))
-	link(root, n)
+	w.link(root, p)
 }
 
 // All returns an iterator over the entries scheduled in the timer wheel, in no particular order.
@@ -125,8 +142,8 @@ func (w *Wheel) All() iter.Seq[node.Node] {
 	return func(yield func(node.Node) bool) {
 		for _, bucket := range w.wheel {
 			for _, root := range bucket {
-				for n := root.NextExp(); n != root; n = n.NextExp() {
-					if !yield(n) {
+				for p := w.links(root).Next; p != root; p = w.links(p).Next {
+					if !yield(w.kind.FromPointer(p)) {
 						return
 					}
 				}
@@ -137,9 +154,17 @@ func (w *Wheel) All() iter.Seq[node.Node] {
 
 // Unschedule removes n from the wheel if it is scheduled.
 func (w *Wheel) Unschedule(n node.Node) {
-	unlink(n)
-	n.SetNextExp(nil)
-	n.SetPrevExp(nil)
+	w.unschedule(node.PointerOf(n))
+}
+
+func (w *Wheel) unschedule(p unsafe.Pointer) {
+	l := w.links(p)
+	if l.Next != nil {
+		w.links(l.Next).Prev = l.Prev
+		w.links(l.Prev).Next = l.Next
+	}
+	l.Next = nil
+	l.Prev = nil
 }
 
 // Advance moves the wheel's time to nowNanos and calls expire for each node whose expiration time
@@ -192,59 +217,55 @@ func (w *Wheel) advanceBuckets(
 // panics, the nodes not yet visited, and the failing node if it is still alive, are scheduled
 // again, so that the wheel keeps every live node it held; one that has expired goes to the level-0
 // bucket of the current tick, which the next Advance sweeps first.
-func (w *Wheel) sweepBucket(root node.Node, expire func(n node.Node, nowNanos int64) bool) {
-	n := root.NextExp()
-	root.SetPrevExp(root)
-	root.SetNextExp(root)
+func (w *Wheel) sweepBucket(root unsafe.Pointer, expire func(n node.Node, nowNanos int64) bool) {
+	rl := w.links(root)
+	p := rl.Next
+	rl.Prev = root
+	rl.Next = root
 
-	var next node.Node
+	var next unsafe.Pointer
 	completed := false
 	defer func() {
 		if completed {
 			return
 		}
-		w.Schedule(n)
+		w.schedule(w.kind.FromPointer(p), p)
 		for next != root {
 			rest := next
-			next = rest.NextExp()
-			// still linked into the detached chain, which Schedule must not unlink it from
-			rest.SetPrevExp(nil)
-			rest.SetNextExp(nil)
-			w.Schedule(rest)
+			l := w.links(rest)
+			next = l.Next
+			// still linked into the detached chain, which schedule must not unlink it from
+			l.Prev = nil
+			l.Next = nil
+			w.schedule(w.kind.FromPointer(rest), rest)
 		}
 	}()
 
-	for n != root {
-		next = n.NextExp()
-		n.SetPrevExp(nil)
-		n.SetNextExp(nil)
+	for p != root {
+		l := w.links(p)
+		next = l.Next
+		l.Prev = nil
+		l.Next = nil
 
+		n := w.kind.FromPointer(p)
 		// expired at its deadline, as HasExpired reports it
 		expired := toWheel(n.ExpiresAt()) <= w.time
 		if !expired || !expire(n, fromWheel(w.time)) {
-			w.Schedule(n)
+			w.schedule(n, p)
 		}
 
-		n = next
+		p = next
 	}
 	completed = true
 }
 
 // link adds the entry at the tail of the bucket's list.
-func link(root, n node.Node) {
-	n.SetPrevExp(root.PrevExp())
-	n.SetNextExp(root)
+func (w *Wheel) link(root, p unsafe.Pointer) {
+	rl := w.links(root)
+	l := w.links(p)
+	l.Prev = rl.Prev
+	l.Next = root
 
-	root.PrevExp().SetNextExp(n)
-	root.SetPrevExp(n)
-}
-
-// unlink removes the entry from its bucket, if scheduled.
-func unlink(n node.Node) {
-	next := n.NextExp()
-	if next != nil {
-		prev := n.PrevExp()
-		next.SetPrevExp(prev)
-		prev.SetNextExp(next)
-	}
+	w.links(rl.Prev).Next = p
+	rl.Prev = p
 }

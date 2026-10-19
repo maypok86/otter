@@ -60,7 +60,8 @@ Compare return values, hit/miss stats, listener events, deadlines and refresh ti
 - E1: node variants `Inline`, `Boxed`, `P`, `U64`, `Empty` and the stateless types: the same
   semantics across variants and feature sets for the `Manager` accessors (`Key`, `Value`,
   `SetValue`, `ValueAndIdentity`, `storeValue`), the layouts and their offsets (`alloc*`,
-  `layout*`, `valueOffsets`), `CanSetValue`, and the header-only sentinels
+  `layout*`, `valueOffsets`), the link offsets (`Kind.LinksOffset`, `Kind.ExpLinksOffset`),
+  `CanSetValue`, and the header-only sentinels
   (`Kind.NewSentinel`); read the emitter in `cmd/generator` and the generated output
 - E2: a cache with maintenance vs one without (no size, weight or expiration): the same public
   results for the same calls

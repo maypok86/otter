@@ -120,6 +120,8 @@ var brwKind = Kind{
 	newHeader:     func() unsafe.Pointer { return unsafe.Pointer(new(BRW)) },
 	variantOffset: unsafe.Offsetof(BRW{}.variant),
 	withState:     true,
+	linksOffset:   unsafe.Offsetof(BRW{}.prev),
+	hasLinks:      true,
 }
 
 func (n *BRW) AsPointer() unsafe.Pointer {
@@ -154,22 +156,6 @@ func (n *BRW) SetNext(v Node) {
 		return
 	}
 	n.next = (*BRW)(v.AsPointer())
-}
-
-func (n *BRW) PrevExp() Node {
-	panic("not implemented")
-}
-
-func (n *BRW) SetPrevExp(v Node) {
-	panic("not implemented")
-}
-
-func (n *BRW) NextExp() Node {
-	panic("not implemented")
-}
-
-func (n *BRW) SetNextExp(v Node) {
-	panic("not implemented")
 }
 
 func (n *BRW) HasExpired(now int64) bool {

@@ -26,8 +26,6 @@ import (
 )
 
 const (
-	isExp = false
-
 	// The initial percent of the maximum weighted capacity dedicated to the main space.
 	percentMain = 0.99
 	// percentMainProtected is the percent of the maximum weighted capacity dedicated to the main's protected space.
@@ -74,6 +72,7 @@ type policy[K comparable] struct {
 // newPolicy returns a policy that evicts through evict. A positive expectedSize sizes the
 // frequency sketch up front.
 func newPolicy[K comparable](
+	kind *node.Kind,
 	isWeighted bool,
 	expectedSize uint64,
 	keyOffset uintptr,
@@ -81,9 +80,9 @@ func newPolicy[K comparable](
 ) *policy[K] {
 	p := &policy[K]{
 		sketch:     newSketch[K](),
-		window:     deque.NewLinked(isExp),
-		probation:  deque.NewLinked(isExp),
-		protected:  deque.NewLinked(isExp),
+		window:     deque.NewLinked(kind),
+		probation:  deque.NewLinked(kind),
+		protected:  deque.NewLinked(kind),
 		isWeighted: isWeighted,
 		rand:       xruntime.Fastrand,
 		evict:      evict,

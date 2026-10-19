@@ -36,7 +36,7 @@ func TestPolicy_SetMaximumSize(t *testing.T) {
 // newTestPolicy returns a weighted policy with the given maximum for the nodes of nm that evicts
 // through evict.
 func newTestPolicy(nm *node.Manager[int, int], maximum uint64, evict func(n node.Node) bool) *policy[int] {
-	p := newPolicy[int](true, 0, nm.KeyOffset(), evict)
+	p := newPolicy[int](nm.Kind, true, 0, nm.KeyOffset(), evict)
 	p.setMaximumSize(maximum)
 	return p
 }
@@ -285,7 +285,7 @@ func TestPolicy_SetMaximumSizeRestartsClimber(t *testing.T) {
 
 	nm := node.NewManager[int, int](node.Config{WithSize: true})
 	for _, adjustment := range []int64{5250, -5250} {
-		p := newPolicy[int](false, 100_000, nm.KeyOffset(), removeAll)
+		p := newPolicy[int](nm.Kind, false, 100_000, nm.KeyOffset(), removeAll)
 		p.setMaximumSize(100_000)
 		for k := range 1000 {
 			p.add(nm.Create(k, k, 0, 0, 1))
@@ -405,7 +405,7 @@ func TestPolicy_IncreaseWindowUpToTheProtectedMaximum(t *testing.T) {
 	t.Parallel()
 
 	nm := node.NewManager[int, int](node.Config{WithSize: true})
-	p := newPolicy[int](false, 0, nm.KeyOffset(), removeAll)
+	p := newPolicy[int](nm.Kind, false, 0, nm.KeyOffset(), removeAll)
 	p.setMaximumSize(100)
 	for k := range 80 {
 		p.add(nm.Create(k, k, 0, 0, 1))
@@ -453,7 +453,7 @@ func requirePolicyReadsKeys[V any](t *testing.T, value V) {
 					WithRefresh:    refresh,
 				}
 				nm := node.NewManager[string, V](c)
-				p := newPolicy[string](weighted, 0, nm.KeyOffset(), removeAll)
+				p := newPolicy[string](nm.Kind, weighted, 0, nm.KeyOffset(), removeAll)
 				for _, n := range []node.Node{
 					nm.Create("key", value, 0, 0, 1),
 					nm.CreateUpdatable("key", value, 0, 0, 1),
