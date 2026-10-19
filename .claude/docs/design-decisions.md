@@ -303,11 +303,11 @@ Audits read this file **after** recording their findings (Phase 1.5 of the audit
 
 - **A periodic clean-up that finds `evictionMutex` held skips its tick** (`cleanUpOnTick`).
   Waiting for the lock would deadlock a `StopAllGoroutines` called by the holder: a `Hottest`/
-  `Coldest` loop body or a `SaveCacheTo` writer. The holder ran maintenance when it took the
-  lock, and with the default executor it schedules a drain on release if writes left one
-  required. With no writes, the work skipped waits for the next tick or the next drain:
-  entries expired during an iteration may stay up to a tick longer. With a custom executor see
-  the next entry.
+  `Coldest` loop body or a `SaveCacheTo` writer. The skipped tick marks a drain required, as a
+  write does, and with the default executor the holder schedules it on release, so the entries
+  that expired while it held the lock go then. Without that, a pass that read the time before
+  the tick would leave them to a next tick or write, and a fake clock in a test may deliver
+  neither. With a custom executor see the next entry.
 - **A custom executor gets no rescheduled drain** (`rescheduleCleanUpIfIncomplete`). A pass, or a
   holder of `evictionMutex` (an iteration, a save, `SetMaximum`), that ends with the drain still
   required schedules the next drain only on the default executor. A caller-runs executor would

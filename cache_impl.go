@@ -1805,11 +1805,14 @@ func periodicCleanUp[K comparable, V any](
 	}
 }
 
-// cleanUpOnTick skips the tick while evictionMutex is held: the work waits for the next tick, or
-// for a drain that a write or the holder schedules. Waiting for the lock would make
-// StopAllGoroutines, called by the holder, wait for its own caller.
+// cleanUpOnTick does not wait while evictionMutex is held: waiting would make StopAllGoroutines,
+// called by the holder, wait for its own caller. It marks a drain required instead, as a write
+// does, so that the holder runs one when it releases the lock (on the default executor; see
+// rescheduleCleanUpIfIncomplete), with the time of the tick or later. A pass that holds the lock
+// may have read the time before the tick, and there may be no other tick or write to come.
 func (c *cache[K, V]) cleanUpOnTick() {
 	if !c.evictionMutex.TryLock() {
+		c.scheduleAfterWrite()
 		return
 	}
 	c.maintenanceAndUnlock(nil)
