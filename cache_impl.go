@@ -1788,10 +1788,21 @@ func periodicCleanUp[K comparable, V any](
 				returned = true
 				return
 			}
-			c.CleanUp()
+			c.cleanUpOnTick()
 			c.clock.ProcessTick()
 		}
 	}
+}
+
+// cleanUpOnTick skips the tick while evictionMutex is held: the work waits for the next tick, or
+// for a drain that a write or the holder schedules. Waiting for the lock would make
+// StopAllGoroutines, called by the holder, wait for its own caller.
+func (c *cache[K, V]) cleanUpOnTick() {
+	if !c.evictionMutex.TryLock() {
+		return
+	}
+	c.maintenanceAndUnlock(nil)
+	c.rescheduleCleanUpIfIncomplete()
 }
 
 // tick returns the clock's ticks for the periodic clean-up. The clock is user code, and that

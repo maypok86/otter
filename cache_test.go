@@ -1632,3 +1632,72 @@ type manualTickClock struct {
 func (c *manualTickClock) Tick(time.Duration) <-chan time.Time {
 	return c.ticks
 }
+
+// A tick that comes while an iteration or a save holds the policy's lock is skipped, so that
+// StopAllGoroutines called from the loop body or the writer does not wait for a clean-up that waits
+// for the lock its caller holds.
+func TestCache_StopAllGoroutinesWhileIterating(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		iterate func(c *Cache[int, int], body func())
+	}{
+		{name: "Hottest", iterate: func(c *Cache[int, int], body func()) {
+			for range c.Hottest() {
+				body()
+				break
+			}
+		}},
+		{name: "Coldest", iterate: func(c *Cache[int, int], body func()) {
+			for range c.Coldest() {
+				body()
+				break
+			}
+		}},
+		{name: "SaveCacheTo", iterate: func(c *Cache[int, int], body func()) {
+			require.NoError(t, SaveCacheTo(c, &callingWriter{call: body}))
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			clock := &manualTickClock{nonTickingClock: newNonTickingClock(), ticks: make(chan time.Time)}
+			c := Must(&Options[int, int]{
+				MaximumSize:      100,
+				ExpiryCalculator: ExpiryWriting[int, int](time.Hour),
+				Clock:            clock,
+			})
+			for i := range 10 {
+				c.Set(i, i)
+			}
+
+			ran := false
+			completes(t, "StopAllGoroutines in "+tt.name, func() {
+				tt.iterate(c, func() {
+					ran = true
+					// the channel is unbuffered: the periodic goroutine has the tick
+					clock.ticks <- time.Time{}
+					require.True(t, c.StopAllGoroutines())
+				})
+			})
+			require.True(t, ran)
+		})
+	}
+}
+
+// callingWriter calls call on the second write: the first one, of the maximum, comes before
+// SaveCacheTo takes the policy's lock.
+type callingWriter struct {
+	call func()
+	n    int
+}
+
+func (w *callingWriter) Write(p []byte) (int, error) {
+	w.n++
+	if w.n == 2 {
+		w.call()
+	}
+	return len(p), nil
+}

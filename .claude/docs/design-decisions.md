@@ -266,6 +266,16 @@ Audits read this file **after** recording their findings (Phase 1.5 of the audit
   between instances. The padding costs about 400 bytes per cache plus 64 bytes per
   ring, at most 2.4 KB with 32 stripes.
 
+## Lifecycle
+
+- **A periodic clean-up that finds `evictionMutex` held skips its tick** (`cleanUpOnTick`).
+  Waiting for the lock would deadlock a `StopAllGoroutines` called by the holder: a `Hottest`/
+  `Coldest` loop body or a `SaveCacheTo` writer. The holder ran maintenance when it took the
+  lock, and with the default executor it schedules a drain on release if writes left one
+  required. With a custom executor, or with no writes, the work skipped waits for the next tick
+  or the next drain: entries written over the maximum or expired during an iteration may stay
+  up to a tick longer.
+
 ## Rejected approaches
 
 - **A write version in every node, recorded by each refresh, to tell an in-place update from an
