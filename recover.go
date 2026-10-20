@@ -41,9 +41,7 @@ func recoverCallback(logger Logger, msg string) {
 // (publish, deleteNodeFromMap).
 type safeRecorder struct {
 	recorder stats.Recorder
-	// byCause is recorder if it implements stats.EvictionCauseRecorder, and nil otherwise.
-	byCause stats.EvictionCauseRecorder
-	logger  Logger
+	logger   Logger
 }
 
 func (r *safeRecorder) RecordHits(count int) {
@@ -61,16 +59,6 @@ func (r *safeRecorder) RecordEviction(weight uint32) {
 	r.recorder.RecordEviction(weight)
 }
 
-func (r *safeRecorder) RecordOverflow(weight uint32) {
-	defer recoverCallback(r.logger, "StatsRecorder.RecordOverflow panicked")
-	r.byCause.RecordOverflow(weight)
-}
-
-func (r *safeRecorder) RecordExpiration(weight uint32) {
-	defer recoverCallback(r.logger, "StatsRecorder.RecordExpiration panicked")
-	r.byCause.RecordExpiration(weight)
-}
-
 func (r *safeRecorder) RecordLoadSuccess(loadTime time.Duration) {
 	defer recoverCallback(r.logger, "StatsRecorder.RecordLoadSuccess panicked")
 	r.recorder.RecordLoadSuccess(loadTime)
@@ -79,6 +67,23 @@ func (r *safeRecorder) RecordLoadSuccess(loadTime time.Duration) {
 func (r *safeRecorder) RecordLoadFailure(loadTime time.Duration) {
 	defer recoverCallback(r.logger, "StatsRecorder.RecordLoadFailure panicked")
 	r.recorder.RecordLoadFailure(loadTime)
+}
+
+// safeCauseRecorder is a stats.EvictionCauseRecorder that recovers and logs panics of the user's
+// recorder, for the same reason as safeRecorder.
+type safeCauseRecorder struct {
+	recorder stats.EvictionCauseRecorder
+	logger   Logger
+}
+
+func (r *safeCauseRecorder) RecordOverflow(weight uint32) {
+	defer recoverCallback(r.logger, "StatsRecorder.RecordOverflow panicked")
+	r.recorder.RecordOverflow(weight)
+}
+
+func (r *safeCauseRecorder) RecordExpiration(weight uint32) {
+	defer recoverCallback(r.logger, "StatsRecorder.RecordExpiration panicked")
+	r.recorder.RecordExpiration(weight)
 }
 
 // safeLogger is a Logger that drops panics of the user's logger. The cache logs from its recovery

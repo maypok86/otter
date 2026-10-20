@@ -50,7 +50,8 @@ type EvictionCauseRecorder interface {
 	// size or weight (otter.CauseOverflow).
 	RecordOverflow(weight uint32)
 	// RecordExpiration records the removal of an entry because it expired (otter.CauseExpiration).
-	// An expired entry is counted here also when it is removed for size or by a write.
+	// An entry that has expired is counted here whichever operation removes it, including an
+	// eviction for size, a write, Invalidate and InvalidateAll.
 	RecordExpiration(weight uint32)
 }
 

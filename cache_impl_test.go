@@ -2152,6 +2152,32 @@ func TestCache_EvictionCauseRecorder(t *testing.T) {
 			clk.Sleep(2 * time.Minute)
 			c.Compute(1, func(int, bool) (int, ComputeOp) { return 0, CancelOp })
 		}, CauseExpiration},
+		{"expiration/forSize", func(c *Cache[int, int], clk *nonTickingClock) {
+			for i := range 5 {
+				c.Set(i, i)
+			}
+			c.CleanUp()
+			clk.Sleep(time.Minute - time.Millisecond)
+			c.CleanUp()
+			// expired, but the timer wheel's tick has not been reached yet
+			clk.Sleep(2 * time.Millisecond)
+			for i := 5; i < 30; i++ {
+				c.Set(i, i)
+			}
+			c.CleanUp()
+		}, CauseExpiration},
+		{"expiration/invalidate", func(c *Cache[int, int], clk *nonTickingClock) {
+			c.Set(1, 1)
+			clk.Sleep(2 * time.Minute)
+			c.Invalidate(1)
+		}, CauseExpiration},
+		{"expiration/invalidateAll", func(c *Cache[int, int], clk *nonTickingClock) {
+			for i := range 5 {
+				c.Set(i, i)
+			}
+			clk.Sleep(2 * time.Minute)
+			c.InvalidateAll()
+		}, CauseExpiration},
 		{"manual", func(c *Cache[int, int], _ *nonTickingClock) {
 			c.Set(1, 1)
 			c.Set(1, 2)

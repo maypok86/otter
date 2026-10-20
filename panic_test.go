@@ -320,11 +320,12 @@ func TestCache_GoexitInEvictionCauseRecorderUnlinksTheRemovedNode(t *testing.T) 
 			var exit atomic.Value
 			exit.Store("")
 			clk := newNonTickingClock()
+			counter := stats.NewCounter()
 			c := Must(&Options[int, int]{
 				MaximumSize:      5,
 				ExpiryCalculator: ExpiryWriting[int, int](time.Minute),
 				Clock:            clk,
-				StatsRecorder:    &exitingCauseRecorder{Counter: stats.NewCounter(), exit: &exit},
+				StatsRecorder:    &exitingCauseRecorder{Counter: counter, exit: &exit},
 				Executor:         syncExecutor,
 			})
 			for i := range 5 {
@@ -343,6 +344,8 @@ func TestCache_GoexitInEvictionCauseRecorderUnlinksTheRemovedNode(t *testing.T) 
 				runExiting(c.CleanUp)
 			}
 			require.Empty(t, exit.Load(), "%s was not called", method)
+			// RecordEviction runs first, so it counted the eviction during which maintenance exited.
+			require.EqualValues(t, 1, counter.Snapshot().Evictions)
 			validateCache(t, c)
 		})
 	}

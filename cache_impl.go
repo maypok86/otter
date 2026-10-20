@@ -147,12 +147,9 @@ func newCache[K comparable, V any](o *Options[K, V]) *cache[K, V] {
 	var statsSnapshoter stats.Snapshoter = &stats.NoopRecorder{}
 	var statsByCause stats.EvictionCauseRecorder
 	if withStats {
-		safe := &safeRecorder{recorder: o.StatsRecorder, logger: logger}
-		statsRecorder = safe
-		// The user's recorder is checked, not safe, which implements every method.
+		statsRecorder = &safeRecorder{recorder: o.StatsRecorder, logger: logger}
 		if byCause, ok := o.StatsRecorder.(stats.EvictionCauseRecorder); ok {
-			safe.byCause = byCause
-			statsByCause = safe
+			statsByCause = &safeCauseRecorder{recorder: byCause, logger: logger}
 		}
 		if snapshoter, ok := o.StatsRecorder.(stats.Snapshoter); ok {
 			statsSnapshoter = snapshoter
