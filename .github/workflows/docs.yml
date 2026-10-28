@@ -6,6 +6,8 @@ on:
       - main
     paths:
       - docs/**
+      - mkdocs.yml
+      - .github/workflows/docs.yml
   workflow_dispatch:
 
 permissions: {}
@@ -38,8 +40,16 @@ jobs:
         id: pages
         uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
 
+      # Pin every package, selectolax included: mkdocs-glightbox parses the pages with it, and its
+      # 1.0 release made mkdocs-glightbox 0.5.2 drop every image from the built site.
       - name: Install dependencies
-        run: pip install mkdocs-material mkdocs-glightbox mkdocs-minify-plugin
+        run: >-
+          pip install
+          mkdocs==1.6.1
+          mkdocs-material==9.8.0
+          mkdocs-glightbox==0.5.3
+          selectolax==1.0.2
+          mkdocs-minify-plugin==0.8.0
 
       - name: Build site
         run: mkdocs build
