@@ -121,7 +121,7 @@ Every change decided from a key's current value (`set`, `doCompute`, `Invalidate
      goroutine it can make one between a write's release of the lock and its submission: a
      node updated in place stays linked, so its eviction or expiration can be reported before
      the value the update replaced. The task is handed off in a `defer`, so a listener, an
-     executor or a stats recorder (`RecordEviction` of a write over an expired entry) that calls
+     executor or a stats recorder (`RecordEviction` or `RecordExpiration` of a write over an expired entry) that calls
      `runtime.Goexit` does not lose it; `doCompute` records its hit or miss after it publishes. For the same reason, a task always goes before the access (`afterRead` may submit
      a drain), and `removeNode` unlinks a node whose `OnDeletion` exits the goroutine, since the
      walk that would unlink it does not resume.

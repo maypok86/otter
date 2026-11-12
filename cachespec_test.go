@@ -25,8 +25,6 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
-
-	"github.com/maypok86/otter/v2/stats"
 )
 
 // A test that depends on the configuration of the cache declares the configurations it holds for
@@ -254,15 +252,15 @@ func forEachSpec(t *testing.T, spec cacheSpec, test func(t *testing.T, cc *cache
 
 // cacheContext is a cache of one configuration over int keys and values, with a clock that moves
 // only when told to, an executor that by default queues tasks until run is called (so an expired
-// entry stays in the table until then), a stats counter, and recorders of the deletion listeners and the
-// logger. The population is the keys 1 to its size, each with the value -key, written and
+// entry stays in the table until then), a stats recorder that also counts evictions by cause, and
+// recorders of the deletion listeners and the logger. The population is the keys 1 to its size, each with the value -key, written and
 // processed by maintenance before the test starts.
 type cacheContext struct {
 	cacheConfig
 	// spec is the spec of the test; its logs and weigher apply to every configuration.
 	spec  cacheSpec
 	clock *nonTickingClock
-	stats *stats.Counter
+	stats *causeRecorder
 	cache testCache
 	// original is the population, which the test starts with.
 	original map[int]int
@@ -283,7 +281,7 @@ func newCacheContext(t *testing.T, spec cacheSpec, cfg cacheConfig, clock *nonTi
 	t.Helper()
 
 	cc := &cacheContext{
-		cacheConfig: cfg, spec: spec, clock: clock, stats: stats.NewCounter(),
+		cacheConfig: cfg, spec: spec, clock: clock, stats: newCauseRecorder(),
 	}
 	switch cfg.values {
 	case wordValues:
@@ -438,8 +436,9 @@ func (cc *cacheContext) log(level, msg string, err error) {
 }
 
 // check runs what the cache has left to do and checks what every test must leave behind: the
-// cache is consistent, no task is left queued, both deletion listeners got the same events, and
-// nothing was logged unless the spec allows it.
+// cache is consistent, no task is left queued, both deletion listeners got the same events, the
+// stats counted the evictions they were told about, and nothing was logged unless the spec allows
+// it.
 func (cc *cacheContext) check(t *testing.T) {
 	t.Helper()
 
@@ -448,12 +447,46 @@ func (cc *cacheContext) check(t *testing.T) {
 	cc.cache.validate(t)
 	require.Zero(t, cc.queue.pending(), "tasks left queued")
 	require.ElementsMatch(t, cc.atomicDeletions.get(), cc.deletions.get(), "the deletion listeners got different events")
+	cc.checkEvictionStats(t)
 
 	cc.mu.Lock()
 	defer cc.mu.Unlock()
 	if !cc.spec.logs {
 		require.Empty(t, cc.logged, "logged")
 	}
+}
+
+// checkEvictionStats checks that the stats counted every eviction that the deletion listeners were
+// told about, with its weight, in total and by cause.
+func (cc *cacheContext) checkEvictionStats(t *testing.T) {
+	t.Helper()
+
+	var (
+		total, totalWeight uint64
+		counts             = make(map[DeletionCause]int)
+		weights            = make(map[DeletionCause]uint64)
+	)
+	for _, e := range cc.deletions.get() {
+		if !e.WasEvicted() {
+			continue
+		}
+		weight := uint64(1)
+		if cc.maximum == weightBounded && cc.spec.weigher != nil {
+			weight = uint64(cc.spec.weigher(e.Key, e.Value))
+		}
+		total++
+		totalWeight += weight
+		counts[e.Cause]++
+		weights[e.Cause] += weight
+	}
+	s := cc.stats.Snapshot()
+	require.Equal(t, total, s.Evictions, "evictions")
+	require.Equal(t, totalWeight, s.EvictionWeight, "eviction weight")
+
+	cc.stats.mu.Lock()
+	defer cc.stats.mu.Unlock()
+	require.Equal(t, counts, cc.stats.counts, "evictions by cause")
+	require.Equal(t, weights, cc.stats.weights, "eviction weight by cause")
 }
 
 // testCache is the cache of a cacheContext with its values seen as ints, whatever their type.

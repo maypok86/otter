@@ -465,6 +465,25 @@ func TestCache_InvalidateAll(t *testing.T) {
 	})
 }
 
+// InvalidateAll reports the entries that have expired as expired, as every other removal of an
+// expired entry does.
+func TestCache_InvalidateAllExpired(t *testing.T) {
+	t.Parallel()
+
+	spec := cacheSpec{expiry: withExpiry, population: []populationKind{partialCache, fullCache}, executor: allExecutors}
+	forEachSpec(t, spec, func(t *testing.T, cc *cacheContext) {
+		cc.advance(2 * specExpiry)
+		cc.cache.InvalidateAll()
+		require.Zero(t, cc.cache.EstimatedSize())
+		events := make([]DeletionEvent[int, int], 0, len(cc.original))
+		for _, key := range cc.keys() {
+			events = append(events, DeletionEvent[int, int]{Key: key, Value: cc.original[key], Cause: CauseExpiration})
+		}
+		cc.run()
+		cc.requireDeletionsByKey(t, events...)
+	})
+}
+
 // An update of every entry replaces each value once, and concurrent reads find every new value.
 func TestCache_Set(t *testing.T) {
 	t.Parallel()

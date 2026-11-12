@@ -69,6 +69,23 @@ func (r *safeRecorder) RecordLoadFailure(loadTime time.Duration) {
 	r.recorder.RecordLoadFailure(loadTime)
 }
 
+// safeCauseRecorder is a stats.EvictionCauseRecorder that recovers and logs panics of the user's
+// recorder, for the same reason as safeRecorder.
+type safeCauseRecorder struct {
+	recorder stats.EvictionCauseRecorder
+	logger   Logger
+}
+
+func (r *safeCauseRecorder) RecordOverflow(weight uint32) {
+	defer recoverCallback(r.logger, "StatsRecorder.RecordOverflow panicked")
+	r.recorder.RecordOverflow(weight)
+}
+
+func (r *safeCauseRecorder) RecordExpiration(weight uint32) {
+	defer recoverCallback(r.logger, "StatsRecorder.RecordExpiration panicked")
+	r.recorder.RecordExpiration(weight)
+}
+
 // safeLogger is a Logger that drops panics of the user's logger. The cache logs from its recovery
 // paths and from refresh goroutines, where a panicking logger would undo the recovery (leave the
 // eviction lock held or a node half removed) or crash the process.

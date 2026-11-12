@@ -169,7 +169,8 @@ Audits read this file **after** recording their findings (Phase 1.5 of the audit
   except to read single entries.** The bucket locks and `evictionMutex` are plain `sync.Mutex`,
   and `Compute*` functions, the weigher, the calculators and `OnAtomicDeletion` run under the
   bucket lock to stay atomic with the write; the loop body of `Hottest`/`Coldest`,
-  `SaveCacheTo`'s writer, `RecordEviction` in maintenance and `OnDeletion` on a caller-runs
+  `SaveCacheTo`'s writer, the recorder's eviction methods (`RecordEviction`, `RecordOverflow`,
+  `RecordExpiration`) in maintenance and `OnDeletion` on a caller-runs
   executor run under `evictionMutex`. The `Logger` runs under whichever lock the panicking
   callback it reports held (`recoverCallback`), and `Clock.NowNano` under the bucket lock of
   every mutation and under `evictionMutex`; the Clock's doc carries no warning, since a clock that
