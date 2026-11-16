@@ -18,7 +18,6 @@ import (
 	"iter"
 	"math/bits"
 	"time"
-	"unsafe"
 
 	"github.com/maypok86/otter/v2/internal/generated/node"
 	"github.com/maypok86/otter/v2/internal/xmath"
@@ -44,15 +43,12 @@ var (
 )
 
 // Wheel is a hierarchical timer wheel: it keeps nodes in buckets by their expiration time and
-// expires them as its time advances. Each bucket is a circular list behind a sentinel node; the
-// wheel follows the nodes' expiration links through raw pointers (see node.Links), so linking
-// and unlinking do not call the nodes' methods.
+// expires them as its time advances.
 type Wheel struct {
-	wheel [][]unsafe.Pointer
+	kind  *node.Kind
+	wheel [][]*node.Sentinel
 	// time is in wheel units, see toWheel.
-	time   uint64
-	offset uintptr
-	kind   *node.Kind
+	time uint64
 }
 
 // toWheel converts a time of the cache's clock to the wheel's units. The wheel counts in uint64,
@@ -73,31 +69,27 @@ func fromWheel(t uint64) int64 {
 }
 
 func NewWheel(kind *node.Kind) *Wheel {
-	w := &Wheel{
-		wheel:  make([][]unsafe.Pointer, len(buckets)),
-		time:   toWheel(0),
-		offset: kind.ExpLinksOffset(),
-		kind:   kind,
-	}
-	for i := 0; i < len(w.wheel); i++ {
-		w.wheel[i] = make([]unsafe.Pointer, buckets[i])
-		for j := 0; j < len(w.wheel[i]); j++ {
-			root := node.PointerOf(kind.NewSentinel())
-			l := w.links(root)
-			l.Prev = root
-			l.Next = root
-			w.wheel[i][j] = root
+	wheel := make([][]*node.Sentinel, len(buckets))
+	for i := 0; i < len(wheel); i++ {
+		wheel[i] = make([]*node.Sentinel, buckets[i])
+		for j := 0; j < len(wheel[i]); j++ {
+			fn := kind.NewSentinel()
+			rh := fn.Header()
+			sh := kind.SentinelHeader(fn)
+			sh.SetPrevExp(rh)
+			sh.SetNextExp(rh)
+			wheel[i][j] = fn
 		}
 	}
-	return w
-}
-
-func (w *Wheel) links(p unsafe.Pointer) *node.Links {
-	return (*node.Links)(unsafe.Add(p, w.offset))
+	return &Wheel{
+		kind:  kind,
+		wheel: wheel,
+		time:  toWheel(0),
+	}
 }
 
 // findBucket determines the bucket that the timer event should be added to.
-func (w *Wheel) findBucket(expiration uint64) unsafe.Pointer {
+func (w *Wheel) findBucket(expiration uint64) *node.Sentinel {
 	var duration uint64
 	if expiration > w.time {
 		duration = expiration - w.time
@@ -123,27 +115,24 @@ func (w *Wheel) findBucket(expiration uint64) unsafe.Pointer {
 // Writes and accesses reach the wheel out of order (maintenance replays the read buffer before the
 // write buffer), and Schedule is idempotent, so callers do not need to know whether n is
 // scheduled yet.
-func (w *Wheel) Schedule(n node.Node) {
-	w.schedule(n, node.PointerOf(n))
-}
-
-// schedule is Schedule for a node whose pointer the caller already has.
-func (w *Wheel) schedule(n node.Node, p unsafe.Pointer) {
-	w.unschedule(p)
-	if !n.IsAlive() {
+func (w *Wheel) Schedule(n *node.Header) {
+	w.Unschedule(n)
+	nh := w.kind.Header(n)
+	if !nh.IsAlive() {
 		return
 	}
-	root := w.findBucket(toWheel(n.ExpiresAt()))
-	w.link(root, p)
+	root := w.findBucket(toWheel(nh.ExpiresAt()))
+	w.link(root, n)
 }
 
 // All returns an iterator over the entries scheduled in the timer wheel, in no particular order.
-func (w *Wheel) All() iter.Seq[node.Node] {
-	return func(yield func(node.Node) bool) {
+func (w *Wheel) All() iter.Seq[*node.Header] {
+	return func(yield func(*node.Header) bool) {
 		for _, bucket := range w.wheel {
 			for _, root := range bucket {
-				for p := w.links(root).Next; p != root; p = w.links(p).Next {
-					if !yield(w.kind.FromPointer(p)) {
+				rh := root.Header()
+				for n := w.kind.SentinelHeader(root).NextExp(); n != rh; n = w.kind.Header(n).NextExp() {
+					if !yield(n) {
 						return
 					}
 				}
@@ -153,24 +142,17 @@ func (w *Wheel) All() iter.Seq[node.Node] {
 }
 
 // Unschedule removes n from the wheel if it is scheduled.
-func (w *Wheel) Unschedule(n node.Node) {
-	w.unschedule(node.PointerOf(n))
-}
-
-func (w *Wheel) unschedule(p unsafe.Pointer) {
-	l := w.links(p)
-	if l.Next != nil {
-		w.links(l.Next).Prev = l.Prev
-		w.links(l.Prev).Next = l.Next
-	}
-	l.Next = nil
-	l.Prev = nil
+func (w *Wheel) Unschedule(n *node.Header) {
+	w.unlink(n)
+	nh := w.kind.Header(n)
+	nh.SetNextExp(nil)
+	nh.SetPrevExp(nil)
 }
 
 // Advance moves the wheel's time to nowNanos and calls expire for each node whose expiration time
 // is reached. The wheel reads that time before expire runs, and a writer can extend it in
 // between: expire reports whether it removed the node, and a node it keeps is scheduled again.
-func (w *Wheel) Advance(nowNanos int64, expire func(n node.Node, nowNanos int64) bool) {
+func (w *Wheel) Advance(nowNanos int64, expire func(n *node.Header, nowNanos int64) bool) {
 	currentTime := toWheel(nowNanos)
 	prevTime := w.time
 	w.time = currentTime
@@ -201,7 +183,7 @@ func (w *Wheel) Advance(nowNanos int64, expire func(n node.Node, nowNanos int64)
 func (w *Wheel) advanceBuckets(
 	index int,
 	prevTicks, delta uint64,
-	expire func(n node.Node, nowNanos int64) bool,
+	expire func(n *node.Header, nowNanos int64) bool,
 ) {
 	mask := buckets[index] - 1
 	steps := min(delta+1, buckets[index])
@@ -217,55 +199,108 @@ func (w *Wheel) advanceBuckets(
 // panics, the nodes not yet visited, and the failing node if it is still alive, are scheduled
 // again, so that the wheel keeps every live node it held; one that has expired goes to the level-0
 // bucket of the current tick, which the next Advance sweeps first.
-func (w *Wheel) sweepBucket(root unsafe.Pointer, expire func(n node.Node, nowNanos int64) bool) {
-	rl := w.links(root)
-	p := rl.Next
-	rl.Prev = root
-	rl.Next = root
+func (w *Wheel) sweepBucket(root *node.Sentinel, expire func(n *node.Header, nowNanos int64) bool) {
+	rh := root.Header()
+	sh := w.kind.SentinelHeader(root)
+	n := sh.NextExp()
+	sh.SetPrevExp(rh)
+	sh.SetNextExp(rh)
 
-	var next unsafe.Pointer
+	var next *node.Header
 	completed := false
 	defer func() {
 		if completed {
 			return
 		}
-		w.schedule(w.kind.FromPointer(p), p)
-		for next != root {
+		w.Schedule(n)
+		for next != rh {
 			rest := next
-			l := w.links(rest)
-			next = l.Next
-			// still linked into the detached chain, which schedule must not unlink it from
-			l.Prev = nil
-			l.Next = nil
-			w.schedule(w.kind.FromPointer(rest), rest)
+			rhdr := w.kind.Header(rest)
+			next = rhdr.NextExp()
+			// still linked into the detached chain, which Schedule must not unlink it from
+			rhdr.SetPrevExp(nil)
+			rhdr.SetNextExp(nil)
+			w.Schedule(rest)
 		}
 	}()
 
-	for p != root {
-		l := w.links(p)
-		next = l.Next
-		l.Prev = nil
-		l.Next = nil
+	for n != rh {
+		nh := w.kind.Header(n)
+		next = nh.NextExp()
+		nh.SetPrevExp(nil)
+		nh.SetNextExp(nil)
 
-		n := w.kind.FromPointer(p)
 		// expired at its deadline, as HasExpired reports it
-		expired := toWheel(n.ExpiresAt()) <= w.time
+		expired := toWheel(nh.ExpiresAt()) <= w.time
 		if !expired || !expire(n, fromWheel(w.time)) {
-			w.schedule(n, p)
+			w.Schedule(n)
 		}
 
-		p = next
+		n = next
 	}
 	completed = true
 }
 
 // link adds the entry at the tail of the bucket's list.
-func (w *Wheel) link(root, p unsafe.Pointer) {
-	rl := w.links(root)
-	l := w.links(p)
-	l.Prev = rl.Prev
-	l.Next = root
+func (w *Wheel) link(root *node.Sentinel, n *node.Header) {
+	rh := root.Header()
+	sh := w.kind.SentinelHeader(root)
+	nh := w.kind.Header(n)
+	prev := sh.PrevExp()
 
-	w.links(rl.Prev).Next = p
-	rl.Prev = p
+	nh.SetPrevExp(prev)
+	nh.SetNextExp(rh)
+
+	w.kind.Header(prev).SetNextExp(n)
+	sh.SetPrevExp(n)
+}
+
+// unlink removes the entry from its bucket, if scheduled.
+func (w *Wheel) unlink(n *node.Header) {
+	nh := w.kind.Header(n)
+	next := nh.NextExp()
+	if next != nil {
+		prev := nh.PrevExp()
+		w.kind.Header(next).SetPrevExp(prev)
+		w.kind.Header(prev).SetNextExp(next)
+	}
+}
+
+// TypedWheel is a strictly typed *node.Entry[K, V] facade over the non-generic Wheel.
+type TypedWheel[K comparable, V any] struct {
+	raw *Wheel
+	nm  *node.Manager[K, V]
+}
+
+func NewTypedWheel[K comparable, V any](nm *node.Manager[K, V]) *TypedWheel[K, V] {
+	return &TypedWheel[K, V]{
+		raw: NewWheel(nm.Kind),
+		nm:  nm,
+	}
+}
+
+func (w *TypedWheel[K, V]) Schedule(n *node.Entry[K, V]) {
+	w.raw.Schedule(n.Header())
+}
+
+func (w *TypedWheel[K, V]) Unschedule(n *node.Entry[K, V]) {
+	w.raw.Unschedule(n.Header())
+}
+
+func (w *TypedWheel[K, V]) All() iter.Seq[*node.Entry[K, V]] {
+	nm := w.nm
+	return func(yield func(*node.Entry[K, V]) bool) {
+		for h := range w.raw.All() {
+			if !yield(nm.FromHeader(h)) {
+				return
+			}
+		}
+	}
+}
+
+func (w *TypedWheel[K, V]) Advance(nowNanos int64, expire func(n *node.Entry[K, V], nowNanos int64) bool) {
+	nm := w.nm
+	w.raw.Advance(nowNanos, func(h *node.Header, now int64) bool {
+		return expire(nm.FromHeader(h), now)
+	})
 }

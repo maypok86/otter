@@ -19,7 +19,8 @@ import (
 	"math/rand/v2"
 	"runtime"
 	"time"
-	"unsafe"
+
+	"github.com/maypok86/otter/v2/internal/generated/node"
 )
 
 const (
@@ -54,7 +55,7 @@ func Fastrand() uint32 {
 // only moves the goroutine to another stripe.
 func StackHash() uint32 {
 	var x byte
-	return hashStack(uintptr(unsafe.Pointer(&x)))
+	return hashStack(node.StackAddr(&x))
 }
 
 func hashStack(addr uintptr) uint32 {

@@ -802,7 +802,7 @@ func (s *specCache[V]) nodeID(key int) any {
 	if n == nil {
 		return nil
 	}
-	return n.AsPointer()
+	return n
 }
 
 func (s *specCache[V]) validate(t *testing.T) {

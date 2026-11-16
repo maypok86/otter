@@ -96,66 +96,59 @@ func layoutBSE[K comparable, V any]() (key uintptr, values [variantCount]uintptr
 }
 
 // initBSE initializes the header of a node allocated by allocBSE.
-func initBSE(ptr unsafe.Pointer, expiresAt, refreshableAt int64, weight uint32, variant uint8) Node {
+func initBSE(ptr unsafe.Pointer, expiresAt, refreshableAt int64, weight uint32, variant uint8) {
 	n := (*BSE)(ptr)
 	n.variant = variant
 	n.expiresAt.Store(expiresAt)
 	n.state.Store(aliveState)
-	return n
 }
 
-// CastPointerToBSE casts a pointer to BSE.
-func CastPointerToBSE(ptr unsafe.Pointer) Node {
-	if ptr == nil {
+// headerBSE wraps a *Header as a *BSE implementing HeaderIface, returning untyped nil if h == nil.
+func headerBSE(h *Header) HeaderIface {
+	if h == nil {
 		return nil
 	}
-	return (*BSE)(ptr)
+	return (*BSE)(unsafe.Pointer(h))
 }
 
 var bseKind = Kind{
-	fromPointer:    CastPointerToBSE,
-	init:           initBSE,
-	newHeader:      func() unsafe.Pointer { return unsafe.Pointer(new(BSE)) },
-	variantOffset:  unsafe.Offsetof(BSE{}.variant),
-	withState:      true,
-	linksOffset:    unsafe.Offsetof(BSE{}.prev),
-	hasLinks:       true,
-	expLinksOffset: unsafe.Offsetof(BSE{}.prevExp),
-	hasExpLinks:    true,
+	header:        headerBSE,
+	init:          initBSE,
+	newHeader:     func() unsafe.Pointer { return unsafe.Pointer(new(BSE)) },
+	variantOffset: unsafe.Offsetof(BSE{}.variant),
+	withState:     true,
 }
 
-func (n *BSE) AsPointer() unsafe.Pointer {
-	return unsafe.Pointer(n)
+func (n *BSE) Prev() *Header {
+	return (*Header)(unsafe.Pointer(n.prev))
 }
 
-func (n *BSE) Prev() Node {
-	if n.prev == nil {
-		return nil
-	}
-	return n.prev
+func (n *BSE) SetPrev(v *Header) {
+	n.prev = (*BSE)(unsafe.Pointer(v))
 }
 
-func (n *BSE) SetPrev(v Node) {
-	if v == nil {
-		n.prev = nil
-		return
-	}
-	n.prev = (*BSE)(v.AsPointer())
+func (n *BSE) Next() *Header {
+	return (*Header)(unsafe.Pointer(n.next))
 }
 
-func (n *BSE) Next() Node {
-	if n.next == nil {
-		return nil
-	}
-	return n.next
+func (n *BSE) SetNext(v *Header) {
+	n.next = (*BSE)(unsafe.Pointer(v))
 }
 
-func (n *BSE) SetNext(v Node) {
-	if v == nil {
-		n.next = nil
-		return
-	}
-	n.next = (*BSE)(v.AsPointer())
+func (n *BSE) PrevExp() *Header {
+	return (*Header)(unsafe.Pointer(n.prevExp))
+}
+
+func (n *BSE) SetPrevExp(v *Header) {
+	n.prevExp = (*BSE)(unsafe.Pointer(v))
+}
+
+func (n *BSE) NextExp() *Header {
+	return (*Header)(unsafe.Pointer(n.nextExp))
+}
+
+func (n *BSE) SetNextExp(v *Header) {
+	n.nextExp = (*BSE)(unsafe.Pointer(v))
 }
 
 func (n *BSE) HasExpired(now int64) bool {

@@ -39,42 +39,52 @@ func layoutB[K comparable, V any]() (key uintptr, values [variantCount]uintptr) 
 }
 
 // initB initializes the header of a node allocated by allocB.
-func initB(ptr unsafe.Pointer, expiresAt, refreshableAt int64, weight uint32, variant uint8) Node {
-	n := (*B)(ptr)
-	return n
+func initB(ptr unsafe.Pointer, expiresAt, refreshableAt int64, weight uint32, variant uint8) {
 }
 
-// CastPointerToB casts a pointer to B.
-func CastPointerToB(ptr unsafe.Pointer) Node {
-	if ptr == nil {
+// headerB wraps a *Header as a *B implementing HeaderIface, returning untyped nil if h == nil.
+func headerB(h *Header) HeaderIface {
+	if h == nil {
 		return nil
 	}
-	return (*B)(ptr)
+	return (*B)(unsafe.Pointer(h))
 }
 
 var bKind = Kind{
-	fromPointer: CastPointerToB,
-	init:        initB,
-	newHeader:   func() unsafe.Pointer { return unsafe.Pointer(new(B)) },
+	header:    headerB,
+	init:      initB,
+	newHeader: func() unsafe.Pointer { return unsafe.Pointer(new(B)) },
 }
 
-func (n *B) AsPointer() unsafe.Pointer {
-	return unsafe.Pointer(n)
-}
-
-func (n *B) Prev() Node {
+func (n *B) Prev() *Header {
 	panic("not implemented")
 }
 
-func (n *B) SetPrev(v Node) {
+func (n *B) SetPrev(v *Header) {
 	panic("not implemented")
 }
 
-func (n *B) Next() Node {
+func (n *B) Next() *Header {
 	panic("not implemented")
 }
 
-func (n *B) SetNext(v Node) {
+func (n *B) SetNext(v *Header) {
+	panic("not implemented")
+}
+
+func (n *B) PrevExp() *Header {
+	panic("not implemented")
+}
+
+func (n *B) SetPrevExp(v *Header) {
+	panic("not implemented")
+}
+
+func (n *B) NextExp() *Header {
+	panic("not implemented")
+}
+
+func (n *B) SetNextExp(v *Header) {
 	panic("not implemented")
 }
 

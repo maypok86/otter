@@ -34,20 +34,21 @@ const (
 // task is a set of information to update the cache:
 // node, reason for write, difference after node weight change, etc.
 type task struct {
-	n           node.Node
-	old         node.Node
+	n           *node.Header
+	old         *node.Header
 	writeReason reason
 	// quiet reports an update that is not an access: the completion of a refresh, whose
 	// request was counted by the read that started it.
 	quiet bool
 }
 
-// node returns the node contained in the task. If node was not specified, it returns nil.
-func (t *task) node() node.Node {
-	return t.n
-}
-
-// oldNode returns the old node contained in the task. If old node was not specified, it returns nil.
-func (t *task) oldNode() node.Node {
-	return t.old
+// newTask allocates a task. Tasks are not pooled: writers on every P would take them and
+// maintenance on one P would return them, so writers would mostly steal from the pool of that P,
+// which costs more than the allocation.
+func newTask[K comparable, V any](n, old *node.Entry[K, V], writeReason reason) *task {
+	return &task{
+		n:           n.Header(),
+		old:         old.Header(),
+		writeReason: writeReason,
+	}
 }

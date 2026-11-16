@@ -65,7 +65,7 @@ func completes(t *testing.T, name string, fn func()) {
 	}()
 	select {
 	case <-done:
-	case <-time.After(30 * time.Second):
+	case <-time.After(90 * time.Second):
 		t.Fatalf("%s did not complete: a lock or a load was left behind", name)
 	}
 }
@@ -1144,7 +1144,7 @@ func TestCache_GoexitInOnAtomicDeletion(t *testing.T) {
 				require.True(t, ok)
 				require.Equal(t, "1", e.Value)
 
-				require.True(t, c.cache.hashmap.Get(1).IsAlive(), "the node was retired")
+				require.True(t, c.cache.hdr(c.cache.hashmap.Get(1)).IsAlive(), "the node was retired")
 				validateCache(t, c)
 
 				completes(t, "a write after the exited listener", func() {

@@ -101,7 +101,7 @@ func layoutBERW[K comparable, V any]() (key uintptr, values [variantCount]uintpt
 }
 
 // initBERW initializes the header of a node allocated by allocBERW.
-func initBERW(ptr unsafe.Pointer, expiresAt, refreshableAt int64, weight uint32, variant uint8) Node {
+func initBERW(ptr unsafe.Pointer, expiresAt, refreshableAt int64, weight uint32, variant uint8) {
 	n := (*BERW)(ptr)
 	n.variant = variant
 	n.policyWeight = weight
@@ -109,61 +109,54 @@ func initBERW(ptr unsafe.Pointer, expiresAt, refreshableAt int64, weight uint32,
 	n.expiresAt.Store(expiresAt)
 	n.refreshableAt.Store(refreshableAt)
 	n.state.Store(aliveState)
-	return n
 }
 
-// CastPointerToBERW casts a pointer to BERW.
-func CastPointerToBERW(ptr unsafe.Pointer) Node {
-	if ptr == nil {
+// headerBERW wraps a *Header as a *BERW implementing HeaderIface, returning untyped nil if h == nil.
+func headerBERW(h *Header) HeaderIface {
+	if h == nil {
 		return nil
 	}
-	return (*BERW)(ptr)
+	return (*BERW)(unsafe.Pointer(h))
 }
 
 var berwKind = Kind{
-	fromPointer:    CastPointerToBERW,
-	init:           initBERW,
-	newHeader:      func() unsafe.Pointer { return unsafe.Pointer(new(BERW)) },
-	variantOffset:  unsafe.Offsetof(BERW{}.variant),
-	withState:      true,
-	linksOffset:    unsafe.Offsetof(BERW{}.prev),
-	hasLinks:       true,
-	expLinksOffset: unsafe.Offsetof(BERW{}.prevExp),
-	hasExpLinks:    true,
+	header:        headerBERW,
+	init:          initBERW,
+	newHeader:     func() unsafe.Pointer { return unsafe.Pointer(new(BERW)) },
+	variantOffset: unsafe.Offsetof(BERW{}.variant),
+	withState:     true,
 }
 
-func (n *BERW) AsPointer() unsafe.Pointer {
-	return unsafe.Pointer(n)
+func (n *BERW) Prev() *Header {
+	return (*Header)(unsafe.Pointer(n.prev))
 }
 
-func (n *BERW) Prev() Node {
-	if n.prev == nil {
-		return nil
-	}
-	return n.prev
+func (n *BERW) SetPrev(v *Header) {
+	n.prev = (*BERW)(unsafe.Pointer(v))
 }
 
-func (n *BERW) SetPrev(v Node) {
-	if v == nil {
-		n.prev = nil
-		return
-	}
-	n.prev = (*BERW)(v.AsPointer())
+func (n *BERW) Next() *Header {
+	return (*Header)(unsafe.Pointer(n.next))
 }
 
-func (n *BERW) Next() Node {
-	if n.next == nil {
-		return nil
-	}
-	return n.next
+func (n *BERW) SetNext(v *Header) {
+	n.next = (*BERW)(unsafe.Pointer(v))
 }
 
-func (n *BERW) SetNext(v Node) {
-	if v == nil {
-		n.next = nil
-		return
-	}
-	n.next = (*BERW)(v.AsPointer())
+func (n *BERW) PrevExp() *Header {
+	return (*Header)(unsafe.Pointer(n.prevExp))
+}
+
+func (n *BERW) SetPrevExp(v *Header) {
+	n.prevExp = (*BERW)(unsafe.Pointer(v))
+}
+
+func (n *BERW) NextExp() *Header {
+	return (*Header)(unsafe.Pointer(n.nextExp))
+}
+
+func (n *BERW) SetNextExp(v *Header) {
+	n.nextExp = (*BERW)(unsafe.Pointer(v))
 }
 
 func (n *BERW) HasExpired(now int64) bool {

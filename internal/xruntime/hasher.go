@@ -19,7 +19,8 @@ import (
 	"math/bits"
 	"math/rand/v2"
 	"reflect"
-	"unsafe"
+
+	"github.com/maypok86/otter/v2/internal/generated/node"
 )
 
 // Hasher hashes keys of type T with a random seed.
@@ -70,16 +71,5 @@ func hashUint64(seed, v uint64) uint64 {
 // toUint64 reinterprets an integer key as uint64. The switch is resolved at
 // compile time for each instantiation of T.
 func toUint64[T any](t T) uint64 {
-	switch unsafe.Sizeof(t) {
-	case 8:
-		return *(*uint64)(unsafe.Pointer(&t))
-	case 4:
-		return uint64(*(*uint32)(unsafe.Pointer(&t)))
-	case 2:
-		return uint64(*(*uint16)(unsafe.Pointer(&t)))
-	case 1:
-		return uint64(*(*uint8)(unsafe.Pointer(&t)))
-	default:
-		panic("unreachable")
-	}
+	return node.IntToUint64(t)
 }

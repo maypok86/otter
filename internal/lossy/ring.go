@@ -19,7 +19,6 @@ package lossy
 
 import (
 	"sync/atomic"
-	"unsafe"
 
 	"github.com/maypok86/otter/v2/internal/generated/node"
 	"github.com/maypok86/otter/v2/internal/xruntime"
@@ -65,23 +64,20 @@ type ring struct {
 	// allocator put before the ring.
 	_      [xruntime.CacheLineSize]byte
 	head   atomic.Uint64
-	_      [xruntime.CacheLineSize - unsafe.Sizeof(atomic.Uint64{})]byte
+	_      [xruntime.CacheLineSize - 8]byte
 	tail   atomic.Uint64
-	_      [xruntime.CacheLineSize - unsafe.Sizeof(atomic.Uint64{})]byte
-	kind   *node.Kind
-	buffer [bufferSize]unsafe.Pointer // node.Node
+	_      [xruntime.CacheLineSize - 8]byte
+	buffer [bufferSize]atomic.Pointer[node.Header]
 }
 
-func newRing(kind *node.Kind, n node.Node) *ring {
-	r := &ring{
-		kind: kind,
-	}
-	r.buffer[0] = n.AsPointer()
+func newRing(n *node.Header) *ring {
+	r := &ring{}
+	r.buffer[0].Store(n)
 	r.tail.Store(1)
 	return r
 }
 
-func (r *ring) add(n node.Node) Status {
+func (r *ring) add(n *node.Header) Status {
 	head := r.head.Load()
 	tail := r.tail.Load()
 	size := tail - head
@@ -90,7 +86,7 @@ func (r *ring) add(n node.Node) Status {
 	}
 
 	if r.tail.CompareAndSwap(tail, tail+1) {
-		atomic.StorePointer(&r.buffer[tail&mask], n.AsPointer())
+		r.buffer[tail&mask].Store(n)
 		// Report the buffer full as soon as it fills up, so that a drain is scheduled
 		// before the next read is dropped rather than after.
 		if size+1 >= bufferSize {
@@ -101,7 +97,7 @@ func (r *ring) add(n node.Node) Status {
 	return Failed
 }
 
-func (r *ring) drainTo(consumer func(n node.Node)) {
+func (r *ring) drainTo(consumer func(n *node.Header)) {
 	head := r.head.Load()
 	tail := r.tail.Load()
 	size := tail - head
@@ -109,16 +105,15 @@ func (r *ring) drainTo(consumer func(n node.Node)) {
 		return
 	}
 
-	kind := r.kind
 	for head != tail {
 		index := head & mask
-		ptr := atomic.LoadPointer(&r.buffer[index])
+		ptr := r.buffer[index].Load()
 		if ptr == nil {
 			// not published.
 			break
 		}
-		atomic.StorePointer(&r.buffer[index], nil)
-		consumer(kind.FromPointer(ptr))
+		r.buffer[index].Store(nil)
+		consumer(ptr)
 		head++
 	}
 	r.head.Store(head)

@@ -19,7 +19,6 @@ package lossy
 
 import (
 	"sync/atomic"
-	"unsafe"
 
 	"github.com/maypok86/otter/v2/internal/generated/node"
 	"github.com/maypok86/otter/v2/internal/xruntime"
@@ -27,6 +26,7 @@ import (
 
 const (
 	attempts = 3
+	ptrSize  = 4 << (^uintptr(0) >> 63)
 )
 
 // striped is the table of stripes. Every Add reads it, so it is padded on both sides: otherwise
@@ -42,7 +42,7 @@ type striped struct {
 // newBuffers returns the stripes of a table of length n. They are allocated with a cache line
 // of padding on each side for the same reason as the table itself.
 func newBuffers(n int) []atomic.Pointer[ring] {
-	pad := int(xruntime.CacheLineSize / unsafe.Sizeof(atomic.Pointer[ring]{}))
+	pad := xruntime.CacheLineSize / ptrSize
 	buffers := make([]atomic.Pointer[ring], n+2*pad)
 	return buffers[pad : pad+n : pad+n]
 }
@@ -53,16 +53,14 @@ func newBuffers(n int) []atomic.Pointer[ring] {
 type Striped struct {
 	// Every Add loads the table, so the fields are padded like the table itself.
 	_       [xruntime.CacheLineSize]byte
-	kind    *node.Kind
 	maxLen  int
 	striped atomic.Pointer[striped]
 	busy    atomic.Uint32
 	_       [xruntime.CacheLineSize]byte
 }
 
-func NewStriped(maxLen int, kind *node.Kind) *Striped {
+func NewStriped(maxLen int) *Striped {
 	return &Striped{
-		kind:   kind,
 		maxLen: maxLen,
 	}
 }
@@ -70,7 +68,7 @@ func NewStriped(maxLen int, kind *node.Kind) *Striped {
 // Add inserts the specified element into this buffer if it is possible to do so immediately without
 // violating capacity restrictions. The addition is allowed to fail spuriously if multiple
 // goroutines insert concurrently.
-func (s *Striped) Add(n node.Node) Status {
+func (s *Striped) Add(n *node.Header) Status {
 	// A goroutine keeps adding to the same stripe, while goroutines running at the same
 	// time mostly add to different ones.
 	h := xruntime.StackHash()
@@ -94,7 +92,7 @@ func (s *Striped) Add(n node.Node) Status {
 	return result
 }
 
-func (s *Striped) expandOrRetry(n node.Node, h uint32, wasUncontended bool) Status {
+func (s *Striped) expandOrRetry(n *node.Header, h uint32, wasUncontended bool) Status {
 	result := Failed
 	// True if the CAS also failed on another stripe. It starts false, so the table grows
 	// only when the contention shows up again after a rehash, not on a single collision.
@@ -116,7 +114,7 @@ func (s *Striped) expandOrRetry(n node.Node, h uint32, wasUncontended bool) Stat
 						//nolint:gosec // len will never overflow uint32
 						j := h & uint32(rs.len-1)
 						if rs.buffers[j].Load() == nil {
-							rs.buffers[j].Store(newRing(s.kind, n))
+							rs.buffers[j].Store(newRing(n))
 							created = true
 						}
 					}
@@ -168,7 +166,7 @@ func (s *Striped) expandOrRetry(n node.Node, h uint32, wasUncontended bool) Stat
 					buffers: newBuffers(1),
 					len:     1,
 				}
-				striped.buffers[0].Store(newRing(s.kind, n))
+				striped.buffers[0].Store(newRing(n))
 				s.striped.Store(striped)
 				init = true
 			}
@@ -185,7 +183,7 @@ func (s *Striped) expandOrRetry(n node.Node, h uint32, wasUncontended bool) Stat
 
 // DrainTo drains the buffer, sending each element to the consumer for processing. The caller must ensure
 // that a consumer has exclusive read access to the buffer.
-func (s *Striped) DrainTo(consumer func(n node.Node)) {
+func (s *Striped) DrainTo(consumer func(n *node.Header)) {
 	bs := s.striped.Load()
 	if bs == nil {
 		return
@@ -214,21 +212,30 @@ func (s *Striped) Len() int {
 	return result
 }
 
-/*
-func (s *Striped) Clear() {
-	bs := s.striped.Load()
-	if bs == nil {
-		return
-	}
-	for s.busy.Load() != 0 || !s.busy.CompareAndSwap(0, 1) {
-		runtime.Gosched()
-	}
-	for i := 0; i < bs.len; i++ {
-		b := bs.buffers[i].Load()
-		if b != nil {
-			b.clear()
-		}
-	}
-	s.busy.Store(0)
+// TypedStriped is a strictly typed facade over the non-generic Striped read buffer.
+type TypedStriped[K comparable, V any] struct {
+	raw *Striped
+	nm  *node.Manager[K, V]
 }
-*/
+
+func NewTypedStriped[K comparable, V any](maxLen int, nm *node.Manager[K, V]) *TypedStriped[K, V] {
+	return &TypedStriped[K, V]{
+		raw: NewStriped(maxLen),
+		nm:  nm,
+	}
+}
+
+func (s *TypedStriped[K, V]) Add(n *node.Entry[K, V]) Status {
+	return s.raw.Add(n.Header())
+}
+
+func (s *TypedStriped[K, V]) DrainTo(consumer func(n *node.Entry[K, V])) {
+	nm := s.nm
+	s.raw.DrainTo(func(h *node.Header) {
+		consumer(nm.FromHeader(h))
+	})
+}
+
+func (s *TypedStriped[K, V]) Len() int {
+	return s.raw.Len()
+}

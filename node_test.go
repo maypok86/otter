@@ -16,18 +16,16 @@ package otter
 
 import (
 	"fmt"
-	"reflect"
 	"testing"
-	"unsafe"
-
-	"github.com/stretchr/testify/require"
 
 	"github.com/maypok86/otter/v2/internal/generated/node"
 )
 
-// nodeConfigs returns every node configuration a cache can use.
-func nodeConfigs() []node.Config {
-	var configs []node.Config
+// Header(nil), SentinelHeader(nil), and EntryHeader(nil) must return untyped nil HeaderIface
+// values, and missing handle conversions and links must return nil pointers across all 12 configs.
+func TestNode_MissingNodesAreNilInterfaces(t *testing.T) {
+	t.Parallel()
+
 	for _, withSize := range []bool{false, true} {
 		for _, withExpiration := range []bool{false, true} {
 			for _, withRefresh := range []bool{false, true} {
@@ -35,108 +33,79 @@ func nodeConfigs() []node.Config {
 					if withSize && withWeight {
 						continue
 					}
-					configs = append(configs, node.Config{
+					cfg := node.Config{
 						WithSize:       withSize,
 						WithExpiration: withExpiration,
 						WithRefresh:    withRefresh,
 						WithWeight:     withWeight,
+					}
+					t.Run(fmt.Sprintf("%+v", cfg), func(t *testing.T) {
+						t.Parallel()
+
+						nm := node.NewManager[int, int](cfg)
+						n := nm.Create(1, 10, 0, 0, 1)
+						u := nm.CreateUpdatable(2, 20, 0, 0, 1)
+
+						if got := nm.Header(nil); got != nil {
+							t.Fatalf("Header(nil) = %#v, want untyped nil interface", got)
+						}
+						if got := nm.SentinelHeader(nil); got != nil {
+							t.Fatalf("SentinelHeader(nil) = %#v, want untyped nil interface", got)
+						}
+						if got := nm.EntryHeader(nil); got != nil {
+							t.Fatalf("EntryHeader(nil) = %#v, want untyped nil interface", got)
+						}
+						if got := nm.FromHeader(nil); got != nil {
+							t.Fatalf("FromHeader(nil) = %#v, want nil", got)
+						}
+						if got := nm.FromKeyed(nil); got != nil {
+							t.Fatalf("FromKeyed(nil) = %#v, want nil", got)
+						}
+						lens := nm.KeyLens()
+						if got := lens.FromHeader(nil); got != nil {
+							t.Fatalf("KeyLens.FromHeader(nil) = %#v, want nil", got)
+						}
+						if got := lens.Key(n.Keyed()); got != 1 {
+							t.Fatalf("KeyLens.Key(n) = %d, want 1", got)
+						}
+						withState := withSize || withExpiration || withWeight
+						if val, hdr, word := nm.ValueAndIdentity(n); val != 10 || hdr != nil || (withState && word != 10) {
+							t.Fatalf("ValueAndIdentity(n) = (%d, %v, %d), want (10, nil, word)", val, hdr, word)
+						}
+						nmBox := node.NewManager[int, [3]int](cfg)
+						ub := nmBox.CreateUpdatable(2, [3]int{7, 8, 9}, 0, 0, 1)
+						if bval, bhdr, _ := nmBox.ValueAndIdentity(ub); bval != ([3]int{7, 8, 9}) || (withState && bhdr == nil) || (!withState && bhdr != nil) {
+							t.Fatalf("ValueAndIdentity(ub) = (%v, %v), withState=%v", bval, bhdr, withState)
+						}
+
+						for _, e := range []*node.Entry[int, int]{n, u} {
+							nh := nm.EntryHeader(e)
+							if withSize || withWeight {
+								if nh.Prev() != nil || nh.Next() != nil {
+									t.Fatalf("Prev() = %#v, Next() = %#v, want nil pointers", nh.Prev(), nh.Next())
+								}
+							}
+							if withExpiration {
+								if nh.PrevExp() != nil || nh.NextExp() != nil {
+									t.Fatalf("PrevExp() = %#v, NextExp() = %#v, want nil pointers", nh.PrevExp(), nh.NextExp())
+								}
+							}
+						}
+						if withExpiration {
+							s := nm.NewSentinel()
+							sh := nm.SentinelHeader(s)
+							if sh.PrevExp() != nil || sh.NextExp() != nil {
+								t.Fatalf("NewSentinel initial links (%v, %v), want (nil, nil)", sh.PrevExp(), sh.NextExp())
+							}
+							sh.SetPrevExp(s.Header())
+							sh.SetNextExp(s.Header())
+							if sh.PrevExp() != s.Header() || sh.NextExp() != s.Header() {
+								t.Fatalf("NewSentinel self links (%v, %v), want self %v", sh.PrevExp(), sh.NextExp(), s.Header())
+							}
+						}
 					})
 				}
 			}
 		}
-	}
-	return configs
-}
-
-// Nodes are compared with ==, which holds only if a missing node is a nil interface. A typed
-// nil (a nil node pointer in a non-nil interface) would make n == nil false, and the eviction
-// loops would never see the end of a queue.
-func TestNode_MissingNodesAreNilInterfaces(t *testing.T) {
-	t.Parallel()
-
-	for _, cfg := range nodeConfigs() {
-		t.Run(fmt.Sprintf("%+v", cfg), func(t *testing.T) {
-			t.Parallel()
-
-			nm := node.NewManager[int, int](cfg)
-			n := nm.Create(1, 1, 0, 0, 1)
-			u := nm.CreateUpdatable(2, 2, 0, 0, 1)
-
-			if got := nm.FromPointer(nil); got != nil {
-				t.Fatalf("FromPointer(nil) = %#v, want a nil interface", got)
-			}
-			for _, n := range []node.Node{n, u} {
-				if cfg.WithSize || cfg.WithWeight {
-					if n.Prev() != nil || n.Next() != nil {
-						t.Fatalf("Prev() = %#v, Next() = %#v, want nil interfaces", n.Prev(), n.Next())
-					}
-				}
-				if cfg.WithExpiration {
-					l := (*node.Links)(unsafe.Add(node.PointerOf(n), nm.ExpLinksOffset()))
-					if l.Prev != nil || l.Next != nil {
-						t.Fatalf("expiration links = %v, %v, want nil", l.Prev, l.Next)
-					}
-				}
-			}
-		})
-	}
-}
-
-// The eviction policy's queues and the timer wheel write a node's links through raw pointers
-// at the offsets the Kind reports. The offsets must be those of the prev/next and
-// prevExp/nextExp fields of every header, writing there must leave the key and the value
-// alone, and the policy's eviction loops, which read the links through Next and Prev, must
-// see what the queues wrote.
-func TestNode_LinksOffsetsMatchFields(t *testing.T) {
-	t.Parallel()
-
-	for _, cfg := range nodeConfigs() {
-		t.Run(fmt.Sprintf("%+v", cfg), func(t *testing.T) {
-			t.Parallel()
-
-			nm := node.NewManager[int, int](cfg)
-			n := nm.Create(1, 2, 0, 0, 1)
-			other := nm.Create(3, 4, 0, 0, 1)
-			linksAt := func(offset uintptr) *node.Links {
-				return (*node.Links)(unsafe.Add(node.PointerOf(n), offset))
-			}
-			typ := reflect.TypeOf(n).Elem()
-			requirePair := func(offset uintptr, prev, next string) {
-				t.Helper()
-				p, ok := typ.FieldByName(prev)
-				require.True(t, ok, "%s has no field %s", typ, prev)
-				nx, ok := typ.FieldByName(next)
-				require.True(t, ok, "%s has no field %s", typ, next)
-				require.Equal(t, p.Offset, offset, "%s.%s", typ, prev)
-				require.Equal(t, p.Offset+unsafe.Sizeof(unsafe.Pointer(nil)), nx.Offset, "%s.%s", typ, next)
-			}
-
-			if cfg.WithSize || cfg.WithWeight {
-				requirePair(nm.LinksOffset(), "prev", "next")
-				l := linksAt(nm.LinksOffset())
-				l.Prev, l.Next = node.PointerOf(other), node.PointerOf(other)
-				if n.Prev() != other || n.Next() != other {
-					t.Fatalf("Prev() = %#v, Next() = %#v, want the node written at LinksOffset", n.Prev(), n.Next())
-				}
-				if cfg.WithExpiration {
-					if el := linksAt(nm.ExpLinksOffset()); el.Prev != nil || el.Next != nil {
-						t.Fatalf("writing at LinksOffset changed the expiration links")
-					}
-				}
-			} else {
-				require.Panics(t, func() { nm.LinksOffset() })
-			}
-
-			if cfg.WithExpiration {
-				requirePair(nm.ExpLinksOffset(), "prevExp", "nextExp")
-				l := linksAt(nm.ExpLinksOffset())
-				l.Prev, l.Next = node.PointerOf(other), node.PointerOf(other)
-			} else {
-				require.Panics(t, func() { nm.ExpLinksOffset() })
-			}
-			if k, v := nm.Key(n), nm.Value(n); k != 1 || v != 2 {
-				t.Fatalf("Key() = %d, Value() = %d after writing the links, want 1 and 2", k, v)
-			}
-		})
 	}
 }

@@ -16,12 +16,12 @@ package otter
 
 import (
 	"context"
+	"reflect"
 	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
-	"unsafe"
 
 	"github.com/stretchr/testify/require"
 
@@ -150,7 +150,7 @@ func TestCache_InPlaceUpdateConcurrentReads(t *testing.T) {
 	for i := 0; i < keys; i++ {
 		n := c.cache.hashmap.Get(i)
 		require.NotNil(t, n)
-		require.True(t, n.CanSetValue(), "key %d", i)
+		require.True(t, c.cache.hdr(n).CanSetValue(), "key %d", i)
 	}
 }
 
@@ -181,7 +181,7 @@ func TestCache_ExpireNodeRechecksExpiration(t *testing.T) {
 		if extended {
 			// the deadline of n moves later after the wheel found it expired, before expireNode
 			// takes the hash table's lock
-			n.SetExpiresAt(now + int64(time.Minute))
+			ci.hdr(n).SetExpiresAt(now + int64(time.Minute))
 		}
 		removed := ci.expireNode(n, now)
 		ci.evictionMutex.Unlock()
@@ -377,17 +377,17 @@ func TestCache_RefreshAfterUpdateSeesNewExpiration(t *testing.T) {
 func TestCache_UnmaintainedNodesHaveNoValuePointer(t *testing.T) {
 	t.Parallel()
 
-	require.Equal(t, unsafe.Sizeof(struct{ key, value int }{}), unsafe.Sizeof(node.BInline[int, int]{}))
-	require.Equal(t, unsafe.Sizeof(struct {
+	require.Equal(t, reflect.TypeFor[struct{ key, value int }]().Size(), reflect.TypeFor[node.BInline[int, int]]().Size())
+	require.Equal(t, reflect.TypeFor[struct {
 		key, value    int
 		refreshableAt atomic.Int64
-	}{}), unsafe.Sizeof(node.BRInline[int, int]{}))
+	}]().Size(), reflect.TypeFor[node.BRInline[int, int]]().Size())
 
 	c := Must(&Options[int, int]{})
 	c.Set(1, 1)
 	c.Set(1, 2)
 	n := c.cache.hashmap.Get(1)
-	require.False(t, n.CanSetValue())
+	require.False(t, c.cache.hdr(n).CanSetValue())
 	require.Equal(t, 2, c.cache.nodeManager.Value(n))
 }
 
@@ -477,7 +477,7 @@ func TestCache_InPlaceWeightChange(t *testing.T) {
 
 	c.Set(1, 30) // heavier, still within the maximum
 	c.CleanUp()
-	require.True(t, n.AsPointer() == c.cache.hashmap.Get(1).AsPointer(), "the node was replaced")
+	require.True(t, n == c.cache.hashmap.Get(1), "the node was replaced")
 	require.Equal(t, uint64(70), c.WeightedSize())
 	validateCache(t, c)
 
@@ -519,7 +519,7 @@ func TestCache_UpdateThatShrinksExpirationReplacesNode(t *testing.T) {
 	n := c.cache.hashmap.Get(1)
 
 	c.Set(1, 10) // the entry now expires in 10s instead of 100s
-	require.False(t, n.AsPointer() == c.cache.hashmap.Get(1).AsPointer(), "an earlier deadline was set in place")
+	require.False(t, n == c.cache.hashmap.Get(1), "an earlier deadline was set in place")
 	validateCache(t, c)
 
 	clk.Sleep(20 * time.Second)
@@ -617,8 +617,8 @@ func TestCache_ReconcileReschedulesEarlierExpiration(t *testing.T) {
 	ci.evictionMutex.Lock()
 	ci.maintenance(nil)
 	// SetExpiresAfter moved the deadline from 100s to 10s, and its access was dropped
-	n.SetExpiresAt(clk.NowNano() + int64(10*time.Second))
-	ci.runTask(newTask(n, nil, reconcileReason))
+	ci.hdr(n).SetExpiresAt(clk.NowNano() + int64(10*time.Second))
+	ci.runTask(newTask[int, int](n, nil, reconcileReason))
 	ci.evictionMutex.Unlock()
 
 	clk.Sleep(20 * time.Second)
@@ -648,10 +648,10 @@ func TestCache_ReconcileAfterDeadlinePassed(t *testing.T) {
 	ci.evictionMutex.Lock()
 	// an in-place update moved the deadline from 100s to 10s, and a maintenance pass advanced
 	// the wheel past it before the task ran
-	n.SetExpiresAt(clk.NowNano() + int64(10*time.Second))
+	ci.hdr(n).SetExpiresAt(clk.NowNano() + int64(10*time.Second))
 	clk.Sleep(20 * time.Second)
 	ci.maintenance(nil)
-	ci.runTask(newTask(n, nil, reconcileReason))
+	ci.runTask(newTask[int, int](n, nil, reconcileReason))
 	ci.evictionMutex.Unlock()
 
 	clk.Sleep(2 * time.Second)
@@ -806,7 +806,7 @@ func TestCache_WeightAndExpirationChange(t *testing.T) {
 
 	c.Set(1, 10) // lighter, and expires in 10s instead of 100s
 	c.CleanUp()
-	require.False(t, n.AsPointer() == c.cache.hashmap.Get(1).AsPointer(), "an earlier deadline was set in place")
+	require.False(t, n == c.cache.hashmap.Get(1), "an earlier deadline was set in place")
 	require.Equal(t, uint64(110), c.WeightedSize())
 	validateCache(t, c)
 
@@ -823,7 +823,7 @@ func TestCache_WeightAndExpirationChange(t *testing.T) {
 	clk.Sleep(51 * time.Second)
 	c.Set(3, 30)
 	c.CleanUp()
-	require.False(t, n.AsPointer() == c.cache.hashmap.Get(3).AsPointer(), "the expired node was reused")
+	require.False(t, n == c.cache.hashmap.Get(3), "the expired node was reused")
 	require.Contains(t, deleted.get(), DeletionEvent[int, int]{Key: 3, Value: 50, Cause: CauseExpiration})
 	require.Equal(t, uint64(130), c.WeightedSize())
 	validateCache(t, c)
@@ -857,7 +857,7 @@ func TestCache_DeletionListenersAgreeOnCause(t *testing.T) {
 			// reader that read the node before it expired can still do; SetExpiresAfter ignores
 			// an expired node.
 			if n := c.cache.hashmap.Get(e.Key); n != nil {
-				n.SetExpiresAt(clk.NowNano() + int64(time.Hour))
+				c.cache.hdr(n).SetExpiresAt(clk.NowNano() + int64(time.Hour))
 			}
 		},
 		Executor: func(fn func()) {
@@ -919,10 +919,10 @@ func TestCache_InPlaceZeroWeightIsNotEvicted(t *testing.T) {
 	c.CleanUp()
 
 	p := ci.evictionPolicy
-	victim := ci.nodeManager.Key(p.probation.Head())
+	victim := p.keyOf(p.probation.Head())
 	// make the window's head a frequent candidate, so that admission evicts the victim
 	for i := 0; i < 4; i++ {
-		c.GetIfPresent(ci.nodeManager.Key(p.window.Head()))
+		c.GetIfPresent(p.keyOf(p.window.Head()))
 	}
 	c.CleanUp()
 
@@ -931,7 +931,7 @@ func TestCache_InPlaceZeroWeightIsNotEvicted(t *testing.T) {
 	c.Set(100, 100)
 	ci.drainWriteBuffer() // the insertion is replayed: 11 > 10
 	c.Set(victim, -1)     // weight 1 -> 0 in place; its reweigh task is still buffered
-	require.Equal(t, uint32(0), ci.hashmap.Get(victim).Weight())
+	require.Equal(t, uint32(0), ci.hdr(ci.hashmap.Get(victim)).Weight())
 	ci.evictNodes()
 	ci.evictionMutex.Unlock()
 	c.CleanUp()
@@ -1033,7 +1033,7 @@ func TestCache_InPlaceRefreshMovesDeadlineLater(t *testing.T) {
 		return 3, nil
 	}))
 	require.NoError(t, res.Err)
-	require.True(t, n.AsPointer() == c.cache.hashmap.Get(1).AsPointer(), "the node was replaced")
+	require.True(t, n == c.cache.hashmap.Get(1), "the node was replaced")
 
 	clk.Sleep(5 * time.Second) // past the former deadline
 	c.CleanUp()

@@ -16,7 +16,6 @@ import (
 	"errors"
 	"sync"
 	"sync/atomic"
-	"unsafe"
 
 	"github.com/maypok86/otter/v2/internal/generated/node"
 	"github.com/maypok86/otter/v2/internal/hashmap"
@@ -31,7 +30,7 @@ type call[K comparable, V any] struct {
 	err   error
 	// base is the node a refresh was requested for (nil for a load or an absent key). The
 	// call's result is written only if base is still the key's node.
-	base node.Node
+	base *node.Entry[K, V]
 	// done is closed when the call has finished and its result may be read.
 	done       chan struct{}
 	isRefresh  bool
@@ -61,7 +60,7 @@ type call[K comparable, V any] struct {
 	// whose Get started after the value expired does not take it (expiredBefore). Both are written
 	// before done is closed.
 	expiresAt int64
-	node      node.Node
+	node      *node.Entry[K, V]
 	// invalidations is group.invalidations when the bulk load that returned a fake call started.
 	invalidations uint64
 }
@@ -76,7 +75,7 @@ type loadAgain[K comparable, V any] struct {
 	successor *call[K, V]
 }
 
-func newCall[K comparable, V any](key K, isRefresh bool, base node.Node) *call[K, V] {
+func newCall[K comparable, V any](key K, isRefresh bool, base *node.Entry[K, V]) *call[K, V] {
 	c := &call[K, V]{
 		key:       key,
 		isRefresh: isRefresh,
@@ -86,13 +85,12 @@ func newCall[K comparable, V any](key K, isRefresh bool, base node.Node) *call[K
 	return c
 }
 
-func (c *call[K, V]) Value() V {
-	return c.value
+func (c *call[K, V]) Key() K {
+	return c.key
 }
 
-func (c *call[K, V]) AsPointer() unsafe.Pointer {
-	//nolint:gosec // it's ok
-	return unsafe.Pointer(c)
+func (c *call[K, V]) Value() V {
+	return c.value
 }
 
 func (c *call[K, V]) cancel() {
@@ -142,8 +140,8 @@ func (c *call[K, V]) failedForOwner() bool {
 // deleted, and SetExpiresAfter or ExpireAfterRead may move its deadline earlier meanwhile, so the
 // node's current deadline counts as well as the recorded one. The node may hold a later value by
 // then, whose deadline can only make a waiter miss and load the key again.
-func (c *call[K, V]) expiredBefore(nowNano int64) bool {
-	return c.node != nil && (c.expiresAt <= nowNano || c.node.ExpiresAt() <= nowNano)
+func (c *call[K, V]) expiredBefore(kind *node.Kind, nowNano int64) bool {
+	return c.node != nil && (c.expiresAt <= nowNano || kind.Header(c.node.Header()).ExpiresAt() <= nowNano)
 }
 
 // refreshResult is what a manual refresh reports for c once it has finished.
@@ -155,22 +153,13 @@ func (c *call[K, V]) refreshResult() RefreshResult[K, V] {
 	}
 }
 
-type mapCallManager[K comparable, V any] struct{}
-
-func (m *mapCallManager[K, V]) FromPointer(ptr unsafe.Pointer) *call[K, V] {
-	return (*call[K, V])(ptr)
-}
-
-func (m *mapCallManager[K, V]) KeyOffset() uintptr {
-	return unsafe.Offsetof(call[K, V]{}.key)
-}
-
 // group runs loads and refreshes so that each key has at most one registered at a time (a
 // superseded refresh keeps running for the callers that joined it), and owns their lifecycle: a call is registered before it runs, runs with its panics and runtime.Goexit
 // caught, and is finished exactly once, whatever fails: its result is committed, then the call
 // is deleted and its waiters woken, then the commit is published.
 type group[K comparable, V any] struct {
-	calls         *hashmap.Map[K, *call[K, V]]
+	calls         *hashmap.Map[K, call[K, V]]
+	kind          *node.Kind
 	initMutex     sync.Mutex
 	isInitialized atomic.Bool
 
@@ -182,7 +171,7 @@ type group[K comparable, V any] struct {
 	// executor runs refresh tasks.
 	executor func(fn func())
 	// nodeOf returns the key's node in the cache's hash table, or nil.
-	nodeOf func(key K) node.Node
+	nodeOf func(key K) *node.Entry[K, V]
 
 	// The counters below change on bulk loads and invalidations, while the fields above are read
 	// on every Get and write: they are kept off their cache line.
@@ -198,7 +187,7 @@ func (g *group[K, V]) init() {
 	if !g.isInitialized.Load() {
 		g.initMutex.Lock()
 		if !g.isInitialized.Load() {
-			g.calls = hashmap.New[K, *call[K, V]](&mapCallManager[K, V]{})
+			g.calls = hashmap.New[K, call[K, V]]((*call[K, V]).Key)
 			g.isInitialized.Store(true)
 		}
 		g.initMutex.Unlock()
@@ -222,11 +211,11 @@ func (g *group[K, V]) startLoad(key K, nowNano int64) (c *call[K, V], shouldLoad
 // request cancels it. A call started from another base will not be written over the key's
 // current state (see isRefreshBase): a load, whose base is nil, never writes over a live value.
 // It is replaced rather than joined, and still completes for its own waiters.
-func (g *group[K, V]) startRefresh(key K, base node.Node) (c *call[K, V], shouldLoad bool) {
+func (g *group[K, V]) startRefresh(key K, base *node.Entry[K, V]) (c *call[K, V], shouldLoad bool) {
 	return g.startCall(key, true, base, 0)
 }
 
-func (g *group[K, V]) startCall(key K, isRefresh bool, base node.Node, nowNano int64) (c *call[K, V], shouldLoad bool) {
+func (g *group[K, V]) startCall(key K, isRefresh bool, base *node.Entry[K, V], nowNano int64) (c *call[K, V], shouldLoad bool) {
 	// A refresh's base is the key's live node, read under its bucket lock, so a call started from
 	// the same base is not superseded. A committed call has already written its result, in place
 	// over that base, so a refresh that joined it would report that result without reloading it.
@@ -261,13 +250,16 @@ func (g *group[K, V]) startCall(key K, isRefresh bool, base node.Node, nowNano i
 // for the callers that joined it before. A removed or replaced node never comes back, so a
 // refresh that is superseded stays so.
 func (g *group[K, V]) superseded(c *call[K, V], nowNano int64) bool {
-	return c.isRefresh && c.base != nil &&
-		(!c.base.IsAlive() || c.base.HasExpired(nowNano) || g.nodeOf(c.key) != c.base)
+	if !c.isRefresh || c.base == nil {
+		return false
+	}
+	bh := g.kind.Header(c.base.Header())
+	return !bh.IsAlive() || bh.HasExpired(nowNano) || g.nodeOf(c.key) != c.base
 }
 
 // adopt finishes c, which the caller registered, with a value that is already in the cache,
 // without loading it. The value, held by n, expires at expiresAt (see call.expiresAt).
-func (g *group[K, V]) adopt(c *call[K, V], value V, expiresAt int64, n node.Node) {
+func (g *group[K, V]) adopt(c *call[K, V], value V, expiresAt int64, n *node.Entry[K, V]) {
 	c.value = value
 	c.expiresAt, c.node = expiresAt, n
 	g.deleteCall(c)
@@ -469,18 +461,18 @@ func (g *group[K, V]) authoritative(c *call[K, V], prev previous[K, V], nowNano 
 	if c.isFake {
 		return !prev.live && g.getCall(c.key) == nil && g.invalidations.Load() == c.invalidations
 	}
-	return g.getCall(c.key) == c && isRefreshBase(c.base, prev.node, nowNano)
+	return g.getCall(c.key) == c && g.isRefreshBase(c.base, prev.node, nowNano)
 }
 
 // isRefreshBase reports whether current, the key's node when a refresh completes, is still the
 // node base that the refresh was requested for. A refresh of an absent key (base == nil) also
 // matches an expired node, which the request did not see. A base that has expired since the
 // request is absent, so there is nothing left to refresh.
-func isRefreshBase(base, current node.Node, nowNano int64) bool {
+func (g *group[K, V]) isRefreshBase(base, current *node.Entry[K, V], nowNano int64) bool {
 	if base != nil {
-		return current != nil && current == base && !current.HasExpired(nowNano)
+		return current != nil && current == base && !g.kind.Header(current.Header()).HasExpired(nowNano)
 	}
-	return current == nil || current.HasExpired(nowNano)
+	return current == nil || g.kind.Header(current.Header()).HasExpired(nowNano)
 }
 
 // submitRefresh submits a refresh task that finishes the calls in owned, which the caller

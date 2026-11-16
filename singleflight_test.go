@@ -37,7 +37,11 @@ type testGroup struct {
 }
 
 func newTestGroup() *testGroup {
-	tg := &testGroup{group: &group[int, int]{}}
+	tg := &testGroup{
+		group: &group[int, int]{
+			kind: node.NewManager[int, int](node.Config{WithExpiration: true}).Kind,
+		},
+	}
 	tg.commit = func(cl *call[int, int]) mutation[int, int] {
 		tg.mu.Lock()
 		tg.committed = append(tg.committed, cl)
@@ -301,59 +305,59 @@ func TestGroup_Authoritative(t *testing.T) {
 	live := nm.Create(1, 1, now+1, 0, 1)
 	expired := nm.Create(1, 1, now, 0, 1)
 	other := nm.Create(1, 2, now+1, 0, 1)
-	prevOf := func(n node.Node) previous[int, int] {
+	prevOf := func(n *node.Entry[int, int]) previous[int, int] {
 		if n == nil {
 			return previous[int, int]{}
 		}
-		return previous[int, int]{node: n, value: nm.Value(n), live: !n.HasExpired(now)}
+		return previous[int, int]{node: n, value: nm.Value(n), live: !nm.EntryHeader(n).HasExpired(now)}
 	}
 
 	tests := []struct {
 		name string
 		// setup registers the call and returns it, and the key's node when it finishes
-		setup func(g *testGroup) (*call[int, int], node.Node)
+		setup func(g *testGroup) (*call[int, int], *node.Entry[int, int])
 		want  bool
 	}{
-		{"load over an absent key", func(g *testGroup) (*call[int, int], node.Node) {
+		{"load over an absent key", func(g *testGroup) (*call[int, int], *node.Entry[int, int]) {
 			cl, _ := g.startLoad(1, 0)
 			return cl, nil
 		}, true},
-		{"load cancelled by a write", func(g *testGroup) (*call[int, int], node.Node) {
+		{"load cancelled by a write", func(g *testGroup) (*call[int, int], *node.Entry[int, int]) {
 			cl, _ := g.startLoad(1, 0)
 			g.delete(1)
 			return cl, other
 		}, false},
-		{"refresh of an unchanged node", func(g *testGroup) (*call[int, int], node.Node) {
+		{"refresh of an unchanged node", func(g *testGroup) (*call[int, int], *node.Entry[int, int]) {
 			cl, _ := g.startRefresh(1, live)
 			return cl, live
 		}, true},
-		{"refresh of a replaced node", func(g *testGroup) (*call[int, int], node.Node) {
+		{"refresh of a replaced node", func(g *testGroup) (*call[int, int], *node.Entry[int, int]) {
 			cl, _ := g.startRefresh(1, live)
 			return cl, other
 		}, false},
-		{"refresh of a removed node", func(g *testGroup) (*call[int, int], node.Node) {
+		{"refresh of a removed node", func(g *testGroup) (*call[int, int], *node.Entry[int, int]) {
 			cl, _ := g.startRefresh(1, live)
 			return cl, nil
 		}, false},
-		{"refresh of a node that expired in flight", func(g *testGroup) (*call[int, int], node.Node) {
+		{"refresh of a node that expired in flight", func(g *testGroup) (*call[int, int], *node.Entry[int, int]) {
 			cl, _ := g.startRefresh(1, expired)
 			return cl, expired
 		}, false},
-		{"refresh of an absent key over an expired node", func(g *testGroup) (*call[int, int], node.Node) {
+		{"refresh of an absent key over an expired node", func(g *testGroup) (*call[int, int], *node.Entry[int, int]) {
 			cl, _ := g.startRefresh(1, nil)
 			return cl, expired
 		}, true},
-		{"refresh of an absent key over a live node", func(g *testGroup) (*call[int, int], node.Node) {
+		{"refresh of an absent key over a live node", func(g *testGroup) (*call[int, int], *node.Entry[int, int]) {
 			cl, _ := g.startRefresh(1, nil)
 			return cl, live
 		}, false},
-		{"fake call over an absent key", func(*testGroup) (*call[int, int], node.Node) {
+		{"fake call over an absent key", func(*testGroup) (*call[int, int], *node.Entry[int, int]) {
 			return &call[int, int]{key: 1, isFake: true}, nil
 		}, true},
-		{"fake call over a live node", func(*testGroup) (*call[int, int], node.Node) {
+		{"fake call over a live node", func(*testGroup) (*call[int, int], *node.Entry[int, int]) {
 			return &call[int, int]{key: 1, isFake: true}, live
 		}, false},
-		{"fake call while the key has its own load", func(g *testGroup) (*call[int, int], node.Node) {
+		{"fake call while the key has its own load", func(g *testGroup) (*call[int, int], *node.Entry[int, int]) {
 			g.startLoad(1, 0)
 			return &call[int, int]{key: 1, isFake: true}, nil
 		}, false},
