@@ -15,11 +15,11 @@
 package lossy
 
 import (
+	"reflect"
 	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
-	"unsafe"
 
 	"github.com/stretchr/testify/require"
 
@@ -41,11 +41,11 @@ func TestNewStriped(t *testing.T) {
 		WithSize:       true,
 		WithExpiration: true,
 	})
-	s := NewStriped(64, nm.Kind)
+	s := NewStriped(64)
 	if got := s.striped.Load(); got != nil {
 		t.Fatalf("the striped buffer must be nil, but got: %v", got)
 	}
-	res := s.Add(nm.Create(1, 2, 100, 0, 1))
+	res := s.Add(nm.Create(1, 2, 100, 0, 1).Header())
 	if l := s.striped.Load().len; l != 1 {
 		t.Fatalf("the striped buffer length must be 1, but got: %d", l)
 	}
@@ -65,8 +65,8 @@ func TestStriped_Add(t *testing.T) {
 		WithSize:       true,
 		WithExpiration: true,
 	})
-	s := NewStriped(maxBufferLen, nm.Kind)
-	n := nm.Create(1, 2, 100, 0, 1)
+	s := NewStriped(maxBufferLen)
+	n := nm.Create(1, 2, 100, 0, 1).Header()
 
 	var wg sync.WaitGroup
 	wg.Add(goroutines)
@@ -99,11 +99,11 @@ func TestStriped_DrainTo(t *testing.T) {
 		WithSize:       true,
 		WithExpiration: true,
 	})
-	s := NewStriped(64, nm.Kind)
-	n := nm.Create(1, 2, 100, 0, 1)
+	s := NewStriped(64)
+	n := nm.Create(1, 2, 100, 0, 1).Header()
 
 	var drains int
-	s.DrainTo(func(n node.Node) {
+	s.DrainTo(func(n *node.Header) {
 		drains++
 	})
 	if drains != 0 {
@@ -118,7 +118,7 @@ func TestStriped_DrainTo(t *testing.T) {
 		t.Fatalf("the status must be success, but got: %v", res)
 	}
 
-	s.DrainTo(func(n node.Node) {
+	s.DrainTo(func(n *node.Header) {
 		drains++
 	})
 	if drains != 1 {
@@ -137,8 +137,8 @@ func TestStriped_AddAndDrain(t *testing.T) {
 		WithSize:       true,
 		WithExpiration: true,
 	})
-	s := NewStriped(maxBufferLen, nm.Kind)
-	n := nm.Create(1, 2, 100, 0, 1)
+	s := NewStriped(maxBufferLen)
+	n := nm.Create(1, 2, 100, 0, 1).Header()
 
 	var (
 		wg     sync.WaitGroup
@@ -157,7 +157,7 @@ func TestStriped_AddAndDrain(t *testing.T) {
 					return
 				}
 				if res == Full && mu.TryLock() {
-					s.DrainTo(func(n node.Node) {
+					s.DrainTo(func(n *node.Header) {
 						drains.Add(1)
 					})
 					mu.Unlock()
@@ -169,7 +169,7 @@ func TestStriped_AddAndDrain(t *testing.T) {
 
 	wg.Wait()
 
-	s.DrainTo(func(n node.Node) {
+	s.DrainTo(func(n *node.Header) {
 		drains.Add(1)
 	})
 
@@ -184,7 +184,7 @@ func TestStriped_Len(t *testing.T) {
 	s := &Striped{}
 	require.Equal(t, 0, s.Len())
 	nm := node.NewManager[int, int](node.Config{})
-	r := newRing(nm.Kind, nm.Create(1, 1, 0, 2, 3))
+	r := newRing(nm.Create(1, 1, 0, 2, 3).Header())
 	ss := &striped{
 		buffers: make([]atomic.Pointer[ring], 2),
 		len:     2,
@@ -200,16 +200,26 @@ func TestPadding(t *testing.T) {
 	line := uintptr(xruntime.CacheLineSize)
 
 	// Every Add reads these fields, so no other object may share their cache lines.
-	var s Striped
-	require.GreaterOrEqual(t, unsafe.Offsetof(s.kind), line)
-	require.GreaterOrEqual(t, unsafe.Sizeof(s)-unsafe.Offsetof(s.busy)-unsafe.Sizeof(s.busy), line)
+	st := reflect.TypeFor[Striped]()
+	maxLenField, ok := st.FieldByName("maxLen")
+	require.True(t, ok)
+	busyField, ok := st.FieldByName("busy")
+	require.True(t, ok)
+	require.GreaterOrEqual(t, maxLenField.Offset, line)
+	require.GreaterOrEqual(t, st.Size()-busyField.Offset-busyField.Type.Size(), line)
 
-	var bs striped
-	require.GreaterOrEqual(t, unsafe.Offsetof(bs.buffers), line)
-	require.GreaterOrEqual(t, unsafe.Sizeof(bs)-unsafe.Offsetof(bs.len)-unsafe.Sizeof(bs.len), line)
+	bst := reflect.TypeFor[striped]()
+	buffersField, ok := bst.FieldByName("buffers")
+	require.True(t, ok)
+	lenField, ok := bst.FieldByName("len")
+	require.True(t, ok)
+	require.GreaterOrEqual(t, buffersField.Offset, line)
+	require.GreaterOrEqual(t, bst.Size()-lenField.Offset-lenField.Type.Size(), line)
 
-	var r ring
-	require.GreaterOrEqual(t, unsafe.Offsetof(r.head), line)
+	rt := reflect.TypeFor[ring]()
+	headField, ok := rt.FieldByName("head")
+	require.True(t, ok)
+	require.GreaterOrEqual(t, headField.Offset, line)
 
 	// The padding of the stripes stays out of reach of the slice.
 	buffers := newBuffers(2)

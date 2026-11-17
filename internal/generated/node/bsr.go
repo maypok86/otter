@@ -94,64 +94,59 @@ func layoutBSR[K comparable, V any]() (key uintptr, values [variantCount]uintptr
 }
 
 // initBSR initializes the header of a node allocated by allocBSR.
-func initBSR(ptr unsafe.Pointer, expiresAt, refreshableAt int64, weight uint32, variant uint8) Node {
+func initBSR(ptr unsafe.Pointer, expiresAt, refreshableAt int64, weight uint32, variant uint8) {
 	n := (*BSR)(ptr)
 	n.variant = variant
 	n.refreshableAt.Store(refreshableAt)
 	n.state.Store(aliveState)
-	return n
 }
 
-// CastPointerToBSR casts a pointer to BSR.
-func CastPointerToBSR(ptr unsafe.Pointer) Node {
-	if ptr == nil {
+// headerBSR wraps a *Header as a *BSR implementing HeaderIface, returning untyped nil if h == nil.
+func headerBSR(h *Header) HeaderIface {
+	if h == nil {
 		return nil
 	}
-	return (*BSR)(ptr)
+	return (*BSR)(unsafe.Pointer(h))
 }
 
 var bsrKind = Kind{
-	fromPointer:   CastPointerToBSR,
+	header:        headerBSR,
 	init:          initBSR,
 	newHeader:     func() unsafe.Pointer { return unsafe.Pointer(new(BSR)) },
 	variantOffset: unsafe.Offsetof(BSR{}.variant),
 	withState:     true,
-	linksOffset:   unsafe.Offsetof(BSR{}.prev),
-	hasLinks:      true,
 }
 
-func (n *BSR) AsPointer() unsafe.Pointer {
-	return unsafe.Pointer(n)
+func (n *BSR) Prev() *Header {
+	return (*Header)(unsafe.Pointer(n.prev))
 }
 
-func (n *BSR) Prev() Node {
-	if n.prev == nil {
-		return nil
-	}
-	return n.prev
+func (n *BSR) SetPrev(v *Header) {
+	n.prev = (*BSR)(unsafe.Pointer(v))
 }
 
-func (n *BSR) SetPrev(v Node) {
-	if v == nil {
-		n.prev = nil
-		return
-	}
-	n.prev = (*BSR)(v.AsPointer())
+func (n *BSR) Next() *Header {
+	return (*Header)(unsafe.Pointer(n.next))
 }
 
-func (n *BSR) Next() Node {
-	if n.next == nil {
-		return nil
-	}
-	return n.next
+func (n *BSR) SetNext(v *Header) {
+	n.next = (*BSR)(unsafe.Pointer(v))
 }
 
-func (n *BSR) SetNext(v Node) {
-	if v == nil {
-		n.next = nil
-		return
-	}
-	n.next = (*BSR)(v.AsPointer())
+func (n *BSR) PrevExp() *Header {
+	panic("not implemented")
+}
+
+func (n *BSR) SetPrevExp(v *Header) {
+	panic("not implemented")
+}
+
+func (n *BSR) NextExp() *Header {
+	panic("not implemented")
+}
+
+func (n *BSR) SetNextExp(v *Header) {
+	panic("not implemented")
 }
 
 func (n *BSR) HasExpired(now int64) bool {

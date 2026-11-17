@@ -94,51 +94,60 @@ func layoutBER[K comparable, V any]() (key uintptr, values [variantCount]uintptr
 }
 
 // initBER initializes the header of a node allocated by allocBER.
-func initBER(ptr unsafe.Pointer, expiresAt, refreshableAt int64, weight uint32, variant uint8) Node {
+func initBER(ptr unsafe.Pointer, expiresAt, refreshableAt int64, weight uint32, variant uint8) {
 	n := (*BER)(ptr)
 	n.variant = variant
 	n.expiresAt.Store(expiresAt)
 	n.refreshableAt.Store(refreshableAt)
 	n.state.Store(aliveState)
-	return n
 }
 
-// CastPointerToBER casts a pointer to BER.
-func CastPointerToBER(ptr unsafe.Pointer) Node {
-	if ptr == nil {
+// headerBER wraps a *Header as a *BER implementing HeaderIface, returning untyped nil if h == nil.
+func headerBER(h *Header) HeaderIface {
+	if h == nil {
 		return nil
 	}
-	return (*BER)(ptr)
+	return (*BER)(unsafe.Pointer(h))
 }
 
 var berKind = Kind{
-	fromPointer:    CastPointerToBER,
-	init:           initBER,
-	newHeader:      func() unsafe.Pointer { return unsafe.Pointer(new(BER)) },
-	variantOffset:  unsafe.Offsetof(BER{}.variant),
-	withState:      true,
-	expLinksOffset: unsafe.Offsetof(BER{}.prevExp),
-	hasExpLinks:    true,
+	header:        headerBER,
+	init:          initBER,
+	newHeader:     func() unsafe.Pointer { return unsafe.Pointer(new(BER)) },
+	variantOffset: unsafe.Offsetof(BER{}.variant),
+	withState:     true,
 }
 
-func (n *BER) AsPointer() unsafe.Pointer {
-	return unsafe.Pointer(n)
-}
-
-func (n *BER) Prev() Node {
+func (n *BER) Prev() *Header {
 	panic("not implemented")
 }
 
-func (n *BER) SetPrev(v Node) {
+func (n *BER) SetPrev(v *Header) {
 	panic("not implemented")
 }
 
-func (n *BER) Next() Node {
+func (n *BER) Next() *Header {
 	panic("not implemented")
 }
 
-func (n *BER) SetNext(v Node) {
+func (n *BER) SetNext(v *Header) {
 	panic("not implemented")
+}
+
+func (n *BER) PrevExp() *Header {
+	return (*Header)(unsafe.Pointer(n.prevExp))
+}
+
+func (n *BER) SetPrevExp(v *Header) {
+	n.prevExp = (*BER)(unsafe.Pointer(v))
+}
+
+func (n *BER) NextExp() *Header {
+	return (*Header)(unsafe.Pointer(n.nextExp))
+}
+
+func (n *BER) SetNextExp(v *Header) {
+	n.nextExp = (*BER)(unsafe.Pointer(v))
 }
 
 func (n *BER) HasExpired(now int64) bool {

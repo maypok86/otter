@@ -619,7 +619,7 @@ func TestCache_MutationKeepsWhatItDecidedAboutTheEntry(t *testing.T) {
 			}()
 			<-entered
 			close(calc.proceed)
-			for c.cache.hashmap.Get(1).ExpiresAt() != readAt+1 {
+			for c.cache.hdr(c.cache.hashmap.Get(1)).ExpiresAt() != readAt+1 {
 				runtime.Gosched()
 			}
 			close(proceed)
@@ -665,7 +665,7 @@ func movedDeadlineCache[V any](
 		MaximumWeight: 100,
 		Weigher: func(int, V) uint32 {
 			if armed.CompareAndSwap(true, false) {
-				c.cache.hashmap.Get(1).SetExpiresAt(clk.NowNano() + int64(moveBy))
+				c.cache.hdr(c.cache.hashmap.Get(1)).SetExpiresAt(clk.NowNano() + int64(moveBy))
 			}
 			return 1
 		},
@@ -716,11 +716,11 @@ func TestCache_WriteKeepsWhatItFoundWhenAReadMovesTheDeadline(t *testing.T) {
 		var causes []DeletionCause
 		c, arm := movedDeadlineCache[[3]int64](t, clk, keptDeadlineExpiry[[3]int64]{}, &causes)
 		c.Set(1, [3]int64{1})
-		require.False(t, c.cache.hashmap.Get(1).CanSetValue())
+		require.False(t, c.cache.hdr(c.cache.hashmap.Get(1)).CanSetValue())
 
 		arm(-time.Nanosecond)
 		c.Set(1, [3]int64{2})
-		require.True(t, c.cache.hashmap.Get(1).CanSetValue(), "the update of a live entry was not boxed")
+		require.True(t, c.cache.hdr(c.cache.hashmap.Get(1)).CanSetValue(), "the update of a live entry was not boxed")
 	})
 	// A write over an expired entry creates the key, and a read that moved the deadline past the
 	// write's time does not make it an update in place.
@@ -823,7 +823,7 @@ func TestCache_ComputeRemovesTheExpiredEntryItFound(t *testing.T) {
 	c.Compute(1, func(_ int, ok bool) (int, ComputeOp) {
 		found = ok
 		// as a read's ExpireAfterRead CAS can
-		c.cache.hashmap.Get(1).SetExpiresAt(clk.NowNano() + int64(30*time.Second))
+		c.cache.hdr(c.cache.hashmap.Get(1)).SetExpiresAt(clk.NowNano() + int64(30*time.Second))
 		return 0, CancelOp
 	})
 	require.False(t, found, "the Compute function was given the expired value")

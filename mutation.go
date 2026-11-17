@@ -69,7 +69,7 @@ type previous[K comparable, V any] struct {
 	// entry expired while the mutation waited for the lock.
 	nowNano int64
 	// node is the key's node, or nil if the key is absent.
-	node node.Node
+	node *node.Entry[K, V]
 	// value is node's value, read under the lock.
 	value V
 	// weight is node's weight, read under the lock: an update in place changes it.
@@ -92,7 +92,7 @@ type mutation[K comparable, V any] struct {
 	from origin
 	// next is the key's node afterwards, or nil if it is absent. After an update in place it is
 	// previous.node.
-	next node.Node
+	next *node.Entry[K, V]
 	// writeResult is what the write or removal decided about the previous value and, for a
 	// write, the new one.
 	writeResult
@@ -121,16 +121,17 @@ func (c *cache[K, V]) mutate(
 	decide func(prev previous[K, V]) (mutationOp, V),
 ) mutation[K, V] {
 	m := mutation[K, V]{from: from}
-	m.next = c.hashmap.Compute(key, func(current node.Node) node.Node {
+	m.next = c.hashmap.Compute(key, func(current *node.Entry[K, V]) *node.Entry[K, V] {
 		nowNano := c.clock.NowNano()
 		m.nowNano = nowNano
 		m.node = current
 		if current != nil {
+			ch := c.hdr(current)
 			m.value = c.nodeManager.Value(current)
-			m.weight = current.Weight()
-			m.live = !current.HasExpired(nowNano)
+			m.weight = ch.Weight()
+			m.live = !ch.HasExpired(nowNano)
 			if c.withExpiration {
-				m.nodeExpiresAt = current.ExpiresAt()
+				m.nodeExpiresAt = ch.ExpiresAt()
 			}
 		}
 
@@ -138,7 +139,7 @@ func (c *cache[K, V]) mutate(
 		m.op, value = decide(m.previous)
 		switch m.op {
 		case opWrite:
-			var n node.Node
+			var n *node.Entry[K, V]
 			n, m.writeResult = c.atomicSet(key, value, m.previous, from)
 			return n
 		case opInvalidate:
@@ -224,42 +225,12 @@ func (c *cache[K, V]) afterWritePolicies(m mutation[K, V]) {
 
 // atomicSet applies a write of value to the key whose current node is old (nil if absent).
 // The user's weigher, expiry and refresh calculators are called once per write.
-//
-// A write over a live node that can set its value is applied in place, keeping the node: plain
-// updates, loads and refreshes. Swapping in a new node forces an update task through the bounded
-// write buffer so that the policies can relink the node. Under an update-heavy workload that
-// buffer overflows and every writer falls back to performCleanUp, serializing all writes on
-// evictionMutex. When the node identity is kept, the policies only need to observe an access,
-// which goes through the lossy read buffer, unless the weight changed: the eviction policy
-// accounts the weight separately (policyWeight), so that change goes through a reconciliation
-// task.
-//
-// A write that moves the expiration time earlier, or over an entry that has expired and not been
-// removed yet, swaps in a new node. Until an in-place write stores the new deadline, the node
-// holds the new value under the old one, and a lock-free reader, which loads the deadline before
-// the value, may pair them. That is harmless only while the old deadline is live and not earlier
-// than the new one: over an expired entry, a reader that finds the old deadline passed reports
-// the key absent after one with an earlier clock returned the new value, and with an earlier
-// deadline, a reader that starts after it still returns the value.
-//
-// A value that fits in one atomic word (a pointer-shaped value, or one without pointers of up to
-// 8 bytes) can always be set in place (CanSetValue); the cases above still swap in a new node. A
-// larger value is kept inline, and an inline value is never written after publication, so that a
-// concurrent reader cannot observe a torn or cleared value: the first update of such a live entry
-// replaces the node with a boxed one, whose value lives behind an atomic pointer, so that later
-// updates of this (likely hot) key can be applied in place.
-//
-// prev is what mutate decided about the old entry: the kind of the write, and so the calculator
-// it calls, the kind of a new node and the cause follow it, so that they agree with what the
-// caller was given (see removalCause). A deadline that a read has moved since is the read's,
-// unless it is before nowNano (see writeEntry). The choice to write in place reads old's deadline
-// again: in place, a reader could pair the new value with a deadline a read moved before nowNano.
 func (c *cache[K, V]) atomicSet(
 	key K,
 	value V,
 	prev previous[K, V],
 	from origin,
-) (node.Node, writeResult) {
+) (*node.Entry[K, V], writeResult) {
 	old, live, nowNano, oldValue := prev.node, prev.live, prev.nowNano, prev.value
 	// The user's weigher and calculators run before anything is changed: if one of them panics,
 	// the write is not applied and the panic reaches the caller.
@@ -282,33 +253,36 @@ func (c *cache[K, V]) atomicSet(
 	// When the node is updated in place, superseded cannot tell such a call from a live one.
 	c.cancelCalls(key, from)
 
-	// in place only over a live entry whose deadline does not move earlier, see above
-	if live && c.withMaintenance && !old.HasExpired(nowNano) && old.CanSetValue() &&
-		(!c.withExpiration || entry.ExpiresAtNano >= old.ExpiresAt()) {
-		written := writeResult{
-			// the old entry is live: an expired one is replaced
-			cause:     CauseReplacement,
-			inPlace:   true,
-			reconcile: weight != old.Weight(),
-			expiresAt: entry.ExpiresAtNano,
+	if live && c.withMaintenance {
+		oh := c.hdr(old)
+		// in place only over a live entry whose deadline does not move earlier, see above
+		if !oh.HasExpired(nowNano) && oh.CanSetValue() &&
+			(!c.withExpiration || entry.ExpiresAtNano >= oh.ExpiresAt()) {
+			written := writeResult{
+				// the old entry is live: an expired one is replaced
+				cause:     CauseReplacement,
+				inPlace:   true,
+				reconcile: weight != oh.Weight(),
+				expiresAt: entry.ExpiresAtNano,
+			}
+			// The synchronous listener runs before the new value is published, as it does when the
+			// node is replaced: readers see the previous value until the write completes.
+			c.notifyAtomicDeletion(key, oldValue, written.cause)
+			// The value is stored before the deadline: a read that moves the deadline at the same
+			// time checks the value before its CAS (see calcExpiresAtAfterRead).
+			c.nodeManager.SetValue(old, value)
+			if c.isWeighted {
+				// only weighted nodes store a weight; the others always weigh 1
+				oh.SetWeight(weight)
+			}
+			if c.withExpiration {
+				oh.SetExpiresAt(entry.ExpiresAtNano)
+			}
+			if c.withRefresh {
+				oh.SetRefreshableAt(entry.RefreshableAtNano)
+			}
+			return old, written
 		}
-		// The synchronous listener runs before the new value is published, as it does when the
-		// node is replaced: readers see the previous value until the write completes.
-		c.notifyAtomicDeletion(key, oldValue, written.cause)
-		// The value is stored before the deadline: a read that moves the deadline at the same
-		// time checks the value before its CAS (see calcExpiresAtAfterRead).
-		c.nodeManager.SetValue(old, value)
-		if c.isWeighted {
-			// only weighted nodes store a weight; the others always weigh 1
-			old.SetWeight(weight)
-		}
-		if c.withExpiration {
-			old.SetExpiresAt(entry.ExpiresAtNano)
-		}
-		if c.withRefresh {
-			old.SetRefreshableAt(entry.RefreshableAtNano)
-		}
-		return old, written
 	}
 
 	n := c.newNode(key, value, weight, entry.ExpiresAtNano, entry.RefreshableAtNano, live && c.withMaintenance)
@@ -351,7 +325,7 @@ type writeResult struct {
 
 // retireRemoved retires old, which the caller removes from the hash table, without touching the
 // key's pending calls, and returns cause, which it reports to the synchronous listener.
-func (c *cache[K, V]) retireRemoved(old node.Node, cause DeletionCause) DeletionCause {
+func (c *cache[K, V]) retireRemoved(old *node.Entry[K, V], cause DeletionCause) DeletionCause {
 	if old == nil {
 		return 0
 	}

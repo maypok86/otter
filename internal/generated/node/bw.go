@@ -93,65 +93,60 @@ func layoutBW[K comparable, V any]() (key uintptr, values [variantCount]uintptr)
 }
 
 // initBW initializes the header of a node allocated by allocBW.
-func initBW(ptr unsafe.Pointer, expiresAt, refreshableAt int64, weight uint32, variant uint8) Node {
+func initBW(ptr unsafe.Pointer, expiresAt, refreshableAt int64, weight uint32, variant uint8) {
 	n := (*BW)(ptr)
 	n.variant = variant
 	n.policyWeight = weight
 	n.weight.Store(weight)
 	n.state.Store(aliveState)
-	return n
 }
 
-// CastPointerToBW casts a pointer to BW.
-func CastPointerToBW(ptr unsafe.Pointer) Node {
-	if ptr == nil {
+// headerBW wraps a *Header as a *BW implementing HeaderIface, returning untyped nil if h == nil.
+func headerBW(h *Header) HeaderIface {
+	if h == nil {
 		return nil
 	}
-	return (*BW)(ptr)
+	return (*BW)(unsafe.Pointer(h))
 }
 
 var bwKind = Kind{
-	fromPointer:   CastPointerToBW,
+	header:        headerBW,
 	init:          initBW,
 	newHeader:     func() unsafe.Pointer { return unsafe.Pointer(new(BW)) },
 	variantOffset: unsafe.Offsetof(BW{}.variant),
 	withState:     true,
-	linksOffset:   unsafe.Offsetof(BW{}.prev),
-	hasLinks:      true,
 }
 
-func (n *BW) AsPointer() unsafe.Pointer {
-	return unsafe.Pointer(n)
+func (n *BW) Prev() *Header {
+	return (*Header)(unsafe.Pointer(n.prev))
 }
 
-func (n *BW) Prev() Node {
-	if n.prev == nil {
-		return nil
-	}
-	return n.prev
+func (n *BW) SetPrev(v *Header) {
+	n.prev = (*BW)(unsafe.Pointer(v))
 }
 
-func (n *BW) SetPrev(v Node) {
-	if v == nil {
-		n.prev = nil
-		return
-	}
-	n.prev = (*BW)(v.AsPointer())
+func (n *BW) Next() *Header {
+	return (*Header)(unsafe.Pointer(n.next))
 }
 
-func (n *BW) Next() Node {
-	if n.next == nil {
-		return nil
-	}
-	return n.next
+func (n *BW) SetNext(v *Header) {
+	n.next = (*BW)(unsafe.Pointer(v))
 }
 
-func (n *BW) SetNext(v Node) {
-	if v == nil {
-		n.next = nil
-		return
-	}
-	n.next = (*BW)(v.AsPointer())
+func (n *BW) PrevExp() *Header {
+	panic("not implemented")
+}
+
+func (n *BW) SetPrevExp(v *Header) {
+	panic("not implemented")
+}
+
+func (n *BW) NextExp() *Header {
+	panic("not implemented")
+}
+
+func (n *BW) SetNextExp(v *Header) {
+	panic("not implemented")
 }
 
 func (n *BW) HasExpired(now int64) bool {

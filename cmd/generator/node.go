@@ -16,7 +16,6 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 )
@@ -223,9 +222,11 @@ func (g *generator) printConstructors() {
 	g.p("")
 
 	g.p("// init%s initializes the header of a node allocated by alloc%s.", g.structName, g.structName)
-	g.p("func init%s(ptr unsafe.Pointer, expiresAt, refreshableAt int64, weight uint32, variant uint8) Node {", g.structName)
+	g.p("func init%s(ptr unsafe.Pointer, expiresAt, refreshableAt int64, weight uint32, variant uint8) {", g.structName)
 	g.in()
-	g.p("n := (*%s)(ptr)", g.structName)
+	if g.withState() || g.features[refresh] {
+		g.p("n := (*%s)(ptr)", g.structName)
+	}
 	if g.withState() {
 		g.p("n.variant = variant")
 	}
@@ -242,40 +243,31 @@ func (g *generator) printConstructors() {
 	if g.withState() {
 		g.p("n.state.Store(aliveState)")
 	}
-	g.p("return n")
 	g.out()
 	g.p("}")
 	g.p("")
 
-	g.p("// CastPointerTo%s casts a pointer to %s.", g.structName, g.structName)
-	g.p("func CastPointerTo%s(ptr unsafe.Pointer) Node {", g.structName)
+	g.p("// header%s wraps a *Header as a *%s implementing HeaderIface, returning untyped nil if h == nil.", g.structName, g.structName)
+	g.p("func header%s(h *Header) HeaderIface {", g.structName)
 	g.in()
-	g.p("if ptr == nil {")
+	g.p("if h == nil {")
 	g.in()
 	g.p("return nil")
 	g.out()
 	g.p("}")
-	g.p("return (*%s)(ptr)", g.structName)
+	g.p("return (*%s)(unsafe.Pointer(h))", g.structName)
 	g.out()
 	g.p("}")
 	g.p("")
 
 	g.p("var %sKind = Kind{", lower)
 	g.in()
-	g.p("fromPointer: CastPointerTo%s,", g.structName)
-	g.p("init:        init%s,", g.structName)
-	g.p("newHeader:   func() unsafe.Pointer { return unsafe.Pointer(new(%s)) },", g.structName)
+	g.p("header:    header%s,", g.structName)
+	g.p("init:      init%s,", g.structName)
+	g.p("newHeader: func() unsafe.Pointer { return unsafe.Pointer(new(%s)) },", g.structName)
 	if g.withState() {
 		g.p("variantOffset: unsafe.Offsetof(%s{}.variant),", g.structName)
-		g.p("withState:   true,")
-	}
-	if g.isBounded() {
-		g.p("linksOffset: unsafe.Offsetof(%s{}.prev),", g.structName)
-		g.p("hasLinks:    true,")
-	}
-	if g.features[expiration] {
-		g.p("expLinksOffset: unsafe.Offsetof(%s{}.prevExp),", g.structName)
-		g.p("hasExpLinks:    true,")
+		g.p("withState:     true,")
 	}
 	g.out()
 	g.p("}")
@@ -296,24 +288,10 @@ func (g *generator) printValueFunctions() {
 }
 
 func (g *generator) printFunctions() {
-	g.p("func (n *%s) AsPointer() unsafe.Pointer {", g.structName)
-	g.in()
-	g.p("return unsafe.Pointer(n)")
-	g.out()
-	g.p("}")
-	g.p("")
-
-	g.p("func (n *%s) Prev() Node {", g.structName)
+	g.p("func (n *%s) Prev() *Header {", g.structName)
 	g.in()
 	if g.isBounded() {
-		// A nil field is returned as a nil interface, not as a typed nil, so that callers
-		// can compare nodes with ==.
-		g.p("if n.prev == nil {")
-		g.in()
-		g.p("return nil")
-		g.out()
-		g.p("}")
-		g.p("return n.prev")
+		g.p("return (*Header)(unsafe.Pointer(n.prev))")
 	} else {
 		g.p("panic(\"not implemented\")")
 	}
@@ -321,16 +299,10 @@ func (g *generator) printFunctions() {
 	g.p("}")
 	g.p("")
 
-	g.p("func (n *%s) SetPrev(v Node) {", g.structName)
+	g.p("func (n *%s) SetPrev(v *Header) {", g.structName)
 	g.in()
 	if g.isBounded() {
-		g.p("if v == nil {")
-		g.in()
-		g.p("n.prev = nil")
-		g.p("return")
-		g.out()
-		g.p("}")
-		g.p("n.prev = (*%s)(v.AsPointer())", g.structName)
+		g.p("n.prev = (*%s)(unsafe.Pointer(v))", g.structName)
 	} else {
 		g.p("panic(\"not implemented\")")
 	}
@@ -338,15 +310,10 @@ func (g *generator) printFunctions() {
 	g.p("}")
 	g.p("")
 
-	g.p("func (n *%s) Next() Node {", g.structName)
+	g.p("func (n *%s) Next() *Header {", g.structName)
 	g.in()
 	if g.isBounded() {
-		g.p("if n.next == nil {")
-		g.in()
-		g.p("return nil")
-		g.out()
-		g.p("}")
-		g.p("return n.next")
+		g.p("return (*Header)(unsafe.Pointer(n.next))")
 	} else {
 		g.p("panic(\"not implemented\")")
 	}
@@ -354,16 +321,54 @@ func (g *generator) printFunctions() {
 	g.p("}")
 	g.p("")
 
-	g.p("func (n *%s) SetNext(v Node) {", g.structName)
+	g.p("func (n *%s) SetNext(v *Header) {", g.structName)
 	g.in()
 	if g.isBounded() {
-		g.p("if v == nil {")
-		g.in()
-		g.p("n.next = nil")
-		g.p("return")
-		g.out()
-		g.p("}")
-		g.p("n.next = (*%s)(v.AsPointer())", g.structName)
+		g.p("n.next = (*%s)(unsafe.Pointer(v))", g.structName)
+	} else {
+		g.p("panic(\"not implemented\")")
+	}
+	g.out()
+	g.p("}")
+	g.p("")
+
+	g.p("func (n *%s) PrevExp() *Header {", g.structName)
+	g.in()
+	if g.features[expiration] {
+		g.p("return (*Header)(unsafe.Pointer(n.prevExp))")
+	} else {
+		g.p("panic(\"not implemented\")")
+	}
+	g.out()
+	g.p("}")
+	g.p("")
+
+	g.p("func (n *%s) SetPrevExp(v *Header) {", g.structName)
+	g.in()
+	if g.features[expiration] {
+		g.p("n.prevExp = (*%s)(unsafe.Pointer(v))", g.structName)
+	} else {
+		g.p("panic(\"not implemented\")")
+	}
+	g.out()
+	g.p("}")
+	g.p("")
+
+	g.p("func (n *%s) NextExp() *Header {", g.structName)
+	g.in()
+	if g.features[expiration] {
+		g.p("return (*Header)(unsafe.Pointer(n.nextExp))")
+	} else {
+		g.p("panic(\"not implemented\")")
+	}
+	g.out()
+	g.p("}")
+	g.p("")
+
+	g.p("func (n *%s) SetNextExp(v *Header) {", g.structName)
+	g.in()
+	if g.features[expiration] {
+		g.p("n.nextExp = (*%s)(unsafe.Pointer(v))", g.structName)
 	} else {
 		g.p("panic(\"not implemented\")")
 	}
@@ -639,16 +644,5 @@ func run(nodeType, dir string) error {
 
 	fileName := fmt.Sprintf("%s.go", nodeType)
 	filePath := filepath.Join(dir, fileName)
-
-	f, err := os.Create(filePath)
-	if err != nil {
-		return fmt.Errorf("create file %s: %w", filePath, err)
-	}
-	defer f.Close()
-
-	if _, err := f.Write(g.output()); err != nil {
-		return fmt.Errorf("write output: %w", err)
-	}
-
-	return nil
+	return writeFormattedFile(filePath, g.output())
 }

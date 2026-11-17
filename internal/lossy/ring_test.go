@@ -36,10 +36,8 @@ func TestRing_Add(t *testing.T) {
 		WithSize:       true,
 		WithExpiration: true,
 	})
-	n := nm.Create(1, 2, 100, 0, 1)
-	r := &ring{
-		kind: nm.Kind,
-	}
+	n := nm.Create(1, 2, 100, 0, 1).Header()
+	r := &ring{}
 
 	var wg sync.WaitGroup
 	wg.Add(goroutines)
@@ -76,10 +74,8 @@ func TestRing_DrainTo(t *testing.T) {
 		WithSize:       true,
 		WithExpiration: true,
 	})
-	n := nm.Create(1, 2, 100, 0, 1)
-	r := &ring{
-		kind: nm.Kind,
-	}
+	n := nm.Create(1, 2, 100, 0, 1).Header()
+	r := &ring{}
 
 	for i := 0; i < bufferSize; i++ {
 		res := r.add(n)
@@ -89,7 +85,7 @@ func TestRing_DrainTo(t *testing.T) {
 	}
 
 	reads := uint64(0)
-	r.drainTo(func(n node.Node) {
+	r.drainTo(func(n *node.Header) {
 		reads++
 	})
 	if tail := r.tail.Load(); reads != tail {
@@ -110,10 +106,8 @@ func TestRing_AddAndDrain(t *testing.T) {
 		WithSize:       true,
 		WithExpiration: true,
 	})
-	n := nm.Create(1, 2, 100, 0, 1)
-	r := &ring{
-		kind: nm.Kind,
-	}
+	n := nm.Create(1, 2, 100, 0, 1).Header()
+	r := &ring{}
 
 	var (
 		wg    sync.WaitGroup
@@ -132,7 +126,7 @@ func TestRing_AddAndDrain(t *testing.T) {
 					return
 				}
 				if res == Full && mu.TryLock() {
-					r.drainTo(func(n node.Node) {
+					r.drainTo(func(n *node.Header) {
 						reads.Add(1)
 					})
 					mu.Unlock()
@@ -144,7 +138,7 @@ func TestRing_AddAndDrain(t *testing.T) {
 
 	wg.Wait()
 
-	r.drainTo(func(n node.Node) {
+	r.drainTo(func(n *node.Header) {
 		reads.Add(1)
 	})
 
@@ -164,10 +158,8 @@ func TestRing_Overflow(t *testing.T) {
 		WithSize:       true,
 		WithExpiration: true,
 	})
-	n := nm.Create(1, 2, 100, 0, 1)
-	r := &ring{
-		kind: nm.Kind,
-	}
+	n := nm.Create(1, 2, 100, 0, 1).Header()
+	r := &ring{}
 	r.head.Store(math.MaxUint64)
 	r.tail.Store(math.MaxUint64)
 
@@ -176,13 +168,13 @@ func TestRing_Overflow(t *testing.T) {
 		t.Fatalf("the status must be Success, but got: %v", res)
 	}
 
-	var d []node.Node
-	r.drainTo(func(n node.Node) {
+	var d []*node.Header
+	r.drainTo(func(n *node.Header) {
 		d = append(d, n)
 	})
 
 	for i := 0; i < bufferSize; i++ {
-		ptr := r.buffer[i]
+		ptr := r.buffer[i].Load()
 		if ptr != nil {
 			t.Fatalf("the buffer should contain only nils, but buffer[%d] = %v", i, ptr)
 		}
@@ -199,10 +191,8 @@ func TestRing_LenIsNeverNegative(t *testing.T) {
 	t.Parallel()
 
 	nm := node.NewManager[int, int](node.Config{})
-	n := nm.Create(1, 2, 0, 0, 1)
-	r := &ring{
-		kind: nm.Kind,
-	}
+	n := nm.Create(1, 2, 0, 0, 1).Header()
+	r := &ring{}
 
 	// The producer keeps adding and draining, so the head often moves past a tail that the
 	// reader loaded a moment earlier.
@@ -210,7 +200,7 @@ func TestRing_LenIsNeverNegative(t *testing.T) {
 	go func() {
 		for !done.Load() {
 			r.add(n)
-			r.drainTo(func(node.Node) {})
+			r.drainTo(func(*node.Header) {})
 		}
 	}()
 	defer done.Store(true)
@@ -226,10 +216,8 @@ func TestRing_AddReportsFullWhenItFillsTheBuffer(t *testing.T) {
 	t.Parallel()
 
 	nm := node.NewManager[int, int](node.Config{})
-	n := nm.Create(1, 2, 0, 0, 1)
-	r := &ring{
-		kind: nm.Kind,
-	}
+	n := nm.Create(1, 2, 0, 0, 1).Header()
+	r := &ring{}
 
 	for i := 0; i < bufferSize-1; i++ {
 		if res := r.add(n); res != Success {

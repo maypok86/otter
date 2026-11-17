@@ -16,21 +16,20 @@ package queue
 
 import (
 	"fmt"
-	"math"
 	"sync/atomic"
-	"unsafe"
 
 	"github.com/maypok86/otter/v2/internal/xmath"
 	"github.com/maypok86/otter/v2/internal/xruntime"
 )
 
-type buffer struct {
-	data []unsafe.Pointer
+type buffer[T any] struct {
+	data []atomic.Pointer[T]
+	next atomic.Pointer[buffer[T]]
 }
 
-func newBuffer(capacity uint64) *buffer {
-	return &buffer{
-		data: make([]unsafe.Pointer, capacity),
+func newBuffer[T any](capacity uint64) *buffer[T] {
+	return &buffer[T]{
+		data: make([]atomic.Pointer[T], capacity),
 	}
 }
 
@@ -41,15 +40,15 @@ func newBuffer(capacity uint64) *buffer {
 type MPSC[T any] struct {
 	producerIndex    atomic.Uint64
 	_                [xruntime.CacheLineSize - 8]byte
-	consumerBuffer   atomic.Pointer[buffer]
+	consumerBuffer   atomic.Pointer[buffer[T]]
 	consumerIndex    atomic.Uint64
 	consumerMask     atomic.Uint64
 	_                [xruntime.CacheLineSize - 8*3]byte
-	producerBuffer   atomic.Pointer[buffer]
+	producerBuffer   atomic.Pointer[buffer[T]]
 	producerLimit    atomic.Uint64
 	producerMask     atomic.Uint64
 	_                [xruntime.CacheLineSize - 8*2]byte
-	jump             unsafe.Pointer
+	jump             *T
 	maxQueueCapacity uint64
 }
 
@@ -73,13 +72,11 @@ func NewMPSC[T any](initialCapacity, maxCapacity uint32) *MPSC[T] {
 	}
 
 	mask := uint64((p2initialCapacity - 1) << 1)
-	buffer := newBuffer(uint64(p2initialCapacity) + 1)
+	buffer := newBuffer[T](uint64(p2initialCapacity) + 1)
 
-	var zero T
 	q := &MPSC[T]{
 		maxQueueCapacity: uint64(p2maxCapacity) << 1,
-		//nolint:gosec // it's ok
-		jump: unsafe.Pointer(&zero),
+		jump:             new(T),
 	}
 	q.consumerBuffer.Store(buffer)
 	q.consumerMask.Store(mask)
@@ -90,7 +87,7 @@ func NewMPSC[T any](initialCapacity, maxCapacity uint32) *MPSC[T] {
 	return q
 }
 
-func (m *MPSC[T]) getNextBufferSize(buffer *buffer) uint64 {
+func (m *MPSC[T]) getNextBufferSize(buffer *buffer[T]) uint64 {
 	maxSize := m.maxQueueCapacity / 2
 	bufferLength := uint64(len(buffer.data))
 	if maxSize < bufferLength {
@@ -120,7 +117,7 @@ func (m *MPSC[T]) TryPush(t *T) bool {
 	var (
 		mask   uint64
 		pIndex uint64
-		buffer *buffer
+		buffer *buffer[T]
 	)
 
 	for {
@@ -159,8 +156,7 @@ func (m *MPSC[T]) TryPush(t *T) bool {
 	}
 
 	offset := modifiedCalcElementOffset(pIndex, mask)
-	//nolint:gosec // it's ok
-	atomic.StorePointer(&buffer.data[offset], unsafe.Pointer(t))
+	buffer.data[offset].Store(t)
 	return true
 }
 
@@ -193,25 +189,25 @@ func (m *MPSC[T]) TryPop() *T {
 	mask := m.consumerMask.Load()
 
 	offset := modifiedCalcElementOffset(index, mask)
-	v := atomic.LoadPointer(&buffer.data[offset])
+	v := buffer.data[offset].Load()
 	if v == nil {
 		if index == m.producerIndex.Load() {
 			return nil
 		}
-		v = atomic.LoadPointer(&buffer.data[offset])
+		v = buffer.data[offset].Load()
 		for v == nil {
-			v = atomic.LoadPointer(&buffer.data[offset])
+			v = buffer.data[offset].Load()
 		}
 	}
 	if v == m.jump {
-		nextBuffer := m.getNextBuffer(buffer, mask)
+		nextBuffer := m.getNextBuffer(buffer)
 		return m.newBufferTryPush(nextBuffer, index)
 	}
 
-	atomic.StorePointer(&buffer.data[offset], nil)
+	buffer.data[offset].Store(nil)
 	m.consumerIndex.Store(index + 2)
 
-	return (*T)(v)
+	return v
 }
 
 func (m *MPSC[T]) Size() uint64 {
@@ -244,28 +240,26 @@ func (m *MPSC[T]) IsEmpty() bool {
 	return m.consumerIndex.Load() == m.producerIndex.Load()
 }
 
-func (m *MPSC[T]) getNextBuffer(b *buffer, mask uint64) *buffer {
-	nextBufferOffset := nextArrayOffset(mask)
-	nextBuffer := (*buffer)(atomic.LoadPointer(&b.data[nextBufferOffset]))
-	atomic.StorePointer(&b.data[nextBufferOffset], nil)
+func (m *MPSC[T]) getNextBuffer(b *buffer[T]) *buffer[T] {
+	nextBuffer := b.next.Swap(nil)
 	if nextBuffer == nil {
 		panic("nextBuffer should be != nil")
 	}
 	return nextBuffer
 }
 
-func (m *MPSC[T]) newBufferTryPush(b *buffer, index uint64) *T {
+func (m *MPSC[T]) newBufferTryPush(b *buffer[T], index uint64) *T {
 	offsetInNew := m.newBufferAndOffset(b, index)
-	v := atomic.LoadPointer(&b.data[offsetInNew])
+	v := b.data[offsetInNew].Load()
 	if v == nil {
 		panic("new buffer must have at least one element")
 	}
-	atomic.StorePointer(&b.data[offsetInNew], nil)
+	b.data[offsetInNew].Store(nil)
 	m.consumerIndex.Store(index + 2)
-	return (*T)(v)
+	return v
 }
 
-func (m *MPSC[T]) newBufferAndOffset(b *buffer, index uint64) uint64 {
+func (m *MPSC[T]) newBufferAndOffset(b *buffer[T], index uint64) uint64 {
 	m.consumerBuffer.Store(b)
 	//nolint:gosec // there's no overflow
 	mask := uint64(len(b.data)-2) << 1
@@ -273,9 +267,9 @@ func (m *MPSC[T]) newBufferAndOffset(b *buffer, index uint64) uint64 {
 	return modifiedCalcElementOffset(index, mask)
 }
 
-func (m *MPSC[T]) resize(oldMask uint64, oldBuffer *buffer, pIndex uint64, t *T) {
+func (m *MPSC[T]) resize(oldMask uint64, oldBuffer *buffer[T], pIndex uint64, t *T) {
 	newBufferLength := m.getNextBufferSize(oldBuffer)
-	newBuffer := newBuffer(newBufferLength)
+	newBuffer := newBuffer[T](newBufferLength)
 
 	m.producerBuffer.Store(newBuffer)
 	newMask := (newBufferLength - 2) << 1
@@ -284,10 +278,8 @@ func (m *MPSC[T]) resize(oldMask uint64, oldBuffer *buffer, pIndex uint64, t *T)
 	offsetInOld := modifiedCalcElementOffset(pIndex, oldMask)
 	offsetInNew := modifiedCalcElementOffset(pIndex, newMask)
 
-	//nolint:gosec // it's ok
-	atomic.StorePointer(&newBuffer.data[offsetInNew], unsafe.Pointer(t)) // element in new array
-	//nolint:gosec // it's ok
-	atomic.StorePointer(&oldBuffer.data[nextArrayOffset(oldMask)], unsafe.Pointer(newBuffer)) // buffer linked
+	newBuffer.data[offsetInNew].Store(t) // element in new array
+	oldBuffer.next.Store(newBuffer)      // buffer linked
 
 	cIndex := m.consumerIndex.Load()
 	availableInQueue := m.availableInQueue(pIndex, cIndex)
@@ -305,11 +297,7 @@ func (m *MPSC[T]) resize(oldMask uint64, oldBuffer *buffer, pIndex uint64, t *T)
 	// INDEX visible before ELEMENT, consistent with consumer expectation
 
 	// make resize visible to consumer
-	atomic.StorePointer(&oldBuffer.data[offsetInOld], m.jump)
-}
-
-func nextArrayOffset(mask uint64) uint64 {
-	return modifiedCalcElementOffset(mask+2, math.MaxUint64)
+	oldBuffer.data[offsetInOld].Store(m.jump)
 }
 
 // This method assumes index is actually (index << 1) because lower bit is used for resize. This

@@ -128,11 +128,14 @@ func warmUp[K comparable, V any](c *Cache[K, V], keys []warmKey[K]) {
 	ci.maintenance(nil)
 	for _, wk := range keys {
 		n := ci.hashmap.Get(wk.key)
-		if n == nil || !n.IsAlive() || n.HasExpired(nowNano) {
+		if n == nil {
+			continue
+		}
+		if nh := ci.hdr(n); !nh.IsAlive() || nh.HasExpired(nowNano) {
 			continue
 		}
 		for range wk.reads {
-			ci.evictionPolicy.access(n)
+			ci.evictionPolicy.access(n.Keyed())
 		}
 	}
 }

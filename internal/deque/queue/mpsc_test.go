@@ -177,7 +177,7 @@ func TestMPSC_Basic(t *testing.T) {
 			qType: full,
 			do: func(t *testing.T, m *MPSC[int]) {
 				require.Panics(t, func() {
-					b := newBuffer(fullSize + 1)
+					b := newBuffer[int](fullSize + 1)
 					m.getNextBufferSize(b)
 				})
 			},

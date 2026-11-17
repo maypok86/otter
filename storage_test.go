@@ -15,11 +15,11 @@
 package otter
 
 import (
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
-	"unsafe"
 
 	"github.com/stretchr/testify/require"
 
@@ -36,16 +36,16 @@ func testValueStorage[V any](t *testing.T, storage string, v1, v2 V) {
 	require.Equal(t, storage, c.cache.nodeManager.ValueStorage())
 	c.Set(1, v1)
 	n := c.cache.hashmap.Get(1)
-	require.Equal(t, storage != "", n.CanSetValue())
+	require.Equal(t, storage != "", c.cache.hdr(n).CanSetValue())
 	got, _ := c.GetIfPresent(1)
 	require.Equal(t, v1, got)
 
 	c.Set(1, v2)
 	got, _ = c.GetIfPresent(1)
 	require.Equal(t, v2, got)
-	inPlace := n.AsPointer() == c.cache.hashmap.Get(1).AsPointer()
+	inPlace := n == c.cache.hashmap.Get(1)
 	require.Equal(t, storage != "", inPlace, "the first update in place")
-	require.True(t, c.cache.hashmap.Get(1).CanSetValue())
+	require.True(t, c.cache.hdr(c.cache.hashmap.Get(1)).CanSetValue())
 
 	c.Set(1, v1)
 	got, _ = c.GetIfPresent(1)
@@ -71,7 +71,7 @@ func TestCache_ValueStorage(t *testing.T) {
 		testValueStorage(t, "p", &x, &y)
 		testValueStorage(t, "p", map[int]int{1: 1}, map[int]int{2: 2})
 		testValueStorage(t, "p", make(chan int), make(chan int))
-		testValueStorage(t, "p", unsafe.Pointer(&x), unsafe.Pointer(&y))
+		testValueStorage(t, "p", reflect.ValueOf(&x).UnsafePointer(), reflect.ValueOf(&y).UnsafePointer())
 
 		f1 := func() int { return x }
 		f2 := func() int { return y }
@@ -96,7 +96,7 @@ func TestCache_ValueStorage(t *testing.T) {
 		testValueStorage(t, "u64", word64{a: -1, b: 2}, word64{a: 3, b: -4})
 		testValueStorage(t, "u64", [5]byte{1, 2, 3, 4, 5}, [5]byte{6, 7, 8, 9, 10})
 		large := int64(1) << 62
-		if unsafe.Sizeof(0) == 4 {
+		if reflect.TypeFor[int]().Size() == 4 {
 			large = 1 << 30
 		}
 		testValueStorage(t, "u64", -7, int(large))
@@ -124,22 +124,22 @@ func TestCache_NodeSize(t *testing.T) {
 	t.Parallel()
 
 	type large [64]byte
-	pointerSize := unsafe.Sizeof(uintptr(0))
-	boxed := unsafe.Sizeof(node.BSBoxed[int, large]{})
+	pointerSize := reflect.TypeFor[uintptr]().Size()
+	boxed := reflect.TypeFor[node.BSBoxed[int, large]]().Size()
 	// the header and the key
 	prefix := boxed - pointerSize
 
-	require.Equal(t, prefix+unsafe.Sizeof(large{}), unsafe.Sizeof(node.BSInline[int, large]{}))
-	require.Equal(t, boxed, unsafe.Sizeof(node.BSP[int, *int]{}))
+	require.Equal(t, prefix+reflect.TypeFor[large]().Size(), reflect.TypeFor[node.BSInline[int, large]]().Size())
+	require.Equal(t, boxed, reflect.TypeFor[node.BSP[int, *int]]().Size())
 	// a value of zero size is not stored: such a node is allocated as the prefix and the key alone
-	require.Equal(t, prefix, unsafe.Sizeof(node.BSEmpty[int, struct{}]{}))
-	require.Equal(t, unsafe.Sizeof(node.BSInline[int, *int]{}), unsafe.Sizeof(node.BSP[int, *int]{}))
+	require.Equal(t, prefix, reflect.TypeFor[node.BSEmpty[int, struct{}]]().Size())
+	require.Equal(t, reflect.TypeFor[node.BSInline[int, *int]]().Size(), reflect.TypeFor[node.BSP[int, *int]]().Size())
 	if pointerSize == 8 {
-		require.Equal(t, unsafe.Sizeof(node.BSInline[int, uint64]{}), unsafe.Sizeof(node.BSU64[int, uint64]{}))
+		require.Equal(t, reflect.TypeFor[node.BSInline[int, uint64]]().Size(), reflect.TypeFor[node.BSU64[int, uint64]]().Size())
 	} else {
 		// A plain uint64 is only 4-byte aligned on 32-bit platforms, while atomic.Uint64 is
 		// always 8-byte aligned, which may cost padding.
-		require.LessOrEqual(t, unsafe.Sizeof(node.BSU64[int, uint64]{}), unsafe.Sizeof(node.BSInline[int, uint64]{})+4)
+		require.LessOrEqual(t, reflect.TypeFor[node.BSU64[int, uint64]]().Size(), reflect.TypeFor[node.BSInline[int, uint64]]().Size()+4)
 	}
 }
 

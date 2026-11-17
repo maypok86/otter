@@ -1390,7 +1390,7 @@ func TestCache_StaleEvictionKeepsRefreshOfCurrentValue(t *testing.T) {
 			c.Set(2, "x")
 			c.CleanUp()
 			n1 := ci.hashmap.Get(1)
-			require.True(t, n1.InMainProbation())
+			require.True(t, ci.hdr(n1).InMainProbation())
 
 			ci.evictionMutex.Lock()
 			ci.drainReadBuffer()
@@ -1401,8 +1401,8 @@ func TestCache_StaleEvictionKeepsRefreshOfCurrentValue(t *testing.T) {
 			// The write replaces n1 after the drain, so its update task stays in the buffer and
 			// the retired n1 is still the first victim.
 			c.Set(1, "b")
-			require.True(t, n1.IsRetired())
-			require.Equal(t, n1.AsPointer(), ci.evictionPolicy.probation.Head().AsPointer())
+			require.True(t, ci.hdr(n1).IsRetired())
+			require.Same(t, n1.Keyed(), ci.evictionPolicy.probation.Head())
 
 			started := make(chan struct{})
 			release := make(chan struct{})
@@ -1455,7 +1455,7 @@ func TestCache_EvictionDropsRefreshOfEvictedValue(t *testing.T) {
 	<-started
 
 	ci.evictionMutex.Lock()
-	ci.evictionPolicy.evictNode(ci.hashmap.Get(1))
+	ci.evictionPolicy.evictNode(ci.hashmap.Get(1).Keyed())
 	ci.evictionMutex.Unlock()
 
 	got := make(chan int, 1)
@@ -2001,7 +2001,7 @@ func TestCache_InPlaceWriteCancelsRefreshBeforePublishing(t *testing.T) {
 	c.Set(1, 1)
 	clock.Sleep(2 * time.Second)
 	n := c.cache.getNodeQuietly(1, c.cache.clock.NowNano())
-	require.True(t, n.CanSetValue(), "the write would not update the node in place")
+	require.True(t, c.cache.hdr(n).CanSetValue(), "the write would not update the node in place")
 	c.Refresh(context.Background(), 1, reloadAdds{})
 	require.NotNil(t, c.cache.singleflight.getCall(1))
 
@@ -3385,7 +3385,7 @@ func TestCache_ReadDoesNotRefreshAgain(t *testing.T) {
 				clock.Sleep(2 * time.Minute)
 				stale := c.cache.getNodeQuietly(1, c.cache.clock.NowNano())
 				require.NotNil(t, stale)
-				require.False(t, stale.IsFresh(c.cache.clock.NowNano()))
+				require.False(t, c.cache.hdr(stale).IsFresh(c.cache.clock.NowNano()))
 
 				tt.change(c, tl)
 				before := tl.calls.Load() + tbl.calls.Load()
@@ -4601,7 +4601,7 @@ func TestCache_LoadRegisteredWhileInvalidationIsAppliedDoesNotAdoptOldValue(t *t
 				sawOld   bool
 				early    bool
 				// the node the re-check adopted, nil if none
-				adopted = make(chan node.Node, 1)
+				adopted = make(chan *node.Entry[int, int], 1)
 			)
 			c = Must(&Options[int, int]{
 				OnAtomicDeletion: func(DeletionEvent[int, int]) {

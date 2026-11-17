@@ -36,7 +36,7 @@ const (
 	unreachable = math.MaxUint32
 )
 
-func firstBeforeAccess(c *Cache[int, int]) node.Node {
+func firstBeforeAccess(c *Cache[int, int]) *node.Keyed[int] {
 	return c.cache.evictionPolicy.probation.Head()
 }
 
@@ -47,11 +47,12 @@ func updateRecency(t *testing.T, c *Cache[int, int], isRead bool, fn func()) {
 	c.cache.maintenance(nil)
 
 	if isRead {
-		require.NotEqual(t, first, c.cache.evictionPolicy.probation.Head())
-		require.Equal(t, first, c.cache.evictionPolicy.protected.Tail())
+		require.NotSame(t, first, c.cache.evictionPolicy.probation.Head())
+		require.Same(t, first, c.cache.evictionPolicy.protected.Tail())
 	} else {
-		require.NotEqual(t, c.cache.nodeManager.Key(first), c.cache.nodeManager.Key(c.cache.evictionPolicy.probation.Head()))
-		require.Equal(t, c.cache.nodeManager.Key(first), c.cache.nodeManager.Key(c.cache.evictionPolicy.protected.Tail()))
+		p := c.cache.evictionPolicy
+		require.NotEqual(t, p.keyOf(first), p.keyOf(p.probation.Head()))
+		require.Equal(t, p.keyOf(first), p.keyOf(p.protected.Tail()))
 	}
 }
 
@@ -186,7 +187,8 @@ func TestCache_Eviction(t *testing.T) {
 
 		c.cache.evictionMutex.Lock()
 		n := c.cache.hashmap.Get(k1)
-		require.True(t, n.IsAlive())
+		nh := c.cache.hdr(n)
+		require.True(t, nh.IsAlive())
 		done := make(chan struct{})
 		go func() {
 			v, ok := c.Set(k2, k2+1)
@@ -200,11 +202,11 @@ func TestCache_Eviction(t *testing.T) {
 
 		<-done
 		require.False(t, c.has(k1))
-		require.True(t, !n.IsAlive())
-		require.True(t, n.IsRetired())
+		require.True(t, !nh.IsAlive())
+		require.True(t, nh.IsRetired())
 		c.cache.evictionMutex.Unlock()
 		c.CleanUp()
-		require.True(t, n.IsDead())
+		require.True(t, nh.IsDead())
 		require.True(t, c.has(k2))
 		require.Equal(t, 1, m[CauseInvalidation])
 		require.Equal(t, 1, len(m))
@@ -233,20 +235,16 @@ func TestCache_Eviction(t *testing.T) {
 			require.Equal(t, i, v)
 		}
 		expected := make([]int, 0, maximum)
-		h := c.cache.evictionPolicy.window.Head()
-		for h != nil {
-			expected = append(expected, c.cache.nodeManager.Key(h))
-			h = h.Next()
+		for h := range c.cache.evictionPolicy.window.All() {
+			expected = append(expected, c.cache.evictionPolicy.keyOf(h))
 		}
 		c.cache.evictionPolicy.windowMaximum = 0
 		candidate := c.cache.evictionPolicy.evictFromWindow()
 		require.NotNil(t, candidate)
 
 		actual := make([]int, 0, maximum)
-		h = c.cache.evictionPolicy.probation.Head()
-		for h != nil {
-			actual = append(actual, c.cache.nodeManager.Key(h))
-			h = h.Next()
+		for h := range c.cache.evictionPolicy.probation.All() {
+			actual = append(actual, c.cache.evictionPolicy.keyOf(h))
 		}
 
 		require.Equal(t, expected, actual)
@@ -280,15 +278,11 @@ func TestCache_Eviction(t *testing.T) {
 		require.NotNil(t, candidate)
 
 		expected := make([]int, 0, maximum)
-		h := c.cache.evictionPolicy.probation.Head()
-		for h != nil {
-			expected = append(expected, c.cache.nodeManager.Key(h))
-			h = h.Next()
+		for h := range c.cache.evictionPolicy.probation.All() {
+			expected = append(expected, c.cache.evictionPolicy.keyOf(h))
 		}
-		h = c.cache.evictionPolicy.protected.Head()
-		for h != nil {
-			expected = append(expected, c.cache.nodeManager.Key(h))
-			h = h.Next()
+		for h := range c.cache.evictionPolicy.protected.All() {
+			expected = append(expected, c.cache.evictionPolicy.keyOf(h))
 		}
 		c.SetMaximum(0)
 
@@ -327,10 +321,8 @@ func TestCache_Eviction(t *testing.T) {
 		}
 
 		expected := make([]int, 0, maximum)
-		h := c.cache.evictionPolicy.window.Head()
-		for h != nil {
-			expected = append(expected, c.cache.nodeManager.Key(h))
-			h = h.Next()
+		for h := range c.cache.evictionPolicy.window.All() {
+			expected = append(expected, c.cache.evictionPolicy.keyOf(h))
 		}
 
 		c.cache.evictionPolicy.maximum = maximum / 2
@@ -372,10 +364,8 @@ func TestCache_Eviction(t *testing.T) {
 		}
 
 		expected := make([]int, 0, maximum)
-		h := c.cache.evictionPolicy.window.Head()
-		for h != nil {
-			expected = append(expected, c.cache.nodeManager.Key(h))
-			h = h.Next()
+		for h := range c.cache.evictionPolicy.window.All() {
+			expected = append(expected, c.cache.evictionPolicy.keyOf(h))
 		}
 
 		c.cache.evictionPolicy.maximum = maximum / 2
@@ -415,7 +405,7 @@ func TestCache_Eviction(t *testing.T) {
 		for !e.probation.IsEmpty() {
 			n := e.probation.PopFront()
 			e.protected.PushBack(n)
-			n.MakeMainProtected()
+			e.hdr(n).MakeMainProtected()
 		}
 		for i := range c.cache.evictionPolicy.sketch.table {
 			c.cache.evictionPolicy.sketch.table[i] = 0
@@ -423,20 +413,14 @@ func TestCache_Eviction(t *testing.T) {
 		e.mainProtectedWeightedSize = maximum - e.windowWeightedSize
 
 		expected := make([]int, 0, maximum)
-		h := e.window.Head()
-		for h != nil {
-			expected = append(expected, c.cache.nodeManager.Key(h))
-			h = h.Next()
+		for h := range e.window.All() {
+			expected = append(expected, e.keyOf(h))
 		}
-		h = e.probation.Head()
-		for h != nil {
-			expected = append(expected, c.cache.nodeManager.Key(h))
-			h = h.Next()
+		for h := range e.probation.All() {
+			expected = append(expected, e.keyOf(h))
 		}
-		h = e.protected.Head()
-		for h != nil {
-			expected = append(expected, c.cache.nodeManager.Key(h))
-			h = h.Next()
+		for h := range e.protected.All() {
+			expected = append(expected, e.keyOf(h))
 		}
 
 		e.windowMaximum = 0
@@ -477,20 +461,14 @@ func TestCache_Eviction(t *testing.T) {
 		}
 
 		expected := make([]int, 0, maximum)
-		h := e.window.Head()
-		for h != nil {
-			expected = append(expected, c.cache.nodeManager.Key(h))
-			h = h.Next()
+		for h := range e.window.All() {
+			expected = append(expected, e.keyOf(h))
 		}
-		h = e.probation.Head()
-		for h != nil {
-			expected = append(expected, c.cache.nodeManager.Key(h))
-			h = h.Next()
+		for h := range e.probation.All() {
+			expected = append(expected, e.keyOf(h))
 		}
-		h = e.protected.Head()
-		for h != nil {
-			expected = append(expected, c.cache.nodeManager.Key(h))
-			h = h.Next()
+		for h := range e.protected.All() {
+			expected = append(expected, e.keyOf(h))
 		}
 
 		c.SetMaximum(0)
@@ -526,7 +504,7 @@ func TestCache_Eviction(t *testing.T) {
 
 		c.cache.evictionMutex.Lock()
 		expected := e.window.Head()
-		key := c.cache.nodeManager.Key(expected)
+		key := e.keyOf(expected)
 
 		done := make(chan struct{})
 		go func() {
@@ -538,13 +516,13 @@ func TestCache_Eviction(t *testing.T) {
 
 		<-done
 		require.True(t, !c.has(key))
-		require.True(t, expected.IsRetired())
+		require.True(t, e.hdr(expected).IsRetired())
 
 		e.windowMaximum--
 		e.maximum--
 		c.cache.evictNodes()
 
-		require.True(t, expected.IsDead())
+		require.True(t, e.hdr(expected).IsDead())
 		require.Equal(t, e.maximum, uint64(c.EstimatedSize()))
 		c.cache.evictionMutex.Unlock()
 	})
@@ -576,7 +554,7 @@ func TestCache_Eviction(t *testing.T) {
 
 		c.cache.evictionMutex.Lock()
 		expected := e.probation.Head()
-		key := c.cache.nodeManager.Key(expected)
+		key := e.keyOf(expected)
 
 		done := make(chan struct{})
 		go func() {
@@ -588,13 +566,13 @@ func TestCache_Eviction(t *testing.T) {
 
 		<-done
 		require.True(t, !c.has(key))
-		require.True(t, expected.IsRetired())
+		require.True(t, e.hdr(expected).IsRetired())
 
 		e.windowMaximum--
 		e.maximum--
 		c.cache.evictNodes()
 
-		require.True(t, expected.IsDead())
+		require.True(t, e.hdr(expected).IsDead())
 		require.Equal(t, e.maximum, uint64(c.EstimatedSize()))
 		c.cache.evictionMutex.Unlock()
 	})
@@ -634,7 +612,7 @@ func TestCache_Eviction(t *testing.T) {
 		c.SetMaximum(0)
 		c.cache.evictNodes()
 
-		require.True(t, c.has(c.cache.nodeManager.Key(candidate)))
+		require.True(t, c.has(e.keyOf(candidate)))
 		require.Equal(t, uint64(0), c.WeightedSize())
 		require.Equal(t, uint64(0), c.GetMaximum())
 	})
@@ -723,7 +701,7 @@ func TestCache_Eviction(t *testing.T) {
 
 		first := firstBeforeAccess(c)
 		updateRecency(t, c, true, func() {
-			require.True(t, c.has(c.cache.nodeManager.Key(first)))
+			require.True(t, c.has(c.cache.evictionPolicy.keyOf(first)))
 		})
 	})
 	t.Run("updateRecency_onSetIfAbsent", func(t *testing.T) {
@@ -751,7 +729,7 @@ func TestCache_Eviction(t *testing.T) {
 			require.Equal(t, i, v)
 		}
 
-		first := firstBeforeAccess(c)
+		first := c.cache.nodeManager.FromKeyed(firstBeforeAccess(c))
 		updateRecency(t, c, false, func() {
 			v, ok := c.SetIfAbsent(c.cache.nodeManager.Key(first), c.cache.nodeManager.Value(first)+1)
 			require.False(t, ok)
@@ -783,7 +761,7 @@ func TestCache_Eviction(t *testing.T) {
 			require.Equal(t, i, v)
 		}
 
-		first := firstBeforeAccess(c)
+		first := c.cache.nodeManager.FromKeyed(firstBeforeAccess(c))
 		// capture before Set: the node may be updated in place
 		firstValue := c.cache.nodeManager.Value(first)
 		updateRecency(t, c, false, func() {
@@ -1735,7 +1713,8 @@ func TestCache_EvictionOfReplacedNodeReportsNothing(t *testing.T) {
 	c.Set(2, "x")
 	c.CleanUp()
 	n1 := ci.hashmap.Get(1)
-	require.True(t, n1.InMainProbation())
+	n1h := ci.hdr(n1)
+	require.True(t, n1h.InMainProbation())
 
 	ci.evictionMutex.Lock()
 	ci.drainReadBuffer()
@@ -1743,10 +1722,10 @@ func TestCache_EvictionOfReplacedNodeReportsNothing(t *testing.T) {
 	c.Set(3, "y")
 	ci.drainWriteBuffer() // over the maximum now: 3 entries for 2
 	c.Set(1, "b")         // replaces n1; the update task stays in the buffer
-	require.True(t, n1.IsRetired())
-	require.Equal(t, n1.AsPointer(), ci.evictionPolicy.probation.Head().AsPointer())
+	require.True(t, n1h.IsRetired())
+	require.Same(t, n1.Keyed(), ci.evictionPolicy.probation.Head())
 	ci.evictNodes()
-	require.True(t, n1.IsDead())
+	require.True(t, n1h.IsDead())
 	ci.evictionMutex.Unlock()
 	c.CleanUp()
 
@@ -2028,7 +2007,7 @@ func testReadDoesNotMoveDeadlineOfValueWrittenDuringIt[V comparable](t *testing.
 	c.Set(1, v2)
 	c.Set(1, v1)
 	n := c.cache.hashmap.Get(1)
-	require.True(t, n.CanSetValue())
+	require.True(t, c.cache.hdr(n).CanSetValue())
 
 	calc.armed.Store(true)
 	done := make(chan struct{})
@@ -2039,7 +2018,7 @@ func testReadDoesNotMoveDeadlineOfValueWrittenDuringIt[V comparable](t *testing.
 	}()
 	<-calc.entered
 	c.Set(1, v2) // expires at 60s too
-	require.True(t, n.AsPointer() == c.cache.hashmap.Get(1).AsPointer(), "the node was replaced")
+	require.True(t, n == c.cache.hashmap.Get(1), "the node was replaced")
 	close(calc.proceed)
 	<-done
 	require.Equal(t, v1, got, "the read returned a value other than the one ExpireAfterRead was shown")
@@ -2080,7 +2059,7 @@ func testReadExtendsDeadline[V any](t *testing.T, v V) {
 	// the second write leaves the node of any value updatable in place
 	c.Set(1, v)
 	c.Set(1, v)
-	require.True(t, c.cache.hashmap.Get(1).CanSetValue())
+	require.True(t, c.cache.hdr(c.cache.hashmap.Get(1)).CanSetValue())
 
 	clk.Sleep(30 * time.Second)
 	_, ok := c.GetIfPresent(1)

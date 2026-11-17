@@ -34,24 +34,87 @@ const (
 	variantCount
 )
 
-// Node is the header of a cache entry. It does not depend on the key and value types, so that
-// the code that only links, schedules and moves nodes is compiled once per program; the key and
-// the value are read through the Manager, which knows where they follow the header.
-type Node interface {
+// Entry is a strictly typed 1-word phantom pointer handle to a cache entry of type (K, V).
+// Nominal type parameters K and V enforce distinct types per (K, V) while keeping Sizeof == 1,
+// Alignof == 1 (checkptr-safe even for 1-byte tiny allocations), PtrBytes == 0, and Comparable.
+type Entry[K comparable, V any] struct {
+	base byte
+}
+
+// Keyed is a V-erased 1-word phantom pointer handle to a cache entry with key type K.
+type Keyed[K comparable] struct {
+	base byte
+}
+
+// Header is a K/V-erased 1-word handle to offset 0 of a node header (B..BERW).
+type Header struct {
+	base byte
+}
+
+// Sentinel is a keyless, valueless 1-word handle used exclusively for timer-wheel bucket roots.
+type Sentinel struct {
+	base byte
+}
+
+// Keyed upcasts an *Entry[K, V] handle to *Keyed[K].
+func (n *Entry[K, V]) Keyed() *Keyed[K] {
+	return (*Keyed[K])(unsafe.Pointer(n))
+}
+
+// Header upcasts an *Entry[K, V] handle to *Header.
+func (n *Entry[K, V]) Header() *Header {
+	return (*Header)(unsafe.Pointer(n))
+}
+
+// Header upcasts a *Keyed[K] handle to *Header.
+func (n *Keyed[K]) Header() *Header {
+	return (*Header)(unsafe.Pointer(n))
+}
+
+// Header returns the linkable *Header view of a *Sentinel root.
+func (s *Sentinel) Header() *Header {
+	return (*Header)(unsafe.Pointer(s))
+}
+
+// KeyLens reads K from *Keyed[K] and downcasts *Header to *Keyed[K] using an unexported offset
+// sealed inside package node.
+type KeyLens[K comparable] struct {
+	keyOffset uintptr
+}
+
+// Key returns the key of n.
+func (l KeyLens[K]) Key(n *Keyed[K]) K {
+	return *(*K)(unsafe.Add(unsafe.Pointer(n), l.keyOffset))
+}
+
+// FromHeader downcasts h to *Keyed[K], preserving nil.
+func (l KeyLens[K]) FromHeader(h *Header) *Keyed[K] {
+	return (*Keyed[K])(unsafe.Pointer(h))
+}
+
+// HeaderIface is the non-generic virtual interface of a node header, compiled once per program.
+// Intrusive links use concrete 1-word *Header handles (never unsafe.Pointer or 2-word interfaces).
+type HeaderIface interface {
 	// CanSetValue reports whether the value can be replaced in place with Manager.SetValue
 	// without a concurrent reader observing a torn value: it is kept in one atomic word, or
 	// behind a pointer.
 	CanSetValue() bool
-	// AsPointer returns the node as a pointer.
-	AsPointer() unsafe.Pointer
-	// Prev returns the previous node in the eviction policy.
-	Prev() Node
-	// SetPrev sets the previous node in the eviction policy.
-	SetPrev(v Node)
-	// Next returns the next node in the eviction policy.
-	Next() Node
-	// SetNext sets the next node in the eviction policy.
-	SetNext(v Node)
+	// Prev returns the previous node header in the eviction policy.
+	Prev() *Header
+	// SetPrev sets the previous node header in the eviction policy.
+	SetPrev(v *Header)
+	// Next returns the next node header in the eviction policy.
+	Next() *Header
+	// SetNext sets the next node header in the eviction policy.
+	SetNext(v *Header)
+	// PrevExp returns the previous node header in the expiration policy.
+	PrevExp() *Header
+	// SetPrevExp sets the previous node header in the expiration policy.
+	SetPrevExp(v *Header)
+	// NextExp returns the next node header in the expiration policy.
+	NextExp() *Header
+	// SetNextExp sets the next node header in the expiration policy.
+	SetNextExp(v *Header)
 	// HasExpired returns true if node has expired.
 	HasExpired(now int64) bool
 	// ExpiresAt returns the expiration time.
@@ -64,7 +127,7 @@ type Node interface {
 	RefreshableAt() int64
 	// CASRefreshableAt executes the compare-and-swap operation for refreshableAt.
 	CASRefreshableAt(old, new int64) bool
-	// SetRefreshableAt returns the refresh time.
+	// SetRefreshableAt sets the refresh time.
 	SetRefreshableAt(new int64)
 	IsFresh(now int64) bool
 	// Weight returns the weight of the node.
@@ -86,11 +149,11 @@ type Node interface {
 	IsDead() bool
 	// Die sets the node to the dead state.
 	Die()
-	// GetQueueType returns the queue that the entry's resides in (window, probation, or protected).
+	// GetQueueType returns the queue that the entry resides in (window, probation, or protected).
 	GetQueueType() uint8
 	// SetQueueType sets queue that the entry resides in (window, probation, or protected).
 	SetQueueType(queueType uint8)
-	// InWindow returns true if the entry is in the Window or Main space.
+	// InWindow returns true if the entry is in the Window space.
 	InWindow() bool
 	// MakeWindow sets the status to the Window queue.
 	MakeWindow()
@@ -113,61 +176,29 @@ type Config struct {
 
 // Kind is the part of a node type that does not depend on the key and value types.
 type Kind struct {
-	fromPointer func(ptr unsafe.Pointer) Node
-	init        func(ptr unsafe.Pointer, expiresAt, refreshableAt int64, weight uint32, variant uint8) Node
-	newHeader   func() unsafe.Pointer
+	header    func(h *Header) HeaderIface
+	init      func(ptr unsafe.Pointer, expiresAt, refreshableAt int64, weight uint32, variant uint8)
+	newHeader func() unsafe.Pointer
 	// variantOffset is the offset of the variant byte in the header of a node with state.
 	variantOffset uintptr
 	withState     bool
-	// linksOffset and expLinksOffset are the offsets of the Links of the eviction policy and of
-	// the timer wheel in the header, and so in the node, which starts with its header.
-	linksOffset    uintptr
-	expLinksOffset uintptr
-	hasLinks       bool
-	hasExpLinks    bool
 }
 
-// Links is the pair of pointers that links a node into a list: prev and next of the eviction
-// policy, or prevExp and nextExp of the timer wheel. They are adjacent in every header, so a
-// list can follow them through a raw pointer to the node at the offset the Kind reports,
-// without calling the node's methods.
-type Links struct {
-	Prev unsafe.Pointer
-	Next unsafe.Pointer
+// Header returns the virtual HeaderIface for h, or an untyped nil interface when h == nil.
+func (k *Kind) Header(h *Header) HeaderIface {
+	return k.header(h)
 }
 
-// LinksOffset returns the offset of the eviction policy's Links in a node. It panics for nodes
-// of an unbounded cache, which have no such links: a list writing at a made-up offset would
-// overwrite the node's other fields.
-func (k *Kind) LinksOffset() uintptr {
-	if !k.hasLinks {
-		panic("node: the nodes have no eviction policy links")
-	}
-	return k.linksOffset
+// SentinelHeader returns the virtual HeaderIface for s, or an untyped nil interface when s == nil.
+func (k *Kind) SentinelHeader(s *Sentinel) HeaderIface {
+	return k.header((*Header)(unsafe.Pointer(s)))
 }
 
-// ExpLinksOffset returns the offset of the timer wheel's Links in a node. It panics for nodes
-// without expiration, which have no such links.
-func (k *Kind) ExpLinksOffset() uintptr {
-	if !k.hasExpLinks {
-		panic("node: the nodes have no expiration links")
-	}
-	return k.expLinksOffset
-}
-
-// PointerOf returns the pointer to the node's header that n holds. Every node type is a pointer,
-// so it is the interface's data word, read without a method call.
-func PointerOf(n Node) unsafe.Pointer {
-	return (*[2]unsafe.Pointer)(unsafe.Pointer(&n))[1]
-}
-
-func (k *Kind) FromPointer(ptr unsafe.Pointer) Node {
-	return k.fromPointer(ptr)
-}
-
-// NewSentinel returns a node without a key and a value, which only links other nodes.
-func (k *Kind) NewSentinel() Node {
-	return k.init(k.newHeader(), math.MaxInt64, math.MaxInt64, 1, emptyVariant)
+// NewSentinel allocates a keyless, valueless sentinel header for timer-wheel bucket roots.
+func (k *Kind) NewSentinel() *Sentinel {
+	ptr := k.newHeader()
+	k.init(ptr, math.MaxInt64, math.MaxInt64, 1, emptyVariant)
+	return (*Sentinel)(ptr)
 }
 
 type Manager[K comparable, V any] struct {
@@ -261,14 +292,44 @@ func NewManager[K comparable, V any](c Config) *Manager[K, V] {
 	return m
 }
 
-func (m *Manager[K, V]) Create(key K, value V, expiresAt, refreshableAt int64, weight uint32) Node {
+// EntryHeader returns the virtual HeaderIface for n, or an untyped nil interface when n == nil.
+func (m *Manager[K, V]) EntryHeader(n *Entry[K, V]) HeaderIface {
+	return m.header((*Header)(unsafe.Pointer(n)))
+}
+
+// KeyLens returns a sealed KeyLens[K] reading keys at this Manager's key offset.
+func (m *Manager[K, V]) KeyLens() KeyLens[K] {
+	return KeyLens[K]{keyOffset: m.keyOffset}
+}
+
+// ToKeyed upcasts n to *Keyed[K].
+func (m *Manager[K, V]) ToKeyed(n *Entry[K, V]) *Keyed[K] {
+	return (*Keyed[K])(unsafe.Pointer(n))
+}
+
+// FromKeyed downcasts n to *Entry[K, V].
+func (m *Manager[K, V]) FromKeyed(n *Keyed[K]) *Entry[K, V] {
+	return (*Entry[K, V])(unsafe.Pointer(n))
+}
+
+// ToHeader upcasts n to *Header.
+func (m *Manager[K, V]) ToHeader(n *Entry[K, V]) *Header {
+	return (*Header)(unsafe.Pointer(n))
+}
+
+// FromHeader downcasts h to *Entry[K, V].
+func (m *Manager[K, V]) FromHeader(h *Header) *Entry[K, V] {
+	return (*Entry[K, V])(unsafe.Pointer(h))
+}
+
+func (m *Manager[K, V]) Create(key K, value V, expiresAt, refreshableAt int64, weight uint32) *Entry[K, V] {
 	return m.create(key, value, expiresAt, refreshableAt, weight, m.createdVariant)
 }
 
-// CreateUpdatable creates a node whose value can be replaced in place (see Node.CanSetValue): a
+// CreateUpdatable creates a node whose value can be replaced in place (see HeaderIface.CanSetValue): a
 // value that would be kept inline is kept behind an atomic pointer instead. Nodes without state
 // are never updated in place and are created as by Create.
-func (m *Manager[K, V]) CreateUpdatable(key K, value V, expiresAt, refreshableAt int64, weight uint32) Node {
+func (m *Manager[K, V]) CreateUpdatable(key K, value V, expiresAt, refreshableAt int64, weight uint32) *Entry[K, V] {
 	return m.create(key, value, expiresAt, refreshableAt, weight, m.updatableVariant)
 }
 
@@ -279,12 +340,12 @@ func (m *Manager[K, V]) variantOf(ptr unsafe.Pointer) uint8 {
 	return *(*uint8)(unsafe.Add(ptr, m.variantOffset))
 }
 
-func (m *Manager[K, V]) create(key K, value V, expiresAt, refreshableAt int64, weight uint32, variant uint8) Node {
+func (m *Manager[K, V]) create(key K, value V, expiresAt, refreshableAt int64, weight uint32, variant uint8) *Entry[K, V] {
 	ptr := m.alloc(variant)
 	*(*K)(unsafe.Add(ptr, m.keyOffset)) = key
-	n := m.init(ptr, expiresAt, refreshableAt, weight, variant)
+	m.init(ptr, expiresAt, refreshableAt, weight, variant)
 	m.storeValue(ptr, variant, value)
-	return n
+	return (*Entry[K, V])(ptr)
 }
 
 // ValueStorage returns how the nodes keep their values: "p" in an atomic pointer, "u64" in an
@@ -294,20 +355,15 @@ func (m *Manager[K, V]) ValueStorage() string {
 	return m.valueStorage
 }
 
-// KeyOffset returns the offset of the key from the node's header.
-func (m *Manager[K, V]) KeyOffset() uintptr {
-	return m.keyOffset
-}
-
-// Key returns the key of n.
-func (m *Manager[K, V]) Key(n Node) K {
-	return *(*K)(unsafe.Add(PointerOf(n), m.keyOffset))
+// Key returns the key of n directly from its concrete 1-word pointer.
+func (m *Manager[K, V]) Key(n *Entry[K, V]) K {
+	return *(*K)(unsafe.Add(unsafe.Pointer(n), m.keyOffset))
 }
 
 // Value returns the value of n. Nodes without state return before the switch: those caches read
 // a value on every hit.
-func (m *Manager[K, V]) Value(n Node) V {
-	ptr := PointerOf(n)
+func (m *Manager[K, V]) Value(n *Entry[K, V]) V {
+	ptr := unsafe.Pointer(n)
 	if m.stateless {
 		return *(*V)(unsafe.Add(ptr, m.valueOffsets[inlineVariant]))
 	}
@@ -332,8 +388,8 @@ func (m *Manager[K, V]) Value(n Node) V {
 // SetValue replaces the value of n. It may be called on a node that is already in the cache only
 // when CanSetValue reports true, which makes it an atomic replacement that lock-free readers
 // never observe torn.
-func (m *Manager[K, V]) SetValue(n Node, v V) {
-	ptr := PointerOf(n)
+func (m *Manager[K, V]) SetValue(n *Entry[K, V], v V) {
+	ptr := unsafe.Pointer(n)
 	m.storeValue(ptr, m.variantOf(ptr), v)
 }
 
@@ -360,21 +416,20 @@ func (m *Manager[K, V]) storeBoxedValue(ptr unsafe.Pointer, v V) {
 	(*atomic.Pointer[V])(unsafe.Add(ptr, m.valueOffsets[boxedVariant])).Store(&v)
 }
 
-// ValueAndIdentity returns the value of n with what SetValue stored for it: its box or pointer,
-// or its word. Identities that differ tell a reader that the value was replaced in place in
-// between; a box is not reused while an identity holds it. Equal identities mean an equal
-// value. A node whose value is never replaced in place always returns the same identity.
-func (m *Manager[K, V]) ValueAndIdentity(n Node) (V, unsafe.Pointer, uint64) {
-	ptr := PointerOf(n)
+// ValueAndIdentity returns the value of n with what SetValue stored for it: its box or pointer
+// represented as an opaque *Header token (keeping any box GC-live without exposing unsafe.Pointer),
+// or its word.
+func (m *Manager[K, V]) ValueAndIdentity(n *Entry[K, V]) (V, *Header, uint64) {
+	ptr := unsafe.Pointer(n)
 	variant := m.variantOf(ptr)
 	switch variant {
 	case boxedVariant:
 		// the box is loaded once, so the value is the one it identifies
 		p := (*atomic.Pointer[V])(unsafe.Add(ptr, m.valueOffsets[variant])).Load()
-		return *p, unsafe.Pointer(p), 0
+		return *p, (*Header)(unsafe.Pointer(p)), 0
 	case pointerVariant:
 		p := atomic.LoadPointer((*unsafe.Pointer)(unsafe.Add(ptr, m.valueOffsets[variant])))
-		return *(*V)(unsafe.Pointer(&p)), p, 0
+		return *(*V)(unsafe.Pointer(&p)), (*Header)(p), 0
 	case wordVariant:
 		w := (*atomic.Uint64)(unsafe.Add(ptr, m.valueOffsets[variant])).Load()
 		return *(*V)(unsafe.Pointer(&w)), nil, w
@@ -384,6 +439,27 @@ func (m *Manager[K, V]) ValueAndIdentity(n Node) (V, unsafe.Pointer, uint64) {
 	default:
 		// never replaced in place
 		return *(*V)(unsafe.Add(ptr, m.valueOffsets[variant])), nil, 0
+	}
+}
+
+// StackAddr returns the stack address of p as a uintptr without escaping p to the heap.
+func StackAddr(p *byte) uintptr {
+	return uintptr(unsafe.Pointer(p))
+}
+
+// IntToUint64 zero-extends an integer key of size 1, 2, 4, or 8 bytes into a uint64.
+func IntToUint64[T any](t T) uint64 {
+	switch unsafe.Sizeof(t) {
+	case 8:
+		return *(*uint64)(unsafe.Pointer(&t))
+	case 4:
+		return uint64(*(*uint32)(unsafe.Pointer(&t)))
+	case 2:
+		return uint64(*(*uint16)(unsafe.Pointer(&t)))
+	case 1:
+		return uint64(*(*uint8)(unsafe.Pointer(&t)))
+	default:
+		panic("unreachable")
 	}
 }
 

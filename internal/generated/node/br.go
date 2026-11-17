@@ -43,43 +43,54 @@ func layoutBR[K comparable, V any]() (key uintptr, values [variantCount]uintptr)
 }
 
 // initBR initializes the header of a node allocated by allocBR.
-func initBR(ptr unsafe.Pointer, expiresAt, refreshableAt int64, weight uint32, variant uint8) Node {
+func initBR(ptr unsafe.Pointer, expiresAt, refreshableAt int64, weight uint32, variant uint8) {
 	n := (*BR)(ptr)
 	n.refreshableAt.Store(refreshableAt)
-	return n
 }
 
-// CastPointerToBR casts a pointer to BR.
-func CastPointerToBR(ptr unsafe.Pointer) Node {
-	if ptr == nil {
+// headerBR wraps a *Header as a *BR implementing HeaderIface, returning untyped nil if h == nil.
+func headerBR(h *Header) HeaderIface {
+	if h == nil {
 		return nil
 	}
-	return (*BR)(ptr)
+	return (*BR)(unsafe.Pointer(h))
 }
 
 var brKind = Kind{
-	fromPointer: CastPointerToBR,
-	init:        initBR,
-	newHeader:   func() unsafe.Pointer { return unsafe.Pointer(new(BR)) },
+	header:    headerBR,
+	init:      initBR,
+	newHeader: func() unsafe.Pointer { return unsafe.Pointer(new(BR)) },
 }
 
-func (n *BR) AsPointer() unsafe.Pointer {
-	return unsafe.Pointer(n)
-}
-
-func (n *BR) Prev() Node {
+func (n *BR) Prev() *Header {
 	panic("not implemented")
 }
 
-func (n *BR) SetPrev(v Node) {
+func (n *BR) SetPrev(v *Header) {
 	panic("not implemented")
 }
 
-func (n *BR) Next() Node {
+func (n *BR) Next() *Header {
 	panic("not implemented")
 }
 
-func (n *BR) SetNext(v Node) {
+func (n *BR) SetNext(v *Header) {
+	panic("not implemented")
+}
+
+func (n *BR) PrevExp() *Header {
+	panic("not implemented")
+}
+
+func (n *BR) SetPrevExp(v *Header) {
+	panic("not implemented")
+}
+
+func (n *BR) NextExp() *Header {
+	panic("not implemented")
+}
+
+func (n *BR) SetNextExp(v *Header) {
 	panic("not implemented")
 }
 

@@ -17,6 +17,7 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"go/format"
 	"log"
 	"os"
 	"sort"
@@ -234,14 +235,28 @@ func (w *writer) output() []byte {
 	return w.buf.Bytes()
 }
 
+func writeFormattedFile(path string, src []byte) error {
+	formatted, err := format.Source(src)
+	if err != nil {
+		return fmt.Errorf("format %s: %w\n%s", path, err, string(src))
+	}
+	if err := os.WriteFile(path, formatted, 0o644); err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	return nil
+}
+
 func main() {
-	dir := os.Args[1]
+	dir := "./internal/generated/node"
+	if len(os.Args) > 1 {
+		dir = os.Args[1]
+	}
 
 	if err := os.RemoveAll(dir); err != nil {
 		log.Fatalf("remove dir: %s\n", err.Error())
 	}
 
-	if err := os.MkdirAll(dir, os.ModePerm); err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		log.Fatalf("create dir %s: %s", dir, err.Error())
 	}
 
